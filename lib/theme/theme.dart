@@ -17,6 +17,12 @@ ThemeData theme = ThemeData(
       color: const Color(0xffffffff),
       fontWeight: FontWeight.bold,
     ),
+    headline3: TextStyle(
+      fontFamily: 'Avenir',
+      fontSize: 14,
+      color: const Color(0xffffffff),
+      fontWeight: FontWeight.bold,
+    ),
     bodyText2: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 22,
