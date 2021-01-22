@@ -2,10 +2,12 @@ part of 'cell_bloc.dart';
 
 @immutable
 class CellState {
-  CellState({@required this.organelleInFocus});
+  CellState({@required this.organelleInfo});
 
-  final Organelle organelleInFocus;
+  final OrganelleInfo organelleInfo;
 }
+
+
 
 enum Organelle {
   nucleolous,

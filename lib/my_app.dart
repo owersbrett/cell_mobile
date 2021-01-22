@@ -11,12 +11,21 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Cell',
       theme: theme,
-      home: SafeArea(
-        child: MultiBlocProvider(
-          providers: [BlocProvider(create: (_) => CellBloc())],
-          child: Scaffold(body: CellPage()),
+      home: MultiBlocProvider(providers: [
+        BlocProvider(
+          create: (_) => CellBloc(currentIndex: 0),
         ),
-      ),
+      ], child: Cell()),
+    );
+  }
+}
+
+class Cell extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Theme.of(context).backgroundColor,
+      body: CellPage(),
     );
   }
 }
