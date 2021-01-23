@@ -51,17 +51,20 @@ class CellPage extends StatelessWidget {
                     ],
                   ),
                 ),
+                Expanded(
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      ..._buildAssets(cellState.organelleInfo.position),
+                    ],
+                  ),
+                ),
                 Padding(
                   padding: const EdgeInsets.only(
                       left: 24.0, right: 32, top: 48, bottom: 16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Stack(
-                        children: [
-                          ..._buildAssets(cellState.organelleInfo.position),
-                        ],
-                      ),
                       SizedBox(height: 20),
                       Text(
                         "${cellState.organelleInfo.name}",
@@ -75,7 +78,8 @@ class CellPage extends StatelessWidget {
                             style: Theme.of(context).textTheme.headline3,
                           ),
                           IconButton(
-                            icon: Icon(Icons.arrow_forward, color: Colors.white),
+                            icon:
+                                Icon(Icons.arrow_forward, color: Colors.white),
                             onPressed: () {
                               print('lets go');
                             },
