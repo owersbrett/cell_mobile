@@ -1,14 +1,22 @@
-
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/data/organelles.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import 'animations/cell_animation_delegate.dart';
+
+
+
+
+
+
 class CellBody extends StatelessWidget {
   List<Widget> _buildAssets(int currentIndex) {
     List<Widget> widgetList = [Container()];
     for (int index = 0; index <= currentIndex; index++) {
-      widgetList.add(Image.asset(organelles[index].mainImagePath));
+      Widget imageWithAnimation =
+          CellAnimationDelegate.organelle(organelles[index]);
+      widgetList.add(imageWithAnimation);
     }
     return widgetList;
   }
@@ -21,6 +29,9 @@ class CellBody extends StatelessWidget {
           BlocProvider.of<CellBloc>(context).add(DragCellUp());
         if (!dragDetails.primaryVelocity.sign.isNegative)
           BlocProvider.of<CellBloc>(context).add(DragCellDown());
+      },
+      onTap: () {
+        BlocProvider.of<CellBloc>(context).add(DragCellUp());
       },
       child: BlocBuilder<CellBloc, CellState>(
         builder: (cellContext, cellState) {
@@ -90,7 +101,6 @@ class CellBody extends StatelessWidget {
                     ],
                   ),
                 ),
-
               ],
             ),
           );
