@@ -55,9 +55,10 @@ class _NucleolousState extends State<Nucleolus> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      child: Image.asset(widget.organelleInfo.mainImagePath,
-          width: size, height: size),
+    return Image.asset(
+      widget.organelleInfo.mainImagePath,
+      width: size,
+      height: size,
     );
   }
 }
