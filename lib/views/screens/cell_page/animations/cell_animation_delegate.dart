@@ -99,6 +99,14 @@ class CellAnimationDelegate {
         );
       case Organelle.vacuoles:
         return Transform.scale(
+          scale: 1.006,
+                  child: RibosomeAnimation(
+            path: organelleInfo.mainImagePath,
+            persistant: true,
+          ),
+        );
+      case Organelle.peroxisome:
+        return Transform.scale(
           scale: 1.01,
                   child: RibosomeAnimation(
             path: organelleInfo.mainImagePath,
