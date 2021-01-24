@@ -5,6 +5,7 @@ import 'package:cell_mobile/views/screens/cell_page/animations/plasm_animation.d
 import 'package:cell_mobile/views/screens/cell_page/animations/ribosome_animation.dart';
 import 'package:flutter/material.dart';
 
+import 'mitochondria.dart';
 import 'nucleolus.dart';
 
 class CellAnimationDelegate {
@@ -93,6 +94,12 @@ class CellAnimationDelegate {
           path: organelleInfo.mainImagePath,
           persistant: false,
         );
+      case Organelle.mitochondrion:
+      return Mitochondria(organelleInfo: organelleInfo,);
+        // return RibosomeAnimation(
+        //   path: organelleInfo.mainImagePath,
+        //   persistant: false,
+        // );
       default:
     }
 
