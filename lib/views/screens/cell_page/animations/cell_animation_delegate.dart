@@ -88,6 +88,11 @@ class CellAnimationDelegate {
           path: organelleInfo.mainImagePath,
           persistant: false,
         );
+      case Organelle.centrioles:
+        return RibosomeAnimation(
+          path: organelleInfo.mainImagePath,
+          persistant: false,
+        );
       default:
     }
 
