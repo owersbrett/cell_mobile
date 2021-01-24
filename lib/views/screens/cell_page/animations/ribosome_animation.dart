@@ -1,6 +1,3 @@
-import 'dart:io';
-import 'dart:math';
-
 import 'package:arc_animator/arc_animator.dart';
 import 'package:flutter/material.dart';
 

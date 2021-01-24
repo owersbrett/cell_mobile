@@ -2,7 +2,6 @@ import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/models/organelle.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/genetic_animation.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/plasm_animation.dart';
-import 'package:cell_mobile/views/screens/cell_page/animations/pulsing_animation.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/ribosome_animation.dart';
 import 'package:flutter/material.dart';
 
@@ -12,7 +11,6 @@ import 'nucleolus.dart';
 class CellAnimationDelegate {
   static Widget organelle(OrganelleInfo organelleInfo) {
     Widget image = Image.asset(organelleInfo.mainImagePath);
-    Widget animatedImage;
     switch (organelleInfo.organelle) {
       case Organelle.nucleolus:
         return Nucleolus(organelleInfo: organelleInfo);
@@ -101,6 +99,14 @@ class CellAnimationDelegate {
         );
       case Organelle.vacuoles:
         return Transform.scale(
+          scale: 1.006,
+                  child: RibosomeAnimation(
+            path: organelleInfo.mainImagePath,
+            persistant: true,
+          ),
+        );
+      case Organelle.peroxisome:
+        return Transform.scale(
           scale: 1.01,
                   child: RibosomeAnimation(
             path: organelleInfo.mainImagePath,
@@ -112,6 +118,5 @@ class CellAnimationDelegate {
     }
 
     return image;
-    return animatedImage;
   }
 }

@@ -30,7 +30,6 @@ class _MitochondriaState extends State<Mitochondria>
 
   @override
   void dispose() {
-    // TODO: implement dispose
     entryAnimation.dispose();
     pulsingAnimation.dispose();
     super.dispose();
