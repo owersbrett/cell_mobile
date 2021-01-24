@@ -83,6 +83,11 @@ class CellAnimationDelegate {
             ),
           ),
         );
+      case Organelle.microtubules:
+        return RibosomeAnimation(
+          path: organelleInfo.mainImagePath,
+          persistant: false,
+        );
       default:
     }
 
