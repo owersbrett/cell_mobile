@@ -13,8 +13,9 @@ class _MitochondriaState extends State<Mitochondria>
   AnimationController entryAnimation;
   AnimationController pulsingAnimation;
   Tween<double> entryTween;
+  Tween<double> pulseTween;
   Animation animation;
-
+  Animation pulseAnimation;
 
   @override
   void initState() {
@@ -24,11 +25,7 @@ class _MitochondriaState extends State<Mitochondria>
 
   setUpAnimations() {
     introAnimation();
-    pulsingAnimation = AnimationController(
-      vsync: this,
-      duration: Duration(seconds: 1),
-      reverseDuration: Duration(milliseconds: 200),
-    );
+    persistantAnimation();
   }
 
   @override
@@ -38,7 +35,8 @@ class _MitochondriaState extends State<Mitochondria>
     pulsingAnimation.dispose();
     super.dispose();
   }
-   introAnimation() {
+
+  introAnimation() {
     entryAnimation = AnimationController(
       vsync: this,
       duration: Duration(milliseconds: 200),
@@ -50,16 +48,44 @@ class _MitochondriaState extends State<Mitochondria>
       });
     entryAnimation.forward();
   }
+
+  persistantAnimation() {
+    pulsingAnimation = AnimationController(
+      vsync: this,
+      duration: Duration(seconds: 1),
+      reverseDuration: Duration(milliseconds: 200),
+    );
+    pulseTween = Tween<double>(begin: 1, end: 1.03);
+    pulseAnimation = pulseTween.animate(pulsingAnimation)
+      ..addListener(() {
+        if (pulsingAnimation.isCompleted){
+          pulsingAnimation.reverse();
+        } else if (pulsingAnimation.isDismissed) {
+          
+    pulsingAnimation.forward();
+        }
+        setState(() {});
+      });
+    pulsingAnimation.forward();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Transform.scale(
       scale: animation.value,
-          child: AnimatedBuilder(
+      child: AnimatedBuilder(
         animation: entryAnimation,
-        builder: (BuildContext context, Widget child) { 
-          print('hey');
-          return child;
-         },
+        builder: (BuildContext context, Widget child) {
+          return AnimatedBuilder(
+            animation: pulseAnimation,
+            builder: (BuildContext context, Widget child) {  
+              return Transform.scale(
+                scale: pulseAnimation.value,
+                child: child);
+            },
+            child: child,
+          );
+        },
         child: Image.asset(widget.organelleInfo.mainImagePath),
       ),
     );
