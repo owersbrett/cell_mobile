@@ -13,7 +13,7 @@ class MyApp extends StatelessWidget {
       theme: theme,
       home: MultiBlocProvider(providers: [
         BlocProvider(
-          create: (_) => CellBloc(currentIndex: 0),
+          create: (_) => CellBloc(currentIndex: 6),
         ),
       ], child: CellPage()),
     );
