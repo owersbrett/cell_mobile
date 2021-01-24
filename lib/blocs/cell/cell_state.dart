@@ -11,7 +11,7 @@ class CellState {
 
 enum Organelle {
   nucleolus,
-  nucleic_acids,
+  nucleotide,
   rna,
   base_pairs,
   dna,
@@ -43,9 +43,9 @@ class EnumHelper {
     Organelle _nextOrganelle;
     switch (organelle) {
       case Organelle.nucleolus:
-      _nextOrganelle =Organelle.nucleic_acids;
+      _nextOrganelle =Organelle.nucleotide;
         break;
-      case Organelle.nucleic_acids:
+      case Organelle.nucleotide:
       _nextOrganelle =Organelle.rna;
         break;
       case Organelle.rna:
@@ -114,11 +114,11 @@ class EnumHelper {
   static Organelle previousOrganelle(Organelle organelle) {
      Organelle _previousOrganelle;
     switch (organelle) {
-      case Organelle.nucleic_acids:
+      case Organelle.nucleotide:
       _previousOrganelle =Organelle.nucleolus;
         break;
       case Organelle.rna:
-      _previousOrganelle =Organelle.nucleic_acids;
+      _previousOrganelle =Organelle.nucleotide;
         break;
       case Organelle.base_pairs:
       _previousOrganelle =Organelle.rna;

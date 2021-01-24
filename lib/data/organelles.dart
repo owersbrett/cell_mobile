@@ -5,6 +5,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     0,
     name: "Nucleolus",
+    title: "The Creator",
     organelle: Organelle.nucleolus,
     mainImagePath: "assets/images/nucleolus.png",
     shortDescription: "I am the nucleolus...",
@@ -13,9 +14,10 @@ List<OrganelleInfo> organelles = [
   ),
   OrganelleInfo(
     1,
-    name: "Nucleic Acids",
-    organelle: Organelle.nucleic_acids,
-    mainImagePath: "assets/images/nucleic-acids.png",
+    name: "Nucleotides",
+    title: "The Building Blocks",
+    organelle: Organelle.nucleotide,
+    mainImagePath: "assets/images/nucleotide.png",
     shortDescription: "I'm a string of nucleic acids...",
     longDescription: "My function is...",
     carouselImagesPaths: ["Link this to repo"],
@@ -23,6 +25,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     2,
     name: "RNA",
+    title: "The Messenger",
     organelle: Organelle.rna,
     mainImagePath: "assets/images/rna.png",
     shortDescription: "I'm RNA...",
@@ -32,6 +35,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     3,
     name: "Base Pairs",
+    title: "The Complementary Building Blocks",
     organelle: Organelle.base_pairs,
     mainImagePath: "assets/images/base-pairs.png",
     shortDescription: "Base pairs compose DNA...",
@@ -41,6 +45,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     4,
     name: "DNA",
+    title: "Genetic Database",
     organelle: Organelle.dna,
     mainImagePath: "assets/images/dna.png",
     shortDescription: "I'm DNA...",
@@ -50,6 +55,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     5,
     name: "Nucleoplasm",
+    title: "The Inner Sanctum",
     organelle: Organelle.nucleoplasm,
     mainImagePath: "assets/images/nucleoplasm.png",
     shortDescription: "I'm the nucleoplasm...",
@@ -59,6 +65,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     6,
     name: "Nuclear Membrane",
+    title: "The Inner Wall",
     organelle: Organelle.nuclear_membrane,
     mainImagePath: "assets/images/nuclear-membrane.png",
     shortDescription: "I am the nuclear membrane...",
@@ -68,6 +75,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     7,
     name: "Smooth Endoplasmic Reticulum",
+    title: "The Tubular Factory",
     organelle: Organelle.smooth_endoplasmic_reticulum,
     mainImagePath: "assets/images/smooth-endoplasmic-reticulum.png",
     shortDescription: "I am the smooth endoplasmic reticulum...",
@@ -77,6 +85,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     8,
     name: "Ribosomes",
+    title: "The Machine Elves",
     organelle: Organelle.ribosomes,
     mainImagePath: "assets/images/ribosomes.png",
     shortDescription: "We are ribosomes...",
@@ -86,6 +95,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     9,
     name: "Rough Endoplasmic Reticulum",
+    title: "The Studded Factory",
     organelle: Organelle.rough_endoplasmic_reticulum,
     mainImagePath: "assets/images/rough-endoplasmic-reticulum.png",
     shortDescription: "I am the rough endoplasmic reticulum...",
@@ -95,6 +105,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     10,
     name: "Golgi Apparatus",
+    title: "The Synthesizing Transporter",
     organelle: Organelle.golgi_apparatus,
     mainImagePath: "assets/images/golgi-apparatus.png",
     shortDescription: "I am the golgi apparatus...",
@@ -104,6 +115,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     11,
     name: "Microtubules",
+    title: "The Intelligent Scaffold",
     organelle: Organelle.microtubules,
     mainImagePath: "assets/images/microtubules.png",
     shortDescription: "We are microtubules...",
@@ -113,6 +125,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     12,
     name: "Centrioles",
+    title: "The Great Divider",
     organelle: Organelle.centrioles,
     mainImagePath: "assets/images/centrioles.png",
     shortDescription: "We are centrioles...",
@@ -122,6 +135,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     13,
     name: "Mitochondria",
+    title: "The Powerhouse",
     organelle: Organelle.mitochondrion,
     mainImagePath: "assets/images/mitochondria.png",
     shortDescription: "We are the mitochondria...",
@@ -131,6 +145,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     14,
     name: "Vacuoles",
+    title: "The Storage Units",
     organelle: Organelle.vacuoles,
     mainImagePath: "assets/images/vacuoles.png",
     shortDescription: "We are vacuoles...",
@@ -140,6 +155,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     15,
     name: "Peroxisomes",
+    title: "The Oxidative Metabolite",
     organelle: Organelle.peroxisome,
     mainImagePath: "assets/images/peroxisomes.png",
     shortDescription: "I am the plasma membrane...",
@@ -149,6 +165,7 @@ List<OrganelleInfo> organelles = [
   OrganelleInfo(
     16,
     name: "Cytoplasm",
+    title: "The Gelatinous Body",
     organelle: Organelle.cytoplasm,
     mainImagePath: "assets/images/cytoplasm.png",
     shortDescription: "I am the cytoplasm...",
@@ -157,6 +174,7 @@ List<OrganelleInfo> organelles = [
   ),
   OrganelleInfo(
     17,
+    title: "The Skin",
     name: "Plasma Membrane",
     organelle: Organelle.cell_membrane,
     mainImagePath: "assets/images/plasma-membrane.png",

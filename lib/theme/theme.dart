@@ -28,7 +28,13 @@ ThemeData theme = ThemeData(
       fontSize: 22,
       color: const Color(0xffdddddd),
       fontWeight: FontWeight.w400,
-
     ),
+  bodyText1: TextStyle(
+      fontFamily: 'Avenir',
+      fontSize: 28,
+      color: const Color(0xffFFFFFF),
+      fontWeight: FontWeight.w400,
+
+  )
   ),
 );
