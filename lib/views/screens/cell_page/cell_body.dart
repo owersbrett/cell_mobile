@@ -1,5 +1,6 @@
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/data/organelles.dart';
+import 'package:cell_mobile/views/screens/details_page/details_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -92,6 +93,18 @@ class CellBody extends StatelessWidget {
                             icon:
                                 Icon(Icons.arrow_forward, color: Colors.white),
                             onPressed: () {
+                              Navigator.push(
+                                context,
+                                PageRouteBuilder(
+                                  pageBuilder: (ctx, a, b) => DetailsPage(
+                                    organelleInfo:
+                                        BlocProvider.of<CellBloc>(context)
+                                            .state
+                                            .organelleInfo,
+                                  ),
+                                ),
+                              );
+
                               print('lets go');
                             },
                           ),
