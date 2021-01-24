@@ -13,17 +13,17 @@ class _GolgiApparatusState extends State<GolgiApparatus> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-          padding: const EdgeInsets.only(bottom: 11.0, right: 4),
-          child: Transform.translate(
-            offset: Offset(-15, 10),
-            child: Transform.scale(
-              scale: .75,
-              child: RibosomeAnimation(
-                path: widget.organelleInfo.mainImagePath,
-                persistant: false,
-              ),
-            ),
+      padding: const EdgeInsets.only(bottom: 11.0, right: 4),
+      child: Transform.translate(
+        offset: Offset(-15, 10),
+        child: Transform.scale(
+          scale: .75,
+          child: RibosomeAnimation(
+            path: widget.organelleInfo.mainImagePath,
+            persistant: false,
           ),
-        );
+        ),
+      ),
+    );
   }
 }
