@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 ThemeData theme = ThemeData(
   primaryColor: Color(0xff2B3D7F),
   cardColor: Color(0xff2B3D7F),
-  backgroundColor: Color(0xff2B3D7F).withOpacity(.3),
+  backgroundColor: Colors.black,
   textTheme: TextTheme(
     headline1: TextStyle(
       fontFamily: 'Avenir',

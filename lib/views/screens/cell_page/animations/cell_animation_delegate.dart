@@ -60,12 +60,28 @@ class CellAnimationDelegate {
       case Organelle.ribosomes:
         return Padding(
           padding: const EdgeInsets.only(bottom: 11.0, right: 4),
-          child: RibosomeAnimation(path: organelleInfo.mainImagePath, persistant: true),
+          child: RibosomeAnimation(
+              path: organelleInfo.mainImagePath, persistant: true),
         );
       case Organelle.rough_endoplasmic_reticulum:
         return Padding(
           padding: const EdgeInsets.only(bottom: 11.0, right: 4),
-          child: RibosomeAnimation(path: organelleInfo.mainImagePath, persistant: false),
+          child: RibosomeAnimation(
+              path: organelleInfo.mainImagePath, persistant: false),
+        );
+      case Organelle.golgi_apparatus:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 11.0, right: 4),
+          child: Transform.translate(
+            offset: Offset(-15, 10),
+            child: Transform.scale(
+              scale: .75,
+              child: RibosomeAnimation(
+                path: organelleInfo.mainImagePath,
+                persistant: false,
+              ),
+            ),
+          ),
         );
       default:
     }
