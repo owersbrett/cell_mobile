@@ -2,6 +2,7 @@ import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/models/organelle.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/genetic_animation.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/plasm_animation.dart';
+import 'package:cell_mobile/views/screens/cell_page/animations/pulsing_animation.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/ribosome_animation.dart';
 import 'package:flutter/material.dart';
 
@@ -95,11 +96,18 @@ class CellAnimationDelegate {
           persistant: false,
         );
       case Organelle.mitochondrion:
-      return Mitochondria(organelleInfo: organelleInfo,);
-        // return RibosomeAnimation(
-        //   path: organelleInfo.mainImagePath,
-        //   persistant: false,
-        // );
+        return Mitochondria(
+          organelleInfo: organelleInfo,
+        );
+      case Organelle.vacuoles:
+        return Transform.scale(
+          scale: 1.01,
+                  child: RibosomeAnimation(
+            path: organelleInfo.mainImagePath,
+            persistant: true,
+          ),
+        );
+
       default:
     }
 
