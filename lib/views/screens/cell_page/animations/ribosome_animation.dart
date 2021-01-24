@@ -72,7 +72,6 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
             scale: animation.value,
             child: ArcAnimator(
               offsetChanging: (changedOffset) {
-                print(changedOffset.direction == begin.direction);
                 if (changedOffset.direction > right.direction) {
                   setState(() {
                     begin = right;
