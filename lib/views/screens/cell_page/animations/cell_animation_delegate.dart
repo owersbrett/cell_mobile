@@ -2,6 +2,7 @@ import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/models/organelle.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/genetic_animation.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/plasm_animation.dart';
+import 'package:cell_mobile/views/screens/cell_page/animations/ribosome_animation.dart';
 import 'package:flutter/material.dart';
 
 import 'nucleolus.dart';
@@ -50,6 +51,21 @@ class CellAnimationDelegate {
         return Padding(
           padding: const EdgeInsets.only(bottom: 8.0),
           child: image,
+        );
+      case Organelle.smooth_endoplasmic_reticulum:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 11.0, right: 4),
+          child: image,
+        );
+      case Organelle.ribosomes:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 11.0, right: 4),
+          child: RibosomeAnimation(path: organelleInfo.mainImagePath, persistant: true),
+        );
+      case Organelle.rough_endoplasmic_reticulum:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 11.0, right: 4),
+          child: RibosomeAnimation(path: organelleInfo.mainImagePath, persistant: false),
         );
       default:
     }

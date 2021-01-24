@@ -5,18 +5,11 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'animations/cell_animation_delegate.dart';
 
-
-
-
-
-
 class CellBody extends StatelessWidget {
   List<Widget> _buildAssets(int currentIndex) {
     List<Widget> widgetList = [Container()];
     for (int index = 0; index <= currentIndex; index++) {
-      Widget imageWithAnimation =
-          CellAnimationDelegate.organelle(organelles[index]);
-      widgetList.add(imageWithAnimation);
+      widgetList.add(CellAnimationDelegate.organelle(organelles[index]));
     }
     return widgetList;
   }
@@ -38,7 +31,7 @@ class CellBody extends StatelessWidget {
           return Container(
             // height: 500,
             width: MediaQuery.of(context).size.width,
-            color: Colors.red,
+
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -64,11 +57,17 @@ class CellBody extends StatelessWidget {
                   ),
                 ),
                 Expanded(
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      ..._buildAssets(cellState.organelleInfo.position),
-                    ],
+                  child: Center(
+                    child: Container(
+                      width: MediaQuery.of(context).size.width - 25,
+                      height: MediaQuery.of(context).size.width - 25,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          ..._buildAssets(cellState.organelleInfo.position),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 Padding(
