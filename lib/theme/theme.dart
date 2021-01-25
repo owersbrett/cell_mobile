@@ -32,7 +32,7 @@ ThemeData theme = ThemeData(
     ),
   subtitle2: TextStyle(
       fontFamily: 'Avenir',
-      fontSize: 24,
+      fontSize: 22,
       color: const Color(0xffdddddd),
       fontWeight: FontWeight.w400,
     ),
@@ -45,7 +45,7 @@ ThemeData theme = ThemeData(
   ),
     bodyText2: TextStyle(
       fontFamily: 'Avenir',
-      fontSize: 22,
+      fontSize: 18,
       color: const Color(0xffdddddd),
       fontWeight: FontWeight.w400,
     ),

@@ -22,7 +22,9 @@ class MyApp extends StatelessWidget {
             create: (_) => GeneralNavigationBloc(),
           ),
         ],
-        child: GeneralViewDelegate(),
+        child: SafeArea(
+          child: GeneralViewDelegate(),
+        ),
       ),
     );
   }

@@ -42,19 +42,53 @@ class CellPage extends StatelessWidget {
                 children: [
                   Padding(
                     padding: const EdgeInsets.only(
-                        left: 32.0, right: 32, top: 48, bottom: 32),
+                        left: 32.0, right: 16, top: 48, bottom: 32),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          "Explore",
-                          style: Theme.of(context).textTheme.headline1,
+                        Stack(
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                              "Explore",
+                              style: Theme.of(context).textTheme.headline1,
+                            ),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    IconButton(
+                                      icon: Icon(Icons.arrow_upward,
+                                          color: Colors.white),
+                                      onPressed: () {
+                                        BlocProvider.of<CellBloc>(cellContext)
+                                            .add(DragCellDown());
+                                      },
+                                    ),
+                                    SizedBox(width: 16),
+                                    IconButton(
+                                      icon: Icon(Icons.arrow_downward,
+                                          color: Colors.white),
+                                      onPressed: () {
+                                        BlocProvider.of<CellBloc>(cellContext)
+                                            .add(DragCellUp());
+                                      },
+                                    ),
+
+                                  ],
+                                ),
+
+                            
+                              ],
+                            ),
+                          ],
                         ),
                         Padding(
-                          padding: const EdgeInsets.only(left: 2.0, top: 4),
+                          padding: const EdgeInsets.only(left: 2.0),
                           child: Text(
                             "The Cell",
-                            style: Theme.of(context).textTheme.bodyText2,
+                            style: Theme.of(context).textTheme.subtitle2,
                           ),
                         ),
                       ],

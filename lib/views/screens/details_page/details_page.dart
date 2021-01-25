@@ -20,7 +20,8 @@ class DetailsPage extends StatelessWidget {
             child: Stack(
               children: [
                 Padding(
-                  padding: const EdgeInsets.only(left: 16.0, bottom: 16),
+                  padding:
+                      const EdgeInsets.only(left: 16.0, bottom: 16, top: 16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -47,6 +48,7 @@ class DetailsPage extends StatelessWidget {
                           ],
                         ),
                       ),
+                      SizedBox(height: 16),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -59,10 +61,17 @@ class DetailsPage extends StatelessWidget {
                               cellState.organelleInfo.title,
                               style: Theme.of(context).textTheme.subtitle1,
                             ),
+                            SizedBox(height: 16),
                             Expanded(
                               child: ListView(
                                 children: [
-                                  Text(cellState.organelleInfo.longDescription),
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8.0),
+                                    child: Text(
+                                      cellState.organelleInfo.longDescription,
+                                      style: Theme.of(context).textTheme.bodyText2,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
