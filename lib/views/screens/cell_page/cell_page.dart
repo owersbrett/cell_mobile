@@ -1,5 +1,7 @@
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
+import 'package:cell_mobile/blocs/general_navigation/general_navigation_bloc.dart';
 import 'package:cell_mobile/data/organelles.dart';
+import 'package:cell_mobile/views/general_view_delegate.dart';
 import 'package:cell_mobile/views/screens/details_page/details_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -85,28 +87,25 @@ class CellPage extends StatelessWidget {
                         ),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
                             Text(
                               "${cellState.organelleInfo.shortDescription}",
                               style: Theme.of(context).textTheme.headline3,
                             ),
                             IconButton(
-                              icon: Icon(Icons.arrow_forward,
+                              icon: Icon(Icons.arrow_forward_ios,
                                   color: Colors.white),
                               onPressed: () {
-                                Navigator.push(
-                                  context,
-                                  PageRouteBuilder(
-                                    pageBuilder: (ctx, a, b) => DetailsPage(
-                                      organelleInfo:
-                                          BlocProvider.of<CellBloc>(context)
-                                              .state
-                                              .organelleInfo,
-                                    ),
+                                print('hello');
+                                BlocProvider.of<GeneralNavigationBloc>(
+                                        cellContext)
+                                    .add(
+                                  NavigateTo(
+                                    destination:
+                                        GeneralNavigationEnum.organelle_info,
                                   ),
                                 );
-
-                                print('lets go');
                               },
                             ),
                           ],
@@ -121,5 +120,19 @@ class CellPage extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class WholeCellPage extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container();
+  }
+}
+
+class OrganelleInfoPage extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container();
   }
 }

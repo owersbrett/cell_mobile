@@ -13,7 +13,7 @@ ThemeData theme = ThemeData(
     ),
     headline2: TextStyle(
       fontFamily: 'Avenir',
-      fontSize: 20,
+      fontSize: 24,
       color: const Color(0xffffffff),
       fontWeight: FontWeight.bold,
     ),
@@ -23,9 +23,16 @@ ThemeData theme = ThemeData(
       color: const Color(0xffffffff),
       fontWeight: FontWeight.bold,
     ),
-    bodyText2: TextStyle(
+
+  subtitle1: TextStyle(
       fontFamily: 'Avenir',
-      fontSize: 22,
+      fontSize: 18,
+      color: const Color(0xffdddddd),
+      fontWeight: FontWeight.w400,
+    ),
+  subtitle2: TextStyle(
+      fontFamily: 'Avenir',
+      fontSize: 24,
       color: const Color(0xffdddddd),
       fontWeight: FontWeight.w400,
     ),
@@ -35,6 +42,12 @@ ThemeData theme = ThemeData(
       color: const Color(0xffFFFFFF),
       fontWeight: FontWeight.w400,
 
-  )
+  ),
+    bodyText2: TextStyle(
+      fontFamily: 'Avenir',
+      fontSize: 22,
+      color: const Color(0xffdddddd),
+      fontWeight: FontWeight.w400,
+    ),
   ),
 );

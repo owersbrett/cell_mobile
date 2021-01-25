@@ -74,7 +74,7 @@ List<OrganelleInfo> organelles = [
   ),
   OrganelleInfo(
     7,
-    name: "Smooth Endoplasmic Reticulum",
+    name: "Smooth E.R.",
     title: "The Tubular Factory",
     organelle: Organelle.smooth_endoplasmic_reticulum,
     mainImagePath: "assets/images/smooth-endoplasmic-reticulum.png",
@@ -94,7 +94,7 @@ List<OrganelleInfo> organelles = [
   ),
   OrganelleInfo(
     9,
-    name: "Rough Endoplasmic Reticulum",
+    name: "Rough E.R.",
     title: "The Studded Factory",
     organelle: Organelle.rough_endoplasmic_reticulum,
     mainImagePath: "assets/images/rough-endoplasmic-reticulum.png",
