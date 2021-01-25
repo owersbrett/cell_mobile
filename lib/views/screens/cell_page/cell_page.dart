@@ -1,8 +1,6 @@
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/blocs/general_navigation/general_navigation_bloc.dart';
 import 'package:cell_mobile/data/organelles.dart';
-import 'package:cell_mobile/views/general_view_delegate.dart';
-import 'package:cell_mobile/views/screens/details_page/details_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'animations/cell_animation_delegate.dart';
@@ -52,9 +50,9 @@ class CellPage extends StatelessWidget {
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
                                 Text(
-                              "Explore",
-                              style: Theme.of(context).textTheme.headline1,
-                            ),
+                                  "Explore",
+                                  style: Theme.of(context).textTheme.headline1,
+                                ),
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.end,
                                   children: [
@@ -75,11 +73,8 @@ class CellPage extends StatelessWidget {
                                             .add(DragCellUp());
                                       },
                                     ),
-
                                   ],
                                 ),
-
-                            
                               ],
                             ),
                           ],
@@ -124,7 +119,7 @@ class CellPage extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
                             Flexible(
-                                                          child: Text(
+                              child: Text(
                                 "${cellState.organelleInfo.shortDescription}",
                                 style: Theme.of(context).textTheme.headline3,
                                 softWrap: true,

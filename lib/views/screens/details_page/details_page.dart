@@ -1,7 +1,6 @@
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/blocs/general_navigation/general_navigation_bloc.dart';
 import 'package:cell_mobile/data/organelles.dart';
-import 'package:cell_mobile/models/organelle.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
