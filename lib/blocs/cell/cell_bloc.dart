@@ -26,26 +26,26 @@ class CellBloc extends Bloc<CellEvent, CellState> {
   }
 
   Stream<CellState> _mapDragUpToState(DragCellUp event) async* {
-    print('cell dragged up');
-    print('currentIndex $currentIndex');
+    // print('cell dragged up');
+    // print('currentIndex $currentIndex');
     if (currentIndex < organelles.length - 1) currentIndex++;
     
     yield CellState(organelleInfo: organelleInfo);
   }
 
   Stream<CellState> _mapDragDownToState(DragCellDown event) async* {
-    print('cell dragged down');
-    print('currentIndex $currentIndex');
+    // print('cell dragged down');
+    // print('currentIndex $currentIndex');
     if (currentIndex > 0) currentIndex--;
 
     yield CellState(organelleInfo: organelleInfo);
   }
 
-  @override
-  void onTransition(Transition<CellEvent, CellState> transition) {
-    print("current organelle: ${transition.currentState.organelleInfo}");
-    print("current organelle: ${transition.event.runtimeType}");
-    print("current organelle: ${transition.nextState.organelleInfo}");
-    super.onTransition(transition);
-  }
+  // @override
+  // void onTransition(Transition<CellEvent, CellState> transition) {
+  //   print("current organelle: ${transition.currentState.organelleInfo}");
+  //   print("current organelle: ${transition.event.runtimeType}");
+  //   print("current organelle: ${transition.nextState.organelleInfo}");
+  //   super.onTransition(transition);
+  // }
 }

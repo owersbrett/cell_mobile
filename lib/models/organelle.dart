@@ -5,6 +5,7 @@ class OrganelleInfo {
   final int position;
   final Organelle organelle;
   final String name;
+  final String title;
   final String mainImagePath;
   final String shortDescription;
   final String longDescription;
@@ -12,6 +13,7 @@ class OrganelleInfo {
 
   OrganelleInfo(this.position, {
     @required this.name,
+    @required this.title,
      @required this.organelle,
     @required this.mainImagePath,
     @required this.shortDescription,
