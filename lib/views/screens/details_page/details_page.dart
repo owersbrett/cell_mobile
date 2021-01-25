@@ -1,5 +1,6 @@
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/blocs/general_navigation/general_navigation_bloc.dart';
+import 'package:cell_mobile/data/organelles.dart';
 import 'package:cell_mobile/models/organelle.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:flutter/material.dart';
@@ -25,9 +26,26 @@ class DetailsPage extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Expanded(
-                        child: Center(
-                            child: CellAnimationDelegate.organelle(
-                                cellState.organelleInfo)),
+                        child: Stack(
+                          children: [
+                            BlocProvider.of<CellBloc>(cellContext)
+                                        .state
+                                        .organelleInfo
+                                        .organelle ==
+                                    Organelle.rough_endoplasmic_reticulum
+                                ? Center(
+                                    child: CellAnimationDelegate.organelle(
+                                      organelles[7],
+                                    ),
+                                  )
+                                : Container(),
+                            Center(
+                              child: CellAnimationDelegate.organelle(
+                                cellState.organelleInfo,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                       Expanded(
                         child: Column(
@@ -87,7 +105,7 @@ class DetailsPage extends StatelessWidget {
                                 icon: Icon(Icons.arrow_downward,
                                     color: Colors.white),
                                 onPressed: () {
-                                      BlocProvider.of<CellBloc>(cellContext)
+                                  BlocProvider.of<CellBloc>(cellContext)
                                       .add(DragCellUp());
                                 },
                               ),
