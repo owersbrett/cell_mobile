@@ -5,21 +5,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 class GeneralViewDelegate extends StatelessWidget {
+  GeneralViewDelegate({@required this.showSplash});
+  final bool showSplash;
   @override
   Widget build(BuildContext context) {
     return BlocBuilder<GeneralNavigationBloc, GeneralNavigationState>(
       builder: (generalNavigationContext, generalNavigationState) {
-        print('built');
-        if (generalNavigationState.destination ==
+        // print(showSplash);
+        // if (showSplash && generalNavigationState != null) return SplashPage();
+        if (generalNavigationState?.destination ==
             GeneralNavigationEnum.whole_cell) {
           return CellPage();
         }
-        if (generalNavigationState.destination ==
+        if (generalNavigationState?.destination ==
             GeneralNavigationEnum.organelle_info) {
           return DetailsPage();
         }
         return CellPage();
-
       },
     );
   }

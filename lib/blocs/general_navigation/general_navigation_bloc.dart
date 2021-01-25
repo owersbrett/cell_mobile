@@ -8,7 +8,7 @@ part 'general_navigation_event.dart';
 part 'general_navigation_state.dart';
 
 class GeneralNavigationBloc extends Bloc<GeneralNavigationEvent, GeneralNavigationState> {
-  GeneralNavigationBloc() : super(GeneralNavigationState(destination: GeneralNavigationEnum.whole_cell));
+  GeneralNavigationBloc() : super(null);
 
 
   int currentIndex;
