@@ -123,9 +123,14 @@ class CellPage extends StatelessWidget {
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            Text(
-                              "${cellState.organelleInfo.shortDescription}",
-                              style: Theme.of(context).textTheme.headline3,
+                            Flexible(
+                                                          child: Text(
+                                "${cellState.organelleInfo.shortDescription}",
+                                style: Theme.of(context).textTheme.headline3,
+                                softWrap: true,
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 2,
+                              ),
                             ),
                             IconButton(
                               icon: Icon(Icons.arrow_forward_ios,
