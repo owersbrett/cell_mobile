@@ -59,6 +59,7 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
   void dispose() {
     animationController.dispose();
     xWiggleController.dispose();
+
     super.dispose();
   }
 

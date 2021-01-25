@@ -36,6 +36,12 @@ class _GeneticAnimationState extends State<GeneticAnimation>
   }
 
   @override
+  void dispose() {
+    animationController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return new Container(
       alignment: Alignment.center,

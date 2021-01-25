@@ -15,7 +15,7 @@ class CellAnimationDelegate {
       case Organelle.nucleolus:
         return Nucleolus(organelleInfo: organelleInfo);
         break;
-      case Organelle.nucleic_acids:
+      case Organelle.nucleotide:
         return Padding(
           padding: const EdgeInsets.only(top: 8.0),
           child: GeneticAnimation(
