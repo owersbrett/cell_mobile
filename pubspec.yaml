@@ -22,8 +22,9 @@ environment:
 
 dependencies:
   flutter_bloc: ^6.1.1
-  flutter_swiper: ^1.1.6
   arc_animator: ^0.1.1
+  shared_preferences: ^0.5.12+4
+
 
 
   flutter:

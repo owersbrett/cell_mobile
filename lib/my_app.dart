@@ -1,5 +1,4 @@
-import 'package:cell_mobile/views/general_view_delegate.dart';
-import 'package:cell_mobile/views/screens/cell_page/cell_page.dart';
+import 'package:cell_mobile/views/splash_delegate.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'blocs/cell/cell_bloc.dart';
@@ -23,7 +22,7 @@ class MyApp extends StatelessWidget {
           ),
         ],
         child: SafeArea(
-          child: GeneralViewDelegate(),
+          child: SplashDelegate(),
         ),
       ),
     );
