@@ -14,12 +14,8 @@ class MyApp extends StatelessWidget {
       theme: theme,
       home: MultiBlocProvider(
         providers: [
-          BlocProvider(
-            create: (_) => CellBloc(currentIndex: 0),
-          ),
-          BlocProvider(
-            create: (_) => GeneralNavigationBloc(),
-          ),
+          BlocProvider(create: (_) => CellBloc(currentIndex: 0)),
+          BlocProvider(create: (_) => GeneralNavigationBloc()),
         ],
         child: SafeArea(
           child: SplashDelegate(),

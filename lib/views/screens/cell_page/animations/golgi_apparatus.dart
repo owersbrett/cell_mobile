@@ -3,7 +3,7 @@ import 'package:cell_mobile/views/screens/cell_page/animations/ribosome_animatio
 import 'package:flutter/material.dart';
 
 class GolgiApparatus extends StatefulWidget {
-  GolgiApparatus({this.organelleInfo});
+  GolgiApparatus({required this.organelleInfo});
   final OrganelleInfo organelleInfo;
   @override
   _GolgiApparatusState createState() => _GolgiApparatusState();

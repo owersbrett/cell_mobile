@@ -2,15 +2,15 @@ import 'package:cell_mobile/models/organelle.dart';
 import 'package:flutter/material.dart';
 
 class PulsingAnimation extends StatefulWidget {
-  PulsingAnimation({@required this.organelleInfo});
+  PulsingAnimation({required this.organelleInfo});
   final OrganelleInfo organelleInfo;
   @override
   _PulsingAnimationState createState() => _PulsingAnimationState();
 }
 
 class _PulsingAnimationState extends State<PulsingAnimation> with TickerProviderStateMixin {
-  AnimationController motionController;
-  Animation motionAnimation;
+  late AnimationController motionController;
+  late Animation motionAnimation;
 
   double size = 20;
 

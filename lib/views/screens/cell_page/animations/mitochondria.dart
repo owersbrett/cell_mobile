@@ -2,7 +2,7 @@ import 'package:cell_mobile/models/organelle.dart';
 import 'package:flutter/material.dart';
 
 class Mitochondria extends StatefulWidget {
-  const Mitochondria({@required this.organelleInfo});
+  const Mitochondria({required this.organelleInfo});
   final OrganelleInfo organelleInfo;
   @override
   _MitochondriaState createState() => _MitochondriaState();
@@ -10,12 +10,12 @@ class Mitochondria extends StatefulWidget {
 
 class _MitochondriaState extends State<Mitochondria>
     with TickerProviderStateMixin {
-  AnimationController entryAnimation;
-  AnimationController pulsingAnimation;
-  Tween<double> entryTween;
-  Tween<double> pulseTween;
-  Animation animation;
-  Animation pulseAnimation;
+  late AnimationController entryAnimation;
+  late AnimationController pulsingAnimation;
+  late Tween<double> entryTween;
+  late Tween<double> pulseTween;
+  late Animation animation;
+  late Animation pulseAnimation;
 
   @override
   void initState() {
@@ -74,13 +74,13 @@ class _MitochondriaState extends State<Mitochondria>
       scale: animation.value,
       child: AnimatedBuilder(
         animation: entryAnimation,
-        builder: (BuildContext context, Widget child) {
+        builder: (BuildContext context, Widget? child) {
           return AnimatedBuilder(
             animation: pulseAnimation,
-            builder: (BuildContext context, Widget child) {  
+            builder: (BuildContext context, Widget? child) {  
               return Transform.scale(
                 scale: pulseAnimation.value,
-                child: child);
+                child: child ?? Container());
             },
             child: child,
           );

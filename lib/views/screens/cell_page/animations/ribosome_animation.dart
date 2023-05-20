@@ -2,7 +2,7 @@ import 'package:arc_animator/arc_animator.dart';
 import 'package:flutter/material.dart';
 
 class RibosomeAnimation extends StatefulWidget {
-  RibosomeAnimation({this.path, this.persistant});
+  RibosomeAnimation({required this.path, required this.persistant});
   final String path;
   final bool persistant;
   @override
@@ -15,13 +15,13 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
   Offset bottom = Offset(0, -4);
   Offset left = Offset(-4, 0);
   Offset right = Offset(4, 0);
-  Offset begin;
-  Offset end;
-  AnimationController animationController;
-  Animation<double> animation;
-  Tween<double> tween;
+  late Offset begin;
+  late Offset end;
+  late AnimationController animationController;
+  late Animation<double> animation;
+  late Tween<double> tween;
 
-  AnimationController xWiggleController;
+  late AnimationController xWiggleController;
 
   @override
   void initState() {

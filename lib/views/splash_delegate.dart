@@ -10,10 +10,12 @@ class SplashDelegate extends StatefulWidget {
 }
 
 class _SplashDelegateState extends State<SplashDelegate> {
-  Future checkFirstSeen() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
+  late SharedPreferences prefs;
+  Future<bool> checkFirstSeen() async {
+    prefs = await SharedPreferences.getInstance();
     return (prefs.getBool('seen') ?? false);
   }
+
   @override
   void initState() {
     // TODO: implement initState
@@ -21,16 +23,18 @@ class _SplashDelegateState extends State<SplashDelegate> {
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
-  ]);
+    ]);
   }
 
   @override
   Widget build(BuildContext context) {
     return FutureBuilder(
-      future: checkFirstSeen(),
+      future: checkFirstSeen().then((value) {
+        prefs.setBool("seen", true);
+        return true;
+      }),
       builder: (ctx, snapshot) {
-        if (snapshot.hasData && snapshot.data)
-          return GeneralViewDelegate(showSplash: false);
+        if (snapshot.hasData && snapshot.data as bool) return GeneralViewDelegate(showSplash: false);
 
         return GeneralViewDelegate(showSplash: true);
       },

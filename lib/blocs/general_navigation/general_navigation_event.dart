@@ -4,7 +4,7 @@ part of 'general_navigation_bloc.dart';
 abstract class GeneralNavigationEvent {}
 
 class NavigateTo extends GeneralNavigationEvent {
-  NavigateTo({this.destination});
+  NavigateTo({required this.destination});
   final GeneralNavigationEnum destination;
 }
 

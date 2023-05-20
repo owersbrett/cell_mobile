@@ -8,7 +8,7 @@ part 'cell_event.dart';
 part 'cell_state.dart';
 
 class CellBloc extends Bloc<CellEvent, CellState> {
-  CellBloc({@required this.currentIndex}) : super(CellState(organelleInfo: organelles[0]));
+  CellBloc({required this.currentIndex}) : super(CellState(organelleInfo: organelles[0]));
 
 
   int currentIndex;

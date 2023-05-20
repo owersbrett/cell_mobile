@@ -11,7 +11,7 @@ Future main() async {
   await SharedPreferences.getInstance();
 
   // Load the JSON config into memory 
-  await ConfigReader.initialize();
+  // await ConfigReader.initialize();
 
   runApp(MyApp());
 }

@@ -4,7 +4,7 @@ import 'package:cell_mobile/models/organelle.dart';
 import 'package:flutter/material.dart';
 
 class GeneticAnimation extends StatefulWidget {
-  GeneticAnimation({@required this.organelleInfo, @required this.fast, @required this.right,});
+  GeneticAnimation({required this.organelleInfo, required this.fast, required this.right,});
   final bool fast;
   final bool right;
   final OrganelleInfo organelleInfo;
@@ -14,7 +14,7 @@ class GeneticAnimation extends StatefulWidget {
 
 class _GeneticAnimationState extends State<GeneticAnimation>
     with TickerProviderStateMixin {
-  AnimationController animationController;
+  late AnimationController animationController;
 
   @override
   void initState() {
@@ -50,10 +50,10 @@ class _GeneticAnimationState extends State<GeneticAnimation>
         child: new Container(
           child: new Image.asset(widget.organelleInfo.mainImagePath),
         ),
-        builder: (BuildContext context, Widget _widget) {
+        builder: (BuildContext context, Widget? _widget) {
           return new Transform.rotate(
             angle: widget.right ? animationController.value : -animationController.value,
-            child: _widget,
+            child: _widget ?? Container(),
           );
         },
       ),

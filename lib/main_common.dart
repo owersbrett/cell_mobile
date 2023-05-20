@@ -11,17 +11,8 @@ Future<void> mainCommon(String env) async {
   // Load the JSON config into memory 
   await SharedPreferences.getInstance();
 
-  await ConfigReader.initialize();
 
-  switch (env) {
-    case Environment.dev:
-    print('running dev environment');
-      break;
-    case Environment.prod:
-    print('running prod environment');
-      break;
-  }
-  // pass / provide environment specific values in environment specific 
+
   runApp(MyApp());
 }
 

@@ -20,9 +20,9 @@ class CellPage extends StatelessWidget {
       backgroundColor: Theme.of(context).backgroundColor,
       body: GestureDetector(
         onVerticalDragEnd: (DragEndDetails dragDetails) {
-          if (dragDetails.primaryVelocity.sign.isNegative)
+          if (dragDetails.primaryVelocity?.sign.isNegative ?? false)
             BlocProvider.of<CellBloc>(context).add(DragCellUp());
-          if (!dragDetails.primaryVelocity.sign.isNegative)
+          if (!(dragDetails.primaryVelocity?.sign.isNegative ?? false))
             BlocProvider.of<CellBloc>(context).add(DragCellDown());
         },
         onTap: () {

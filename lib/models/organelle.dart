@@ -12,13 +12,13 @@ class OrganelleInfo {
   final List<String> carouselImagesPaths;
 
   OrganelleInfo(this.position, {
-    @required this.name,
-    @required this.title,
-     @required this.organelle,
-    @required this.mainImagePath,
-    @required this.shortDescription,
-    @required this.longDescription,
-    @required this.carouselImagesPaths
+    required this.name,
+    required this.title,
+     required this.organelle,
+    required this.mainImagePath,
+    required this.shortDescription,
+    required this.longDescription,
+    required this.carouselImagesPaths
   });
 }
 

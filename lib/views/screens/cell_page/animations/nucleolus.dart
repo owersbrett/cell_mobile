@@ -2,15 +2,15 @@ import 'package:cell_mobile/models/organelle.dart';
 import 'package:flutter/material.dart';
 
 class Nucleolus extends StatefulWidget {
-  Nucleolus({@required this.organelleInfo});
+  Nucleolus({required this.organelleInfo});
   final OrganelleInfo organelleInfo;
   @override
   _NucleolousState createState() => _NucleolousState();
 }
 
 class _NucleolousState extends State<Nucleolus> with TickerProviderStateMixin {
-  AnimationController motionController;
-  Animation motionAnimation;
+  late AnimationController motionController;
+  late Animation motionAnimation;
 
   double size = 20;
 
@@ -57,7 +57,7 @@ class _NucleolousState extends State<Nucleolus> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: motionAnimation,
-      builder: (animationContext, animationChild) => animationChild,
+      builder: (animationContext, animationChild) => animationChild ?? Container(),
           child: Image.asset(
         widget.organelleInfo.mainImagePath,
         width: size,

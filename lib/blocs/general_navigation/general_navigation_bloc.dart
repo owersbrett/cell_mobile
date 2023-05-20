@@ -8,8 +8,9 @@ part 'general_navigation_event.dart';
 part 'general_navigation_state.dart';
 
 class GeneralNavigationBloc extends Bloc<GeneralNavigationEvent, GeneralNavigationState> {
-  GeneralNavigationBloc() : super(null);
-
+  GeneralNavigationBloc()
+      : currentIndex = 0,
+        super(GeneralNavigationState(destination: GeneralNavigationEnum.whole_cell));
 
   int currentIndex;
   OrganelleInfo get organelleInfo => organelles[currentIndex];
@@ -20,14 +21,11 @@ class GeneralNavigationBloc extends Bloc<GeneralNavigationEvent, GeneralNavigati
   ) async* {
     if (event is NavigateTo) {
       yield* _mapNavigateToToState(event);
-    } 
+    }
   }
 
   Stream<GeneralNavigationState> _mapNavigateToToState(NavigateTo event) async* {
     print('hello there');
     yield GeneralNavigationState(destination: event.destination);
   }
-
- 
-
 }

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class PlasmAnimation extends StatefulWidget {
-  PlasmAnimation({this.image});
+  PlasmAnimation({required this.image});
   final Widget image;
   @override
   _PlasmAnimationState createState() => _PlasmAnimationState();

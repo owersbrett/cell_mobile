@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 class GeneralViewDelegate extends StatelessWidget {
-  GeneralViewDelegate({@required this.showSplash});
+  GeneralViewDelegate({required this.showSplash});
   final bool showSplash;
   @override
   Widget build(BuildContext context) {
