@@ -3,47 +3,47 @@ import 'package:flutter/material.dart';
 ThemeData theme = ThemeData(
   primaryColor: Color(0xff2B3D7F),
   cardColor: Color(0xff2B3D7F),
-  backgroundColor: Colors.black,
+  scaffoldBackgroundColor: Colors.black,
   textTheme: TextTheme(
-    headline1: TextStyle(
+    headlineLarge: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 44,
       color: const Color(0xffffffff),
       fontWeight: FontWeight.bold,
     ),
-    headline2: TextStyle(
+    headlineMedium: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 24,
       color: const Color(0xffffffff),
       fontWeight: FontWeight.bold,
     ),
-    headline3: TextStyle(
+    headlineSmall: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 14,
       color: const Color(0xffffffff),
       fontWeight: FontWeight.bold,
     ),
 
-  subtitle1: TextStyle(
+  titleSmall: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 18,
       color: const Color(0xffdddddd),
       fontWeight: FontWeight.w400,
     ),
-  subtitle2: TextStyle(
+  titleMedium: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 22,
       color: const Color(0xffdddddd),
       fontWeight: FontWeight.w400,
     ),
-  bodyText1: TextStyle(
+  bodyLarge: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 28,
       color: const Color(0xffFFFFFF),
       fontWeight: FontWeight.w400,
 
   ),
-    bodyText2: TextStyle(
+    bodyMedium: TextStyle(
       fontFamily: 'Avenir',
       fontSize: 18,
       color: const Color(0xffdddddd),

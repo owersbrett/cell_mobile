@@ -1,6 +1,4 @@
-part of 'general_navigation_bloc.dart';
 
-@immutable
 abstract class GeneralNavigationEvent {}
 
 class NavigateTo extends GeneralNavigationEvent {

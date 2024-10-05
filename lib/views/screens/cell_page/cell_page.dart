@@ -3,6 +3,8 @@ import 'package:cell_mobile/blocs/general_navigation/general_navigation_bloc.dar
 import 'package:cell_mobile/data/organelles.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../blocs/cell/cell.dart';
+import '../../../blocs/general_navigation/general_navigation.dart';
 import 'animations/cell_animation_delegate.dart';
 
 class CellPage extends StatelessWidget {
@@ -17,7 +19,7 @@ class CellPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Theme.of(context).backgroundColor,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: GestureDetector(
         onVerticalDragEnd: (DragEndDetails dragDetails) {
           if (dragDetails.primaryVelocity?.sign.isNegative ?? false)
@@ -51,7 +53,7 @@ class CellPage extends StatelessWidget {
                               children: [
                                 Text(
                                   "Explore",
-                                  style: Theme.of(context).textTheme.headline1,
+                                  style: Theme.of(context).textTheme.headlineLarge,
                                 ),
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.end,
@@ -83,7 +85,7 @@ class CellPage extends StatelessWidget {
                           padding: const EdgeInsets.only(left: 2.0),
                           child: Text(
                             "The Cell",
-                            style: Theme.of(context).textTheme.subtitle2,
+                            style: Theme.of(context).textTheme.titleMedium,
                           ),
                         ),
                       ],
@@ -112,7 +114,7 @@ class CellPage extends StatelessWidget {
                         SizedBox(height: 20),
                         Text(
                           "${cellState.organelleInfo.name}",
-                          style: Theme.of(context).textTheme.headline2,
+                          style: Theme.of(context).textTheme.headlineMedium,
                         ),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -121,7 +123,7 @@ class CellPage extends StatelessWidget {
                             Flexible(
                               child: Text(
                                 "${cellState.organelleInfo.shortDescription}",
-                                style: Theme.of(context).textTheme.headline3,
+                                style: Theme.of(context).textTheme.headlineSmall,
                                 softWrap: true,
                                 overflow: TextOverflow.ellipsis,
                                 maxLines: 2,

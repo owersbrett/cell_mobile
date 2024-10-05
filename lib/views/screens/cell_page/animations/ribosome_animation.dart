@@ -1,4 +1,3 @@
-import 'package:arc_animator/arc_animator.dart';
 import 'package:flutter/material.dart';
 
 class RibosomeAnimation extends StatefulWidget {
@@ -18,8 +17,8 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
   late Offset begin;
   late Offset end;
   late AnimationController animationController;
-  late Animation<double> animation;
-  late Tween<double> tween;
+  late Animation<double> scaleAnimation;
+  late Animation<Offset> positionAnimation;
 
   late AnimationController xWiggleController;
 
@@ -38,8 +37,7 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
       vsync: this,
       duration: Duration(milliseconds: 200),
     );
-    tween = Tween<double>(begin: 1.75, end: 1);
-    animation = tween.animate(animationController)
+    scaleAnimation = Tween<double>(begin: 1.75, end: 1).animate(animationController)
       ..addListener(() {
         setState(() {});
       });
@@ -47,11 +45,20 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
   }
 
   persistantAnimation() {
-    if (xWiggleController != null) xWiggleController.forward();
     xWiggleController = AnimationController(
       vsync: this,
       duration: Duration(milliseconds: 1000),
-    )..addListener(() {});
+    );
+
+    positionAnimation = Tween<Offset>(begin: top, end: right).animate(
+      CurvedAnimation(
+        parent: xWiggleController,
+        curve: Curves.easeInOutSine,
+      ),
+    )..addListener(() {
+        setState(() {});
+      });
+
     xWiggleController.forward();
   }
 
@@ -59,7 +66,6 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
   void dispose() {
     animationController.dispose();
     xWiggleController.dispose();
-
     super.dispose();
   }
 
@@ -67,27 +73,15 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
   Widget build(BuildContext context) {
     return widget.persistant
         ? Transform.scale(
-            scale: animation.value,
-            child: ArcAnimator(
-              offsetChanging: (changedOffset) {
-                if (changedOffset.direction > right.direction) {
-                  setState(() {
-                    begin = right;
-                    end = bottom;
-                  });
-                  xWiggleController.forward();
-                } else if (changedOffset.direction == 0.0) {
-                  setState(() {
-                    begin = bottom;
-                    end = left;
-                  });
-                  xWiggleController.forward();
-                }
+            scale: scaleAnimation.value,
+            child: AnimatedBuilder(
+              animation: positionAnimation,
+              builder: (context, child) {
+                return Transform.translate(
+                  offset: positionAnimation.value,
+                  child: child,
+                );
               },
-              curve: Curves.easeInOutSine,
-              begin: begin,
-              end: end,
-              controller: xWiggleController,
               child: Container(
                 child: Image.asset(
                   widget.path,
@@ -96,21 +90,10 @@ class _RibosomeAnimationState extends State<RibosomeAnimation>
             ),
           )
         : Transform.scale(
-            scale: animation.value,
+            scale: scaleAnimation.value,
             child: Container(
               child: Image.asset(widget.path),
             ),
           );
-    // return Transform.scale(
-    //   scale: animation.value,
-    //   child: Transform.translate(
-    //     offset: Offset(animationX.value, animationY.value),
-    //     child: Container(
-    //       child: Image.asset(
-    //         widget.path,
-    //       ),
-    //     ),
-    //   ),
-    // );
   }
 }

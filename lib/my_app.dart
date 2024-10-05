@@ -14,7 +14,7 @@ class MyApp extends StatelessWidget {
       theme: theme,
       home: MultiBlocProvider(
         providers: [
-          BlocProvider(create: (_) => CellBloc(currentIndex: 0)),
+          BlocProvider(create: (_) => CellBloc()),
           BlocProvider(create: (_) => GeneralNavigationBloc()),
         ],
         child: SafeArea(

@@ -22,7 +22,6 @@ environment:
 
 dependencies:
   flutter_bloc: 
-  arc_animator: 
   shared_preferences: 
   flutter_launcher_icons: 
 

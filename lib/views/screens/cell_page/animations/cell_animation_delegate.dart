@@ -5,6 +5,7 @@ import 'package:cell_mobile/views/screens/cell_page/animations/plasm_animation.d
 import 'package:cell_mobile/views/screens/cell_page/animations/ribosome_animation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../blocs/cell/cell.dart';
 import 'mitochondria.dart';
 import 'nucleolus.dart';
 
@@ -14,7 +15,6 @@ class CellAnimationDelegate {
     switch (organelleInfo.organelle) {
       case Organelle.nucleolus:
         return Nucleolus(organelleInfo: organelleInfo);
-        break;
       case Organelle.nucleotide:
         return Padding(
           padding: const EdgeInsets.only(top: 8.0),

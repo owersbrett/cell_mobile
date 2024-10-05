@@ -14,7 +14,7 @@ class SplashPage extends StatelessWidget {
           MaterialButton(
             child: Text(
               'Explore The Cell',
-              style: Theme.of(context).textTheme.headline1,
+              style: Theme.of(context).textTheme.headlineLarge,
             ),
             color: Colors.red,
           

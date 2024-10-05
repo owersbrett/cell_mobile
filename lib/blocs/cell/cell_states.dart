@@ -1,9 +1,9 @@
-part of 'cell_bloc.dart';
 
-@immutable
+import 'package:cell_mobile/models/organelle.dart';
+
 class CellState {
   CellState({required this.organelleInfo});
-
+  
   final OrganelleInfo organelleInfo;
 }
 

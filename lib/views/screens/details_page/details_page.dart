@@ -5,6 +5,9 @@ import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_de
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../blocs/cell/cell.dart';
+import '../../../blocs/general_navigation/general_navigation.dart';
+
 class DetailsPage extends StatelessWidget {
   DetailsPage();
 
@@ -54,11 +57,11 @@ class DetailsPage extends StatelessWidget {
                           children: [
                             Text(
                               cellState.organelleInfo.name,
-                              style: Theme.of(context).textTheme.headline2,
+                              style: Theme.of(context).textTheme.headlineMedium,
                             ),
                             Text(
                               cellState.organelleInfo.title,
-                              style: Theme.of(context).textTheme.subtitle1,
+                              style: Theme.of(context).textTheme.titleMedium,
                             ),
                             SizedBox(height: 16),
                             Expanded(
@@ -68,7 +71,7 @@ class DetailsPage extends StatelessWidget {
                                     padding: const EdgeInsets.only(right: 8.0),
                                     child: Text(
                                       cellState.organelleInfo.longDescription,
-                                      style: Theme.of(context).textTheme.bodyText2,
+                                      style: Theme.of(context).textTheme.bodyMedium,
                                     ),
                                   ),
                                 ],

@@ -1,4 +1,5 @@
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
+import 'package:cell_mobile/blocs/cell/cell_states.dart';
 import 'package:flutter/material.dart';
 
 class OrganelleInfo {
