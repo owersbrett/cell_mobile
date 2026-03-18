@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class LoadingResource extends StatelessWidget {
-  LoadingResource({@required this.resource});
+  LoadingResource({required this.resource});
 
   final String resource;
   @override
