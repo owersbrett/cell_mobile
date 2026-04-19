@@ -1,5 +1,7 @@
 import 'package:cell_mobile/blocs/cell/cell_bloc.dart';
 import 'package:cell_mobile/blocs/general_navigation/general_navigation_bloc.dart';
+import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
+import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/data/organelles.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -51,9 +53,25 @@ class CellPage extends StatelessWidget {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Text(
-                                  "Explore",
-                                  style: Theme.of(context).textTheme.headlineLarge,
+                                Row(
+                                  children: [
+                                    GestureDetector(
+                                      onTap: () {
+                                        // Reset general navigation state when leaving
+                                        BlocProvider.of<GeneralNavigationBloc>(context)
+                                            .add(NavigateTo(destination: GeneralNavigationEnum.whole_cell));
+                                        context.read<NavigationBloc>().add(
+                                          NavigateToScreen(AppScreen.scaleExplorer),
+                                        );
+                                      },
+                                      child: Icon(Icons.arrow_back, color: Colors.white70, size: 24),
+                                    ),
+                                    SizedBox(width: 12),
+                                    Text(
+                                      "Explore",
+                                      style: Theme.of(context).textTheme.headlineLarge,
+                                    ),
+                                  ],
                                 ),
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.end,
