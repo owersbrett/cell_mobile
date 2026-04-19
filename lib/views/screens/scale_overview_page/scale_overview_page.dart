@@ -312,6 +312,18 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                                     );
                                   }
                                 : null,
+                            onPlayTap: () {
+                              context
+                                  .read<ScaleExplorerBloc>()
+                                  .add(SelectScale(info.scale));
+                              if (info.scale == BioScale.organelle) {
+                                context.read<NavigationBloc>().add(
+                                    NavigateToScreen(AppScreen.cellGame));
+                              } else {
+                                context.read<NavigationBloc>().add(
+                                    NavigateToScreen(AppScreen.miniGame));
+                              }
+                            },
                             onTap: () {
                               if (isSelected) {
                                 context

@@ -78,9 +78,9 @@ class GameEngine {
 
   GameState _handleDash(GameState state) {
     if (!state.player.hasDash || state.player.dashCooldown > 0) return state;
+    // Set dashTime on all blobs — the speed boost is applied in _movePlayerBlobs
     final blobs = state.player.blobs.map((b) {
-      if (b.velocity.lengthSquared < 1) return b;
-      return b.copyWith(velocity: b.velocity * dashMultiplier);
+      return b.copyWith(dashTime: dashDuration);
     }).toList();
     return state.copyWith(
       player: state.player.copyWith(blobs: blobs, dashCooldown: dashCooldownTime),
@@ -123,6 +123,7 @@ class GameEngine {
     s = _moveAI(s, dt);
     s = _updateEjected(s, dt);
     s = _playerEatPellets(s);
+    s = _playerEatEjected(s);
     s = _aiEatPellets(s);
     s = _playerCollectOrganelles(s);
     s = _playerVsAI(s);
@@ -138,10 +139,14 @@ class GameEngine {
 
   GameState _movePlayerBlobs(GameState state, double dt) {
     final blobs = state.player.blobs.map((b) {
-      var pos = b.position + b.velocity * dt;
+      // Apply dash speed multiplier if dashing
+      final speedMult = b.isDashing ? dashMultiplier : 1.0;
+      var pos = b.position + b.velocity * speedMult * dt;
       final r = b.radius;
       pos = Vec2(pos.x.clamp(r, worldWidth - r), pos.y.clamp(r, worldHeight - r));
-      return b.copyWith(position: pos);
+      // Tick down dash timer
+      final newDashTime = (b.dashTime - dt).clamp(0.0, double.infinity);
+      return b.copyWith(position: pos, dashTime: newDashTime);
     }).toList();
     return state.copyWith(player: state.player.copyWith(blobs: blobs));
   }
@@ -236,6 +241,31 @@ class GameEngine {
     );
   }
 
+  GameState _playerEatEjected(GameState state) {
+    final remaining = <EjectedMass>[];
+    final blobs = List<CellBlob>.from(state.player.blobs);
+    bool ate = false;
+
+    for (final e in state.ejectedMasses) {
+      bool eaten = false;
+      for (int i = 0; i < blobs.length; i++) {
+        if (blobs[i].position.distanceTo(e.position) < blobs[i].radius) {
+          blobs[i] = blobs[i].copyWith(mass: blobs[i].mass + e.mass);
+          eaten = true;
+          ate = true;
+          break;
+        }
+      }
+      if (!eaten) remaining.add(e);
+    }
+
+    if (!ate) return state;
+    return state.copyWith(
+      player: state.player.copyWith(blobs: blobs),
+      ejectedMasses: remaining,
+    );
+  }
+
   GameState _aiEatPellets(GameState state) {
     var pellets = List<AgarPellet>.from(state.pellets);
     final ais = <AICell>[];
@@ -304,13 +334,13 @@ class GameEngine {
 
         changed = true;
         if (blobs[b].mass > ais[a].mass * 1.1) {
-          // Player eats AI
-          blobs[b] = blobs[b].copyWith(mass: blobs[b].mass + ais[a].mass * 0.8);
+          // Player eats AI — absorb all mass
+          blobs[b] = blobs[b].copyWith(mass: blobs[b].mass + ais[a].mass);
           // Respawn AI
           ais[a] = _respawnAI(ais[a]);
         } else if (ais[a].mass > blobs[b].mass * 1.1) {
-          // AI eats player blob
-          ais[a] = ais[a].copyWith(mass: ais[a].mass + blobs[b].mass * 0.8);
+          // AI eats player blob — absorb all mass
+          ais[a] = ais[a].copyWith(mass: ais[a].mass + blobs[b].mass);
           blobs[b] = blobs[b].copyWith(mass: initialMass * 0.5);
           final angle = _random.nextDouble() * pi * 2;
           blobs[b] = blobs[b].copyWith(position: Vec2(

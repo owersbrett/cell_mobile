@@ -5,6 +5,7 @@ enum AppScreen {
   entityDetail,
   cellInteractive,
   cellGame,
+  miniGame,
 }
 
 abstract class NavigationEvent {}
