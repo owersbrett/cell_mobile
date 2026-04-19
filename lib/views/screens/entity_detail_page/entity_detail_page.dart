@@ -21,6 +21,9 @@ class EntityDetailPage extends StatelessWidget {
     BioScale.organism: Color(0xFFFFC107),
     BioScale.ecosystem: Color(0xFFFF9800),
     BioScale.farmSystem: Color(0xFF8D6E63),
+    BioScale.supplyChain: Color(0xFF78909C),
+    BioScale.financial: Color(0xFFE19816),
+    BioScale.global: Color(0xFFE16416),
   };
 
   static const _scaleIcons = <BioScale, IconData>{
@@ -32,6 +35,9 @@ class EntityDetailPage extends StatelessWidget {
     BioScale.organism: Icons.local_florist,
     BioScale.ecosystem: Icons.forest,
     BioScale.farmSystem: Icons.agriculture,
+    BioScale.supplyChain: Icons.local_shipping,
+    BioScale.financial: Icons.trending_up,
+    BioScale.global: Icons.public,
   };
 
   static const _scaleLabels = <BioScale, String>{
@@ -43,6 +49,9 @@ class EntityDetailPage extends StatelessWidget {
     BioScale.organism: 'Organism',
     BioScale.ecosystem: 'Ecosystem',
     BioScale.farmSystem: 'Farm System',
+    BioScale.supplyChain: 'Supply Chain',
+    BioScale.financial: 'Financial',
+    BioScale.global: 'Global',
   };
 
   @override

@@ -27,7 +27,7 @@ const ecosystemEntities = <BioEntity>[
         'This isn\'t a one-way relationship. Root exudates serve as a selective force, attracting beneficial microorganisms while deterring harmful ones. Some exudates mobilize nutrients (organic acids can dissolve rock-bound phosphorus), some recruit beneficial bacteria (flavonoids attract nitrogen-fixing Rhizobium to legume roots), and some inhibit pathogens (certain phenolic compounds are antimicrobial). The plant is essentially farming its own microbiome.\n\n'
         'In agriculture, understanding the rhizosphere is key to developing biological approaches to crop nutrition and protection. Inoculants — commercial preparations of beneficial rhizosphere microorganisms — can improve nutrient uptake, suppress diseases, and enhance stress tolerance. Breeding crops for improved root exudate profiles that recruit beneficial microorganisms is an emerging frontier in sustainable agriculture.',
     zoomInIds: ['cell_root_hair'],
-    relatedIds: ['ecosystem_soil_biome', 'ecosystem_mycorrhizal', 'cell_root_hair', 'organ_root', 'molecular_nitrates'],
+    relatedIds: ['ecosystem_soil_biome', 'ecosystem_mycorrhizal', 'cell_root_hair', 'organ_root', 'molecular_air'],
   ),
   BioEntity(
     id: 'ecosystem_mycorrhizal',
@@ -53,8 +53,8 @@ const ecosystemEntities = <BioEntity>[
         'The nitrogen cycle is the biogeochemical process by which nitrogen is converted between its various chemical forms as it circulates among the atmosphere, terrestrial, and aquatic ecosystems. Nitrogen gas (N₂) makes up 78% of the atmosphere, but this form is inert — plants cannot use it. The cycle involves several key transformations, each driven by different groups of microorganisms.\n\n'
         'Nitrogen fixation converts atmospheric N₂ into ammonium (NH₄⁺) — performed by free-living soil bacteria, symbiotic Rhizobium bacteria in legume root nodules, and the Haber-Bosch industrial process. Nitrification converts ammonium to nitrite and then nitrate (NO₃⁻) — performed by Nitrosomonas and Nitrobacter bacteria. Nitrate is the form most readily absorbed by plant roots. Denitrification converts nitrate back to N₂ gas — performed by anaerobic bacteria in waterlogged soils, closing the cycle but also losing nitrogen from the soil system.\n\n'
         'In agriculture, the nitrogen cycle is both the most important nutrient cycle and the most disrupted. The Haber-Bosch process (synthesizing ammonia from atmospheric N₂ using fossil fuels) has doubled the amount of biologically available nitrogen on Earth, feeding billions but also causing nitrogen pollution of waterways, coastal dead zones, and nitrous oxide emissions (a greenhouse gas 300 times more potent than CO₂). Sustainable agriculture seeks to optimize nitrogen cycling through biological fixation, precision fertilization, and practices that minimize losses.',
-    zoomInIds: ['molecular_nitrates'],
-    relatedIds: ['molecular_nitrates', 'organism_soybean', 'organism_legume', 'farm_fertilizer', 'farm_crop_rotation', 'ecosystem_soil_biome'],
+    zoomInIds: ['molecular_air'],
+    relatedIds: ['molecular_air', 'organism_soybean', 'organism_legume', 'farm_fertilizer', 'farm_crop_rotation', 'ecosystem_soil_biome'],
   ),
   BioEntity(
     id: 'ecosystem_water_cycle',

@@ -1,6 +1,9 @@
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
+import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
+import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/data/organelles.dart';
+import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -77,6 +80,8 @@ class SplashPage extends StatelessWidget {
                   ),
                 ),
                 onPressed: () {
+                  // Pre-select Cell scale so carousel opens on Cells
+                  context.read<ScaleExplorerBloc>().add(SelectScale(BioScale.cell));
                   context.read<NavigationBloc>().add(
                     NavigateToScreen(AppScreen.scaleOverview),
                   );

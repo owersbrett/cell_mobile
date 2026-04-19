@@ -1,6 +1,10 @@
 import 'package:cell_mobile/blocs/cell/cell_states.dart';
 
 enum BioScale {
+  nothings,
+  questions,
+  particles,
+  atoms,
   molecular,
   organelle,
   cell,
@@ -9,6 +13,20 @@ enum BioScale {
   organism,
   ecosystem,
   farmSystem,
+  supplyChain,
+  financial,
+  global,
+  planets,
+  solarSystems,
+  galactic,
+  clusters,
+  cosmicStructures,
+  bigQuestions,
+  universe,
+  multiverse,
+  multiverseAll,
+  universeAll,
+  infinities,
 }
 
 class BioEntity {

@@ -29,7 +29,7 @@ const cellEntities = <BioEntity>[
         'In agriculture, root hair density and function are key determinants of nutrient use efficiency. Plants with abundant, healthy root hairs can extract more nutrients from the soil, reducing the need for fertilizer. The rhizosphere — the thin zone of soil directly surrounding root hairs — is one of the most biologically active environments on Earth, teeming with bacteria and fungi that can either help or hinder nutrient absorption.',
     zoomInIds: ['organelle_mitochondria', 'organelle_plasma_membrane', 'organelle_central_vacuole'],
     zoomOutIds: ['tissue_dermal'],
-    relatedIds: ['molecular_nitrates', 'organ_root', 'ecosystem_rhizosphere', 'ecosystem_soil_biome'],
+    relatedIds: ['molecular_air', 'organ_root', 'ecosystem_rhizosphere', 'ecosystem_soil_biome'],
   ),
   BioEntity(
     id: 'cell_mesophyll',
@@ -44,7 +44,7 @@ const cellEntities = <BioEntity>[
         'In agriculture, mesophyll cell density and chloroplast content directly determine photosynthetic capacity and therefore yield potential. Leaf thickness, which reflects the number of mesophyll cell layers, varies between species and in response to light conditions. Sun-grown leaves are thicker with more palisade layers; shade leaves are thinner. Understanding these adaptations helps farmers optimize planting density and canopy management.',
     zoomInIds: ['organelle_chloroplast', 'organelle_mitochondria', 'organelle_plasmodesmata'],
     zoomOutIds: ['tissue_ground'],
-    relatedIds: ['molecular_chlorophyll', 'molecular_glucose', 'cell_guard', 'organ_leaf'],
+    relatedIds: ['molecular_carbon', 'molecular_carbohydrates', 'cell_guard', 'organ_leaf'],
   ),
   BioEntity(
     id: 'cell_xylem_vessel',
@@ -74,6 +74,6 @@ const cellEntities = <BioEntity>[
         'In agriculture, phloem transport directly determines how much of a plant\'s photosynthetic output reaches the harvested organ. In grain crops, efficient phloem loading and transport to developing seeds is essential for high yields. Phloem-feeding insects like aphids tap into sieve tubes to steal sugar, and many plant viruses hijack phloem transport to spread systemically through the plant.',
     zoomInIds: ['organelle_plasmodesmata'],
     zoomOutIds: ['tissue_vascular'],
-    relatedIds: ['molecular_glucose', 'cell_xylem_vessel', 'organ_stem', 'cell_mesophyll'],
+    relatedIds: ['molecular_carbohydrates', 'cell_xylem_vessel', 'organ_stem', 'cell_mesophyll'],
   ),
 ];

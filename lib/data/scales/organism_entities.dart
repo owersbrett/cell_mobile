@@ -29,7 +29,7 @@ const organismEntities = <BioEntity>[
         'Soybeans are the world\'s most important source of plant protein and vegetable oil. The seeds contain approximately 40% protein and 20% oil. Soybean meal (the protein fraction after oil extraction) is the primary protein source in livestock feed worldwide. For human consumption, soybeans are processed into tofu, tempeh, soy milk, and a growing array of plant-based meat alternatives. Understanding the nitrogen fixation pathway is a holy grail of agricultural research — if this ability could be transferred to cereals, it would revolutionize farming.',
     zoomInIds: ['organ_root', 'organ_stem', 'organ_leaf', 'organ_flower', 'organ_seed'],
     zoomOutIds: ['ecosystem_soil_biome', 'farm_crop_rotation'],
-    relatedIds: ['molecular_nitrates', 'ecosystem_nitrogen_cycle', 'farm_crop_rotation', 'organism_legume', 'ecosystem_rhizosphere'],
+    relatedIds: ['molecular_air', 'ecosystem_nitrogen_cycle', 'farm_crop_rotation', 'organism_legume', 'ecosystem_rhizosphere'],
   ),
   BioEntity(
     id: 'organism_wheat',
@@ -74,7 +74,7 @@ const organismEntities = <BioEntity>[
         'In sustainable agriculture, legumes are indispensable. They reduce dependence on synthetic nitrogen fertilizer (which requires large amounts of fossil fuel to produce), improve soil structure, break pest and disease cycles when used in rotation, and provide high-protein food and feed. Cover crops like crimson clover and hairy vetch can fix 50-200 kg of nitrogen per hectare per year, substantially reducing the fertilizer needs of the following crop.',
     zoomInIds: ['organ_root', 'organ_stem', 'organ_leaf', 'organ_flower', 'organ_seed'],
     zoomOutIds: ['ecosystem_soil_biome', 'farm_crop_rotation', 'farm_cover_cropping'],
-    relatedIds: ['organism_soybean', 'molecular_nitrates', 'ecosystem_nitrogen_cycle', 'farm_crop_rotation', 'farm_cover_cropping'],
+    relatedIds: ['organism_soybean', 'molecular_air', 'ecosystem_nitrogen_cycle', 'farm_crop_rotation', 'farm_cover_cropping'],
   ),
   BioEntity(
     id: 'organism_rice',

@@ -10,6 +10,9 @@ class ScaleCard extends StatelessWidget {
   final int entityCount;
   final VoidCallback onTap;
   final Widget? animation;
+  final bool isSelected;
+  final bool hasInteractive;
+  final VoidCallback? onInteractiveTap;
 
   const ScaleCard({
     Key? key,
@@ -21,6 +24,9 @@ class ScaleCard extends StatelessWidget {
     required this.entityCount,
     required this.onTap,
     this.animation,
+    this.isSelected = false,
+    this.hasInteractive = false,
+    this.onInteractiveTap,
   }) : super(key: key);
 
   @override
@@ -38,7 +44,10 @@ class ScaleCard extends StatelessWidget {
             ],
           ),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: color.withValues(alpha: 0.35), width: 1),
+          border: Border.all(
+            color: isSelected ? color : color.withValues(alpha: 0.35),
+            width: isSelected ? 2 : 1,
+          ),
         ),
         child: Stack(
           children: [
@@ -88,6 +97,38 @@ class ScaleCard extends StatelessWidget {
                     ],
                   ),
                   const Spacer(),
+                  // Interactive enter button
+                  if (hasInteractive && onInteractiveTap != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: GestureDetector(
+                        onTap: onInteractiveTap,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.25),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: color.withValues(alpha: 0.4)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.play_circle_filled, color: color, size: 14),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Enter',
+                                style: TextStyle(
+                                  fontFamily: 'Avenir',
+                                  fontSize: 11,
+                                  color: color,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
                   // Bottom: name + subtitle
                   Text(
                     label,

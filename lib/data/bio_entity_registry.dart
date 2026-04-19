@@ -1,4 +1,8 @@
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/data/scales/nothings_entities.dart';
+import 'package:cell_mobile/data/scales/questions_entities.dart';
+import 'package:cell_mobile/data/scales/particles_entities.dart';
+import 'package:cell_mobile/data/scales/atoms_entities.dart';
 import 'package:cell_mobile/data/scales/molecular_entities.dart';
 import 'package:cell_mobile/data/scales/organelle_entities.dart';
 import 'package:cell_mobile/data/scales/cell_entities.dart';
@@ -7,6 +11,9 @@ import 'package:cell_mobile/data/scales/organ_entities.dart';
 import 'package:cell_mobile/data/scales/organism_entities.dart';
 import 'package:cell_mobile/data/scales/ecosystem_entities.dart';
 import 'package:cell_mobile/data/scales/farm_system_entities.dart';
+import 'package:cell_mobile/data/scales/supply_chain_entities.dart';
+import 'package:cell_mobile/data/scales/financial_entities.dart';
+import 'package:cell_mobile/data/scales/global_entities.dart';
 
 class BioEntityRegistry {
   static final BioEntityRegistry _instance = BioEntityRegistry._internal();
@@ -17,6 +24,10 @@ class BioEntityRegistry {
 
   BioEntityRegistry._internal() {
     final allEntities = <BioEntity>[
+      ...nothingsEntities,
+      ...questionsEntities,
+      ...particlesEntities,
+      ...atomsEntities,
       ...molecularEntities,
       ...organelleEntities,
       ...cellEntities,
@@ -25,6 +36,9 @@ class BioEntityRegistry {
       ...organismEntities,
       ...ecosystemEntities,
       ...farmSystemEntities,
+      ...supplyChainEntities,
+      ...financialEntities,
+      ...globalEntities,
     ];
 
     _byId = {for (final e in allEntities) e.id: e};

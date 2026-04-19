@@ -4,6 +4,7 @@ enum AppScreen {
   scaleExplorer,
   entityDetail,
   cellInteractive,
+  cellGame,
 }
 
 abstract class NavigationEvent {}

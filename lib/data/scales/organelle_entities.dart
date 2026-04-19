@@ -13,7 +13,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found within the nuclear envelope, the nucleolus manufactures ribosomes that build the cell\'s proteins.',
     longDescription: 'The nucleolus\' function involves manufacturing ribosomes. Ribosomes proceed to build proteins which serve a variety of purposes within the cell. I\'m located within the nuclear membrane, in the inner most region of the cell.',
     organelleEnum: Organelle.nucleolus,
-    zoomInIds: ['molecular_amino_acids'],
+    zoomInIds: ['molecular_proteins'],
     zoomOutIds: ['cell_mesophyll', 'cell_guard'],
     relatedIds: ['organelle_ribosomes'],
   ),
@@ -27,7 +27,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found in a variety of places, nucleotides are the building blocks of DNA and RNA.',
     longDescription: 'Nucleotides are the building blocks of both RNA and DNA. They are made up of 3 parts: a nitrogenous base, a phosphate, and a sugar with 5 carbon atoms. Not only are they used to build the genetic database of organisms, they also play a role in energy storage and enzymatic activity. The 5 nucleotides are adenine, cytosine, guanine, thymine, and uracil.',
     organelleEnum: Organelle.nucleotide,
-    zoomInIds: ['molecular_amino_acids'],
+    zoomInIds: ['molecular_proteins'],
     relatedIds: ['organelle_dna', 'organelle_rna'],
   ),
   BioEntity(
@@ -64,7 +64,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found in all life, DNA encodes the complete genetic blueprint for every organism.',
     longDescription: 'DNA behaves as a database for life. DNA has the ability to instruct itself to create more of itself. Mutations in DNA may occur in this process. Certain changes will be pronounced in the organism, changing how the organism behaves and appears in the world. Enough changes and a process known as speciation occurs. These changes are stored in DNA, the genetic database, which tells individual cells what to make and how to make it.',
     organelleEnum: Organelle.dna,
-    zoomInIds: ['molecular_amino_acids'],
+    zoomInIds: ['molecular_proteins'],
     relatedIds: ['organelle_nucleotide', 'organelle_rna', 'organelle_base_pairs'],
   ),
   BioEntity(
@@ -89,7 +89,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found between the nucleoplasm and cytoplasm, the nuclear membrane controls what enters and exits the nucleus.',
     longDescription: 'The nuclear membrane consists of a double lipid bilayer. Within the context of biology, nuclear is used to describe the inner most portion of the cell. A membrane is used to describe a structure intended to separate structures. The nuclear membrane, separating the nucleoplasm and cytoplasm, also provides passageways for particular materials, such as nucleic acids and proteins.',
     organelleEnum: Organelle.nuclear_membrane,
-    zoomInIds: ['molecular_phospholipids'],
+    zoomInIds: ['molecular_lipids'],
     relatedIds: ['organelle_nucleoplasm', 'organelle_plasma_membrane'],
   ),
   BioEntity(
@@ -102,7 +102,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found in the cytoplasm, the smooth ER manufactures hormones and lipids.',
     longDescription: 'The smooth endoplasmic reticulum spends time manufacturing hormones and lipids. There are no ribosomes attached to its walls, which makes it different from the rough endoplasmic reticulum. It\'s composed of a network of tubes, therefore it is tubular.',
     organelleEnum: Organelle.smooth_endoplasmic_reticulum,
-    zoomInIds: ['molecular_phospholipids'],
+    zoomInIds: ['molecular_lipids'],
     relatedIds: ['organelle_rough_er', 'organelle_golgi_apparatus'],
   ),
   BioEntity(
@@ -115,7 +115,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found in the cytoplasm and on the rough ER, ribosomes build proteins from amino acid chains.',
     longDescription: 'Ribosomes are similar to machine elves. First they\'re there, making things work, then they\'re gone, ephemeral little squirts. DNA is responsible for creating these little fellows, which spend their times travelling around the cell, decoding messages for the greater unit as well as forming peptide bonds. Ribosomes will link up amino acids and peptides in order to make proteins for the cell.',
     organelleEnum: Organelle.ribosomes,
-    zoomInIds: ['molecular_amino_acids'],
+    zoomInIds: ['molecular_proteins'],
     relatedIds: ['organelle_rna', 'organelle_rough_er', 'organelle_nucleolus'],
   ),
   BioEntity(
@@ -128,7 +128,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found in the cytoplasm, the rough ER is studded with ribosomes and synthesizes proteins.',
     longDescription: 'The rough endoplasmic reticulum plays a vital role in the synthesis of proteins. This portion of the endoplasmic reticulum is studded with ribosomes, who also play an important role in the synthesis of proteins. How convenient.',
     organelleEnum: Organelle.rough_endoplasmic_reticulum,
-    zoomInIds: ['molecular_amino_acids'],
+    zoomInIds: ['molecular_proteins'],
     relatedIds: ['organelle_ribosomes', 'organelle_smooth_er', 'organelle_golgi_apparatus'],
   ),
   BioEntity(
@@ -177,9 +177,9 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'Found in the cytoplasm, mitochondria generate ATP — the energy currency of the cell.',
     longDescription: 'As the powerhouse of the cell, it is responsible for synthesizing chemical energy and storing it in the form of ATP, or adenosine triphosphate. When ATP expends energy, it becomes ADP, or adenosine diphosphate. Essentially the splitting off of the phosphate group allows for electrons to be used in particular chemical reactions, behaving as a currency in a way. Mitochondria is unique in that it has its own DNA.',
     organelleEnum: Organelle.mitochondrion,
-    zoomInIds: ['molecular_atp', 'molecular_glucose'],
+    zoomInIds: ['molecular_atp', 'molecular_carbohydrates'],
     zoomOutIds: ['cell_mesophyll', 'cell_root_hair', 'cell_guard'],
-    relatedIds: ['molecular_atp', 'molecular_glucose', 'organelle_chloroplast'],
+    relatedIds: ['molecular_atp', 'molecular_carbohydrates', 'organelle_chloroplast'],
   ),
   BioEntity(
     id: 'organelle_vacuoles',
@@ -227,7 +227,7 @@ const organelleEntities = <BioEntity>[
     shortDescription: 'The outermost layer of the cell, the plasma membrane controls what enters and exits.',
     longDescription: 'The plasma membrane, also known as the cell membrane, is a lipid bilayer that separates the cell from the outside world. This membrane is studded with proteins that allow for safe and controlled transport of molecules to and from the cell.',
     organelleEnum: Organelle.cell_membrane,
-    zoomInIds: ['molecular_phospholipids'],
+    zoomInIds: ['molecular_lipids'],
     relatedIds: ['organelle_cell_wall', 'organelle_cytoplasm'],
   ),
   // 4 new plant-specific organelles
@@ -242,9 +242,9 @@ const organelleEntities = <BioEntity>[
         'Chloroplasts are the organelles that make plant life — and by extension, nearly all life on Earth — possible. These double-membraned organelles contain stacks of thylakoids called grana, where the light-dependent reactions of photosynthesis occur. Chlorophyll molecules embedded in the thylakoid membranes absorb sunlight and use that energy to split water molecules, releasing oxygen and generating ATP and NADPH.\n\n'
         'The ATP and NADPH then power the Calvin cycle in the stroma (the fluid surrounding the grana), where carbon dioxide from the atmosphere is fixed into glucose. This process — converting light energy, water, and CO₂ into sugar and oxygen — is the foundation of nearly every food chain on Earth.\n\n'
         'Like mitochondria, chloroplasts have their own DNA, supporting the endosymbiotic theory that they were once free-living photosynthetic bacteria that were engulfed by ancestral eukaryotic cells. In agriculture, chloroplast efficiency directly determines crop productivity. Researchers are actively working to improve photosynthetic efficiency through genetic engineering, potentially increasing crop yields by 20-40%.',
-    zoomInIds: ['molecular_chlorophyll', 'molecular_atp', 'molecular_glucose'],
+    zoomInIds: ['molecular_carbon', 'molecular_atp', 'molecular_carbohydrates'],
     zoomOutIds: ['cell_mesophyll'],
-    relatedIds: ['molecular_chlorophyll', 'molecular_glucose', 'organelle_mitochondria', 'cell_mesophyll', 'organ_leaf'],
+    relatedIds: ['molecular_carbon', 'molecular_carbohydrates', 'organelle_mitochondria', 'cell_mesophyll', 'organ_leaf'],
   ),
   BioEntity(
     id: 'organelle_cell_wall',
@@ -257,9 +257,9 @@ const organelleEntities = <BioEntity>[
         'The cell wall is a defining feature of plant cells, providing structural support, protection, and shape. Composed primarily of cellulose — long chains of glucose molecules woven into strong microfibrils — the cell wall is one of the most abundant organic materials on Earth. In addition to cellulose, the wall contains hemicellulose, pectin, and sometimes lignin, each contributing different structural properties.\n\n'
         'The primary cell wall is laid down during cell growth and is relatively flexible. Once the cell has finished growing, many cell types deposit a secondary cell wall inside the primary one, which is thicker and more rigid. In xylem vessels, the secondary wall is heavily lignified, creating the wood that supports trees and provides the structural backbone of stems.\n\n'
         'In agriculture, cell wall composition matters enormously. It determines the texture and digestibility of fruits and vegetables, the strength of stems (lodging resistance in cereals), and the quality of fiber crops like cotton and flax. Understanding cell wall biology also underpins the biofuel industry, which seeks to break down cellulose into fermentable sugars.',
-    zoomInIds: ['molecular_glucose'],
+    zoomInIds: ['molecular_carbohydrates'],
     zoomOutIds: ['cell_xylem_vessel'],
-    relatedIds: ['organelle_plasma_membrane', 'molecular_glucose', 'cell_xylem_vessel'],
+    relatedIds: ['organelle_plasma_membrane', 'molecular_carbohydrates', 'cell_xylem_vessel'],
   ),
   BioEntity(
     id: 'organelle_central_vacuole',
