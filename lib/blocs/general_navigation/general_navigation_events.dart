@@ -8,5 +8,6 @@ class NavigateTo extends GeneralNavigationEvent {
 
 enum GeneralNavigationEnum {
   whole_cell,
-  organelle_info
+  organelle_info,
+  loading
 }

@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "hot-potato-games"
+  },
+  "targets": {
+    "hot-potato-games": {
+      "hosting": {
+        "explore-the-cell": [
+          "explore-the-cell"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

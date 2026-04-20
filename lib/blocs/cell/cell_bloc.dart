@@ -6,9 +6,15 @@ class CellBloc extends Bloc<CellEvent, CellState> {
   CellBloc() : super(CellState(organelleInfo: organelles[0])) {
     on(_onEvent);
   }
-  void _onEvent(CellEvent event, Emitter<CellState> emit)  {
-    if (event is DragCellUp)  _dragCellUp(event, emit);
-    if (event is DragCellDown)  _dragCellDown(event, emit);
+  void _onEvent(CellEvent event, Emitter<CellState> emit) {
+    if (event is DragCellUp) _dragCellUp(event, emit);
+    if (event is DragCellDown) _dragCellDown(event, emit);
+    if (event is SetOrganelle) _setOrganelle(event, emit);
+  }
+
+  void _setOrganelle(SetOrganelle event, Emitter<CellState> emit) async {
+    var currentOrganelle = event.organelle;
+    emit(CellState(organelleInfo: currentOrganelle));
   }
 
   void _dragCellUp(DragCellUp event, Emitter<CellState> emit) async {

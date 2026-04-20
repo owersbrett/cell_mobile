@@ -11,7 +11,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'general_navigation.dart';
 
 class GeneralNavigationBloc extends Bloc<GeneralNavigationEvent, GeneralNavigationState> {
-  GeneralNavigationBloc() : super(GeneralNavigationState(destination: GeneralNavigationEnum.whole_cell)) {
+  GeneralNavigationBloc() : super(GeneralNavigationState(destination: GeneralNavigationEnum.loading)) {
     on(_onEvent);
   }
   void _onEvent(GeneralNavigationEvent event, Emitter<GeneralNavigationState> emit) {
