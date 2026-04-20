@@ -2,6 +2,20 @@
         "version": "0.2.0",
         "configurations": [
             {
+                "name": "chrome",
+                "type": "dart",
+                "request": "launch",
+                "program": "lib/main_dev.dart",
+                "deviceId": "chrome"
+            },
+            {
+                "name": "202501001",
+                "type": "dart",
+                "request": "launch",
+                "program": "lib/main_dev.dart",
+                "deviceId": "BF81F5F6-41F9-4A50-85B9-0DB02AC8BC30"
+            },
+            {
                 "name": "Development",
                 "type": "dart",
                 "request": "launch",
