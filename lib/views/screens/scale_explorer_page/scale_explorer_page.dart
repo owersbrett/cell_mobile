@@ -10,7 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/atom_orbital_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/cluster_animation.dart';
-import 'package:cell_mobile/views/screens/scale_overview_page/widgets/ecosystem_scene_animation.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/dragon_curve_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/farm_cycle_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/particles_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/financial_animation.dart';
@@ -18,11 +18,15 @@ import 'package:cell_mobile/views/screens/scale_overview_page/widgets/supply_cha
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/cosmic_web_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/galaxy_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/globe_animation.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/planets_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/question_marks_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/solar_system_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/universe_animations.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/molecular_animations.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/binary_nothing_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/scale_animations.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/potato_mitosis_animation.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/companion_planting_animation.dart';
 import 'widgets/scale_indicator.dart';
 
 class ScaleExplorerPage extends StatefulWidget {
@@ -126,6 +130,7 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
   }
 
   static const _scaleColors = <BioScale, Color>{
+    BioScale.somethings: Color(0xFF7E57C2),
     BioScale.molecular: Color(0xFF00BCD4),
     BioScale.organelle: Color(0xFF9C27B0),
     BioScale.cell: Color(0xFF009688),
@@ -137,9 +142,11 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     BioScale.supplyChain: Color(0xFF78909C),
     BioScale.financial: Color(0xFFE19816),
     BioScale.global: Color(0xFFE16416),
+    BioScale.allThings: Color(0xFFB0BEC5),
   };
 
   static const _scaleIcons = <BioScale, IconData>{
+    BioScale.somethings: Icons.auto_awesome,
     BioScale.molecular: Icons.science,
     BioScale.organelle: Icons.blur_circular,
     BioScale.cell: Icons.grid_view,
@@ -151,6 +158,7 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     BioScale.supplyChain: Icons.local_shipping,
     BioScale.financial: Icons.trending_up,
     BioScale.global: Icons.public,
+    BioScale.allThings: Icons.all_inclusive,
   };
 
   @override
@@ -468,8 +476,8 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     // Other scales — use the scale-level animations
     switch (entity.scale) {
       case BioScale.nothings:
-        return const SizedBox.shrink();
-      case BioScale.questions:
+        return BinaryNothingAnimation(color: color);
+      case BioScale.somethings:
         return QuestionMarksAnimation(color: color);
       case BioScale.particles:
         return ParticlesAnimation(color: color);
@@ -478,7 +486,7 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
       case BioScale.organelle:
         return OrganelleAnimation(color: color);
       case BioScale.cell:
-        return CellAnimation(color: color);
+        return PotatoMitosisAnimation(color: color);
       case BioScale.tissue:
         return TissueAnimation(color: color);
       case BioScale.organ:
@@ -486,11 +494,11 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
       case BioScale.organism:
         return OrganismAnimation(color: color);
       case BioScale.ecosystem:
-        return EcosystemSceneAnimation(color: color);
+        return CompanionPlantingAnimation(color: color);
       case BioScale.farmSystem:
         return FarmCycleAnimation(color: color);
       case BioScale.planets:
-        return GlobeAnimation(color: color, focusIndex: entity.position);
+        return PlanetsAnimation(color: color);
       case BioScale.solarSystems:
         return SolarSystemAnimation(color: color);
       case BioScale.galactic:
@@ -498,13 +506,9 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
       case BioScale.clusters:
         return ClusterAnimation(color: color);
       case BioScale.cosmicStructures:
+        return DragonCurveAnimation(color: color);
+      case BioScale.allThings:
         return CosmicWebAnimation(color: color);
-      case BioScale.bigQuestions:
-        return QuestionMarksAnimation(color: color);
-      case BioScale.universe:
-        return ObservableUniverseAnimation(color: color);
-      case BioScale.multiverse:
-        return MultiverseBranchAnimation(color: color);
       case BioScale.multiverseAll:
         return MultiverseMeshAnimation(color: color);
       case BioScale.universeAll:

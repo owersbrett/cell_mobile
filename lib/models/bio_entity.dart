@@ -2,7 +2,7 @@ import 'package:cell_mobile/blocs/cell/cell_states.dart';
 
 enum BioScale {
   nothings,
-  questions,
+  somethings,
   particles,
   atoms,
   molecular,
@@ -21,11 +21,9 @@ enum BioScale {
   galactic,
   clusters,
   cosmicStructures,
-  bigQuestions,
-  universe,
-  multiverse,
   multiverseAll,
   universeAll,
+  allThings,
   infinities,
 }
 

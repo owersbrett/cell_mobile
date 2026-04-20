@@ -1,6 +1,6 @@
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/data/scales/nothings_entities.dart';
-import 'package:cell_mobile/data/scales/questions_entities.dart';
+import 'package:cell_mobile/data/scales/somethings_entities.dart';
 import 'package:cell_mobile/data/scales/particles_entities.dart';
 import 'package:cell_mobile/data/scales/atoms_entities.dart';
 import 'package:cell_mobile/data/scales/molecular_entities.dart';
@@ -14,6 +14,15 @@ import 'package:cell_mobile/data/scales/farm_system_entities.dart';
 import 'package:cell_mobile/data/scales/supply_chain_entities.dart';
 import 'package:cell_mobile/data/scales/financial_entities.dart';
 import 'package:cell_mobile/data/scales/global_entities.dart';
+import 'package:cell_mobile/data/scales/planets_entities.dart';
+import 'package:cell_mobile/data/scales/solar_systems_entities.dart';
+import 'package:cell_mobile/data/scales/galactic_entities.dart';
+import 'package:cell_mobile/data/scales/clusters_entities.dart';
+import 'package:cell_mobile/data/scales/cosmic_structures_entities.dart';
+import 'package:cell_mobile/data/scales/multiverse_all_entities.dart';
+import 'package:cell_mobile/data/scales/universe_all_entities.dart';
+import 'package:cell_mobile/data/scales/all_things_entities.dart';
+import 'package:cell_mobile/data/scales/infinities_entities.dart';
 
 class BioEntityRegistry {
   static final BioEntityRegistry _instance = BioEntityRegistry._internal();
@@ -25,7 +34,7 @@ class BioEntityRegistry {
   BioEntityRegistry._internal() {
     final allEntities = <BioEntity>[
       ...nothingsEntities,
-      ...questionsEntities,
+      ...somethingsEntities,
       ...particlesEntities,
       ...atomsEntities,
       ...molecularEntities,
@@ -39,6 +48,15 @@ class BioEntityRegistry {
       ...supplyChainEntities,
       ...financialEntities,
       ...globalEntities,
+      ...planetsEntities,
+      ...solarSystemsEntities,
+      ...galacticEntities,
+      ...clustersEntities,
+      ...cosmicStructuresEntities,
+      ...multiverseAllEntities,
+      ...universeAllEntities,
+      ...allThingsEntities,
+      ...infinitiesEntities,
     ];
 
     _byId = {for (final e in allEntities) e.id: e};

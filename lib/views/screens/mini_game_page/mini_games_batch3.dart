@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ---------------------------------------------------------------------------
 // Helper: shared particle class for visual juice
@@ -20,6 +23,28 @@ class _JuiceParticle {
   }) : maxLife = life;
 }
 
+// ---------------------------------------------------------------------------
+// Market event for leading-indicator event log
+// ---------------------------------------------------------------------------
+class _MarketEvent {
+  final double timestamp;
+  final String leadingText;
+  final String actualText;
+  final double priceImpact;
+  final Color color;
+  bool isRevealed = false;
+  final double revealDelay;
+
+  _MarketEvent({
+    required this.timestamp,
+    required this.leadingText,
+    required this.actualText,
+    required this.priceImpact,
+    required this.color,
+    required this.revealDelay,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. FinancialTradingGame — "Potato Futures"
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -28,6 +53,14 @@ class FinancialTradingGame extends StatefulWidget {
   const FinancialTradingGame({Key? key}) : super(key: key);
   @override
   State<FinancialTradingGame> createState() => _FinancialTradingGameState();
+}
+
+class _LeveragedPosition {
+  final double entryPrice;
+  final int quantity;
+  double get liquidationPrice => entryPrice * 0.80;
+  double get marginCallPrice => entryPrice * 0.85;
+  _LeveragedPosition({required this.entryPrice, required this.quantity});
 }
 
 class _FinancialTradingGameState extends State<FinancialTradingGame>
@@ -45,6 +78,21 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   double _timeLeft = 60;
   bool _gameOver = false;
 
+  // Leverage state
+  bool _leverageMode = false;
+  final List<_LeveragedPosition> _leveragedPositions = [];
+  double _liquidationFlashTimer = 0;
+  double _liquidationTextScale = 0;
+  bool _marginCallWarning = false;
+  bool _rugPullActive = false;
+  double _rugPullTimer = 0;
+
+  // HODL tracking
+  double _hodlTimer = 0;
+  double _hodlStartPrice = 0;
+  bool _isHodling = false;
+  double _diamondHandsTimer = 0;
+
   // Limit orders
   double? _limitBuyPrice;
   double? _limitSellPrice;
@@ -54,12 +102,21 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   double _headlineTimer = 0;
   double _eventImpact = 0;
 
+  // High scores
+  List<Map<String, dynamic>> _highScores = [];
+  double _bestScore = 0;
+  bool _newHighScore = false;
+  double _newHighScoreTimer = 0;
+
   final List<String> _bullishNews = [
     'Drought in Idaho!',
     'Potato blight reported!',
     'Export demand surges!',
     'Supply chain disrupted!',
     'French fry shortage!',
+    'Blight in Idaho!',
+    'Potato futures surge on French fry demand',
+    'New variety \'Yukon Gold 2.0\' announced',
   ];
   final List<String> _bearishNews = [
     'Record harvest incoming!',
@@ -67,6 +124,46 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     'Demand drops sharply!',
     'Warehouses overflowing!',
     'Sweet potatoes trending!',
+    'Potato glut floods market!',
+    'Lab-grown potatoes hit shelves!',
+  ];
+
+  // Market event log
+  final List<_MarketEvent> _eventLog = [];
+  double _nextEventTimer = 5.0; // first event comes quickly
+  double _elapsedTime = 0;
+
+  static const List<Map<String, dynamic>> _eventTemplates = [
+    {
+      'leading': '\u{1F4E1} Weather report incoming...',
+      'actual': '\u{1F327}\u{FE0F} Drought in Idaho! Supply down.',
+      'impact': 6.0,
+      'hintBullish': true,
+    },
+    {
+      'leading': '\u{1F4E1} Trade data pending...',
+      'actual': '\u{1F4E6} Record exports to Japan!',
+      'impact': 4.5,
+      'hintBullish': true,
+    },
+    {
+      'leading': '\u{1F4E1} USDA report due...',
+      'actual': '\u{1F4CA} Potato glut \u2014 oversupply!',
+      'impact': -6.0,
+      'hintBullish': false,
+    },
+    {
+      'leading': '\u{1F4E1} Lab results coming...',
+      'actual': '\u{1F9EC} New blight-resistant variety!',
+      'impact': 3.0,
+      'hintBullish': true,
+    },
+    {
+      'leading': '\u{1F4E1} Policy alert...',
+      'actual': '\u{1F3DB}\u{FE0F} Tariff on imports!',
+      'impact': 5.5,
+      'hintBullish': true,
+    },
   ];
 
   // Particles for visual juice
@@ -79,6 +176,71 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick)
       ..forward();
+    _loadHighScores();
+  }
+
+  Future<void> _loadHighScores() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('potato_futures_high_scores');
+    if (raw != null) {
+      final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
+      if (mounted) {
+        setState(() {
+          _highScores = decoded
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .toList();
+          if (_highScores.isNotEmpty) {
+            _bestScore = (_highScores.first['score'] as num).toDouble();
+          }
+        });
+      }
+    }
+  }
+
+  Future<void> _saveHighScore(double score) async {
+    final prefs = await SharedPreferences.getInstance();
+    final entry = {
+      'score': score,
+      'date': DateTime.now().toIso8601String().substring(0, 10),
+    };
+    _highScores.add(entry);
+    _highScores.sort(
+        (a, b) => (b['score'] as num).compareTo(a['score'] as num));
+    if (_highScores.length > 5) {
+      _highScores = _highScores.sublist(0, 5);
+    }
+    await prefs.setString(
+        'potato_futures_high_scores', jsonEncode(_highScores));
+    if (_highScores.isNotEmpty) {
+      _bestScore = (_highScores.first['score'] as num).toDouble();
+    }
+  }
+
+  void _checkAndSaveHighScore() {
+    final nw = _netWorth;
+    final qualifies = _highScores.length < 5 ||
+        nw > (_highScores.last['score'] as num).toDouble();
+    if (qualifies) {
+      _newHighScore = true;
+      _newHighScoreTimer = 3.0;
+      _saveHighScore(nw);
+    }
+  }
+
+  int get _leveragedInventory {
+    int total = 0;
+    for (final pos in _leveragedPositions) {
+      total += pos.quantity;
+    }
+    return total;
+  }
+
+  double get _leveragedPnl {
+    double total = 0;
+    for (final pos in _leveragedPositions) {
+      total += pos.quantity * (_price - pos.entryPrice);
+    }
+    return total;
   }
 
   @override
@@ -95,7 +257,24 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       if (_timeLeft <= 0) {
         _timeLeft = 0;
         _gameOver = true;
+        _checkAndSaveHighScore();
         return;
+      }
+
+      // Liquidation flash animation
+      if (_liquidationFlashTimer > 0) {
+        _liquidationFlashTimer -= dt;
+        _liquidationTextScale =
+            (1.0 - (_liquidationFlashTimer / 2.0)).clamp(0.0, 1.0);
+      }
+
+      // New high score animation timer
+      if (_newHighScoreTimer > 0) _newHighScoreTimer -= dt;
+
+      // Rug pull animation
+      if (_rugPullActive) {
+        _rugPullTimer -= dt;
+        if (_rugPullTimer <= 0) _rugPullActive = false;
       }
 
       // News events
@@ -111,28 +290,117 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         _headlineTimer = 3;
       }
 
-      // Price physics: random walk + momentum + mean reversion + events
-      final noise = (_rng.nextDouble() - 0.5) * 2;
-      final meanReversion = (50 - _price) * 0.005;
-      _momentum = _momentum * 0.95 + noise * 0.3 + _eventImpact * 0.1;
-      _eventImpact *= 0.95;
-      _price += _momentum + meanReversion;
+      // Price physics
+      if (!_rugPullActive) {
+        final noise = (_rng.nextDouble() - 0.5) * 2;
+        final meanReversion = (50 - _price) * 0.005;
+        _momentum = _momentum * 0.95 + noise * 0.3 + _eventImpact * 0.1;
+        _eventImpact *= 0.95;
+        _price += _momentum + meanReversion;
+      } else {
+        _price -= 2.0;
+        _momentum = -3;
+      }
       _price = _price.clamp(5.0, 200.0);
       _priceHistory.add(_price);
       if (_priceHistory.length > 120) _priceHistory.removeAt(0);
 
-      // Check limit orders
-      if (_limitBuyPrice != null && _price <= _limitBuyPrice! && _cash >= _price) {
-        _cash -= _price;
-        _inventory++;
-        _spawnParticles(_rng.nextDouble() * 200, 200, Colors.green, 5);
-        _limitBuyPrice = null;
+      // HODL tracking
+      if (_inventory > 0 || _leveragedInventory > 0) {
+        if (!_isHodling) {
+          _isHodling = true;
+          _hodlTimer = 0;
+          _hodlStartPrice = _price;
+        }
+        _hodlTimer += dt;
+        if (_hodlTimer >= 10 && _price > _hodlStartPrice && _diamondHandsTimer <= 0) {
+          _diamondHandsTimer = 2.5;
+        }
+      } else {
+        _isHodling = false;
+        _hodlTimer = 0;
       }
-      if (_limitSellPrice != null && _price >= _limitSellPrice! && _inventory > 0) {
-        _cash += _price;
-        _inventory--;
-        _spawnParticles(_rng.nextDouble() * 200, 200, Colors.red, 5);
-        _limitSellPrice = null;
+      if (_diamondHandsTimer > 0) _diamondHandsTimer -= dt;
+
+      // Margin call / liquidation check
+      _marginCallWarning = false;
+      bool shouldLiquidate = false;
+      for (final pos in _leveragedPositions) {
+        if (_price <= pos.liquidationPrice) {
+          shouldLiquidate = true;
+          break;
+        }
+        if (_price <= pos.marginCallPrice) {
+          _marginCallWarning = true;
+        }
+      }
+      if (shouldLiquidate && _leveragedPositions.isNotEmpty) {
+        _performLiquidation();
+      }
+
+      // Check limit orders
+      if (_limitBuyPrice != null && _price <= _limitBuyPrice!) {
+        if (_leverageMode) {
+          final cost = _price * 0.2;
+          if (_cash >= cost) {
+            _cash -= cost;
+            _leveragedPositions.add(
+                _LeveragedPosition(entryPrice: _price, quantity: 1));
+            _spawnParticles(_rng.nextDouble() * 200, 200, Colors.orangeAccent, 5);
+            _limitBuyPrice = null;
+          }
+        } else if (_cash >= _price) {
+          _cash -= _price;
+          _inventory++;
+          _spawnParticles(_rng.nextDouble() * 200, 200, Colors.green, 5);
+          _limitBuyPrice = null;
+        }
+      }
+      if (_limitSellPrice != null && _price >= _limitSellPrice!) {
+        if (_leveragedPositions.isNotEmpty) {
+          final pos = _leveragedPositions.removeLast();
+          _cash += _price * pos.quantity;
+          _spawnParticles(_rng.nextDouble() * 200, 200, Colors.red, 5);
+          if (_leveragedPositions.isEmpty) _limitSellPrice = null;
+        } else if (_inventory > 0) {
+          _cash += _price;
+          _inventory--;
+          _spawnParticles(_rng.nextDouble() * 200, 200, Colors.red, 5);
+          _limitSellPrice = null;
+        }
+      }
+
+      // --- Market event log system ---
+      _elapsedTime += dt;
+      _nextEventTimer -= dt;
+      if (_nextEventTimer <= 0) {
+        _nextEventTimer = 8 + _rng.nextDouble() * 4; // 8-12s between events
+        final template = _eventTemplates[_rng.nextInt(_eventTemplates.length)];
+        final isFakeout = _rng.nextDouble() < 0.20; // 20% chance of fake-out
+        double impact = (template['impact'] as double);
+        if (isFakeout) impact = -impact;
+        final revealDelay = 3.0 + _rng.nextDouble() * 2.0; // 3-5s
+        final isBullish = impact > 0;
+        _eventLog.insert(
+          0,
+          _MarketEvent(
+            timestamp: _elapsedTime,
+            leadingText: template['leading'] as String,
+            actualText: template['actual'] as String,
+            priceImpact: impact,
+            color: isBullish ? const Color(0xFF4CAF50) : const Color(0xFFEF5350),
+            revealDelay: revealDelay,
+          ),
+        );
+        // Keep max 12 events in memory
+        if (_eventLog.length > 12) _eventLog.removeLast();
+      }
+      // Reveal events whose delay has expired and apply price impact
+      for (final ev in _eventLog) {
+        if (!ev.isRevealed && (_elapsedTime - ev.timestamp) >= ev.revealDelay) {
+          ev.isRevealed = true;
+          _eventImpact += ev.priceImpact;
+        }
       }
 
       // Update particles
@@ -143,6 +411,30 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       }
       _particles.removeWhere((p) => p.life <= 0);
     });
+  }
+
+  void _performLiquidation() {
+    double proceeds = 0;
+    double totalCost = 0;
+    for (final pos in _leveragedPositions) {
+      proceeds += pos.quantity * _price;
+      totalCost += pos.quantity * pos.entryPrice;
+    }
+    final loss = totalCost - proceeds;
+    _cash = (_cash - loss).clamp(0.0, 999999.0);
+    _leveragedPositions.clear();
+    _liquidationFlashTimer = 2.0;
+    _liquidationTextScale = 0;
+    _marginCallWarning = false;
+    _rugPullActive = true;
+    _rugPullTimer = 0.5;
+    for (int i = 0; i < 30; i++) {
+      _spawnParticles(_rng.nextDouble() * 300, _rng.nextDouble() * 400, Colors.red, 3);
+    }
+    if (_cash <= 0 && _inventory == 0) {
+      _gameOver = true;
+      _checkAndSaveHighScore();
+    }
   }
 
   void _spawnParticles(double x, double y, Color color, int count) {
@@ -156,8 +448,17 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     }
   }
 
-  double get _netWorth => _cash + _inventory * _price;
+  double get _netWorth => _cash + _inventory * _price + _leveragedPnl;
   double get _pnl => _netWorth - _startNetWorth;
+
+  double? get _lowestLiquidationPrice {
+    if (_leveragedPositions.isEmpty) return null;
+    double lowest = double.infinity;
+    for (final pos in _leveragedPositions) {
+      if (pos.liquidationPrice < lowest) lowest = pos.liquidationPrice;
+    }
+    return lowest;
+  }
 
   void _restart() {
     setState(() {
@@ -176,52 +477,81 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       _headlineTimer = 0;
       _eventImpact = 0;
       _particles.clear();
+      _leverageMode = false;
+      _leveragedPositions.clear();
+      _liquidationFlashTimer = 0;
+      _liquidationTextScale = 0;
+      _marginCallWarning = false;
+      _rugPullActive = false;
+      _rugPullTimer = 0;
+      _hodlTimer = 0;
+      _hodlStartPrice = 0;
+      _isHodling = false;
+      _diamondHandsTimer = 0;
+      _newHighScore = false;
+      _newHighScoreTimer = 0;
+      _eventLog.clear();
+      _nextEventTimer = 5.0;
+      _elapsedTime = 0;
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
-      final chartHeight = constraints.maxHeight * 0.35;
+      final chartHeight = constraints.maxHeight * 0.30;
       return Container(
         color: Colors.black,
         child: Stack(
           children: [
+            if (_liquidationFlashTimer > 0)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.red.withValues(alpha: (_liquidationFlashTimer / 2.0).clamp(0.0, 0.6)),
+                ),
+              ),
             Column(
               children: [
-                // Timer + headline
+                // Timer + headline + best score
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
                         '${_timeLeft.toInt()}s',
                         style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 18,
+                          fontFamily: 'Avenir', fontSize: 16,
                           color: _timeLeft < 10 ? Colors.redAccent : Colors.white70,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
+                      const SizedBox(width: 6),
+                      if (_bestScore > 0)
+                        Text(
+                          'Best: \$${_bestScore.toStringAsFixed(0)}',
+                          style: const TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Colors.white30),
+                        ),
                       if (_headlineTimer > 0)
                         Expanded(
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
                             child: Text(
                               _headline,
                               textAlign: TextAlign.center,
+                              overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontFamily: 'Avenir', fontSize: 13,
-                                fontWeight: FontWeight.bold,
+                                fontFamily: 'Avenir', fontSize: 11, fontWeight: FontWeight.bold,
                                 color: _eventImpact > 0 ? Colors.orangeAccent : Colors.lightBlueAccent,
                               ),
                             ),
                           ),
-                        ),
+                        )
+                      else
+                        const Spacer(),
                       Text(
                         'P&L: ${_pnl >= 0 ? "+" : ""}\$${_pnl.toStringAsFixed(0)}',
                         style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold,
+                          fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold,
                           color: _pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
                         ),
                       ),
@@ -229,13 +559,52 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                   ),
                 ),
 
-                // Price chart with tap for limit orders
+                // Leveraged P&L display
+                if (_leveragedPositions.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+                      ),
+                      child: Text(
+                        '5x Pos: $_leveragedInventory  '
+                        'P&L: ${_leveragedPnl >= 0 ? "+" : ""}\$${_leveragedPnl.toStringAsFixed(0)}  '
+                        'Liq: \$${_lowestLiquidationPrice?.toStringAsFixed(1) ?? "-"}',
+                        style: TextStyle(
+                          fontFamily: 'Avenir', fontSize: 10,
+                          color: _leveragedPnl >= 0 ? Colors.orangeAccent : Colors.redAccent,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Margin call warning banner
+                if (_marginCallWarning && !_gameOver)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    color: Colors.red.withValues(alpha: 0.3),
+                    child: const Text(
+                      'MARGIN CALL WARNING',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontFamily: 'Avenir', fontSize: 13, fontWeight: FontWeight.bold, color: Colors.redAccent),
+                    ),
+                  ),
+
+                // Price chart
                 GestureDetector(
                   onTapDown: (details) {
                     if (_gameOver) return;
                     final fraction = 1 - (details.localPosition.dy / chartHeight);
-                    final minP = _priceHistory.reduce(min) - 5;
-                    final maxP = _priceHistory.reduce(max) + 5;
+                    final allPrices = List<double>.from(_priceHistory);
+                    final liqPrice = _lowestLiquidationPrice;
+                    if (liqPrice != null) allPrices.add(liqPrice);
+                    final minP = allPrices.reduce(min) - 5;
+                    final maxP = allPrices.reduce(max) + 5;
                     final tappedPrice = minP + fraction * (maxP - minP);
                     setState(() {
                       if (tappedPrice < _price) {
@@ -251,75 +620,145 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                     child: CustomPaint(
                       painter: _TradingChartPainter(
                         _priceHistory, _limitBuyPrice, _limitSellPrice, _price,
+                        liquidationPrices: _leveragedPositions.map((p) => p.liquidationPrice).toList(),
                       ),
                     ),
                   ),
                 ),
 
-                const SizedBox(height: 8),
+                const SizedBox(height: 4),
 
                 // Current price
                 Text(
                   '\$${_price.toStringAsFixed(1)} / potato',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, color: Colors.white, fontWeight: FontWeight.bold),
+                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 2),
 
                 // Inventory + cash
                 Text(
-                  'Cash: \$${_cash.toStringAsFixed(0)}   Potatoes: $_inventory',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54),
+                  'Cash: \$${_cash.toStringAsFixed(0)}   Potatoes: $_inventory'
+                  '${_leveragedInventory > 0 ? "   5x: $_leveragedInventory" : ""}',
+                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white54),
                 ),
+
+                // HODL counter
+                if (_isHodling && _hodlTimer > 1)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      'HODL: ${_hodlTimer.toInt()}s',
+                      style: TextStyle(fontFamily: 'Avenir', fontSize: 10,
+                        color: _hodlTimer >= 10 ? Colors.amberAccent : Colors.white30),
+                    ),
+                  ),
+
                 if (_limitBuyPrice != null || _limitSellPrice != null)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4),
+                    padding: const EdgeInsets.only(top: 2),
                     child: Text(
                       '${_limitBuyPrice != null ? "Limit BUY @ \$${_limitBuyPrice!.toStringAsFixed(1)}" : ""}'
                       '${_limitBuyPrice != null && _limitSellPrice != null ? "  |  " : ""}'
                       '${_limitSellPrice != null ? "Limit SELL @ \$${_limitSellPrice!.toStringAsFixed(1)}" : ""}',
-                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.amberAccent),
+                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Colors.amberAccent),
                     ),
                   ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
 
-                // Buy/Sell buttons
+                // Buy / Leverage toggle / Sell buttons
                 if (!_gameOver)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      _tradeButton('BUY', Colors.green, _cash >= _price ? () {
-                        setState(() {
-                          _cash -= _price;
-                          _inventory++;
-                          _spawnParticles(constraints.maxWidth * 0.3, constraints.maxHeight * 0.7, Colors.green, 8);
-                        });
-                      } : null),
-                      const SizedBox(width: 24),
-                      _tradeButton('SELL', Colors.red, _inventory > 0 ? () {
-                        setState(() {
-                          _cash += _price;
-                          _inventory--;
-                          _spawnParticles(constraints.maxWidth * 0.7, constraints.maxHeight * 0.7, Colors.red, 8);
-                        });
-                      } : null),
+                      _tradeButton(
+                        _leverageMode ? 'BUY 5x' : 'BUY',
+                        _leverageMode ? Colors.orange : Colors.green,
+                        _leverageMode
+                            ? (_cash >= _price * 0.2 ? () {
+                                setState(() {
+                                  _cash -= _price * 0.2;
+                                  _leveragedPositions.add(_LeveragedPosition(entryPrice: _price, quantity: 1));
+                                  _spawnParticles(constraints.maxWidth * 0.2, constraints.maxHeight * 0.7, Colors.orange, 8);
+                                });
+                              } : null)
+                            : (_cash >= _price ? () {
+                                setState(() {
+                                  _cash -= _price;
+                                  _inventory++;
+                                  _spawnParticles(constraints.maxWidth * 0.2, constraints.maxHeight * 0.7, Colors.green, 8);
+                                });
+                              } : null),
+                      ),
+                      const SizedBox(width: 10),
+                      GestureDetector(
+                        onTap: () => setState(() => _leverageMode = !_leverageMode),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                          decoration: BoxDecoration(
+                            color: _leverageMode ? Colors.orange.withValues(alpha: 0.4) : Colors.grey.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: _leverageMode ? Colors.orangeAccent : Colors.grey.withValues(alpha: 0.3),
+                              width: _leverageMode ? 2 : 1,
+                            ),
+                          ),
+                          child: Text(
+                            '5x',
+                            style: TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold,
+                              color: _leverageMode ? Colors.orangeAccent : Colors.grey),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      _tradeButton(
+                        'SELL', Colors.red,
+                        (_inventory > 0 || _leveragedPositions.isNotEmpty) ? () {
+                          setState(() {
+                            if (_leveragedPositions.isNotEmpty) {
+                              final pos = _leveragedPositions.removeLast();
+                              _cash += _price * pos.quantity;
+                            } else {
+                              _cash += _price;
+                              _inventory--;
+                            }
+                            _spawnParticles(constraints.maxWidth * 0.8, constraints.maxHeight * 0.7, Colors.red, 8);
+                          });
+                        } : null,
+                      ),
                     ],
                   ),
 
-                const SizedBox(height: 16),
+                const SizedBox(height: 8),
 
                 // Net worth
                 Text(
                   'Net Worth: \$${_netWorth.toStringAsFixed(0)}',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFFE19816)),
+                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFE19816)),
                 ),
 
                 if (_gameOver) ...[
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   Text(
                     _pnl >= 0 ? 'Nice trades!' : 'Better luck next time!',
-                    style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: _pnl >= 0 ? Colors.greenAccent : Colors.redAccent),
+                    style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: _pnl >= 0 ? Colors.greenAccent : Colors.redAccent),
                   ),
-                  const SizedBox(height: 8),
+                  if (_highScores.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    const Text('TOP SCORES', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                    const SizedBox(height: 2),
+                    ..._highScores.asMap().entries.map((e) {
+                      final i = e.key;
+                      final s = e.value;
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: Text(
+                          '${i + 1}. \$${(s['score'] as num).toStringAsFixed(0)}  (${s['date']})',
+                          style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white54),
+                        ),
+                      );
+                    }),
+                  ],
+                  const SizedBox(height: 6),
                   GestureDetector(
                     onTap: _restart,
                     child: Container(
@@ -343,6 +782,159 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                 ),
               ),
             )),
+
+            // LIQUIDATED text overlay
+            if (_liquidationFlashTimer > 0)
+              Center(
+                child: Transform.scale(
+                  scale: 0.5 + _liquidationTextScale * 1.5,
+                  child: Text(
+                    'LIQUIDATED',
+                    style: TextStyle(
+                      fontFamily: 'Avenir', fontSize: 40, fontWeight: FontWeight.w900,
+                      color: Colors.red.withValues(alpha: (_liquidationFlashTimer / 2.0).clamp(0.0, 1.0)),
+                      shadows: const [
+                        Shadow(color: Colors.redAccent, blurRadius: 20),
+                        Shadow(color: Colors.red, blurRadius: 40),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+            // Diamond Hands text
+            if (_diamondHandsTimer > 0)
+              Positioned(
+                top: constraints.maxHeight * 0.4, left: 0, right: 0,
+                child: Center(
+                  child: Text(
+                    'Diamond Hands \u{1F48E}',
+                    style: TextStyle(
+                      fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold,
+                      color: Colors.cyanAccent.withValues(alpha: (_diamondHandsTimer / 2.5).clamp(0.0, 1.0)),
+                    ),
+                  ),
+                ),
+              ),
+
+            // NEW HIGH SCORE overlay
+            if (_newHighScore && _newHighScoreTimer > 0)
+              Positioned(
+                top: constraints.maxHeight * 0.25, left: 0, right: 0,
+                child: Center(
+                  child: Transform.scale(
+                    scale: 0.8 + (1.0 - (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)) * 0.4,
+                    child: Text(
+                      'NEW HIGH SCORE!',
+                      style: TextStyle(
+                        fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.w900,
+                        color: Colors.amberAccent.withValues(alpha: (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)),
+                        shadows: const [
+                          Shadow(color: Colors.orange, blurRadius: 20),
+                          Shadow(color: Colors.amber, blurRadius: 40),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // Margin call floating warning
+            if (_marginCallWarning && !_gameOver)
+              Positioned(
+                top: constraints.maxHeight * 0.15, left: 0, right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.redAccent),
+                    ),
+                    child: const Text(
+                      'MARGIN CALL',
+                      style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.redAccent),
+                    ),
+                  ),
+                ),
+              ),
+
+            // Market event log panel
+            if (!_gameOver && _eventLog.isNotEmpty)
+              Positioned(
+                left: 4,
+                bottom: 50,
+                child: Container(
+                  width: 170,
+                  constraints: const BoxConstraints(maxHeight: 180),
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.75),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'MARKET INTEL',
+                        style: TextStyle(
+                          fontFamily: 'Avenir', fontSize: 9,
+                          fontWeight: FontWeight.bold, color: Colors.white38,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Flexible(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: _eventLog.take(8).map((ev) {
+                              final age = _elapsedTime - ev.timestamp;
+                              final timeLabel = age < 60
+                                  ? '${age.toInt()}s'
+                                  : '${(age / 60).toInt()}m';
+                              final text = ev.isRevealed
+                                  ? ev.actualText
+                                  : ev.leadingText;
+                              final textColor = ev.isRevealed
+                                  ? ev.color
+                                  : Colors.amberAccent.withValues(alpha: 0.7);
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 3),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      timeLabel,
+                                      style: TextStyle(
+                                        fontFamily: 'Avenir', fontSize: 8,
+                                        color: Colors.white.withValues(alpha: 0.3),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        text,
+                                        style: TextStyle(
+                                          fontFamily: 'Avenir', fontSize: 9,
+                                          color: textColor,
+                                          height: 1.2,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       );
@@ -353,7 +945,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
         decoration: BoxDecoration(
           color: onTap != null ? color.withValues(alpha: 0.3) : Colors.grey.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(12),
@@ -361,7 +953,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         ),
         child: Text(
           label,
-          style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: onTap != null ? color : Colors.grey),
+          style: TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: onTap != null ? color : Colors.grey),
         ),
       ),
     );
@@ -373,13 +965,26 @@ class _TradingChartPainter extends CustomPainter {
   final double? limitBuy;
   final double? limitSell;
   final double currentPrice;
-  _TradingChartPainter(this.data, this.limitBuy, this.limitSell, this.currentPrice);
+  final List<double> liquidationPrices;
+
+  _TradingChartPainter(
+    this.data, this.limitBuy, this.limitSell, this.currentPrice, {
+    this.liquidationPrices = const [],
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     if (data.length < 2) return;
-    final minV = data.reduce(min) - 5;
-    final maxV = data.reduce(max) + 5;
+
+    // Compute range including liquidation prices
+    double minV = data.reduce(min);
+    double maxV = data.reduce(max);
+    for (final lp in liquidationPrices) {
+      if (lp < minV) minV = lp;
+      if (lp > maxV) maxV = lp;
+    }
+    minV -= 5;
+    maxV += 5;
     final range = maxV - minV;
     if (range <= 0) return;
 
@@ -438,6 +1043,25 @@ class _TradingChartPainter extends CustomPainter {
         }
       }
     }
+
+    // Liquidation price lines (red dashed)
+    for (final liqPrice in liquidationPrices) {
+      final y = size.height - ((liqPrice - minV) / range) * size.height;
+      if (y > 0 && y < size.height) {
+        final dashedPaint = Paint()..color = const Color(0xCCFF0000)..strokeWidth = 1.5;
+        for (double x = 0; x < size.width; x += 10) {
+          canvas.drawLine(Offset(x, y), Offset(x + 5, y), dashedPaint);
+        }
+        final textPainter = TextPainter(
+          text: TextSpan(
+            text: 'LIQ \$${liqPrice.toStringAsFixed(1)}',
+            style: const TextStyle(color: Color(0xCCFF0000), fontSize: 9, fontFamily: 'Avenir'),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        textPainter.paint(canvas, Offset(size.width - textPainter.width - 4, y - 12));
+      }
+    }
   }
 
   @override
@@ -462,19 +1086,48 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
   double _timeLeft = 60;
   int _transportPoints = 100;
   bool _gameOver = false;
-  bool _won = false;
   int _citiesFed = 0;
+  int _round = 1;
+  int _totalPeopleFed = 0;
+  int _citiesLost = 0;
+  static const int _maxCitiesLost = 3;
+  bool _showingCelebration = false;
+  double _celebrationTimer = 0;
+  bool _isNewHighScore = false;
+
+  // High scores
+  List<Map<String, dynamic>> _highScores = [];
 
   // Producers: name, x%, y%
   final List<_MapNode> _producers = [
-    _MapNode('Idaho', 0.15, 0.30, Colors.amber),
-    _MapNode('Peru', 0.22, 0.65, Colors.amber),
+    _MapNode('Idaho Falls', 0.15, 0.30, Colors.amber),
+    _MapNode('Lima', 0.22, 0.65, Colors.amber),
     _MapNode('China', 0.72, 0.35, Colors.amber),
     _MapNode('India', 0.65, 0.45, Colors.amber),
-    _MapNode('Europe', 0.47, 0.25, Colors.amber),
+    _MapNode('Dublin', 0.47, 0.25, Colors.amber),
   ];
 
-  // Cities: name, x%, y%, fed?
+  // Base city list for round 1
+  static List<_CityNode> _baseCities() => [
+    _CityNode('Minsk', 0.52, 0.22, 120000, false, false),
+    _CityNode('Lagos', 0.44, 0.55, 450000, false, false),
+    _CityNode('Tokyo', 0.82, 0.33, 900000, false, false),
+    _CityNode('Delhi', 0.67, 0.40, 750000, false, false),
+    _CityNode('SP', 0.28, 0.68, 600000, false, false),
+  ];
+
+  // Extra city names pool (potato-themed where possible)
+  static const List<String> _extraCityNames = [
+    'London', 'Cairo', 'Seoul', 'Sydney', 'Berlin', 'Rio', 'Moscow',
+    'Boise', 'Cusco', 'Cork', 'Vitebsk', 'Quito', 'Nairobi',
+    'Manila', 'Jakarta', 'Dhaka', 'Bogota',
+  ];
+  static const List<int> _extraCityPops = [
+    500000, 320000, 600000, 280000, 400000, 550000, 700000,
+    120000, 90000, 80000, 110000, 200000, 350000,
+    650000, 500000, 800000, 420000,
+  ];
+
   late List<_CityNode> _cities;
 
   // Routes drawn
@@ -484,23 +1137,98 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
   int? _dragSourceIdx;
   Offset? _dragCurrent;
 
+  // Route info overlay
+  String? _routeInfoText;
+  double _routeInfoTimer = 0;
+
+  // City starvation timers (seconds until city starves)
+  final Map<int, double> _starvationTimers = {};
+  static const double _baseStarvationTime = 20.0;
+
   // Particles
   final List<_JuiceParticle> _particles = [];
+
+  // Layout dimensions cached
+  double _lastW = 0;
+  double _lastH = 0;
+
+  double get _starvationTimeForRound {
+    final t = _baseStarvationTime - (_round - 1) * 2.0;
+    return t < 8.0 ? 8.0 : t;
+  }
 
   @override
   void initState() {
     super.initState();
-    _cities = [
-      _CityNode('NYC', 0.20, 0.32, false),
-      _CityNode('Lagos', 0.44, 0.55, false),
-      _CityNode('Tokyo', 0.82, 0.33, false),
-      _CityNode('Delhi', 0.67, 0.40, false),
-      _CityNode('SP', 0.28, 0.68, false),
-    ];
+    _cities = _baseCities();
+    _initStarvationTimers();
+    _loadHighScores();
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick)
       ..forward();
   }
+
+  void _initStarvationTimers() {
+    _starvationTimers.clear();
+    for (int i = 0; i < _cities.length; i++) {
+      if (!_cities[i].fed && !_cities[i].starved) {
+        _starvationTimers[i] = _starvationTimeForRound;
+      }
+    }
+  }
+
+  Future<void> _loadHighScores() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('feed_the_world_high_scores');
+    if (raw != null) {
+      try {
+        final List<dynamic> decoded = jsonDecode(raw);
+        if (mounted) {
+          setState(() {
+            _highScores = decoded
+                .map((e) => Map<String, dynamic>.from(e as Map))
+                .toList();
+          });
+        }
+      } catch (_) {
+        _highScores = [];
+      }
+    }
+  }
+
+  Future<void> _saveHighScores() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'feed_the_world_high_scores',
+      jsonEncode(_highScores),
+    );
+  }
+
+  void _checkAndSaveHighScore(int score) {
+    final entry = {
+      'score': score,
+      'date': DateTime.now().toIso8601String().substring(0, 10),
+    };
+    _highScores.add(entry);
+    _highScores.sort(
+      (a, b) => (b['score'] as int).compareTo(a['score'] as int),
+    );
+    if (_highScores.length > 5) {
+      _highScores = _highScores.sublist(0, 5);
+    }
+    // Check if our score made it into the top 5
+    _isNewHighScore = _highScores.any(
+      (e) => e['score'] == score && e['date'] == entry['date'],
+    );
+    _saveHighScores();
+  }
+
+  int get _currentBestScore {
+    if (_highScores.isEmpty) return 0;
+    return _highScores.first['score'] as int;
+  }
+
+  int get _currentScore => _totalPeopleFed;
 
   @override
   void dispose() {
@@ -512,22 +1240,86 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
     if (_gameOver) return;
     final dt = 1 / 60.0;
     setState(() {
-      _timeLeft -= dt;
-      if (_timeLeft <= 0) {
-        _timeLeft = 0;
-        _gameOver = true;
+      // Celebration pause between rounds
+      if (_showingCelebration) {
+        _celebrationTimer -= dt;
+        if (_rng.nextDouble() < 0.3) {
+          _spawnP(
+            _lastW * (0.2 + _rng.nextDouble() * 0.6),
+            _lastH * (0.2 + _rng.nextDouble() * 0.4),
+            [
+              Colors.greenAccent,
+              Colors.amberAccent,
+              Colors.cyanAccent,
+              Colors.pinkAccent,
+            ][_rng.nextInt(4)],
+            3,
+          );
+        }
+        if (_celebrationTimer <= 0) {
+          _showingCelebration = false;
+          _startNextRound();
+        }
+        _updateParticles(dt);
         return;
       }
 
+      _timeLeft -= dt;
+      if (_timeLeft <= 0) {
+        _timeLeft = 0;
+        _endGame();
+        return;
+      }
+
+      // Route info fade
+      if (_routeInfoTimer > 0) {
+        _routeInfoTimer -= dt;
+        if (_routeInfoTimer <= 0) _routeInfoText = null;
+      }
+
+      // Starvation timers for unfed cities
+      final keysToRemove = <int>[];
+      for (final key in _starvationTimers.keys.toList()) {
+        if (key < _cities.length &&
+            !_cities[key].fed &&
+            !_cities[key].starved) {
+          _starvationTimers[key] = _starvationTimers[key]! - dt;
+          if (_starvationTimers[key]! <= 0) {
+            _cities[key].starved = true;
+            _citiesLost++;
+            _spawnP(
+              _cities[key].x * _lastW,
+              _cities[key].y * _lastH,
+              Colors.grey,
+              15,
+            );
+            keysToRemove.add(key);
+            if (_citiesLost >= _maxCitiesLost) {
+              _endGame();
+              return;
+            }
+          }
+        }
+      }
+      for (final k in keysToRemove) {
+        _starvationTimers.remove(k);
+      }
+
       // Spawn new hungry cities periodically
-      if (_rng.nextDouble() < 0.003 && _cities.length < 12) {
-        final names = ['London', 'Cairo', 'Seoul', 'Sydney', 'Berlin', 'Rio', 'Moscow'];
+      final spawnRate = 0.003 + (_round - 1) * 0.001;
+      final maxCities = 5 + _round * 2;
+      if (_rng.nextDouble() < spawnRate && _cities.length < maxCities) {
+        final nameIdx = _rng.nextInt(_extraCityNames.length);
+        final newIdx = _cities.length;
         _cities.add(_CityNode(
-          names[_rng.nextInt(names.length)],
+          _extraCityNames[nameIdx],
           0.1 + _rng.nextDouble() * 0.8,
           0.15 + _rng.nextDouble() * 0.65,
+          _extraCityPops[nameIdx],
+          false,
           false,
         ));
+        _starvationTimers[newIdx] = _starvationTimeForRound;
       }
 
       // Animate route deliveries
@@ -535,38 +1327,104 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
         r.progress += dt * 0.5;
         if (r.progress >= 1.0 && !r.delivered) {
           r.delivered = true;
-          if (!_cities[r.cityIdx].fed) {
+          if (r.cityIdx < _cities.length &&
+              !_cities[r.cityIdx].fed &&
+              !_cities[r.cityIdx].starved) {
             _cities[r.cityIdx].fed = true;
             _citiesFed++;
-            final c = _cities[r.cityIdx];
-            _spawnP(c.x * 400, c.y * 400, Colors.greenAccent, 10);
+            _totalPeopleFed += _cities[r.cityIdx].population;
+            _starvationTimers.remove(r.cityIdx);
+            _spawnP(
+              _cities[r.cityIdx].x * _lastW,
+              _cities[r.cityIdx].y * _lastH,
+              Colors.greenAccent,
+              10,
+            );
           }
         }
       }
 
-      // Check win
-      if (_cities.every((c) => c.fed)) {
-        _won = true;
-        _gameOver = true;
+      // Check if all feedable cities are fed -> round complete
+      final feedable = _cities.where((c) => !c.starved).toList();
+      if (feedable.isNotEmpty && feedable.every((c) => c.fed)) {
+        _showingCelebration = true;
+        _celebrationTimer = 2.0;
+        for (int i = 0; i < 30; i++) {
+          _spawnP(
+            _lastW * (0.2 + _rng.nextDouble() * 0.6),
+            _lastH * (0.2 + _rng.nextDouble() * 0.6),
+            [
+              Colors.greenAccent,
+              Colors.amberAccent,
+              Colors.cyanAccent,
+            ][_rng.nextInt(3)],
+            2,
+          );
+        }
       }
 
-      // Particles
-      for (final p in _particles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.life -= dt;
-      }
-      _particles.removeWhere((p) => p.life <= 0);
+      _updateParticles(dt);
     });
+  }
+
+  void _updateParticles(double dt) {
+    for (final p in _particles) {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+    }
+    _particles.removeWhere((p) => p.life <= 0);
+  }
+
+  void _endGame() {
+    _gameOver = true;
+    _checkAndSaveHighScore(_currentScore);
+  }
+
+  void _startNextRound() {
+    _round++;
+    _transportPoints += 60 + _round * 10;
+    _routes.clear();
+
+    final numCities = 5 + _round;
+    _cities = [];
+    final allNames = [
+      'Minsk', 'Lagos', 'Tokyo', 'Delhi', 'SP',
+      ..._extraCityNames,
+    ];
+    final allPops = [
+      120000, 450000, 900000, 750000, 600000,
+      ..._extraCityPops,
+    ];
+    final usedIdxs = <int>{};
+    for (int i = 0; i < numCities && i < allNames.length; i++) {
+      int idx;
+      do {
+        idx = _rng.nextInt(allNames.length);
+      } while (usedIdxs.contains(idx));
+      usedIdxs.add(idx);
+      _cities.add(_CityNode(
+        allNames[idx],
+        0.1 + _rng.nextDouble() * 0.8,
+        0.15 + _rng.nextDouble() * 0.65,
+        allPops[idx],
+        false,
+        false,
+      ));
+    }
+    _citiesFed = 0;
+    _initStarvationTimers();
   }
 
   void _spawnP(double x, double y, Color c, int n) {
     for (int i = 0; i < n; i++) {
       _particles.add(_JuiceParticle(
-        x: x, y: y,
+        x: x,
+        y: y,
         vx: (_rng.nextDouble() - 0.5) * 80,
         vy: (_rng.nextDouble() - 0.5) * 80,
-        life: 0.6, color: c,
+        life: 0.6,
+        color: c,
       ));
     }
   }
@@ -576,18 +1434,25 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
       _timeLeft = 60;
       _transportPoints = 100;
       _gameOver = false;
-      _won = false;
       _citiesFed = 0;
+      _round = 1;
+      _totalPeopleFed = 0;
+      _citiesLost = 0;
+      _showingCelebration = false;
+      _isNewHighScore = false;
+      _routeInfoText = null;
+      _routeInfoTimer = 0;
       _routes.clear();
       _particles.clear();
-      _cities = [
-        _CityNode('NYC', 0.20, 0.32, false),
-        _CityNode('Lagos', 0.44, 0.55, false),
-        _CityNode('Tokyo', 0.82, 0.33, false),
-        _CityNode('Delhi', 0.67, 0.40, false),
-        _CityNode('SP', 0.28, 0.68, false),
-      ];
+      _cities = _baseCities();
+      _initStarvationTimers();
     });
+  }
+
+  String _formatPopulation(int pop) {
+    if (pop >= 1000000) return '${(pop / 1000000).toStringAsFixed(1)}M';
+    if (pop >= 1000) return '${(pop / 1000).toStringAsFixed(0)}K';
+    return pop.toString();
   }
 
   @override
@@ -595,11 +1460,12 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
     return LayoutBuilder(builder: (context, constraints) {
       final w = constraints.maxWidth;
       final h = constraints.maxHeight;
+      _lastW = w;
+      _lastH = h;
 
       return GestureDetector(
         onPanStart: (details) {
-          if (_gameOver) return;
-          // Check if starting on a producer
+          if (_gameOver || _showingCelebration) return;
           for (int i = 0; i < _producers.length; i++) {
             final px = _producers[i].x * w;
             final py = _producers[i].y * h;
@@ -617,9 +1483,8 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
         },
         onPanEnd: (details) {
           if (_dragSourceIdx != null && _dragCurrent != null) {
-            // Check if ended on a city
             for (int i = 0; i < _cities.length; i++) {
-              if (_cities[i].fed) continue;
+              if (_cities[i].fed || _cities[i].starved) continue;
               final cx = _cities[i].x * w;
               final cy = _cities[i].y * h;
               if ((_dragCurrent! - Offset(cx, cy)).distance < 30) {
@@ -628,10 +1493,15 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
                 final dy = prod.y - _cities[i].y;
                 final dist = sqrt(dx * dx + dy * dy);
                 final cost = (dist * 50).round();
+                final distKm = (dist * 20000).round();
                 if (_transportPoints >= cost) {
                   setState(() {
                     _transportPoints -= cost;
-                    _routes.add(_SupplyRoute(_dragSourceIdx!, i, 0, false));
+                    _routes.add(
+                      _SupplyRoute(_dragSourceIdx!, i, 0, false),
+                    );
+                    _routeInfoText = '${distKm}km  Cost: $cost';
+                    _routeInfoTimer = 2.0;
                   });
                 }
                 break;
@@ -645,54 +1515,377 @@ class _GlobalFeedGameState extends State<GlobalFeedGame>
           color: const Color(0xFF0A1628),
           child: CustomPaint(
             painter: _WorldMapPainter(
-              _producers, _cities, _routes, _dragSourceIdx, _dragCurrent, _particles,
+              _producers,
+              _cities,
+              _routes,
+              _dragSourceIdx,
+              _dragCurrent,
+              _particles,
+              _starvationTimers,
+              _starvationTimeForRound,
             ),
             child: Stack(
               children: [
-                // HUD
+                // HUD top row
                 Positioned(
-                  top: 8, left: 16, right: 16,
+                  top: 8,
+                  left: 16,
+                  right: 16,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('${_timeLeft.toInt()}s', style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: _timeLeft < 10 ? Colors.redAccent : Colors.white70)),
-                      Text('Transport: $_transportPoints', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
-                      Text('Fed: $_citiesFed/${_cities.length}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.greenAccent)),
+                      Text(
+                        '${_timeLeft.toInt()}s',
+                        style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 16,
+                          color: _timeLeft < 10
+                              ? Colors.redAccent
+                              : Colors.white70,
+                        ),
+                      ),
+                      Text(
+                        'R$_round',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 14,
+                          color: Colors.cyanAccent,
+                        ),
+                      ),
+                      Text(
+                        'Transport: $_transportPoints',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 14,
+                          color: Colors.amberAccent,
+                        ),
+                      ),
                     ],
                   ),
                 ),
-                // Instructions / end
+                // HUD second row
                 Positioned(
-                  bottom: 20, left: 0, right: 0,
-                  child: Center(
-                    child: _gameOver
-                        ? Column(
+                  top: 28,
+                  left: 16,
+                  right: 16,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Fed: $_citiesFed/'
+                        '${_cities.where((c) => !c.starved).length}',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 12,
+                          color: Colors.greenAccent,
+                        ),
+                      ),
+                      Text(
+                        'People: ${_formatPopulation(_totalPeopleFed)}',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 12,
+                          color: Colors.lightBlueAccent,
+                        ),
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (int i = 0; i < _maxCitiesLost; i++)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 2),
+                              child: Icon(
+                                i < _citiesLost
+                                    ? Icons.close
+                                    : Icons.location_city,
+                                size: 12,
+                                color: i < _citiesLost
+                                    ? Colors.redAccent
+                                    : Colors.white30,
+                              ),
+                            ),
+                        ],
+                      ),
+                      if (_currentBestScore > 0)
+                        Text(
+                          'Best: ${_formatPopulation(_currentBestScore)}',
+                          style: const TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 10,
+                            color: Colors.white38,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                // Route info overlay
+                if (_routeInfoText != null && _routeInfoTimer > 0)
+                  Positioned(
+                    top: h * 0.45,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          _routeInfoText!,
+                          style: TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 13,
+                            color: Colors.amberAccent.withValues(
+                              alpha: (_routeInfoTimer / 2.0).clamp(0.0, 1.0),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Celebration overlay
+                if (_showingCelebration)
+                  Positioned(
+                    top: h * 0.35,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Round $_round Complete!',
+                            style: const TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.greenAccent,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${_formatPopulation(_totalPeopleFed)} people fed',
+                            style: const TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 14,
+                              color: Colors.lightBlueAccent,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Next round in '
+                            '${_celebrationTimer.toInt() + 1}...',
+                            style: const TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 12,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                // Game over overlay
+                if (_gameOver)
+                  Positioned.fill(
+                    child: Container(
+                      color: Colors.black87,
+                      child: Center(
+                        child: SingleChildScrollView(
+                          child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              if (_isNewHighScore) ...[
+                                TweenAnimationBuilder<double>(
+                                  tween: Tween(begin: 0.8, end: 1.2),
+                                  duration: const Duration(milliseconds: 600),
+                                  curve: Curves.elasticOut,
+                                  builder: (context, scale, child) =>
+                                      Transform.scale(
+                                    scale: scale,
+                                    child: child,
+                                  ),
+                                  child: const Text(
+                                    'NEW HIGH SCORE!',
+                                    style: TextStyle(
+                                      fontFamily: 'Avenir',
+                                      fontSize: 24,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.amberAccent,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                              ],
                               Text(
-                                _won ? 'World Fed!' : 'Time Up! Fed $_citiesFed/${_cities.length}',
-                                style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: _won ? Colors.greenAccent : Colors.redAccent),
+                                _citiesLost >= _maxCitiesLost
+                                    ? 'Too Many Cities Starved!'
+                                    : 'Time Up!',
+                                style: const TextStyle(
+                                  fontFamily: 'Avenir',
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.redAccent,
+                                ),
                               ),
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 12),
+                              _statRow('Rounds completed', '$_round'),
+                              _statRow(
+                                'Total people fed',
+                                _formatPopulation(_totalPeopleFed),
+                              ),
+                              _statRow('Cities lost', '$_citiesLost'),
+                              _statRow(
+                                'Score',
+                                _formatPopulation(_currentScore),
+                              ),
+                              const SizedBox(height: 16),
+                              if (_highScores.isNotEmpty) ...[
+                                const Text(
+                                  'LEADERBOARD',
+                                  style: TextStyle(
+                                    fontFamily: 'Avenir',
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.cyanAccent,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                for (int i = 0; i < _highScores.length; i++)
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 2,
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(
+                                          width: 20,
+                                          child: Text(
+                                            '${i + 1}.',
+                                            style: TextStyle(
+                                              fontFamily: 'Avenir',
+                                              fontSize: 12,
+                                              color: i == 0
+                                                  ? Colors.amberAccent
+                                                  : Colors.white54,
+                                            ),
+                                          ),
+                                        ),
+                                        SizedBox(
+                                          width: 80,
+                                          child: Text(
+                                            _formatPopulation(
+                                              _highScores[i]['score'] as int,
+                                            ),
+                                            style: TextStyle(
+                                              fontFamily: 'Avenir',
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold,
+                                              color: _highScores[i]['score'] ==
+                                                      _currentScore
+                                                  ? Colors.greenAccent
+                                                  : Colors.white70,
+                                            ),
+                                          ),
+                                        ),
+                                        Text(
+                                          _highScores[i]['date'] as String,
+                                          style: const TextStyle(
+                                            fontFamily: 'Avenir',
+                                            fontSize: 10,
+                                            color: Colors.white38,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                const SizedBox(height: 12),
+                              ],
                               GestureDetector(
                                 onTap: _restart,
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                                  decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white24)),
-                                  child: const Text('Restart', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 24,
+                                    vertical: 10,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.white24),
+                                  ),
+                                  child: const Text(
+                                    'Play Again',
+                                    style: TextStyle(
+                                      fontFamily: 'Avenir',
+                                      fontSize: 14,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],
-                          )
-                        : const Text('Drag from producers to hungry cities', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white30)),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                else if (!_showingCelebration)
+                  const Positioned(
+                    bottom: 20,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Text(
+                        'Drag from producers to hungry cities',
+                        style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 13,
+                          color: Colors.white30,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
               ],
             ),
           ),
         ),
       );
     });
+  }
+
+  Widget _statRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 32),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 140,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 13,
+                color: Colors.white54,
+              ),
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              fontFamily: 'Avenir',
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -706,8 +1899,12 @@ class _MapNode {
 class _CityNode {
   final String name;
   final double x, y;
+  final int population;
   bool fed;
-  _CityNode(this.name, this.x, this.y, this.fed);
+  bool starved;
+  _CityNode(
+    this.name, this.x, this.y, this.population, this.fed, this.starved,
+  );
 }
 
 class _SupplyRoute {
@@ -724,8 +1921,19 @@ class _WorldMapPainter extends CustomPainter {
   final int? dragSource;
   final Offset? dragCurrent;
   final List<_JuiceParticle> particles;
+  final Map<int, double> starvationTimers;
+  final double maxStarvationTime;
 
-  _WorldMapPainter(this.producers, this.cities, this.routes, this.dragSource, this.dragCurrent, this.particles);
+  _WorldMapPainter(
+    this.producers,
+    this.cities,
+    this.routes,
+    this.dragSource,
+    this.dragCurrent,
+    this.particles,
+    this.starvationTimers,
+    this.maxStarvationTime,
+  );
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -738,34 +1946,45 @@ class _WorldMapPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
 
-    // North America
-    _drawEllipse(canvas, size, 0.17, 0.28, 0.12, 0.14, continentPaint, outlinePaint);
-    // South America
-    _drawEllipse(canvas, size, 0.24, 0.62, 0.07, 0.16, continentPaint, outlinePaint);
-    // Europe
-    _drawEllipse(canvas, size, 0.48, 0.25, 0.08, 0.08, continentPaint, outlinePaint);
-    // Africa
-    _drawEllipse(canvas, size, 0.48, 0.52, 0.08, 0.15, continentPaint, outlinePaint);
-    // Asia
-    _drawEllipse(canvas, size, 0.70, 0.30, 0.16, 0.14, continentPaint, outlinePaint);
-    // Australia
-    _drawEllipse(canvas, size, 0.82, 0.65, 0.06, 0.06, continentPaint, outlinePaint);
+    _drawEllipse(
+      canvas, size, 0.17, 0.28, 0.12, 0.14, continentPaint, outlinePaint,
+    );
+    _drawEllipse(
+      canvas, size, 0.24, 0.62, 0.07, 0.16, continentPaint, outlinePaint,
+    );
+    _drawEllipse(
+      canvas, size, 0.48, 0.25, 0.08, 0.08, continentPaint, outlinePaint,
+    );
+    _drawEllipse(
+      canvas, size, 0.48, 0.52, 0.08, 0.15, continentPaint, outlinePaint,
+    );
+    _drawEllipse(
+      canvas, size, 0.70, 0.30, 0.16, 0.14, continentPaint, outlinePaint,
+    );
+    _drawEllipse(
+      canvas, size, 0.82, 0.65, 0.06, 0.06, continentPaint, outlinePaint,
+    );
 
     // Routes
     for (final r in routes) {
+      if (r.producerIdx >= producers.length ||
+          r.cityIdx >= cities.length) {
+        continue;
+      }
       final p = producers[r.producerIdx];
       final c = cities[r.cityIdx];
       final from = Offset(p.x * size.width, p.y * size.height);
       final to = Offset(c.x * size.width, c.y * size.height);
       final routePaint = Paint()
-        ..color = (r.delivered ? Colors.greenAccent : Colors.amberAccent).withValues(alpha: 0.4)
+        ..color = (r.delivered ? Colors.greenAccent : Colors.amberAccent)
+            .withValues(alpha: 0.4)
         ..strokeWidth = 2
         ..style = PaintingStyle.stroke;
       canvas.drawLine(from, to, routePaint);
 
-      // Moving dot along route
       if (!r.delivered) {
-        final dotPos = Offset.lerp(from, to, r.progress.clamp(0.0, 1.0))!;
+        final dotPos =
+            Offset.lerp(from, to, r.progress.clamp(0.0, 1.0))!;
         canvas.drawCircle(dotPos, 4, Paint()..color = Colors.amberAccent);
       }
     }
@@ -773,57 +1992,138 @@ class _WorldMapPainter extends CustomPainter {
     // Drag line
     if (dragSource != null && dragCurrent != null) {
       final p = producers[dragSource!];
+      final dragPaint = Paint()
+        ..color = Colors.white38
+        ..strokeWidth = 1.5
+        ..style = PaintingStyle.stroke;
       canvas.drawLine(
         Offset(p.x * size.width, p.y * size.height),
         dragCurrent!,
-        Paint()..color = Colors.white38..strokeWidth = 1.5..style = PaintingStyle.stroke,
+        dragPaint,
       );
     }
 
     // Producers (glow)
     for (final p in producers) {
       final pos = Offset(p.x * size.width, p.y * size.height);
-      canvas.drawCircle(pos, 18, Paint()..color = Colors.amber.withValues(alpha: 0.15));
-      canvas.drawCircle(pos, 10, Paint()..color = Colors.amber.withValues(alpha: 0.4));
+      canvas.drawCircle(
+        pos, 18, Paint()..color = Colors.amber.withValues(alpha: 0.15),
+      );
+      canvas.drawCircle(
+        pos, 10, Paint()..color = Colors.amber.withValues(alpha: 0.4),
+      );
       canvas.drawCircle(pos, 5, Paint()..color = Colors.amber);
       _drawLabel(canvas, p.name, pos.dx, pos.dy - 16, Colors.amberAccent, 10);
     }
 
     // Cities
-    for (final c in cities) {
+    for (int i = 0; i < cities.length; i++) {
+      final c = cities[i];
       final pos = Offset(c.x * size.width, c.y * size.height);
-      if (c.fed) {
-        canvas.drawCircle(pos, 8, Paint()..color = Colors.greenAccent.withValues(alpha: 0.4));
+      if (c.starved) {
+        canvas.drawCircle(
+          pos, 10, Paint()..color = Colors.grey.withValues(alpha: 0.3),
+        );
+        canvas.drawCircle(
+          pos, 5, Paint()..color = Colors.grey.withValues(alpha: 0.6),
+        );
+        _drawLabel(canvas, '\u2620', pos.dx, pos.dy - 2, Colors.grey, 14);
+        _drawLabel(canvas, c.name, pos.dx, pos.dy + 14, Colors.grey, 9);
+      } else if (c.fed) {
+        canvas.drawCircle(
+          pos, 8,
+          Paint()..color = Colors.greenAccent.withValues(alpha: 0.4),
+        );
         canvas.drawCircle(pos, 4, Paint()..color = Colors.greenAccent);
+        _drawLabel(
+          canvas, c.name, pos.dx, pos.dy + 12, Colors.greenAccent, 10,
+        );
       } else {
-        // Flash red
-        final alpha = 0.3 + 0.7 * ((DateTime.now().millisecondsSinceEpoch % 1000) / 1000);
-        canvas.drawCircle(pos, 12, Paint()..color = Colors.redAccent.withValues(alpha: alpha * 0.2));
-        canvas.drawCircle(pos, 6, Paint()..color = Colors.redAccent.withValues(alpha: alpha));
+        final alpha = 0.3 +
+            0.7 *
+                ((DateTime.now().millisecondsSinceEpoch % 1000) / 1000);
+        canvas.drawCircle(
+          pos, 12,
+          Paint()..color = Colors.redAccent.withValues(alpha: alpha * 0.2),
+        );
+        canvas.drawCircle(
+          pos, 6,
+          Paint()..color = Colors.redAccent.withValues(alpha: alpha),
+        );
+        _drawLabel(
+          canvas, c.name, pos.dx, pos.dy + 12, Colors.redAccent, 10,
+        );
+
+        // Starvation timer bar
+        final timeLeft = starvationTimers[i];
+        if (timeLeft != null && maxStarvationTime > 0) {
+          final frac = (timeLeft / maxStarvationTime).clamp(0.0, 1.0);
+          const barW = 20.0;
+          const barH = 3.0;
+          final barX = pos.dx - barW / 2;
+          final barY = pos.dy + 20;
+          canvas.drawRect(
+            Rect.fromLTWH(barX, barY, barW, barH),
+            Paint()..color = Colors.white12,
+          );
+          canvas.drawRect(
+            Rect.fromLTWH(barX, barY, barW * frac, barH),
+            Paint()
+              ..color = frac < 0.3 ? Colors.redAccent : Colors.orangeAccent,
+          );
+        }
       }
-      _drawLabel(canvas, c.name, pos.dx, pos.dy + 12, c.fed ? Colors.greenAccent : Colors.redAccent, 10);
     }
 
     // Particles
     for (final p in particles) {
       if (p.life > 0) {
         canvas.drawCircle(
-          Offset(p.x, p.y), 3,
-          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+          Offset(p.x, p.y),
+          3,
+          Paint()
+            ..color = p.color.withValues(
+              alpha: (p.life / p.maxLife).clamp(0.0, 1.0),
+            ),
         );
       }
     }
   }
 
-  void _drawEllipse(Canvas canvas, Size size, double cx, double cy, double rx, double ry, Paint fill, Paint outline) {
-    final rect = Rect.fromCenter(center: Offset(cx * size.width, cy * size.height), width: rx * 2 * size.width, height: ry * 2 * size.height);
+  void _drawEllipse(
+    Canvas canvas,
+    Size size,
+    double cx,
+    double cy,
+    double rx,
+    double ry,
+    Paint fill,
+    Paint outline,
+  ) {
+    final rect = Rect.fromCenter(
+      center: Offset(cx * size.width, cy * size.height),
+      width: rx * 2 * size.width,
+      height: ry * 2 * size.height,
+    );
     canvas.drawOval(rect, fill);
     canvas.drawOval(rect, outline);
   }
 
-  void _drawLabel(Canvas canvas, String text, double x, double y, Color color, double fontSize) {
+  void _drawLabel(
+    Canvas canvas,
+    String text,
+    double x,
+    double y,
+    Color color,
+    double fontSize,
+  ) {
     final tp = TextPainter(
-      text: TextSpan(text: text, style: TextStyle(fontFamily: 'Avenir', fontSize: fontSize, color: color)),
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          fontFamily: 'Avenir', fontSize: fontSize, color: color,
+        ),
+      ),
       textDirection: TextDirection.ltr,
     )..layout();
     tp.paint(canvas, Offset(x - tp.width / 2, y - tp.height / 2));
@@ -853,6 +2153,9 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   int _score = 0;
   int _health = 3;
   bool _gameOver = false;
+  bool _waitingToStart = true;
+  int _highScore = 0;
+  bool _newBest = false;
 
   final List<_Asteroid> _asteroids = [];
   final List<_OrbitObject> _orbiting = [];
@@ -864,8 +2167,28 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   void initState() {
     super.initState();
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+      ..addListener(_tick);
+    _loadHighScore();
+  }
+
+  Future<void> _loadHighScore() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _highScore = prefs.getInt('gravity_well_high_score') ?? 0;
+    });
+  }
+
+  Future<void> _saveHighScore(int score) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('gravity_well_high_score', score);
+  }
+
+  void _startGame() {
+    setState(() {
+      _waitingToStart = false;
+      _newBest = false;
+    });
+    _ctrl.forward();
   }
 
   @override
@@ -875,7 +2198,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   }
 
   void _tick() {
-    if (_gameOver) return;
+    if (_gameOver || _waitingToStart) return;
     final dt = 1 / 60.0;
     setState(() {
       // Move player toward drag target
@@ -920,7 +2243,15 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
             _health--;
             _spawnP(a.x, a.y, Colors.redAccent, 15);
             a.captured = true;
-            if (_health <= 0) _gameOver = true;
+            if (_health <= 0) {
+              _gameOver = true;
+              if (_score > _highScore) {
+                _highScore = _score;
+                _newBest = true;
+                _saveHighScore(_score);
+              }
+              _ctrl.stop();
+            }
           } else {
             _score++;
             _orbiting.add(_OrbitObject(_rng.nextDouble() * 2 * pi, 0.03 + _orbiting.length * 0.008, _getStarColor()));
@@ -967,11 +2298,14 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   }
 
   void _restart() {
+    _ctrl.reset();
     setState(() {
       _px = 0.5; _py = 0.5;
       _planetRadius = 16;
       _score = 0; _health = 3;
       _gameOver = false;
+      _waitingToStart = true;
+      _newBest = false;
       _asteroids.clear();
       _orbiting.clear();
       _particles.clear();
@@ -985,10 +2319,16 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
       final w = constraints.maxWidth;
       final h = constraints.maxHeight;
       return GestureDetector(
-        onPanStart: (d) { if (!_gameOver) _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h); },
-        onPanUpdate: (d) { if (!_gameOver) setState(() => _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h)); },
+        onPanStart: (d) { if (!_gameOver && !_waitingToStart) _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h); },
+        onPanUpdate: (d) { if (!_gameOver && !_waitingToStart) setState(() => _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h)); },
         onPanEnd: (_) {},
-        onTapDown: (d) { if (!_gameOver) setState(() => _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h)); },
+        onTapDown: (d) {
+          if (_waitingToStart) {
+            _startGame();
+          } else if (!_gameOver) {
+            setState(() => _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h));
+          }
+        },
         child: Container(
           color: Colors.black,
           child: CustomPaint(
@@ -997,45 +2337,73 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
             ),
             child: Stack(
               children: [
-                // HUD
-                Positioned(
-                  top: 8, left: 16, right: 16,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: List.generate(3, (i) => Padding(
-                          padding: const EdgeInsets.only(right: 4),
-                          child: Icon(Icons.circle, size: 14, color: i < _health ? Colors.greenAccent : Colors.grey.withValues(alpha: 0.3)),
-                        )),
-                      ),
-                      Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
-                    ],
+                // HUD (visible during gameplay)
+                if (!_waitingToStart)
+                  Positioned(
+                    top: 8, left: 16, right: 16,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          children: List.generate(3, (i) => Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: Icon(Icons.circle, size: 14, color: i < _health ? Colors.greenAccent : Colors.grey.withValues(alpha: 0.3)),
+                          )),
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
+                            if (_highScore > 0)
+                              Text('Best: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white30)),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                // Start screen
+                if (_waitingToStart)
+                  Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('Gravity Well', style: TextStyle(fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+                        const SizedBox(height: 16),
+                        const Text('Drag to move. Capture asteroids.\nAvoid red objects.', textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
+                        const SizedBox(height: 20),
+                        if (_highScore > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 20),
+                            child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent)),
+                          ),
+                        const Text('Tap to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.white70)),
+                      ],
+                    ),
+                  ),
+                // Game over screen
                 if (_gameOver)
                   Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text('Game Over! Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+                        if (_newBest)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 8),
+                            child: Text('NEW BEST!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                          ),
+                        const SizedBox(height: 8),
+                        Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.amberAccent)),
                         const SizedBox(height: 12),
                         GestureDetector(
                           onTap: _restart,
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
                             decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
-                            child: const Text('Restart', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                            child: const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
                           ),
                         ),
                       ],
-                    ),
-                  ),
-                if (!_gameOver && _score == 0)
-                  Positioned(
-                    bottom: 30, left: 0, right: 0,
-                    child: const Center(
-                      child: Text('Drag to move. Capture objects with gravity.', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white24)),
                     ),
                   ),
               ],
@@ -1133,8 +2501,24 @@ class _GravityWellPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. SolarSortGame — "Planet Lineup"
+// 4. SolarSortGame — "Solar Architect" (Tower of Hanoi with Planets)
+// Move all planets from the leftmost tower to the rightmost tower.
+// Tap a tower to pick up its top planet, tap another to place it.
+// A larger planet can never be placed on a smaller one.
+// Progressive stages: each win adds a tower or a planet, alternating.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+class _HanoiPlanet {
+  final String name;
+  final Color color;
+  final int sizeRank; // 0 = smallest, higher = larger
+
+  const _HanoiPlanet({
+    required this.name,
+    required this.color,
+    required this.sizeRank,
+  });
+}
 
 class SolarSortGame extends StatefulWidget {
   const SolarSortGame({Key? key}) : super(key: key);
@@ -1143,356 +2527,353 @@ class SolarSortGame extends StatefulWidget {
 }
 
 class _SolarSortGameState extends State<SolarSortGame>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-  final Random _rng = Random();
+    with TickerProviderStateMixin {
+  static const _planetNames = ['Jupiter', 'Saturn', 'Neptune', 'Uranus', 'Earth', 'Mars', 'Venus', 'Mercury'];
+  static const _planetColors = [Color(0xFFCC9966), Color(0xFFDDCC88), Color(0xFF4466AA), Color(0xFF88CCDD), Color(0xFF4488CC), Color(0xFFCC5533), Color(0xFFE8A84C), Color(0xFFB0B0B0)];
 
-  static const _planetNames = ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
-  static const _planetColors = [Color(0xFFB0B0B0), Color(0xFFE8A84C), Color(0xFF4488CC), Color(0xFFCC5533), Color(0xFFCC9966), Color(0xFFDDCC88), Color(0xFF88CCDD), Color(0xFF4466AA)];
-  static const _planetFacts = [
-    'Smallest planet, closest to the Sun!',
-    'Hottest planet — hotter than Mercury!',
-    'Only planet with liquid water on the surface!',
-    'Home to the tallest mountain in the solar system!',
-    'So big, 1,300 Earths could fit inside!',
-    'Its rings are made mostly of ice!',
-    'It rotates on its side!',
-    'Winds reach 1,200 mph!',
-  ];
+  static List<int> _stageConfig(int stage) {
+    // Returns [towers, planets]
+    int towers = 3;
+    int planets = 3;
+    for (int s = 2; s <= stage; s++) {
+      if (s % 2 == 0) {
+        towers++;
+      } else {
+        planets++;
+      }
+    }
+    if (planets > _planetNames.length) planets = _planetNames.length;
+    if (towers > planets + 2) towers = planets + 2;
+    return [towers, planets];
+  }
 
-  late List<int> _shuffledOrder; // indices into _planetNames
-  final Map<int, Offset> _positions = {};
-  final Set<int> _placed = {};
-  int? _dragging;
-  Offset _dragOffset = Offset.zero;
-  double _timeLeft = 45;
-  bool _gameOver = false;
+  int _stage = 1;
+  int _moveCount = 0;
+  int? _selectedTower;
   bool _won = false;
-  int _round = 1;
-  String _factText = '';
-  double _factTimer = 0;
+  bool _showMenu = true;
+  Map<int, int> _bestMoves = {};
 
-  final List<_JuiceParticle> _particles = [];
+  late List<List<_HanoiPlanet>> _towers;
+  late List<_HanoiPlanet> _activePlanets;
+  int _numTowers = 3;
+  int _numPlanets = 3;
+
+  AnimationController? _shakeCtrl;
+  Animation<double>? _shakeAnim;
+  int? _shakeTower;
+
+  late AnimationController _glowCtrl;
+  late Animation<double> _glowAnim;
 
   @override
   void initState() {
     super.initState();
-    _shufflePositions();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+    _towers = List.generate(3, (_) => <_HanoiPlanet>[]);
+    _activePlanets = [];
+    _glowCtrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 800),
+    )..repeat(reverse: true);
+    _glowAnim = Tween<double>(begin: 0.3, end: 1.0).animate(
+      CurvedAnimation(parent: _glowCtrl, curve: Curves.easeInOut),
+    );
+    _loadProgress();
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    _glowCtrl.dispose();
+    _shakeCtrl?.dispose();
     super.dispose();
   }
 
-  void _shufflePositions() {
-    _shuffledOrder = List.generate(8, (i) => i)..shuffle(_rng);
-    _positions.clear();
-    _placed.clear();
-    // Random initial positions
-    for (int i = 0; i < 8; i++) {
-      _positions[_shuffledOrder[i]] = Offset(
-        0.1 + _rng.nextDouble() * 0.8,
-        0.2 + _rng.nextDouble() * 0.5,
-      );
+  Future<void> _loadProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedStage = prefs.getInt('solar_architect_stage') ?? 1;
+    final bestJson = prefs.getString('solar_architect_best_moves');
+    Map<int, int> best = {};
+    if (bestJson != null) {
+      final decoded = jsonDecode(bestJson) as Map<String, dynamic>;
+      for (final e in decoded.entries) {
+        best[int.parse(e.key)] = e.value as int;
+      }
     }
+    if (!mounted) return;
+    setState(() {
+      _stage = savedStage;
+      _bestMoves = best;
+      _showMenu = true;
+    });
   }
 
-  void _tick() {
-    if (_gameOver) return;
-    final dt = 1 / 60.0;
+  Future<void> _saveProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('solar_architect_stage', _stage);
+    final bestJson = <String, int>{};
+    for (final e in _bestMoves.entries) {
+      bestJson[e.key.toString()] = e.value;
+    }
+    await prefs.setString('solar_architect_best_moves', jsonEncode(bestJson));
+  }
+
+  void _initStage(int stage) {
+    final cfg = _stageConfig(stage);
+    _numTowers = cfg[0];
+    _numPlanets = cfg[1];
+    _activePlanets = [];
+    for (int i = 0; i < _numPlanets; i++) {
+      final defIdx = _planetNames.length - _numPlanets + i;
+      _activePlanets.add(_HanoiPlanet(
+        name: _planetNames[defIdx],
+        color: _planetColors[defIdx],
+        sizeRank: _numPlanets - 1 - i,
+      ));
+    }
+    _towers = List.generate(_numTowers, (_) => <_HanoiPlanet>[]);
+    _towers[0] = _activePlanets.reversed.toList();
+    _moveCount = 0;
+    _selectedTower = null;
+    _won = false;
+    _shakeTower = null;
+  }
+
+  void _startStage(int stage) {
+    setState(() { _stage = stage; _showMenu = false; _initStage(stage); });
+  }
+
+  void _onTapTower(int towerIdx) {
+    if (_won) return;
     setState(() {
-      _timeLeft -= dt;
-      if (_factTimer > 0) _factTimer -= dt;
-      if (_timeLeft <= 0) {
-        _timeLeft = 0;
-        _gameOver = true;
+      if (_selectedTower == null) {
+        if (_towers[towerIdx].isNotEmpty) _selectedTower = towerIdx;
+      } else if (_selectedTower == towerIdx) {
+        _selectedTower = null;
+      } else {
+        final fromTower = _towers[_selectedTower!];
+        final toTower = _towers[towerIdx];
+        final planet = fromTower.first;
+        if (toTower.isEmpty || toTower.first.sizeRank > planet.sizeRank) {
+          fromTower.removeAt(0);
+          toTower.insert(0, planet);
+          _moveCount++;
+          _selectedTower = null;
+          if (_towers[_numTowers - 1].length == _numPlanets) {
+            _won = true;
+            final prev = _bestMoves[_stage];
+            if (prev == null || _moveCount < prev) _bestMoves[_stage] = _moveCount;
+            _saveProgress();
+          }
+        } else {
+          _triggerShake(_selectedTower!);
+          _selectedTower = null;
+        }
       }
-
-      for (final p in _particles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.life -= dt;
-      }
-      _particles.removeWhere((p) => p.life <= 0);
     });
   }
 
-  void _restart() {
-    setState(() {
-      _shufflePositions();
-      _timeLeft = _round > 1 ? 30 : 45;
-      _gameOver = false;
-      _won = false;
-      _factText = '';
-      _factTimer = 0;
-      _particles.clear();
-    });
+  void _triggerShake(int towerIdx) {
+    _shakeTower = towerIdx;
+    _shakeCtrl?.dispose();
+    _shakeCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
+    _shakeAnim = Tween<double>(begin: 0, end: 1).animate(CurvedAnimation(parent: _shakeCtrl!, curve: Curves.elasticIn));
+    _shakeCtrl!.addStatusListener((s) { if (s == AnimationStatus.completed && mounted) setState(() => _shakeTower = null); });
+    _shakeCtrl!.addListener(() { if (mounted) setState(() {}); });
+    _shakeCtrl!.forward();
   }
 
-  void _speedRound() {
-    setState(() {
-      _round++;
-      _shufflePositions();
-      _timeLeft = 25;
-      _gameOver = false;
-      _won = false;
-      _factText = '';
-      _factTimer = 0;
-      _particles.clear();
-    });
+  double _shakeOffset() {
+    if (_shakeTower == null || _shakeAnim == null) return 0;
+    final t = _shakeAnim!.value;
+    return sin(t * pi * 6) * 8 * (1.0 - t);
   }
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
-      final slotY = h * 0.82;
-      final sunX = 30.0;
+    if (_showMenu) return _buildMenu();
+    return _buildGame();
+  }
 
-      return GestureDetector(
-        onPanStart: (d) {
-          if (_gameOver) return;
-          for (int i = 0; i < 8; i++) {
-            if (_placed.contains(i)) continue;
-            final pos = _positions[i]!;
-            final px = pos.dx * w;
-            final py = pos.dy * h;
-            if ((d.localPosition - Offset(px, py)).distance < 30) {
-              _dragging = i;
-              _dragOffset = Offset(px - d.localPosition.dx, py - d.localPosition.dy);
-              break;
-            }
-          }
-        },
-        onPanUpdate: (d) {
-          if (_dragging != null) {
-            setState(() {
-              _positions[_dragging!] = Offset(
-                (d.localPosition.dx + _dragOffset.dx) / w,
-                (d.localPosition.dy + _dragOffset.dy) / h,
-              );
-            });
-          }
-        },
-        onPanEnd: (d) {
-          if (_dragging != null) {
-            // Check if dropped near correct slot
-            final slotX = sunX + 20 + (_dragging! + 0.5) * ((w - sunX - 20) / 8);
-            final pos = _positions[_dragging!]!;
-            final dx = pos.dx * w - slotX;
-            final dy = pos.dy * h - slotY;
-            if (sqrt(dx * dx + dy * dy) < 35) {
-              setState(() {
-                _placed.add(_dragging!);
-                _positions[_dragging!] = Offset(slotX / w, slotY / h);
-                _factText = _planetFacts[_dragging!];
-                _factTimer = 2.5;
-                // Particles
-                for (int i = 0; i < 12; i++) {
-                  _particles.add(_JuiceParticle(
-                    x: slotX, y: slotY,
-                    vx: (_rng.nextDouble() - 0.5) * 100,
-                    vy: (_rng.nextDouble() - 0.5) * 100 - 30,
-                    life: 0.7,
-                    color: _planetColors[_dragging!],
-                  ));
-                }
-                if (_placed.length == 8) {
-                  _won = true;
-                  _gameOver = true;
-                }
-              });
-            }
-            _dragging = null;
-          }
-        },
-        child: Container(
-          color: const Color(0xFF050515),
-          child: Stack(
-            children: [
-              // Stars background
-              CustomPaint(painter: _StarfieldPainter(60)),
-
-              // Orbit line
-              Positioned(
-                left: sunX, top: slotY - 1,
-                child: Container(width: w - sunX, height: 2, color: Colors.white.withValues(alpha: 0.08)),
-              ),
-
-              // Sun
-              Positioned(
-                left: 8, top: slotY - 18,
-                child: Container(
-                  width: 36, height: 36,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.amber,
-                    boxShadow: [BoxShadow(color: Colors.amber.withValues(alpha: 0.4), blurRadius: 20)],
-                  ),
-                ),
-              ),
-
-              // Slot markers
-              ...List.generate(8, (i) {
-                final slotX = sunX + 20 + (i + 0.5) * ((w - sunX - 20) / 8);
-                return Positioned(
-                  left: slotX - 3, top: slotY - 3,
-                  child: Container(
-                    width: 6, height: 6,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _placed.contains(i) ? _planetColors[i].withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.15),
+  Widget _buildMenu() {
+    final maxStage = _bestMoves.isEmpty ? 1 : _bestMoves.keys.fold<int>(1, (mx, k) => k > mx ? k : mx) + 1;
+    final highestUnlocked = max(maxStage, _stage);
+    return Container(
+      color: const Color(0xFF050515),
+      child: SafeArea(
+        child: Column(children: [
+          const SizedBox(height: 24),
+          const Text('Solar Architect', style: TextStyle(fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+          const SizedBox(height: 8),
+          const Text('Tower of Hanoi with Planets', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
+          const SizedBox(height: 24),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              itemCount: highestUnlocked,
+              itemBuilder: (context, i) {
+                final stage = i + 1;
+                final cfg = _stageConfig(stage);
+                final best = _bestMoves[stage];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: GestureDetector(
+                    onTap: () => _startStage(stage),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.white.withValues(alpha: 0.05), border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.3))),
+                      child: Row(children: [
+                        Text('Stage $stage', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white)),
+                        const SizedBox(width: 12),
+                        Text('${cfg[0]}T / ${cfg[1]}P', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white38)),
+                        const Spacer(),
+                        if (best != null) Text('Best: $best moves', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.amberAccent))
+                        else const Text('Not completed', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white24)),
+                      ]),
                     ),
                   ),
                 );
-              }),
-
-              // Planets
-              ...List.generate(8, (idx) {
-                final i = _shuffledOrder[idx];
-                final pos = _positions[i]!;
-                final isPlaced = _placed.contains(i);
-                final size = 22.0 + (i == 4 || i == 5 ? 10 : 0); // Jupiter/Saturn bigger
-                return Positioned(
-                  left: pos.dx * w - size / 2,
-                  top: pos.dy * h - size / 2,
-                  child: Container(
-                    width: size, height: size,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _planetColors[i],
-                      boxShadow: isPlaced
-                          ? [BoxShadow(color: _planetColors[i].withValues(alpha: 0.5), blurRadius: 10)]
-                          : null,
-                    ),
-                    child: Center(
-                      child: Text(
-                        _planetNames[i][0],
-                        style: TextStyle(fontFamily: 'Avenir', fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white.withValues(alpha: 0.9)),
-                      ),
-                    ),
-                  ),
-                );
-              }),
-
-              // Particles
-              ..._particles.where((p) => p.life > 0).map((p) => Positioned(
-                left: p.x - 2, top: p.y - 2,
-                child: Container(
-                  width: 4, height: 4,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
-                  ),
-                ),
-              )),
-
-              // HUD
-              Positioned(
-                top: 8, left: 16, right: 16,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Round $_round', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
-                    Text('${_timeLeft.toInt()}s', style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: _timeLeft < 10 ? Colors.redAccent : Colors.white70)),
-                    Text('${_placed.length}/8', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
-                  ],
-                ),
-              ),
-
-              // Fact display
-              if (_factTimer > 0)
-                Positioned(
-                  bottom: 80, left: 24, right: 24,
-                  child: Center(
-                    child: Text(
-                      _factText,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent.withValues(alpha: _factTimer.clamp(0.0, 1.0))),
-                    ),
-                  ),
-                ),
-
-              // End state
-              if (_gameOver)
-                Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _won ? 'Sorted! Round $_round complete!' : 'Time up! ${_placed.length}/8 placed',
-                        style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: _won ? Colors.greenAccent : Colors.redAccent),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          GestureDetector(
-                            onTap: _restart,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                              decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
-                              child: const Text('Restart', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
-                            ),
-                          ),
-                          if (_won) ...[
-                            const SizedBox(width: 12),
-                            GestureDetector(
-                              onTap: _speedRound,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                                decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.amber.withValues(alpha: 0.2), border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.5))),
-                                child: const Text('Speed Round!', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-
-              if (!_gameOver && _placed.isEmpty)
-                Positioned(
-                  bottom: 20, left: 0, right: 0,
-                  child: const Center(child: Text('Drag planets to their correct position from the Sun', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white24))),
-                ),
-            ],
+              },
+            ),
           ),
-        ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildGame() {
+    return LayoutBuilder(builder: (context, constraints) {
+      final w = constraints.maxWidth; final h = constraints.maxHeight;
+      final towerAreaTop = 50.0; final towerAreaBottom = h - 120;
+      final towerAreaHeight = towerAreaBottom - towerAreaTop;
+      final towerSpacing = w / (_numTowers + 1);
+      final maxDiskWidth = (towerSpacing * 0.85).clamp(30.0, 120.0);
+      final minDiskWidth = maxDiskWidth * 0.3;
+      final diskHeight = (towerAreaHeight / (_numPlanets + 3)).clamp(14.0, 28.0);
+      return GestureDetector(
+        onTapDown: (details) {
+          if (_won) return;
+          final tapX = details.localPosition.dx;
+          for (int i = 0; i < _numTowers; i++) {
+            final cx = towerSpacing * (i + 1);
+            if ((tapX - cx).abs() < towerSpacing * 0.45) { _onTapTower(i); return; }
+          }
+        },
+        child: Container(color: const Color(0xFF050515), child: Stack(children: [
+          CustomPaint(size: Size(w, h), painter: _HanoiStarsPainter()),
+          Positioned(top: 8, left: 16, right: 16, child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            GestureDetector(onTap: () => setState(() => _showMenu = true), child: const Icon(Icons.arrow_back_ios, color: Colors.white38, size: 18)),
+            Text('Stage $_stage', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.w600, color: Colors.amberAccent)),
+            Text('Moves: $_moveCount', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+          ])),
+          for (int i = 0; i < _numTowers; i++)
+            Positioned(left: towerSpacing * (i + 1) - 3, top: towerAreaTop + 20,
+              child: Container(width: 6, height: towerAreaHeight - 20, decoration: BoxDecoration(borderRadius: BorderRadius.circular(3), gradient: const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xFF333344), Color(0xFF555566)])))),
+          for (int i = 0; i < _numTowers; i++)
+            Positioned(left: towerSpacing * (i + 1) - maxDiskWidth / 2 - 4, top: towerAreaBottom - 4,
+              child: Container(width: maxDiskWidth + 8, height: 6, decoration: BoxDecoration(borderRadius: BorderRadius.circular(3), color: const Color(0xFF666677)))),
+          for (int i = 0; i < _numTowers; i++)
+            Positioned(left: towerSpacing * (i + 1) - 10, top: towerAreaBottom + 6,
+              child: SizedBox(width: 20, child: Text(i == 0 ? 'S' : (i == _numTowers - 1 ? 'G' : ''), textAlign: TextAlign.center,
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: i == _numTowers - 1 ? Colors.amberAccent.withValues(alpha: 0.6) : Colors.white24)))),
+          for (int ti = 0; ti < _numTowers; ti++)
+            for (int pi2 = 0; pi2 < _towers[ti].length; pi2++)
+              _buildPlanetDisk(tower: ti, stackIndex: pi2, planet: _towers[ti][pi2], towerSpacing: towerSpacing, towerAreaBottom: towerAreaBottom, diskHeight: diskHeight, maxDiskWidth: maxDiskWidth, minDiskWidth: minDiskWidth),
+          Positioned(left: 0, right: 0, bottom: 0, child: _buildLegend()),
+          if (_won) _buildWinOverlay(),
+        ])),
       );
     });
   }
+
+  Widget _buildWinOverlay() {
+    return Center(child: Container(
+      padding: const EdgeInsets.all(24), margin: const EdgeInsets.symmetric(horizontal: 32),
+      decoration: BoxDecoration(color: const Color(0xDD101025), borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.5))),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Text('Stage Complete!', style: TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+        const SizedBox(height: 8),
+        Text('Moves: $_moveCount', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
+        if (_bestMoves[_stage] != null) Text('Best: ${_bestMoves[_stage]} moves', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
+        const SizedBox(height: 16),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          GestureDetector(onTap: () => _startStage(_stage), child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)), child: const Text('Retry', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)))),
+          const SizedBox(width: 12),
+          GestureDetector(onTap: () => _startStage(_stage + 1), child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.amber.withValues(alpha: 0.2), border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.5))), child: const Text('Next Stage', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)))),
+        ]),
+        const SizedBox(height: 8),
+        GestureDetector(onTap: () => setState(() => _showMenu = true), child: const Text('Stage Select', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white38, decoration: TextDecoration.underline))),
+      ]),
+    ));
+  }
+
+  Widget _buildPlanetDisk({required int tower, required int stackIndex, required _HanoiPlanet planet, required double towerSpacing, required double towerAreaBottom, required double diskHeight, required double maxDiskWidth, required double minDiskWidth}) {
+    final isSelected = _selectedTower == tower && stackIndex == 0;
+    final isShaking = _shakeTower == tower && stackIndex == 0;
+    final fraction = (planet.sizeRank + 1) / _numPlanets;
+    final diskWidth = minDiskWidth + (maxDiskWidth - minDiskWidth) * fraction;
+    final cx = towerSpacing * (tower + 1);
+    final totalDisks = _towers[tower].length;
+    final diskFromBottom = totalDisks - 1 - stackIndex;
+    final baseY = towerAreaBottom - 6 - (diskFromBottom + 1) * (diskHeight + 2);
+    final liftY = isSelected ? -30.0 : 0.0;
+    final shakeX = isShaking ? _shakeOffset() : 0.0;
+    return Positioned(left: cx - diskWidth / 2 + shakeX, top: baseY + liftY,
+      child: AnimatedBuilder(animation: _glowAnim, builder: (context, child) {
+        return Container(width: diskWidth, height: diskHeight,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(diskHeight / 2),
+            boxShadow: isSelected ? [BoxShadow(color: planet.color.withValues(alpha: _glowAnim.value * 0.7), blurRadius: 12, spreadRadius: 3)] : [BoxShadow(color: planet.color.withValues(alpha: 0.3), blurRadius: 4)],
+            gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color.lerp(planet.color, Colors.white, 0.3)!, planet.color, Color.lerp(planet.color, Colors.black, 0.3)!]),
+          ),
+          child: Center(child: Text(planet.name, style: TextStyle(fontFamily: 'Avenir', fontSize: (diskHeight * 0.45).clamp(8.0, 12.0), fontWeight: FontWeight.w600, color: Colors.white.withValues(alpha: 0.9)), overflow: TextOverflow.ellipsis)),
+        );
+      }),
+    );
+  }
+
+  Widget _buildLegend() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: const BoxDecoration(color: Color(0xFF0A0A20), border: Border(top: BorderSide(color: Color(0xFF222244), width: 1))),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Text('SIZE ORDER (bottom to top)', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Colors.white38, letterSpacing: 1)),
+        const SizedBox(height: 4),
+        SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          for (int i = 0; i < _activePlanets.length; i++) ...[
+            if (i > 0) const Padding(padding: EdgeInsets.symmetric(horizontal: 2), child: Icon(Icons.chevron_right, size: 12, color: Colors.white24)),
+            Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), color: _activePlanets[i].color.withValues(alpha: 0.15)),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Container(width: 8.0 + (_activePlanets[i].sizeRank / max(1, _numPlanets - 1) * 8), height: 8.0 + (_activePlanets[i].sizeRank / max(1, _numPlanets - 1) * 8), decoration: BoxDecoration(shape: BoxShape.circle, color: _activePlanets[i].color)),
+                const SizedBox(width: 4),
+                Text(_activePlanets[i].name, style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: _activePlanets[i].color.withValues(alpha: 0.9))),
+              ])),
+          ],
+        ])),
+        const SizedBox(height: 2),
+        const Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('LARGEST', style: TextStyle(fontFamily: 'Avenir', fontSize: 8, color: Colors.white24, letterSpacing: 1)),
+          Text('SMALLEST', style: TextStyle(fontFamily: 'Avenir', fontSize: 8, color: Colors.white24, letterSpacing: 1)),
+        ]),
+      ]),
+    );
+  }
 }
 
-class _StarfieldPainter extends CustomPainter {
-  final int count;
-  _StarfieldPainter(this.count);
-
+class _HanoiStarsPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final rng = Random(99);
-    for (int i = 0; i < count; i++) {
-      canvas.drawCircle(
-        Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height),
-        0.4 + rng.nextDouble() * 1.0,
-        Paint()..color = Colors.white.withValues(alpha: 0.15 + rng.nextDouble() * 0.25),
-      );
+    final rng = Random(42);
+    for (int i = 0; i < 100; i++) {
+      canvas.drawCircle(Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height), 0.3 + rng.nextDouble() * 0.8, Paint()..color = Colors.white.withValues(alpha: 0.05 + rng.nextDouble() * 0.15));
     }
   }
 
   @override
-  bool shouldRepaint(covariant _StarfieldPainter old) => false;
+  bool shouldRepaint(covariant _HanoiStarsPainter old) => false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. GalaxyCollectorGame — "Star Catcher"
+// 5. GalaxyCollectorGame — "Galaxy Builder"
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class GalaxyCollectorGame extends StatefulWidget {
@@ -1501,273 +2882,320 @@ class GalaxyCollectorGame extends StatefulWidget {
   State<GalaxyCollectorGame> createState() => _GalaxyCollectorGameState();
 }
 
+enum _GBPhase { start, playing, gameOver }
+
+class _GBStar {
+  double x, y, life, maxLife;
+  Color color;
+  int points;
+  bool collected;
+  double scale;
+  _GBStar(this.x, this.y, this.life, this.color, this.points) : maxLife = life, collected = false, scale = 0.0;
+}
+
+class _GBBlackHole {
+  double x, y, life;
+  _GBBlackHole(this.x, this.y, this.life);
+}
+
+class _GBZipTrail {
+  double sx, sy, tx, ty, t;
+  Color color;
+  _GBZipTrail(this.sx, this.sy, this.tx, this.ty, this.color) : t = 0.0;
+}
+
 class _GalaxyCollectorGameState extends State<GalaxyCollectorGame>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   final Random _rng = Random();
-
-  double _cx = 0.5, _cy = 0.5; // collector position
-  int _score = 0;
-  int _galaxyStars = 0;
-  double _galaxyAngle = 0;
-
-  final List<_FieldStar> _stars = [];
-  final List<_BlackHole> _blackHoles = [];
+  final FocusNode _focusNode = FocusNode();
+  _GBPhase _phase = _GBPhase.start;
+  double _cx = 0.5, _cy = 0.5, _kbDx = 0, _kbDy = 0;
+  int _score = 0, _galaxyStars = 0, _missCount = 0, _streak = 0, _bestStreak = 0;
+  int _multiplier = 1, _multiplierRemaining = 0, _galaxyLevel = 1, _highScore = 0;
+  double _galaxyAngle = 0, _milestoneTimer = 0, _darkFlash = 0;
+  String? _milestoneText;
+  DateTime? _startTime;
+  final List<_GBStar> _stars = [];
+  final List<_GBBlackHole> _blackHoles = [];
   final List<_JuiceParticle> _particles = [];
+  final List<_GBZipTrail> _zipTrails = [];
+  int get _spiralArms => _galaxyLevel.clamp(1, 8);
 
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))..addListener(_tick)..forward();
+    _loadHighScore();
+  }
+
+  Future<void> _loadHighScore() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() { _highScore = prefs.getInt('galaxy_builder_high_score') ?? 0; });
+  }
+
+  Future<void> _saveHighScore() async {
+    if (_score > _highScore) {
+      _highScore = _score;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('galaxy_builder_high_score', _score);
+    }
   }
 
   @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
+  void dispose() { _ctrl.dispose(); _focusNode.dispose(); super.dispose(); }
+
+  void _startGame() {
+    setState(() {
+      _phase = _GBPhase.playing; _cx = 0.5; _cy = 0.5; _kbDx = 0; _kbDy = 0;
+      _score = 0; _galaxyStars = 0; _missCount = 0; _streak = 0; _bestStreak = 0;
+      _multiplier = 1; _multiplierRemaining = 0; _galaxyLevel = 1; _galaxyAngle = 0;
+      _milestoneText = null; _milestoneTimer = 0; _darkFlash = 0;
+      _stars.clear(); _blackHoles.clear(); _particles.clear(); _zipTrails.clear();
+      _startTime = DateTime.now();
+    });
+    _focusNode.requestFocus();
   }
 
+  void _endGame() { _saveHighScore(); setState(() { _phase = _GBPhase.gameOver; }); }
+
   void _tick() {
-    final dt = 1 / 60.0;
+    if (_phase != _GBPhase.playing) return;
+    const dt = 1 / 60.0;
     setState(() {
-      _galaxyAngle += dt * 0.5;
+      _galaxyAngle += dt * 0.3;
+      if (_kbDx != 0 || _kbDy != 0) { _cx += _kbDx * dt * 0.8; _cy += _kbDy * dt * 0.8; }
 
-      // Spawn stars
-      if (_rng.nextDouble() < 0.06) {
-        final colors = [Colors.white, Colors.yellowAccent, Colors.cyanAccent, Colors.pinkAccent, Colors.orangeAccent];
-        final points = [1, 2, 3, 5, 2];
-        final ci = _rng.nextInt(colors.length);
-        _stars.add(_FieldStar(
-          _rng.nextDouble(), _rng.nextDouble(),
-          2 + _rng.nextDouble() * 2, // lifespan
-          colors[ci], points[ci],
-        ));
+      final spawnChance = 0.04 + _galaxyLevel * 0.005;
+      if (_rng.nextDouble() < spawnChance) {
+        final roll = _rng.nextDouble();
+        Color c; int pts;
+        if (roll < 0.5) { c = Colors.white; pts = 1; }
+        else if (roll < 0.8) { c = Colors.yellowAccent; pts = 2; }
+        else { c = const Color(0xFF88CCFF); pts = 3; }
+        double sx = _rng.nextDouble() * 0.95 + 0.025;
+        double sy = _rng.nextDouble() * 0.85 + 0.12;
+        if (sx > 0.75 && sy < 0.2) sx = _rng.nextDouble() * 0.7 + 0.025;
+        _stars.add(_GBStar(sx, sy, 2.0 + _rng.nextDouble() * 1.0, c, pts));
       }
 
-      // Spawn black holes
-      if (_rng.nextDouble() < 0.005 && _blackHoles.length < 3) {
-        _blackHoles.add(_BlackHole(
-          _rng.nextDouble() * 0.8 + 0.1,
-          _rng.nextDouble() * 0.8 + 0.1,
-          8 + _rng.nextDouble() * 5,
-        ));
+      final maxBH = 1 + (_galaxyLevel ~/ 2);
+      if (_rng.nextDouble() < 0.002 + _galaxyLevel * 0.001 && _blackHoles.length < maxBH) {
+        _blackHoles.add(_GBBlackHole(_rng.nextDouble() * 0.8 + 0.1, _rng.nextDouble() * 0.7 + 0.2, 5.0));
       }
 
-      // Update stars
+      for (final s in _stars) { if (s.scale < 1.0) s.scale = (s.scale + dt / 0.3).clamp(0.0, 1.0); s.life -= dt; }
       for (final s in _stars) {
-        s.life -= dt;
+        if (s.life <= 0 && !s.collected) {
+          _missCount++; _streak = 0; _multiplier = 1; _multiplierRemaining = 0;
+          if (_missCount >= 10) { _endGame(); return; }
+        }
       }
       _stars.removeWhere((s) => s.life <= 0);
 
-      // Black hole pull on collector
       for (final bh in _blackHoles) {
-        final dx = bh.x - _cx;
-        final dy = bh.y - _cy;
+        final dx = bh.x - _cx; final dy = bh.y - _cy;
         final dist = sqrt(dx * dx + dy * dy).clamp(0.05, 2.0);
-        final pull = 0.0005 / (dist * dist);
-        _cx += dx / dist * pull;
-        _cy += dy / dist * pull;
-
-        // Steal stars if too close
-        if (dist < 0.06) {
-          if (_galaxyStars > 0) {
-            _galaxyStars = (_galaxyStars - 1).clamp(0, 9999);
-            _spawnP(bh.x, bh.y, Colors.purpleAccent, 5);
-          }
+        _cx += dx / dist * (0.0008 / (dist * dist)); _cy += dy / dist * (0.0008 / (dist * dist));
+        if (dist < 0.05) {
+          final stolen = min(_galaxyStars, 5);
+          if (stolen > 0) { _galaxyStars -= stolen; _score = max(0, _score - stolen); _darkFlash = 0.5; _spawnBurst(bh.x, bh.y, Colors.purpleAccent, 10); _galaxyLevel = _calcLevel(_galaxyStars); }
         }
         bh.life -= dt;
       }
       _blackHoles.removeWhere((bh) => bh.life <= 0);
 
-      // Check star collection
       for (final s in _stars) {
         if (s.collected) continue;
-        final dx = _cx - s.x;
-        final dy = _cy - s.y;
-        if (sqrt(dx * dx + dy * dy) < 0.04) {
-          s.collected = true;
-          _score += s.points;
-          _galaxyStars++;
-          _spawnP(s.x, s.y, s.color, 6);
+        if (sqrt((_cx - s.x) * (_cx - s.x) + (_cy - s.y) * (_cy - s.y)) < 0.04) {
+          s.collected = true; _score += s.points * _multiplier; _galaxyStars++; _streak++;
+          if (_streak > _bestStreak) _bestStreak = _streak;
+          if (_streak % 5 == 0 && _streak > 0) { _multiplier = 2; _multiplierRemaining = 5; }
+          if (_multiplierRemaining > 0 && _multiplier == 2) { _multiplierRemaining--; if (_multiplierRemaining <= 0) _multiplier = 1; }
+          _zipTrails.add(_GBZipTrail(s.x, s.y, 0.92, 0.08, s.color));
+          _spawnBurst(s.x, s.y, s.color, 4);
+          final ol = _galaxyLevel; _galaxyLevel = _calcLevel(_galaxyStars);
+          if (_galaxyLevel > ol) _showMs('Galaxy Level $_galaxyLevel!');
+          if (_galaxyStars == 10) _showMs('10 Stars! Galaxy forming...');
+          if (_galaxyStars == 25) _showMs('25 Stars! Spiral emerging!');
+          if (_galaxyStars == 50) _showMs('50 Stars! Beautiful galaxy!');
+          if (_galaxyStars == 100) _showMs('100 Stars! Magnificent!');
         }
       }
-
-      _cx = _cx.clamp(0.02, 0.98);
-      _cy = _cy.clamp(0.02, 0.98);
-
-      // Particles
-      for (final p in _particles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.life -= dt;
-      }
+      _cx = _cx.clamp(0.02, 0.98); _cy = _cy.clamp(0.02, 0.98);
+      for (final z in _zipTrails) z.t += dt * 3.0;
+      _zipTrails.removeWhere((z) => z.t >= 1.0);
+      for (final p in _particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
       _particles.removeWhere((p) => p.life <= 0);
+      if (_milestoneTimer > 0) { _milestoneTimer -= dt; if (_milestoneTimer <= 0) _milestoneText = null; }
+      if (_darkFlash > 0) _darkFlash = (_darkFlash - dt * 2).clamp(0.0, 1.0);
     });
   }
 
-  void _spawnP(double x, double y, Color c, int n) {
-    for (int i = 0; i < n; i++) {
-      _particles.add(_JuiceParticle(
-        x: x, y: y,
-        vx: (_rng.nextDouble() - 0.5) * 0.3,
-        vy: (_rng.nextDouble() - 0.5) * 0.3,
-        life: 0.5, color: c,
-      ));
-    }
+  int _calcLevel(int s) { if (s >= 100) return 5 + (s - 100) ~/ 25; if (s >= 50) return 4; if (s >= 25) return 3; if (s >= 10) return 2; return 1; }
+  void _showMs(String t) { _milestoneText = t; _milestoneTimer = 2.0; }
+  void _spawnBurst(double x, double y, Color c, int n) { for (int i = 0; i < n; i++) _particles.add(_JuiceParticle(x: x, y: y, vx: (_rng.nextDouble() - 0.5) * 0.4, vy: (_rng.nextDouble() - 0.5) * 0.4, life: 0.4 + _rng.nextDouble() * 0.3, color: c, radius: 2)); }
+  String _fmtDur(Duration d) => '${d.inMinutes}m ${d.inSeconds % 60}s';
+
+  KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
+    final key = event.logicalKey; final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
+    double dx = 0, dy = 0;
+    if (key == LogicalKeyboardKey.keyW || key == LogicalKeyboardKey.arrowUp) dy = -1;
+    if (key == LogicalKeyboardKey.keyS || key == LogicalKeyboardKey.arrowDown) dy = 1;
+    if (key == LogicalKeyboardKey.keyA || key == LogicalKeyboardKey.arrowLeft) dx = -1;
+    if (key == LogicalKeyboardKey.keyD || key == LogicalKeyboardKey.arrowRight) dx = 1;
+    if (dx != 0 || dy != 0) { setState(() { if (isDown) { _kbDx = dx; _kbDy = dy; } else { if (dx != 0) _kbDx = 0; if (dy != 0) _kbDy = 0; } }); return KeyEventResult.handled; }
+    return KeyEventResult.ignored;
   }
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
-      return GestureDetector(
-        onPanUpdate: (d) {
-          setState(() {
-            _cx = (d.localPosition.dx / w).clamp(0.02, 0.98);
-            _cy = (d.localPosition.dy / h).clamp(0.02, 0.98);
-          });
-        },
-        onTapDown: (d) {
-          setState(() {
-            _cx = d.localPosition.dx / w;
-            _cy = d.localPosition.dy / h;
-          });
-        },
-        child: Container(
-          color: const Color(0xFF020210),
-          child: CustomPaint(
-            painter: _StarCatcherPainter(
-              _cx, _cy, _stars, _blackHoles, _particles, _galaxyStars, _galaxyAngle,
-            ),
-            child: Stack(
-              children: [
-                // HUD
-                Positioned(
-                  top: 8, left: 16, right: 16,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Stars: $_galaxyStars', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.cyanAccent)),
-                      Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent)),
-                    ],
-                  ),
-                ),
-                if (_score == 0)
-                  Positioned(
-                    bottom: 20, left: 0, right: 0,
-                    child: const Center(child: Text('Drag to catch stars. Avoid black holes!', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white24))),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      );
-    });
+    return Focus(focusNode: _focusNode, autofocus: true, onKeyEvent: _handleKey,
+      child: LayoutBuilder(builder: (context, constraints) {
+        final w = constraints.maxWidth, h = constraints.maxHeight;
+        if (_phase == _GBPhase.start) return _buildStart();
+        if (_phase == _GBPhase.gameOver) return _buildOver();
+        return GestureDetector(
+          onPanStart: (d) => setState(() { _cx = (d.localPosition.dx / w).clamp(0.02, 0.98); _cy = (d.localPosition.dy / h).clamp(0.02, 0.98); }),
+          onPanUpdate: (d) => setState(() { _cx = (d.localPosition.dx / w).clamp(0.02, 0.98); _cy = (d.localPosition.dy / h).clamp(0.02, 0.98); }),
+          onTapDown: (d) => setState(() { _cx = (d.localPosition.dx / w).clamp(0.02, 0.98); _cy = (d.localPosition.dy / h).clamp(0.02, 0.98); }),
+          child: Container(color: Colors.black, child: CustomPaint(
+            painter: _GalaxyBuilderPainter(cx: _cx, cy: _cy, stars: _stars, blackHoles: _blackHoles, particles: _particles, zipTrails: _zipTrails, galaxyStars: _galaxyStars, galaxyAngle: _galaxyAngle, spiralArms: _spiralArms, darkFlash: _darkFlash),
+            child: Stack(children: [
+              Positioned(top: 8, left: 12, right: 12, child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text('Stars: $_score${_multiplier > 1 ? '  ${_multiplier}x!' : ''}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                    Text('Galaxy Lv $_galaxyLevel', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white54)),
+                  ]),
+                  const SizedBox(height: 4),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text('GOAL: Catch glowing stars before they fade', style: TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white.withValues(alpha: 0.35))),
+                    Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text('Lives ', style: TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white.withValues(alpha: 0.3))),
+                      ...List.generate(10, (i) => Container(
+                        margin: const EdgeInsets.only(left: 2), width: 5, height: 5,
+                        decoration: BoxDecoration(shape: BoxShape.circle, color: i < (10 - _missCount) ? Colors.greenAccent.withValues(alpha: 0.7) : Colors.red.withValues(alpha: 0.15)),
+                      )),
+                    ]),
+                  ]),
+                ]),
+              )),
+              if (_milestoneText != null) Positioned(top: 80, left: 0, right: 0, child: Center(child: Text(_milestoneText!, style: TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.amberAccent.withValues(alpha: (_milestoneTimer / 2.0).clamp(0.0, 1.0)))))),
+            ]),
+          )),
+        );
+      }),
+    );
+  }
+
+  Widget _buildStart() {
+    return GestureDetector(onTap: _startGame, child: Container(color: Colors.black, child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Text('Galaxy Builder', style: TextStyle(fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white)),
+      const SizedBox(height: 12),
+      const Text('Catch stars before they fade.\nAvoid black holes.', textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white54)),
+      const SizedBox(height: 20),
+      if (_highScore > 0) Padding(padding: const EdgeInsets.only(bottom: 16), child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent))),
+      const Text('Tap to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
+    ]))));
+  }
+
+  Widget _buildOver() {
+    final elapsed = _startTime != null ? DateTime.now().difference(_startTime!) : Duration.zero;
+    return GestureDetector(onTap: _startGame, child: Container(color: Colors.black, child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Text('The universe went dark...', style: TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white70)),
+      const SizedBox(height: 20),
+      Text('Stars Collected: $_galaxyStars', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white)),
+      const SizedBox(height: 4),
+      Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent)),
+      const SizedBox(height: 4),
+      Text('Galaxy Level: $_galaxyLevel', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.cyanAccent)),
+      const SizedBox(height: 4),
+      Text('Best Streak: $_bestStreak', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.orangeAccent)),
+      const SizedBox(height: 4),
+      Text('Time: ${_fmtDur(elapsed)}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white54)),
+      const SizedBox(height: 12),
+      if (_score >= _highScore && _score > 0) const Padding(padding: EdgeInsets.only(bottom: 8), child: Text('New High Score!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent))),
+      Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white38)),
+      const SizedBox(height: 20),
+      const Text('Build Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
+    ]))));
   }
 }
 
-class _FieldStar {
-  double x, y, life;
-  Color color;
-  int points;
-  bool collected;
-  _FieldStar(this.x, this.y, this.life, this.color, this.points) : collected = false;
-}
-
-class _BlackHole {
-  double x, y, life;
-  _BlackHole(this.x, this.y, this.life);
-}
-
-class _StarCatcherPainter extends CustomPainter {
+class _GalaxyBuilderPainter extends CustomPainter {
   final double cx, cy;
-  final List<_FieldStar> stars;
-  final List<_BlackHole> blackHoles;
+  final List<_GBStar> stars;
+  final List<_GBBlackHole> blackHoles;
   final List<_JuiceParticle> particles;
-  final int galaxyStars;
-  final double galaxyAngle;
-
-  _StarCatcherPainter(this.cx, this.cy, this.stars, this.blackHoles, this.particles, this.galaxyStars, this.galaxyAngle);
+  final List<_GBZipTrail> zipTrails;
+  final int galaxyStars, spiralArms;
+  final double galaxyAngle, darkFlash;
+  _GalaxyBuilderPainter({required this.cx, required this.cy, required this.stars, required this.blackHoles, required this.particles, required this.zipTrails, required this.galaxyStars, required this.galaxyAngle, required this.spiralArms, required this.darkFlash});
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Background stars
-    final rng = Random(7);
-    for (int i = 0; i < 50; i++) {
-      canvas.drawCircle(
-        Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height),
-        0.3 + rng.nextDouble() * 0.5,
-        Paint()..color = Colors.white.withValues(alpha: 0.1),
-      );
-    }
+    final rng = Random(42);
+    for (int i = 0; i < 60; i++) canvas.drawCircle(Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height), 0.3 + rng.nextDouble() * 0.6, Paint()..color = Colors.white.withValues(alpha: 0.06 + rng.nextDouble() * 0.04));
 
-    // Galaxy display (top-right corner)
-    final galaxyCenter = Offset(size.width - 50, 60);
-    for (int i = 0; i < galaxyStars && i < 200; i++) {
-      final armAngle = galaxyAngle + (i % 3) * (2 * pi / 3);
-      final r = 5 + i * 0.2;
-      final spiralAngle = armAngle + r * 0.15;
-      final sx = galaxyCenter.dx + cos(spiralAngle) * r;
-      final sy = galaxyCenter.dy + sin(spiralAngle) * r;
-      canvas.drawCircle(
-        Offset(sx, sy), 1.2,
-        Paint()..color = HSVColor.fromAHSV(0.7, (i * 30.0) % 360, 0.5, 0.9).toColor(),
-      );
+    final gc = Offset(size.width - 45, 50);
+    if (galaxyStars > 0) canvas.drawCircle(gc, 15.0 + min(galaxyStars.toDouble(), 100.0) * 0.3, Paint()..color = Colors.white.withValues(alpha: 0.03));
+    for (int i = 0; i < min(galaxyStars, 300); i++) {
+      final arm = i % spiralArms;
+      final aa = galaxyAngle + arm * (2 * pi / spiralArms);
+      final r = 3.0 + i * 0.15;
+      final sa = aa + r * 0.12;
+      final sr = Random(i * 7 + 3);
+      final sc = sr.nextDouble() * 3.0 - 1.5;
+      canvas.drawCircle(Offset(gc.dx + cos(sa) * (r + sc), gc.dy + sin(sa) * (r + sc)), 0.8 + sr.nextDouble() * 0.6, Paint()..color = HSVColor.fromAHSV(0.7, (i * 25.0 + arm * 60) % 360, 0.4, 0.9).toColor());
     }
-    if (galaxyStars > 0) {
-      canvas.drawCircle(galaxyCenter, 3, Paint()..color = Colors.white.withValues(alpha: 0.5));
-    }
+    if (galaxyStars > 0) { canvas.drawCircle(gc, 3, Paint()..color = Colors.white.withValues(alpha: 0.6)); canvas.drawCircle(gc, 5, Paint()..color = Colors.white.withValues(alpha: 0.15)); }
 
-    // Stars in field
     for (final s in stars) {
       if (s.collected) continue;
-      final alpha = (s.life).clamp(0.0, 1.0);
-      final sx = s.x * size.width;
-      final sy = s.y * size.height;
-      canvas.drawCircle(Offset(sx, sy), 6, Paint()..color = s.color.withValues(alpha: alpha * 0.2));
-      canvas.drawCircle(Offset(sx, sy), 3, Paint()..color = s.color.withValues(alpha: alpha));
+      final lr = (s.life / s.maxLife).clamp(0.0, 1.0);
+      final fade = lr < 0.3 ? lr / 0.3 : 1.0;
+      final a = fade * s.scale;
+      final sx = s.x * size.width, sy = s.y * size.height;
+      final sr = 3.0 * s.scale;
+      canvas.drawCircle(Offset(sx, sy), sr * 2.5, Paint()..color = s.color.withValues(alpha: a * 0.15));
+      canvas.drawCircle(Offset(sx, sy), sr * 1.5, Paint()..color = s.color.withValues(alpha: a * 0.3));
+      canvas.drawCircle(Offset(sx, sy), sr, Paint()..color = s.color.withValues(alpha: a));
     }
 
-    // Black holes
     for (final bh in blackHoles) {
-      final bx = bh.x * size.width;
-      final by = bh.y * size.height;
-      // Dark center with purple glow
-      canvas.drawCircle(Offset(bx, by), 20, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.1));
-      canvas.drawCircle(Offset(bx, by), 12, Paint()..color = Colors.deepPurple.withValues(alpha: 0.3));
-      canvas.drawCircle(Offset(bx, by), 6, Paint()..color = Colors.black);
-      canvas.drawCircle(Offset(bx, by), 7, Paint()
-        ..color = Colors.purpleAccent.withValues(alpha: 0.5)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5);
+      final bx = bh.x * size.width, by = bh.y * size.height;
+      final la = (bh.life / 5.0).clamp(0.0, 1.0);
+      final pp = Paint()..color = Colors.purple.withValues(alpha: 0.08 * la)..strokeWidth = 0.5;
+      for (int i = 0; i < 12; i++) { final ag = i * pi / 6; canvas.drawLine(Offset(bx + cos(ag) * 35, by + sin(ag) * 35), Offset(bx + cos(ag) * 10, by + sin(ag) * 10), pp); }
+      canvas.drawCircle(Offset(bx, by), 22, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.06 * la));
+      canvas.drawCircle(Offset(bx, by), 14, Paint()..color = Colors.deepPurple.withValues(alpha: 0.25 * la));
+      canvas.drawCircle(Offset(bx, by), 7, Paint()..color = Colors.black);
+      canvas.drawCircle(Offset(bx, by), 8, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.5 * la)..style = PaintingStyle.stroke..strokeWidth = 1.5);
     }
 
-    // Collector
-    final collX = cx * size.width;
-    final collY = cy * size.height;
-    canvas.drawCircle(Offset(collX, collY), 14, Paint()..color = Colors.cyanAccent.withValues(alpha: 0.1));
-    canvas.drawCircle(Offset(collX, collY), 10, Paint()
-      ..color = Colors.cyanAccent.withValues(alpha: 0.3)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5);
-    canvas.drawCircle(Offset(collX, collY), 5, Paint()..color = Colors.cyanAccent);
-
-    // Particles
-    for (final p in particles) {
-      if (p.life > 0) {
-        canvas.drawCircle(
-          Offset(p.x * size.width, p.y * size.height), 2,
-          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
-        );
-      }
+    for (final z in zipTrails) {
+      final t = z.t.clamp(0.0, 1.0); final et = t * t;
+      final ta = (1.0 - t).clamp(0.0, 1.0);
+      for (int i = 0; i < 4; i++) { final tt = (t - i * 0.05).clamp(0.0, 1.0); final te = tt * tt; canvas.drawCircle(Offset((z.sx + (z.tx - z.sx) * te) * size.width, (z.sy + (z.ty - z.sy) * te) * size.height), 1.5 - i * 0.3, Paint()..color = z.color.withValues(alpha: ta * (1.0 - i * 0.2))); }
+      canvas.drawCircle(Offset((z.sx + (z.tx - z.sx) * et) * size.width, (z.sy + (z.ty - z.sy) * et) * size.height), 2.5, Paint()..color = z.color.withValues(alpha: ta));
     }
+
+    final cx2 = cx * size.width, cy2 = cy * size.height;
+    canvas.drawCircle(Offset(cx2, cy2), 18, Paint()..color = Colors.white.withValues(alpha: 0.06)..style = PaintingStyle.stroke..strokeWidth = 1);
+    canvas.drawCircle(Offset(cx2, cy2), 12, Paint()..color = Colors.white.withValues(alpha: 0.12)..style = PaintingStyle.stroke..strokeWidth = 1);
+    canvas.drawCircle(Offset(cx2, cy2), 8, Paint()..color = Colors.white.withValues(alpha: 0.08));
+    canvas.drawCircle(Offset(cx2, cy2), 5, Paint()..color = Colors.white);
+
+    for (final p in particles) { if (p.life > 0) canvas.drawCircle(Offset(p.x * size.width, p.y * size.height), p.radius, Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0))); }
+
+    if (darkFlash > 0) canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), Paint()..color = Colors.black.withValues(alpha: darkFlash * 0.6));
   }
 
   @override
-  bool shouldRepaint(covariant _StarCatcherPainter old) => true;
+  bool shouldRepaint(covariant _GalaxyBuilderPainter old) => true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1780,6 +3208,8 @@ class CosmicWebGame extends StatefulWidget {
   State<CosmicWebGame> createState() => _CosmicWebGameState();
 }
 
+enum _CosmicWebPhase { start, playing, levelComplete, gameOver }
+
 class _CosmicWebGameState extends State<CosmicWebGame>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
@@ -1787,20 +3217,62 @@ class _CosmicWebGameState extends State<CosmicWebGame>
 
   final List<_WebNode> _nodes = [];
   final List<_WebEdge> _edges = [];
-  double _timeLeft = 60;
-  bool _gameOver = false;
-  bool _won = false;
+  final List<_JuiceParticle> _particles = [];
+
+  _CosmicWebPhase _phase = _CosmicWebPhase.start;
+  int _level = 1;
+  double _timeLeft = 30;
+  double _levelCompleteTimer = 0;
+  int _highLevel = 0;
+
   int? _dragFromNode;
   Offset? _dragPos;
 
-  final List<_JuiceParticle> _particles = [];
+  // Level-dependent parameters (pixel values, set per layout)
+  double _nodeRadius = 30;
+  double _connectRange = 120;
+  double _hitTestRadius = 35;
 
-  static const double _maxConnectionDist = 0.28;
+  // Cached layout size for coordinate conversion
+  double _layoutW = 1;
+  double _layoutH = 1;
+
+  // Level config helpers
+  int _nodeCountForLevel(int level) {
+    const counts = [0, 5, 6, 7, 8, 9];
+    if (level < counts.length) return counts[level];
+    return 9 + (level - 5);
+  }
+
+  double _nodeRadiusForLevel(int level) {
+    const radii = [0.0, 30.0, 26.0, 22.0, 18.0, 15.0];
+    if (level < radii.length) return radii[level];
+    return 15.0;
+  }
+
+  double _connectRangeForLevel(int level) {
+    const ranges = [0.0, 120.0, 105.0, 90.0, 80.0, 70.0];
+    if (level < ranges.length) return ranges[level];
+    return 70.0;
+  }
+
+  double _driftSpeedForLevel(int level) {
+    if (level <= 2) return 0.0;
+    if (level <= 4) return 0.005;
+    return 0.005 + (level - 4) * 0.003;
+  }
+
+  double _timeLimitForLevel(int level) {
+    final t = 30.0 - (level - 1) * 3.0;
+    return t < 10 ? 10.0 : t;
+  }
+
+  bool _canBreakConnections(int level) => level >= 5;
 
   @override
   void initState() {
     super.initState();
-    _spawnNodes(8);
+    _loadHighLevel();
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick)
       ..forward();
@@ -1812,67 +3284,137 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     super.dispose();
   }
 
+  Future<void> _loadHighLevel() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _highLevel = prefs.getInt('cosmic_web_high_level') ?? 0;
+    });
+  }
+
+  Future<void> _saveHighLevel() async {
+    if (_level > _highLevel) {
+      _highLevel = _level;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('cosmic_web_high_level', _highLevel);
+    }
+  }
+
+  void _startGame() {
+    setState(() {
+      _level = 1;
+      _phase = _CosmicWebPhase.playing;
+      _particles.clear();
+      _startLevel();
+    });
+  }
+
+  void _startLevel() {
+    final count = _nodeCountForLevel(_level);
+    _nodeRadius = _nodeRadiusForLevel(_level);
+    _connectRange = _connectRangeForLevel(_level);
+    _hitTestRadius = _nodeRadius + 8;
+    _timeLeft = _timeLimitForLevel(_level);
+    _dragFromNode = null;
+    _dragPos = null;
+    _spawnNodes(count);
+  }
+
   void _spawnNodes(int count) {
     _nodes.clear();
     _edges.clear();
+    final drift = _driftSpeedForLevel(_level);
     for (int i = 0; i < count; i++) {
       _nodes.add(_WebNode(
         0.1 + _rng.nextDouble() * 0.8,
         0.15 + _rng.nextDouble() * 0.65,
-        (_rng.nextDouble() - 0.5) * 0.01,
-        (_rng.nextDouble() - 0.5) * 0.01,
+        drift > 0 ? (_rng.nextDouble() - 0.5) * drift * 2 : 0,
+        drift > 0 ? (_rng.nextDouble() - 0.5) * drift * 2 : 0,
       ));
+    }
+    // Ensure nodes are not too close together
+    for (int i = 0; i < _nodes.length; i++) {
+      for (int j = i + 1; j < _nodes.length; j++) {
+        final dx = _nodes[i].x - _nodes[j].x;
+        final dy = _nodes[i].y - _nodes[j].y;
+        if (sqrt(dx * dx + dy * dy) < 0.08) {
+          _nodes[j].x = 0.1 + _rng.nextDouble() * 0.8;
+          _nodes[j].y = 0.15 + _rng.nextDouble() * 0.65;
+        }
+      }
     }
   }
 
   void _tick() {
-    if (_gameOver) return;
     final dt = 1 / 60.0;
+
     setState(() {
-      _timeLeft -= dt;
-      if (_timeLeft <= 0) {
-        _timeLeft = 0;
-        _gameOver = true;
-        return;
-      }
-
-      // Drift nodes
-      for (final n in _nodes) {
-        n.x += n.vx * dt;
-        n.y += n.vy * dt;
-        // Bounce off walls
-        if (n.x < 0.05 || n.x > 0.95) n.vx = -n.vx;
-        if (n.y < 0.1 || n.y > 0.85) n.vy = -n.vy;
-        n.x = n.x.clamp(0.05, 0.95);
-        n.y = n.y.clamp(0.1, 0.85);
-        n.pulse += dt * 3;
-      }
-
-      // Break connections that are too far
-      _edges.removeWhere((e) {
-        final a = _nodes[e.a];
-        final b = _nodes[e.b];
-        final dx = a.x - b.x;
-        final dy = a.y - b.y;
-        return sqrt(dx * dx + dy * dy) > _maxConnectionDist * 1.3;
-      });
-
-      // Check win — all nodes connected (union-find)
-      if (_edges.isNotEmpty && _isFullyConnected()) {
-        _won = true;
-        _gameOver = true;
-        for (final n in _nodes) {
-          _spawnP(n.x, n.y, Colors.cyanAccent, 10);
-        }
-      }
-
-      // Particles
+      // Always update particles
       for (final p in _particles) {
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.life -= dt;
       }
       _particles.removeWhere((p) => p.life <= 0);
+
+      // Always pulse nodes
+      for (final n in _nodes) {
+        n.pulse += dt * 3;
+      }
+
+      if (_phase == _CosmicWebPhase.levelComplete) {
+        _levelCompleteTimer -= dt;
+        if (_levelCompleteTimer <= 0) {
+          _level++;
+          _phase = _CosmicWebPhase.playing;
+          _startLevel();
+        }
+        return;
+      }
+
+      if (_phase != _CosmicWebPhase.playing) return;
+
+      _timeLeft -= dt;
+      if (_timeLeft <= 0) {
+        _timeLeft = 0;
+        _phase = _CosmicWebPhase.gameOver;
+        _saveHighLevel();
+        return;
+      }
+
+      // Drift nodes
+      final drift = _driftSpeedForLevel(_level);
+      if (drift > 0) {
+        for (final n in _nodes) {
+          n.x += n.vx * dt;
+          n.y += n.vy * dt;
+          if (n.x < 0.05 || n.x > 0.95) n.vx = -n.vx;
+          if (n.y < 0.1 || n.y > 0.85) n.vy = -n.vy;
+          n.x = n.x.clamp(0.05, 0.95);
+          n.y = n.y.clamp(0.1, 0.85);
+        }
+      }
+
+      // Break connections that are too far (only level 5+)
+      if (_canBreakConnections(_level)) {
+        final breakDist = _connectRange * 1.4 / _layoutW.clamp(1, 9999);
+        _edges.removeWhere((e) {
+          final a = _nodes[e.a];
+          final b = _nodes[e.b];
+          final dx = a.x - b.x;
+          final dy = (a.y - b.y) * (_layoutH / _layoutW.clamp(1, 9999));
+          return sqrt(dx * dx + dy * dy) > breakDist;
+        });
+      }
+
+      // Check win condition: all nodes connected
+      if (_nodes.isNotEmpty && _edges.isNotEmpty && _isFullyConnected()) {
+        _phase = _CosmicWebPhase.levelComplete;
+        _levelCompleteTimer = 1.5;
+        _saveHighLevel();
+        for (final n in _nodes) {
+          _spawnP(n.x, n.y, Colors.cyanAccent, 12);
+        }
+      }
     });
   }
 
@@ -1906,23 +3448,33 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     }
   }
 
-  void _restart() {
-    setState(() {
-      _spawnNodes(8 + _rng.nextInt(4));
-      _timeLeft = 60;
-      _gameOver = false;
-      _won = false;
-      _particles.clear();
-    });
-  }
-
   int? _nodeAt(Offset localPos, double w, double h) {
     for (int i = 0; i < _nodes.length; i++) {
       final nx = _nodes[i].x * w;
       final ny = _nodes[i].y * h;
-      if ((localPos - Offset(nx, ny)).distance < 25) return i;
+      if ((localPos - Offset(nx, ny)).distance < _hitTestRadius) return i;
     }
     return null;
+  }
+
+  Set<int> _validTargets(int fromNode, double w, double h) {
+    final targets = <int>{};
+    final a = _nodes[fromNode];
+    for (int i = 0; i < _nodes.length; i++) {
+      if (i == fromNode) continue;
+      final b = _nodes[i];
+      final dx = (a.x - b.x) * w;
+      final dy = (a.y - b.y) * h;
+      final dist = sqrt(dx * dx + dy * dy);
+      if (dist <= _connectRange) {
+        final alreadyConnected = _edges.any((e) =>
+            (e.a == fromNode && e.b == i) || (e.a == i && e.b == fromNode));
+        if (!alreadyConnected) {
+          targets.add(i);
+        }
+      }
+    }
+    return targets;
   }
 
   @override
@@ -1930,9 +3482,22 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     return LayoutBuilder(builder: (context, constraints) {
       final w = constraints.maxWidth;
       final h = constraints.maxHeight;
+      _layoutW = w;
+      _layoutH = h;
+
+      if (_phase == _CosmicWebPhase.start) {
+        return _buildStartScreen();
+      }
+
+      final validTargets = _dragFromNode != null
+          ? _validTargets(_dragFromNode!, w, h)
+          : <int>{};
+
+      final allConnected = _phase == _CosmicWebPhase.levelComplete;
+
       return GestureDetector(
         onPanStart: (d) {
-          if (_gameOver) return;
+          if (_phase != _CosmicWebPhase.playing) return;
           _dragFromNode = _nodeAt(d.localPosition, w, h);
           _dragPos = d.localPosition;
         },
@@ -1945,20 +3510,20 @@ class _CosmicWebGameState extends State<CosmicWebGame>
           if (_dragFromNode != null && _dragPos != null) {
             final toNode = _nodeAt(_dragPos!, w, h);
             if (toNode != null && toNode != _dragFromNode) {
-              // Check distance
               final a = _nodes[_dragFromNode!];
               final b = _nodes[toNode];
-              final dx = a.x - b.x;
-              final dy = a.y - b.y;
+              final dx = (a.x - b.x) * w;
+              final dy = (a.y - b.y) * h;
               final dist = sqrt(dx * dx + dy * dy);
-              if (dist <= _maxConnectionDist) {
-                // Check if edge already exists
+              if (dist <= _connectRange) {
                 final exists = _edges.any((e) =>
-                    (e.a == _dragFromNode && e.b == toNode) || (e.a == toNode && e.b == _dragFromNode));
+                    (e.a == _dragFromNode && e.b == toNode) ||
+                    (e.a == toNode && e.b == _dragFromNode));
                 if (!exists) {
                   setState(() {
                     _edges.add(_WebEdge(_dragFromNode!, toNode));
-                    _spawnP((a.x + b.x) / 2, (a.y + b.y) / 2, Colors.cyanAccent, 5);
+                    _spawnP((a.x + b.x) / 2, (a.y + b.y) / 2,
+                        Colors.cyanAccent, 8);
                   });
                 }
               }
@@ -1970,45 +3535,146 @@ class _CosmicWebGameState extends State<CosmicWebGame>
         child: Container(
           color: const Color(0xFF050510),
           child: CustomPaint(
-            painter: _CosmicWebPainter(_nodes, _edges, _particles, _dragFromNode, _dragPos, w, h),
+            painter: _CosmicWebPainter(
+              nodes: _nodes,
+              edges: _edges,
+              particles: _particles,
+              dragFrom: _dragFromNode,
+              dragPos: _dragPos,
+              screenW: w,
+              screenH: h,
+              nodeRadius: _nodeRadius,
+              connectRange: _connectRange,
+              validTargets: validTargets,
+              allConnected: allConnected,
+            ),
             child: Stack(
               children: [
+                // Top HUD
                 Positioned(
                   top: 8, left: 16, right: 16,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('${_timeLeft.toInt()}s', style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: _timeLeft < 10 ? Colors.redAccent : Colors.white70)),
-                      Text('Edges: ${_edges.length}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.cyanAccent)),
-                      Text('Nodes: ${_nodes.length}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
+                      Text(
+                        '${_timeLeft.ceil()}s',
+                        style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 16,
+                          color: _timeLeft < 8
+                              ? Colors.redAccent
+                              : Colors.white70,
+                        ),
+                      ),
+                      Text(
+                        'Level $_level',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.cyanAccent,
+                        ),
+                      ),
+                      Text(
+                        '${_edges.length}/${_nodes.length - 1}',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 14,
+                          color: Colors.white54,
+                        ),
+                      ),
                     ],
                   ),
                 ),
-                if (_gameOver)
+                // Level complete overlay
+                if (_phase == _CosmicWebPhase.levelComplete)
+                  Center(
+                    child: Text(
+                      'Level $_level Complete!',
+                      style: const TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.cyanAccent,
+                      ),
+                    ),
+                  ),
+                // Game over overlay
+                if (_phase == _CosmicWebPhase.gameOver)
                   Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          _won ? 'Web Complete!' : 'Time up! Not fully connected.',
-                          style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: _won ? Colors.cyanAccent : Colors.redAccent),
+                        const Text(
+                          'Time Up!',
+                          style: TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.redAccent,
+                          ),
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Reached Level $_level',
+                          style: const TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 16,
+                            color: Colors.white70,
+                          ),
+                        ),
+                        if (_level >= _highLevel && _level > 1)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 4),
+                            child: Text(
+                              'New Best!',
+                              style: TextStyle(
+                                fontFamily: 'Avenir',
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.amberAccent,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 16),
                         GestureDetector(
-                          onTap: _restart,
+                          onTap: () {
+                            setState(() {
+                              _phase = _CosmicWebPhase.start;
+                              _particles.clear();
+                            });
+                          },
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
-                            child: const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 10),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.white24),
+                            ),
+                            child: const Text('Play Again',
+                                style: TextStyle(
+                                    fontFamily: 'Avenir',
+                                    fontSize: 14,
+                                    color: Colors.white70)),
                           ),
                         ),
                       ],
                     ),
                   ),
-                if (!_gameOver && _edges.isEmpty)
-                  Positioned(
+                // Hint on first drag
+                if (_phase == _CosmicWebPhase.playing && _edges.isEmpty)
+                  const Positioned(
                     bottom: 20, left: 0, right: 0,
-                    child: const Center(child: Text('Drag between nodes to connect them', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white24))),
+                    child: Center(
+                      child: Text(
+                        'Drag between nodes to link them',
+                        style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 13,
+                          color: Colors.white24,
+                        ),
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -2016,6 +3682,78 @@ class _CosmicWebGameState extends State<CosmicWebGame>
         ),
       );
     });
+  }
+
+  Widget _buildStartScreen() {
+    return Container(
+      color: const Color(0xFF050510),
+      child: Center(
+        child: GestureDetector(
+          onTap: _startGame,
+          behavior: HitTestBehavior.opaque,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Web Weaver',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.cyanAccent,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Connect all nodes into a network',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 14,
+                  color: Colors.white54,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Drag between nodes to link them',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 13,
+                  color: Colors.white38,
+                ),
+              ),
+              if (_highLevel > 0) ...[
+                const SizedBox(height: 20),
+                Text(
+                  'Best: Level $_highLevel',
+                  style: const TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 15,
+                    color: Colors.amberAccent,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 28),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 28, vertical: 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.4)),
+                ),
+                child: const Text(
+                  'Tap to Play',
+                  style: TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 16,
+                    color: Colors.cyanAccent,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -2036,13 +3774,31 @@ class _CosmicWebPainter extends CustomPainter {
   final int? dragFrom;
   final Offset? dragPos;
   final double screenW, screenH;
+  final double nodeRadius;
+  final double connectRange;
+  final Set<int> validTargets;
+  final bool allConnected;
 
-  _CosmicWebPainter(this.nodes, this.edges, this.particles, this.dragFrom, this.dragPos, this.screenW, this.screenH);
+  _CosmicWebPainter({
+    required this.nodes,
+    required this.edges,
+    required this.particles,
+    required this.dragFrom,
+    required this.dragPos,
+    required this.screenW,
+    required this.screenH,
+    required this.nodeRadius,
+    required this.connectRange,
+    required this.validTargets,
+    required this.allConnected,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     // Background grid
-    final gridPaint = Paint()..color = const Color(0x08FFFFFF)..strokeWidth = 0.3;
+    final gridPaint = Paint()
+      ..color = const Color(0x08FFFFFF)
+      ..strokeWidth = 0.3;
     for (double x = 0; x < size.width; x += 40) {
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
     }
@@ -2050,48 +3806,182 @@ class _CosmicWebPainter extends CustomPainter {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
     }
 
-    // Edges
+    final connectedNodes = <int>{};
+    for (final e in edges) {
+      connectedNodes.add(e.a);
+      connectedNodes.add(e.b);
+    }
+
+    // Edge glow intensity for "all connected" celebration
+    final double edgeGlow = allConnected ? 0.8 : 0.4;
+    final double edgeWidth = allConnected ? 3.0 : 2.0;
+
+    // Edges with energy pulse
     for (final e in edges) {
       final a = nodes[e.a];
       final b = nodes[e.b];
       final from = Offset(a.x * size.width, a.y * size.height);
       final to = Offset(b.x * size.width, b.y * size.height);
-      canvas.drawLine(from, to, Paint()
-        ..color = Colors.cyanAccent.withValues(alpha: 0.4)
-        ..strokeWidth = 2
-        ..strokeCap = StrokeCap.round);
-      // Pulse effect traveling along edge
+
+      // Main edge line
+      canvas.drawLine(
+        from,
+        to,
+        Paint()
+          ..color = Colors.cyanAccent.withValues(alpha: edgeGlow)
+          ..strokeWidth = edgeWidth
+          ..strokeCap = StrokeCap.round,
+      );
+
+      // Energy pulse traveling along edge
       final pulseT = (a.pulse % 2) / 2;
       final pulsePos = Offset.lerp(from, to, pulseT)!;
-      canvas.drawCircle(pulsePos, 2, Paint()..color = Colors.cyanAccent.withValues(alpha: 0.6));
+      canvas.drawCircle(
+        pulsePos,
+        allConnected ? 4 : 2.5,
+        Paint()..color = Colors.cyanAccent.withValues(alpha: 0.8),
+      );
+
+      // Second pulse going the other direction
+      final pulseT2 = ((a.pulse + 1.0) % 2) / 2;
+      final pulsePos2 = Offset.lerp(to, from, pulseT2)!;
+      canvas.drawCircle(
+        pulsePos2,
+        allConnected ? 3 : 2,
+        Paint()..color = Colors.cyanAccent.withValues(alpha: 0.5),
+      );
     }
 
     // Drag line
     if (dragFrom != null && dragPos != null) {
-      final from = Offset(nodes[dragFrom!].x * size.width, nodes[dragFrom!].y * size.height);
-      canvas.drawLine(from, dragPos!, Paint()
-        ..color = Colors.white.withValues(alpha: 0.3)
-        ..strokeWidth = 1.5
-        ..style = PaintingStyle.stroke);
+      final from = Offset(
+        nodes[dragFrom!].x * size.width,
+        nodes[dragFrom!].y * size.height,
+      );
+      canvas.drawLine(
+        from,
+        dragPos!,
+        Paint()
+          ..color = Colors.cyanAccent.withValues(alpha: 0.6)
+          ..strokeWidth = 2.0
+          ..strokeCap = StrokeCap.round,
+      );
     }
 
     // Nodes
     for (int i = 0; i < nodes.length; i++) {
       final n = nodes[i];
       final pos = Offset(n.x * size.width, n.y * size.height);
-      final connected = edges.any((e) => e.a == i || e.b == i);
-      final glowAlpha = 0.1 + 0.05 * sin(n.pulse);
-      canvas.drawCircle(pos, 16, Paint()..color = (connected ? Colors.cyanAccent : Colors.white).withValues(alpha: glowAlpha));
-      canvas.drawCircle(pos, 8, Paint()..color = connected ? Colors.cyanAccent.withValues(alpha: 0.6) : Colors.white.withValues(alpha: 0.3));
-      canvas.drawCircle(pos, 4, Paint()..color = connected ? Colors.cyanAccent : Colors.white.withValues(alpha: 0.5));
+      final isConnected = connectedNodes.contains(i);
+      final isValidTarget = validTargets.contains(i);
+      final isDragSource = dragFrom == i;
+
+      if (allConnected) {
+        // Celebration: all nodes glow brightly together
+        final celebPulse = 0.5 + 0.3 * sin(n.pulse * 2);
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 1.8,
+          Paint()..color = Colors.cyanAccent.withValues(alpha: celebPulse * 0.3),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius,
+          Paint()..color = Colors.cyanAccent.withValues(alpha: 0.8),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 0.5,
+          Paint()..color = Colors.white.withValues(alpha: 0.9),
+        );
+      } else if (isValidTarget) {
+        // Pulsing glow for valid connection targets
+        final glowPulse = 0.4 + 0.4 * sin(n.pulse * 4);
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 2.2,
+          Paint()..color = Colors.greenAccent.withValues(alpha: glowPulse * 0.25),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 1.5,
+          Paint()..color = Colors.greenAccent.withValues(alpha: glowPulse * 0.3),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius,
+          Paint()..color = Colors.greenAccent.withValues(alpha: 0.7),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 0.4,
+          Paint()..color = Colors.white.withValues(alpha: 0.8),
+        );
+      } else if (isDragSource) {
+        // Highlight the drag source node
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 1.6,
+          Paint()..color = Colors.cyanAccent.withValues(alpha: 0.3),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius,
+          Paint()..color = Colors.cyanAccent.withValues(alpha: 0.8),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 0.4,
+          Paint()..color = Colors.white.withValues(alpha: 0.9),
+        );
+      } else if (isConnected) {
+        // Connected nodes glow brighter
+        final connPulse = 0.6 + 0.15 * sin(n.pulse);
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 1.5,
+          Paint()..color = Colors.cyanAccent.withValues(alpha: 0.1 + 0.05 * sin(n.pulse)),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius,
+          Paint()..color = Colors.cyanAccent.withValues(alpha: connPulse),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 0.4,
+          Paint()..color = Colors.white.withValues(alpha: 0.7),
+        );
+      } else {
+        // Unconnected: dim "lonely" pulse
+        final lonelyPulse = 0.15 + 0.1 * sin(n.pulse * 1.5);
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 1.3,
+          Paint()..color = Colors.white.withValues(alpha: lonelyPulse * 0.3),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius,
+          Paint()..color = Colors.white.withValues(alpha: lonelyPulse + 0.1),
+        );
+        canvas.drawCircle(
+          pos,
+          nodeRadius * 0.35,
+          Paint()..color = Colors.white.withValues(alpha: 0.4),
+        );
+      }
     }
 
     // Particles
     for (final p in particles) {
       if (p.life > 0) {
         canvas.drawCircle(
-          Offset(p.x * size.width, p.y * size.height), 2.5,
-          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+          Offset(p.x * size.width, p.y * size.height),
+          2.5,
+          Paint()
+            ..color = p.color.withValues(
+                alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
         );
       }
     }
@@ -2720,4 +4610,1780 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
       );
     });
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ClusterGravityGame — "Gravity Sling"
+// Slingshot a small galaxy around clusters to reach a target. Golf-style scoring.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _GravCluster {
+  double x, y, mass;
+  _GravCluster(this.x, this.y, this.mass);
+}
+
+class ClusterGravityGame extends StatefulWidget {
+  const ClusterGravityGame({Key? key}) : super(key: key);
+  @override
+  State<ClusterGravityGame> createState() => _ClusterGravityGameState();
+}
+
+class _ClusterGravityGameState extends State<ClusterGravityGame>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  final Random _rng = Random();
+
+  // Galaxy (the player projectile)
+  double _gx = 0, _gy = 0, _gvx = 0, _gvy = 0;
+  bool _launched = false;
+  bool _dragging = false;
+  Offset _dragStart = Offset.zero;
+  Offset _dragCurrent = Offset.zero;
+  final List<Offset> _trail = [];
+
+  // Clusters (gravity wells)
+  List<_GravCluster> _clusters = [];
+
+  // Target
+  double _tx = 0, _ty = 0;
+
+  // Scoring
+  int _slings = 0;
+  int _level = 1;
+  int _score = 0;
+  bool _levelComplete = false;
+  bool _outOfBounds = false;
+  double _lastTime = 0;
+
+  final List<_JuiceParticle> _particles = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
+    _lastTime = _now();
+  }
+
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _setupLevel(double w, double h) {
+    _gx = 0.1;
+    _gy = 0.8;
+    _gvx = 0;
+    _gvy = 0;
+    _launched = false;
+    _levelComplete = false;
+    _outOfBounds = false;
+    _slings = 0;
+    _trail.clear();
+    _particles.clear();
+    _clusters.clear();
+
+    if (_level == 1) {
+      // Level 1: single cluster in the middle, target directly above it — easy slingshot
+      _clusters.add(_GravCluster(0.5, 0.5, 0.5));
+      _tx = 0.85;
+      _ty = 0.15;
+    } else if (_level == 2) {
+      // Level 2: two clusters, target requires curving around one
+      _clusters.add(_GravCluster(0.4, 0.45, 0.45));
+      _clusters.add(_GravCluster(0.7, 0.3, 0.35));
+      _tx = 0.85;
+      _ty = 0.12;
+    } else {
+      // Level 3+: random clusters, increasing count and mass
+      final count = 2 + ((_level - 2) ~/ 2).clamp(0, 4);
+      for (int i = 0; i < count; i++) {
+        _clusters.add(_GravCluster(
+          0.2 + _rng.nextDouble() * 0.6,
+          0.15 + _rng.nextDouble() * 0.55,
+          0.3 + _rng.nextDouble() * 0.5,
+        ));
+      }
+      _tx = 0.7 + _rng.nextDouble() * 0.2;
+      _ty = 0.08 + _rng.nextDouble() * 0.2;
+    }
+  }
+
+  bool _needsSetup = true;
+
+  void _tick() {
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+
+    setState(() {
+      if (_launched && !_levelComplete && !_outOfBounds) {
+        // Apply gravity from each cluster
+        for (final c in _clusters) {
+          final dx = c.x - _gx;
+          final dy = c.y - _gy;
+          final dist = sqrt(dx * dx + dy * dy).clamp(0.03, 2.0);
+          final force = c.mass * 0.08 / (dist * dist);
+          _gvx += dx / dist * force * dt;
+          _gvy += dy / dist * force * dt;
+        }
+        _gx += _gvx * dt;
+        _gy += _gvy * dt;
+
+        // Trail
+        _trail.add(Offset(_gx, _gy));
+        if (_trail.length > 80) _trail.removeAt(0);
+
+        // Check target hit
+        final tdx = _gx - _tx;
+        final tdy = _gy - _ty;
+        if (sqrt(tdx * tdx + tdy * tdy) < 0.04) {
+          _levelComplete = true;
+          final bonus = max(0, 30 - _slings * 5);
+          _score += 10 + bonus;
+          for (int i = 0; i < 20; i++) {
+            final a = _rng.nextDouble() * 2 * pi;
+            _particles.add(_JuiceParticle(
+              x: _tx, y: _ty,
+              vx: cos(a) * 0.3, vy: sin(a) * 0.3,
+              life: 0.8, color: Colors.amberAccent,
+            ));
+          }
+        }
+
+        // Out of bounds
+        if (_gx < -0.15 || _gx > 1.15 || _gy < -0.15 || _gy > 1.15) {
+          _outOfBounds = true;
+        }
+
+        // Check collision with cluster (too close = crash)
+        for (final c in _clusters) {
+          final dx = _gx - c.x;
+          final dy = _gy - c.y;
+          if (sqrt(dx * dx + dy * dy) < 0.03) {
+            _outOfBounds = true;
+            for (int i = 0; i < 10; i++) {
+              final a = _rng.nextDouble() * 2 * pi;
+              _particles.add(_JuiceParticle(
+                x: c.x, y: c.y,
+                vx: cos(a) * 0.2, vy: sin(a) * 0.2,
+                life: 0.5, color: Colors.redAccent,
+              ));
+            }
+          }
+        }
+      }
+
+      // Particles
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      _particles.removeWhere((p) => p.life <= 0);
+    });
+  }
+
+  void _launch() {
+    if (_levelComplete || _outOfBounds) return;
+    final dx = _dragStart.dx - _dragCurrent.dx;
+    final dy = _dragStart.dy - _dragCurrent.dy;
+    _gvx = dx / 200.0 * 0.8;
+    _gvy = dy / 200.0 * 0.8;
+    _launched = true;
+    _slings++;
+    _dragging = false;
+  }
+
+  void _resetShot() {
+    setState(() {
+      _gx = 0.1;
+      _gy = 0.8;
+      _gvx = 0;
+      _gvy = 0;
+      _launched = false;
+      _outOfBounds = false;
+      _trail.clear();
+    });
+  }
+
+  void _nextLevel() {
+    setState(() {
+      _level++;
+      _needsSetup = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final w = constraints.maxWidth;
+      final h = constraints.maxHeight;
+      if (_needsSetup) {
+        _setupLevel(w, h);
+        _needsSetup = false;
+      }
+      return GestureDetector(
+        onPanStart: (d) {
+          if (_launched || _levelComplete) return;
+          final gxPx = _gx * w;
+          final gyPx = _gy * h;
+          if ((d.localPosition - Offset(gxPx, gyPx)).distance < 50) {
+            _dragging = true;
+            _dragStart = d.localPosition;
+            _dragCurrent = d.localPosition;
+          }
+        },
+        onPanUpdate: (d) {
+          if (_dragging) setState(() => _dragCurrent = d.localPosition);
+        },
+        onPanEnd: (d) {
+          if (_dragging) _launch();
+        },
+        child: Container(
+          color: const Color(0xFF030310),
+          child: CustomPaint(
+            painter: _GravitySlingPainter(
+              gx: _gx, gy: _gy, trail: _trail,
+              clusters: _clusters, tx: _tx, ty: _ty,
+              particles: _particles, dragging: _dragging,
+              dragStart: _dragStart, dragCurrent: _dragCurrent,
+              launched: _launched, slings: _slings,
+            ),
+            child: Stack(
+              children: [
+                Positioned(
+                  top: 8, left: 16, right: 16,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Level $_level', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
+                      Text('Slings: $_slings', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
+                      Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                    ],
+                  ),
+                ),
+                if (_levelComplete)
+                  Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('Target Reached!', style: TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                        Text('$_slings sling${_slings == 1 ? "" : "s"}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white54)),
+                        const SizedBox(height: 12),
+                        GestureDetector(
+                          onTap: _nextLevel,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.amber.withValues(alpha: 0.2), border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.5))),
+                            child: const Text('Next Level', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_outOfBounds && !_levelComplete)
+                  Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('Lost in space!', style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                        const SizedBox(height: 12),
+                        GestureDetector(
+                          onTap: _resetShot,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
+                            child: const Text('Try Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (!_launched && !_levelComplete && !_dragging)
+                  Positioned(
+                    bottom: 20, left: 0, right: 0,
+                    child: const Center(child: Text('Drag from your galaxy to slingshot', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white24))),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _GravitySlingPainter extends CustomPainter {
+  final double gx, gy;
+  final List<Offset> trail;
+  final List<_GravCluster> clusters;
+  final double tx, ty;
+  final List<_JuiceParticle> particles;
+  final bool dragging, launched;
+  final Offset dragStart, dragCurrent;
+  final int slings;
+
+  _GravitySlingPainter({
+    required this.gx, required this.gy, required this.trail,
+    required this.clusters, required this.tx, required this.ty,
+    required this.particles, required this.dragging,
+    required this.dragStart, required this.dragCurrent,
+    required this.launched, required this.slings,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Stars
+    final rng = Random(77);
+    for (int i = 0; i < 100; i++) {
+      canvas.drawCircle(
+        Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height),
+        0.3 + rng.nextDouble() * 0.6,
+        Paint()..color = Colors.white.withValues(alpha: 0.08 + rng.nextDouble() * 0.15),
+      );
+    }
+
+    // Clusters (gravity wells)
+    for (final c in clusters) {
+      final cx = c.x * size.width;
+      final cy = c.y * size.height;
+      final r = 12 + c.mass * 20;
+      // Gravity field visualization
+      canvas.drawCircle(Offset(cx, cy), r * 3, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.04));
+      canvas.drawCircle(Offset(cx, cy), r * 2, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.06));
+      canvas.drawCircle(Offset(cx, cy), r, Paint()..color = const Color(0xFF7B1FA2).withValues(alpha: 0.5));
+      canvas.drawCircle(Offset(cx, cy), r * 0.5, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.6));
+    }
+
+    // Target
+    final txPx = tx * size.width;
+    final tyPx = ty * size.height;
+    canvas.drawCircle(Offset(txPx, tyPx), 18, Paint()..color = Colors.amber.withValues(alpha: 0.15));
+    canvas.drawCircle(Offset(txPx, tyPx), 12, Paint()..color = Colors.amber.withValues(alpha: 0.3));
+    canvas.drawCircle(Offset(txPx, tyPx), 6, Paint()..color = Colors.amberAccent);
+    // Crosshair
+    final cp = Paint()..color = Colors.amberAccent.withValues(alpha: 0.4)..strokeWidth = 1;
+    canvas.drawLine(Offset(txPx - 16, tyPx), Offset(txPx + 16, tyPx), cp);
+    canvas.drawLine(Offset(txPx, tyPx - 16), Offset(txPx, tyPx + 16), cp);
+
+    // Trail
+    if (trail.length > 1) {
+      for (int i = 1; i < trail.length; i++) {
+        final alpha = i / trail.length * 0.5;
+        canvas.drawLine(
+          Offset(trail[i - 1].dx * size.width, trail[i - 1].dy * size.height),
+          Offset(trail[i].dx * size.width, trail[i].dy * size.height),
+          Paint()..color = Colors.cyanAccent.withValues(alpha: alpha)..strokeWidth = 1.5,
+        );
+      }
+    }
+
+    // Galaxy (player)
+    final gpx = gx * size.width;
+    final gpy = gy * size.height;
+    canvas.drawCircle(Offset(gpx, gpy), 12, Paint()..color = Colors.cyanAccent.withValues(alpha: 0.15));
+    canvas.drawCircle(Offset(gpx, gpy), 7, Paint()..color = Colors.cyanAccent.withValues(alpha: 0.5));
+    canvas.drawCircle(Offset(gpx, gpy), 3.5, Paint()..color = Colors.white.withValues(alpha: 0.8));
+
+    // Drag arrow
+    if (dragging) {
+      final dx = dragStart.dx - dragCurrent.dx;
+      final dy = dragStart.dy - dragCurrent.dy;
+      canvas.drawLine(
+        Offset(gpx, gpy),
+        Offset(gpx + dx, gpy + dy),
+        Paint()..color = Colors.white.withValues(alpha: 0.5)..strokeWidth = 2..strokeCap = StrokeCap.round,
+      );
+      // Power indicator
+      final power = sqrt(dx * dx + dy * dy).clamp(0.0, 200.0) / 200.0;
+      canvas.drawCircle(
+        Offset(gpx, gpy), 10 + power * 20,
+        Paint()..color = Color.lerp(Colors.cyanAccent, Colors.redAccent, power)!.withValues(alpha: 0.3)..style = PaintingStyle.stroke..strokeWidth = 2,
+      );
+    }
+
+    // Particles
+    for (final p in particles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x * size.width, p.y * size.height), 2.5,
+          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GravitySlingPainter old) => true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NeuronConnectGame — "Neuron Connect"
+// Draw paths between pulsing nodes to guide electrical signals to a target.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _NeuronNode {
+  double x, y;
+  bool active;
+  double pulse;
+  bool isTarget;
+  bool isSource;
+  _NeuronNode(this.x, this.y) : active = true, pulse = 0, isTarget = false, isSource = false;
+}
+
+class _NeuronSignal {
+  int currentNode;
+  int? nextNode;
+  double progress; // 0..1 along current edge
+  bool dead;
+  bool delivered;
+  _NeuronSignal(this.currentNode) : progress = 0, dead = false, delivered = false;
+}
+
+class NeuronConnectGame extends StatefulWidget {
+  const NeuronConnectGame({Key? key}) : super(key: key);
+  @override
+  State<NeuronConnectGame> createState() => _NeuronConnectGameState();
+}
+
+class _NeuronConnectGameState extends State<NeuronConnectGame>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  final Random _rng = Random();
+
+  final List<_NeuronNode> _nodes = [];
+  final List<List<int>> _connections = []; // adjacency list
+  final List<_NeuronSignal> _signals = [];
+  int _score = 0;
+  int _lost = 0;
+  double _signalSpawnTimer = 0;
+  double _deactivateTimer = 0;
+  double _lastTime = 0;
+  bool _needsSetup = true;
+
+  // Drawing state
+  int? _drawFrom;
+  Offset? _drawPos;
+
+  final List<_JuiceParticle> _particles = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
+    _lastTime = _now();
+  }
+
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _setup() {
+    _nodes.clear();
+    _connections.clear();
+    _signals.clear();
+    _particles.clear();
+    // Generate nodes in a grid-ish pattern with jitter
+    for (int i = 0; i < 12; i++) {
+      final col = i % 4;
+      final row = i ~/ 4;
+      _nodes.add(_NeuronNode(
+        0.12 + col * 0.25 + (_rng.nextDouble() - 0.5) * 0.1,
+        0.15 + row * 0.25 + (_rng.nextDouble() - 0.5) * 0.08,
+      ));
+      _connections.add([]);
+    }
+    // Set target (bottom right area) and sources (left side)
+    _nodes[11].isTarget = true;
+    _nodes[0].isSource = true;
+    _nodes[4].isSource = true;
+    _needsSetup = false;
+  }
+
+  void _tick() {
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+
+    setState(() {
+      // Node pulses
+      for (final n in _nodes) {
+        n.pulse += dt * 2.5;
+      }
+
+      // Randomly deactivate/reactivate nodes
+      _deactivateTimer -= dt;
+      if (_deactivateTimer <= 0) {
+        _deactivateTimer = 4 + _rng.nextDouble() * 3;
+        final idx = _rng.nextInt(_nodes.length);
+        if (!_nodes[idx].isTarget && !_nodes[idx].isSource) {
+          _nodes[idx].active = !_nodes[idx].active;
+          if (!_nodes[idx].active) {
+            // Remove connections involving this node
+            for (int i = 0; i < _connections.length; i++) {
+              _connections[i].removeWhere((j) => j == idx);
+            }
+            _connections[idx].clear();
+          }
+        }
+      }
+
+      // Spawn signals at source nodes
+      _signalSpawnTimer -= dt;
+      if (_signalSpawnTimer <= 0 && _signals.length < 5) {
+        _signalSpawnTimer = 2.0 + _rng.nextDouble() * 2.0;
+        final sources = <int>[];
+        for (int i = 0; i < _nodes.length; i++) {
+          if (_nodes[i].isSource && _nodes[i].active) sources.add(i);
+        }
+        if (sources.isNotEmpty) {
+          _signals.add(_NeuronSignal(sources[_rng.nextInt(sources.length)]));
+        }
+      }
+
+      // Move signals
+      for (final sig in _signals) {
+        if (sig.dead || sig.delivered) continue;
+
+        if (sig.nextNode == null) {
+          // Pick next node from connections
+          final adj = _connections[sig.currentNode].where((j) => _nodes[j].active).toList();
+          if (adj.isEmpty) {
+            // Dead end
+            sig.dead = true;
+            _lost++;
+            final n = _nodes[sig.currentNode];
+            for (int i = 0; i < 5; i++) {
+              final a = _rng.nextDouble() * 2 * pi;
+              _particles.add(_JuiceParticle(
+                x: n.x, y: n.y,
+                vx: cos(a) * 0.15, vy: sin(a) * 0.15,
+                life: 0.5, color: Colors.redAccent,
+              ));
+            }
+            continue;
+          }
+          sig.nextNode = adj[_rng.nextInt(adj.length)];
+          sig.progress = 0;
+        }
+
+        sig.progress += dt * 1.2;
+        if (sig.progress >= 1.0) {
+          sig.currentNode = sig.nextNode!;
+          sig.nextNode = null;
+          sig.progress = 0;
+
+          // Check if reached target
+          if (_nodes[sig.currentNode].isTarget) {
+            sig.delivered = true;
+            _score++;
+            final n = _nodes[sig.currentNode];
+            for (int i = 0; i < 10; i++) {
+              final a = _rng.nextDouble() * 2 * pi;
+              _particles.add(_JuiceParticle(
+                x: n.x, y: n.y,
+                vx: cos(a) * 0.2, vy: sin(a) * 0.2,
+                life: 0.7, color: Colors.greenAccent,
+              ));
+            }
+          }
+        }
+      }
+      _signals.removeWhere((s) => s.dead || s.delivered);
+
+      // Particles
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      _particles.removeWhere((p) => p.life <= 0);
+    });
+  }
+
+  int? _nodeAt(Offset pos, double w, double h) {
+    for (int i = 0; i < _nodes.length; i++) {
+      if (!_nodes[i].active) continue;
+      final nx = _nodes[i].x * w;
+      final ny = _nodes[i].y * h;
+      if ((pos - Offset(nx, ny)).distance < 28) return i;
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final w = constraints.maxWidth;
+      final h = constraints.maxHeight;
+      if (_needsSetup) _setup();
+      return GestureDetector(
+        onPanStart: (d) {
+          _drawFrom = _nodeAt(d.localPosition, w, h);
+          _drawPos = d.localPosition;
+        },
+        onPanUpdate: (d) {
+          if (_drawFrom != null) setState(() => _drawPos = d.localPosition);
+        },
+        onPanEnd: (d) {
+          if (_drawFrom != null && _drawPos != null) {
+            final toNode = _nodeAt(_drawPos!, w, h);
+            if (toNode != null && toNode != _drawFrom && _nodes[toNode].active && _nodes[_drawFrom!].active) {
+              // Check distance
+              final a = _nodes[_drawFrom!];
+              final b = _nodes[toNode];
+              final dx = a.x - b.x;
+              final dy = a.y - b.y;
+              final dist = sqrt(dx * dx + dy * dy);
+              if (dist < 0.45) {
+                // Add bidirectional connection if not exists
+                if (!_connections[_drawFrom!].contains(toNode)) {
+                  _connections[_drawFrom!].add(toNode);
+                  _connections[toNode].add(_drawFrom!);
+                }
+              }
+            }
+          }
+          _drawFrom = null;
+          _drawPos = null;
+        },
+        child: Container(
+          color: const Color(0xFF080818),
+          child: CustomPaint(
+            painter: _NeuronPainter(
+              nodes: _nodes, connections: _connections,
+              signals: _signals, particles: _particles,
+              drawFrom: _drawFrom, drawPos: _drawPos,
+              w: w, h: h,
+            ),
+            child: Stack(
+              children: [
+                Positioned(
+                  top: 8, left: 16, right: 16,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Delivered: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.greenAccent)),
+                      Text('Lost: $_lost', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.redAccent)),
+                    ],
+                  ),
+                ),
+                if (_score == 0 && _connections.every((c) => c.isEmpty))
+                  Positioned(
+                    bottom: 20, left: 0, right: 0,
+                    child: const Center(child: Text('Draw paths between nodes to guide signals', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white24))),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _NeuronPainter extends CustomPainter {
+  final List<_NeuronNode> nodes;
+  final List<List<int>> connections;
+  final List<_NeuronSignal> signals;
+  final List<_JuiceParticle> particles;
+  final int? drawFrom;
+  final Offset? drawPos;
+  final double w, h;
+
+  _NeuronPainter({
+    required this.nodes, required this.connections,
+    required this.signals, required this.particles,
+    required this.drawFrom, required this.drawPos,
+    required this.w, required this.h,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF080818));
+
+    // Connections
+    for (int i = 0; i < connections.length; i++) {
+      for (final j in connections[i]) {
+        if (j <= i) continue; // draw each edge once
+        final a = nodes[i];
+        final b = nodes[j];
+        final from = Offset(a.x * size.width, a.y * size.height);
+        final to = Offset(b.x * size.width, b.y * size.height);
+        canvas.drawLine(from, to, Paint()
+          ..color = Colors.cyan.withValues(alpha: 0.2)
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round);
+      }
+    }
+
+    // Draw line in progress
+    if (drawFrom != null && drawPos != null) {
+      final from = Offset(nodes[drawFrom!].x * size.width, nodes[drawFrom!].y * size.height);
+      canvas.drawLine(from, drawPos!, Paint()
+        ..color = Colors.white.withValues(alpha: 0.3)
+        ..strokeWidth = 1.5);
+    }
+
+    // Nodes
+    for (int i = 0; i < nodes.length; i++) {
+      final n = nodes[i];
+      final pos = Offset(n.x * size.width, n.y * size.height);
+      if (!n.active) {
+        canvas.drawCircle(pos, 6, Paint()..color = Colors.grey.withValues(alpha: 0.15));
+        continue;
+      }
+      final pulseR = 8 + sin(n.pulse) * 3;
+      Color nodeColor = Colors.cyan;
+      if (n.isTarget) nodeColor = Colors.greenAccent;
+      if (n.isSource) nodeColor = Colors.amber;
+      // Glow
+      canvas.drawCircle(pos, pulseR + 8, Paint()..color = nodeColor.withValues(alpha: 0.08 + sin(n.pulse) * 0.04));
+      canvas.drawCircle(pos, pulseR, Paint()..color = nodeColor.withValues(alpha: 0.4));
+      canvas.drawCircle(pos, pulseR * 0.5, Paint()..color = nodeColor.withValues(alpha: 0.7));
+      if (n.isTarget) {
+        final tp = TextPainter(
+          text: TextSpan(text: 'TARGET', style: TextStyle(fontFamily: 'Avenir', fontSize: 8, color: Colors.greenAccent.withValues(alpha: 0.7))),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy + pulseR + 4));
+      }
+      if (n.isSource) {
+        final tp = TextPainter(
+          text: TextSpan(text: 'SRC', style: TextStyle(fontFamily: 'Avenir', fontSize: 8, color: Colors.amber.withValues(alpha: 0.7))),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy + pulseR + 4));
+      }
+    }
+
+    // Signals
+    for (final sig in signals) {
+      Offset pos;
+      if (sig.nextNode != null) {
+        final from = nodes[sig.currentNode];
+        final to = nodes[sig.nextNode!];
+        pos = Offset(
+          (from.x + (to.x - from.x) * sig.progress) * size.width,
+          (from.y + (to.y - from.y) * sig.progress) * size.height,
+        );
+      } else {
+        final n = nodes[sig.currentNode];
+        pos = Offset(n.x * size.width, n.y * size.height);
+      }
+      canvas.drawCircle(pos, 8, Paint()..color = Colors.yellowAccent.withValues(alpha: 0.2));
+      canvas.drawCircle(pos, 4, Paint()..color = Colors.yellowAccent.withValues(alpha: 0.8));
+      canvas.drawCircle(pos, 2, Paint()..color = Colors.white);
+    }
+
+    // Particles
+    for (final p in particles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x * size.width, p.y * size.height), 2.5,
+          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _NeuronPainter old) => true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RealityMergeGame — "Reality Merge"
+// Match colored bubble universes by frequency. Merge matching = grow & score.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _BubbleUniverse {
+  double x, y, vx, vy, radius;
+  int frequency;
+  Color color;
+  double popAnim; // >0 = popping animation
+  _BubbleUniverse({
+    required this.x, required this.y, required this.vx, required this.vy,
+    required this.radius, required this.frequency, required this.color,
+  }) : popAnim = 0;
+}
+
+class RealityMergeGame extends StatefulWidget {
+  const RealityMergeGame({Key? key}) : super(key: key);
+  @override
+  State<RealityMergeGame> createState() => _RealityMergeGameState();
+}
+
+class _RealityMergeGameState extends State<RealityMergeGame>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  final Random _rng = Random();
+
+  final List<_BubbleUniverse> _bubbles = [];
+  int? _dragIndex;
+  int _score = 0;
+  int _misses = 0;
+  double _spawnTimer = 0;
+  double _lastTime = 0;
+  Size _size = Size.zero;
+  bool _gameOver = false;
+  static const int _maxBubbles = 15;
+  static const int _maxMisses = 5;
+
+  final List<_JuiceParticle> _particles = [];
+
+  static const _freqColors = [
+    Color(0xFFE53935), Color(0xFF1E88E5), Color(0xFF43A047),
+    Color(0xFFFDD835), Color(0xFFAB47BC), Color(0xFFFF7043),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
+    _lastTime = _now();
+  }
+
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _spawnBubble() {
+    if (_size == Size.zero) return;
+    final freq = _rng.nextInt(6) + 1;
+    final side = _rng.nextInt(4);
+    double sx, sy;
+    switch (side) {
+      case 0: sx = _rng.nextDouble() * _size.width; sy = -40; break;
+      case 1: sx = _size.width + 40; sy = _rng.nextDouble() * _size.height; break;
+      case 2: sx = _rng.nextDouble() * _size.width; sy = _size.height + 40; break;
+      default: sx = -40; sy = _rng.nextDouble() * _size.height; break;
+    }
+    final cx = _size.width / 2;
+    final cy = _size.height / 2;
+    final dx = cx - sx + (_rng.nextDouble() - 0.5) * 80;
+    final dy = cy - sy + (_rng.nextDouble() - 0.5) * 80;
+    final dist = sqrt(dx * dx + dy * dy);
+    final spd = 15 + _rng.nextDouble() * 20;
+    _bubbles.add(_BubbleUniverse(
+      x: sx, y: sy,
+      vx: dx / dist * spd, vy: dy / dist * spd,
+      radius: 22 + _rng.nextDouble() * 10,
+      frequency: freq,
+      color: _freqColors[freq - 1],
+    ));
+  }
+
+  void _tick() {
+    if (_gameOver) return;
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+
+    setState(() {
+      // Check game over: too many bubbles or too many misses
+      if (_bubbles.length >= _maxBubbles || _misses >= _maxMisses) {
+        _gameOver = true;
+        return;
+      }
+
+      // Spawn (faster over time)
+      _spawnTimer -= dt;
+      final spawnRate = max(0.5, 1.2 - _score * 0.03);
+      if (_spawnTimer <= 0 && _bubbles.length < _maxBubbles) {
+        _spawnTimer = spawnRate + _rng.nextDouble() * 0.5;
+        _spawnBubble();
+      }
+
+      // Move bubbles
+      for (int i = 0; i < _bubbles.length; i++) {
+        if (i == _dragIndex) continue;
+        final b = _bubbles[i];
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        b.vx *= (1 - 0.3 * dt);
+        b.vy *= (1 - 0.3 * dt);
+        // Bounce off walls
+        if (b.x < b.radius) { b.x = b.radius; b.vx = b.vx.abs(); }
+        if (b.x > _size.width - b.radius) { b.x = _size.width - b.radius; b.vx = -b.vx.abs(); }
+        if (b.y < b.radius) { b.y = b.radius; b.vy = b.vy.abs(); }
+        if (b.y > _size.height - b.radius) { b.y = _size.height - b.radius; b.vy = -b.vy.abs(); }
+      }
+
+      // Bubble-bubble soft repulsion
+      for (int i = 0; i < _bubbles.length; i++) {
+        for (int j = i + 1; j < _bubbles.length; j++) {
+          if (i == _dragIndex || j == _dragIndex) continue;
+          final a = _bubbles[i];
+          final b = _bubbles[j];
+          final dx = b.x - a.x;
+          final dy = b.y - a.y;
+          final dist = sqrt(dx * dx + dy * dy);
+          final minD = a.radius + b.radius;
+          if (dist < minD && dist > 0.1) {
+            final overlap = minD - dist;
+            final nx = dx / dist;
+            final ny = dy / dist;
+            a.vx -= nx * overlap * 1.5;
+            a.vy -= ny * overlap * 1.5;
+            b.vx += nx * overlap * 1.5;
+            b.vy += ny * overlap * 1.5;
+          }
+        }
+      }
+
+      // Pop animations
+      _bubbles.removeWhere((b) => b.popAnim > 0.5);
+      for (final b in _bubbles) {
+        if (b.popAnim > 0) b.popAnim += dt;
+      }
+
+      // Particles
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      _particles.removeWhere((p) => p.life <= 0);
+    });
+  }
+
+  void _tryMerge(int dragIdx) {
+    final dragged = _bubbles[dragIdx];
+    for (int i = 0; i < _bubbles.length; i++) {
+      if (i == dragIdx) continue;
+      final b = _bubbles[i];
+      final dx = dragged.x - b.x;
+      final dy = dragged.y - b.y;
+      final dist = sqrt(dx * dx + dy * dy);
+      if (dist < dragged.radius + b.radius + 5) {
+        if (dragged.frequency == b.frequency) {
+          // Merge! Keep the other, grow it
+          _score++;
+          b.radius = (b.radius + 8).clamp(0, 60);
+          b.frequency = ((b.frequency + 1 - 1) % 6) + 1; // shift frequency
+          b.color = _freqColors[b.frequency - 1];
+          // Pop effect
+          for (int j = 0; j < 12; j++) {
+            final a = _rng.nextDouble() * 2 * pi;
+            _particles.add(_JuiceParticle(
+              x: (dragged.x + b.x) / 2, y: (dragged.y + b.y) / 2,
+              vx: cos(a) * 80, vy: sin(a) * 80,
+              life: 0.6, color: dragged.color,
+            ));
+          }
+          _bubbles.removeAt(dragIdx);
+          return;
+        } else {
+          // Mismatch — shrink both
+          _misses++;
+          dragged.radius = (dragged.radius - 6).clamp(10, 60);
+          b.radius = (b.radius - 6).clamp(10, 60);
+          // Bounce apart
+          if (dist > 0.1) {
+            dragged.vx = dx / dist * 80;
+            dragged.vy = dy / dist * 80;
+            b.vx = -dx / dist * 80;
+            b.vy = -dy / dist * 80;
+          }
+          for (int j = 0; j < 6; j++) {
+            final a = _rng.nextDouble() * 2 * pi;
+            _particles.add(_JuiceParticle(
+              x: (dragged.x + b.x) / 2, y: (dragged.y + b.y) / 2,
+              vx: cos(a) * 50, vy: sin(a) * 50,
+              life: 0.4, color: Colors.grey,
+            ));
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      _size = Size(constraints.maxWidth, constraints.maxHeight);
+      return GestureDetector(
+        onPanStart: (d) {
+          if (_gameOver) return;
+          for (int i = _bubbles.length - 1; i >= 0; i--) {
+            final b = _bubbles[i];
+            if ((Offset(b.x, b.y) - d.localPosition).distance < b.radius + 10) {
+              _dragIndex = i;
+              return;
+            }
+          }
+        },
+        onPanUpdate: (d) {
+          if (_dragIndex != null && _dragIndex! < _bubbles.length) {
+            final b = _bubbles[_dragIndex!];
+            b.x = d.localPosition.dx;
+            b.y = d.localPosition.dy;
+            b.vx = 0;
+            b.vy = 0;
+          }
+        },
+        onPanEnd: (d) {
+          if (_dragIndex != null && _dragIndex! < _bubbles.length) {
+            _tryMerge(_dragIndex!);
+          }
+          _dragIndex = null;
+        },
+        child: Container(
+          color: const Color(0xFF0A0A1A),
+          child: CustomPaint(
+            painter: _RealityMergePainter(
+              bubbles: _bubbles, particles: _particles,
+              dragIndex: _dragIndex,
+            ),
+            child: Stack(
+              children: [
+                Positioned(
+                  top: 8, left: 16, right: 16,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Merges: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.greenAccent)),
+                      Text('Mismatches: $_misses', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.redAccent)),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  top: 26, left: 16, right: 16,
+                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Text('Bubbles: ${_bubbles.length}/$_maxBubbles', style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: _bubbles.length >= _maxBubbles - 3 ? Colors.redAccent : Colors.white38)),
+                    Row(mainAxisSize: MainAxisSize.min, children: [
+                      ...List.generate(_maxMisses, (i) => Container(
+                        margin: const EdgeInsets.only(left: 2), width: 6, height: 6,
+                        decoration: BoxDecoration(shape: BoxShape.circle, color: i < (_maxMisses - _misses) ? Colors.greenAccent.withValues(alpha: 0.6) : Colors.red.withValues(alpha: 0.2)),
+                      )),
+                    ]),
+                  ]),
+                ),
+                if (_bubbles.isEmpty && _score == 0)
+                  Positioned(
+                    bottom: 20, left: 0, right: 0,
+                    child: const Center(child: Text('Drag matching frequencies together\nMismatch = lose a life. Overflow = game over.', textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white24))),
+                  ),
+                if (_gameOver)
+                  Positioned.fill(child: Container(
+                    color: Colors.black.withValues(alpha: 0.8),
+                    child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(_misses >= _maxMisses ? 'Too Many Mismatches!' : 'Reality Overflow!', style: const TextStyle(fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                      const SizedBox(height: 8),
+                      Text('Merges: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.white70)),
+                      const SizedBox(height: 24),
+                      GestureDetector(
+                        onTap: () => setState(() { _gameOver = false; _score = 0; _misses = 0; _bubbles.clear(); _particles.clear(); _spawnTimer = 1; }),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                          decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
+                          child: const Text('Merge Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
+                        ),
+                      ),
+                    ])),
+                  )),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _RealityMergePainter extends CustomPainter {
+  final List<_BubbleUniverse> bubbles;
+  final List<_JuiceParticle> particles;
+  final int? dragIndex;
+
+  _RealityMergePainter({required this.bubbles, required this.particles, required this.dragIndex});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Bubbles
+    for (int i = 0; i < bubbles.length; i++) {
+      final b = bubbles[i];
+      final pos = Offset(b.x, b.y);
+      final isDragged = i == dragIndex;
+
+      // Outer glow
+      canvas.drawCircle(pos, b.radius + 8, Paint()..color = b.color.withValues(alpha: isDragged ? 0.2 : 0.08));
+      // Body
+      canvas.drawCircle(pos, b.radius, Paint()..color = b.color.withValues(alpha: isDragged ? 0.6 : 0.35));
+      canvas.drawCircle(pos, b.radius, Paint()
+        ..color = b.color.withValues(alpha: isDragged ? 0.8 : 0.5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2);
+      // Highlight
+      canvas.drawCircle(
+        Offset(pos.dx - b.radius * 0.2, pos.dy - b.radius * 0.2),
+        b.radius * 0.3,
+        Paint()..color = Colors.white.withValues(alpha: 0.2),
+      );
+      // Frequency number
+      final tp = TextPainter(
+        text: TextSpan(
+          text: '${b.frequency}',
+          style: TextStyle(
+            fontFamily: 'Avenir', fontSize: b.radius * 0.7,
+            fontWeight: FontWeight.bold,
+            color: Colors.white.withValues(alpha: 0.9),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
+    }
+
+    // Particles
+    for (final p in particles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x, p.y), 3,
+          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RealityMergePainter old) => true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DarkMatterGame — "Dark Matter Detector"
+// Tap/hold to activate detector, reveal and capture invisible particles.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _DarkParticle {
+  double x, y, vx, vy;
+  bool captured;
+  _DarkParticle({required this.x, required this.y, required this.vx, required this.vy}) : captured = false;
+}
+
+class DarkMatterGame extends StatefulWidget {
+  const DarkMatterGame({Key? key}) : super(key: key);
+  @override
+  State<DarkMatterGame> createState() => _DarkMatterGameState();
+}
+
+class _DarkMatterGameState extends State<DarkMatterGame>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  final Random _rng = Random();
+
+  final List<_DarkParticle> _darkParticles = [];
+  bool _detecting = false;
+  Offset _detectorPos = Offset.zero;
+  double _detectorRadius = 0;
+  static const double _maxDetectorR = 80;
+  static const double _captureR = 25;
+
+  int _score = 0;
+  double _spawnTimer = 0;
+  double _lastTime = 0;
+  Size _size = Size.zero;
+
+  // Capture flash
+  double _captureFlash = 0;
+  final List<_JuiceParticle> _particles = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
+    _lastTime = _now();
+  }
+
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _tick() {
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+
+    setState(() {
+      // Spawn dark matter
+      _spawnTimer -= dt;
+      if (_spawnTimer <= 0 && _darkParticles.length < 15) {
+        _spawnTimer = 0.8 + _rng.nextDouble() * 1.0;
+        if (_size != Size.zero) {
+          _darkParticles.add(_DarkParticle(
+            x: _rng.nextDouble() * _size.width,
+            y: _rng.nextDouble() * _size.height,
+            vx: (_rng.nextDouble() - 0.5) * 30,
+            vy: (_rng.nextDouble() - 0.5) * 30,
+          ));
+        }
+      }
+
+      // Move particles
+      for (final p in _darkParticles) {
+        if (p.captured) continue;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        // Gentle random drift
+        p.vx += (_rng.nextDouble() - 0.5) * 20 * dt;
+        p.vy += (_rng.nextDouble() - 0.5) * 20 * dt;
+        // Wrap around
+        if (p.x < 0) p.x += _size.width;
+        if (p.x > _size.width) p.x -= _size.width;
+        if (p.y < 0) p.y += _size.height;
+        if (p.y > _size.height) p.y -= _size.height;
+      }
+      _darkParticles.removeWhere((p) => p.captured);
+
+      // Detector radius animation
+      if (_detecting) {
+        _detectorRadius = (_detectorRadius + dt * 200).clamp(0, _maxDetectorR);
+      } else {
+        _detectorRadius = (_detectorRadius - dt * 300).clamp(0, _maxDetectorR);
+      }
+
+      // Flash decay
+      if (_captureFlash > 0) _captureFlash = (_captureFlash - dt * 4).clamp(0.0, 1.0);
+
+      // Juice particles
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      _particles.removeWhere((p) => p.life <= 0);
+    });
+  }
+
+  void _tryCapture(Offset pos) {
+    for (final p in _darkParticles) {
+      if (p.captured) continue;
+      final dist = (Offset(p.x, p.y) - pos).distance;
+      if (dist < _captureR) {
+        p.captured = true;
+        _score++;
+        _captureFlash = 1;
+        for (int i = 0; i < 8; i++) {
+          final a = _rng.nextDouble() * 2 * pi;
+          _particles.add(_JuiceParticle(
+            x: p.x, y: p.y,
+            vx: cos(a) * 60, vy: sin(a) * 60,
+            life: 0.5, color: Colors.purpleAccent,
+          ));
+        }
+        return; // One capture per tap
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      _size = Size(constraints.maxWidth, constraints.maxHeight);
+      return GestureDetector(
+        onTapDown: (d) {
+          _tryCapture(d.localPosition);
+        },
+        onLongPressStart: (d) {
+          _detecting = true;
+          _detectorPos = d.localPosition;
+        },
+        onLongPressMoveUpdate: (d) {
+          _detectorPos = d.localPosition;
+        },
+        onLongPressEnd: (d) {
+          _detecting = false;
+        },
+        child: Container(
+          color: Colors.black,
+          child: CustomPaint(
+            painter: _DarkMatterPainter(
+              darkParticles: _darkParticles,
+              detecting: _detecting || _detectorRadius > 1,
+              detectorPos: _detectorPos,
+              detectorRadius: _detectorRadius,
+              captureFlash: _captureFlash,
+              score: _score,
+              juiceParticles: _particles,
+            ),
+            child: Stack(
+              children: [
+                Positioned(
+                  top: 8, left: 0, right: 0,
+                  child: Center(
+                    child: Text('Captured: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.purpleAccent)),
+                  ),
+                ),
+                if (_score == 0)
+                  Positioned(
+                    bottom: 20, left: 0, right: 0,
+                    child: const Center(child: Text('Hold to scan, tap to capture', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white12))),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _DarkMatterPainter extends CustomPainter {
+  final List<_DarkParticle> darkParticles;
+  final bool detecting;
+  final Offset detectorPos;
+  final double detectorRadius;
+  final double captureFlash;
+  final int score;
+  final List<_JuiceParticle> juiceParticles;
+
+  _DarkMatterPainter({
+    required this.darkParticles, required this.detecting,
+    required this.detectorPos, required this.detectorRadius,
+    required this.captureFlash, required this.score,
+    required this.juiceParticles,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
+
+    // Capture flash
+    if (captureFlash > 0) {
+      canvas.drawRect(
+        Offset.zero & size,
+        Paint()..color = Colors.purpleAccent.withValues(alpha: captureFlash * 0.08),
+      );
+    }
+
+    // Detector glow
+    if (detecting && detectorRadius > 1) {
+      final gradient = ui.Gradient.radial(
+        detectorPos, detectorRadius,
+        [Colors.purpleAccent.withValues(alpha: 0.12), Colors.transparent],
+      );
+      canvas.drawCircle(detectorPos, detectorRadius, Paint()..shader = gradient);
+      canvas.drawCircle(detectorPos, detectorRadius, Paint()
+        ..color = Colors.purpleAccent.withValues(alpha: 0.15)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1);
+      // Inner ring
+      canvas.drawCircle(detectorPos, 25, Paint()
+        ..color = Colors.purpleAccent.withValues(alpha: 0.3)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1);
+    }
+
+    // Dark matter particles — only visible near detector
+    for (final p in darkParticles) {
+      if (p.captured) continue;
+      final pos = Offset(p.x, p.y);
+      double visibility = 0;
+      if (detecting && detectorRadius > 10) {
+        final dist = (pos - detectorPos).distance;
+        if (dist < detectorRadius) {
+          visibility = (1.0 - dist / detectorRadius).clamp(0.0, 1.0);
+        }
+      }
+      if (visibility > 0) {
+        // Revealed
+        canvas.drawCircle(pos, 8, Paint()..color = Colors.purpleAccent.withValues(alpha: visibility * 0.15));
+        canvas.drawCircle(pos, 4, Paint()..color = Colors.purpleAccent.withValues(alpha: visibility * 0.5));
+        canvas.drawCircle(pos, 2, Paint()..color = Colors.white.withValues(alpha: visibility * 0.4));
+      } else {
+        // Completely invisible — maybe a very faint hint
+        canvas.drawCircle(pos, 1.5, Paint()..color = Colors.white.withValues(alpha: 0.015));
+      }
+    }
+
+    // Juice particles
+    for (final p in juiceParticles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x, p.y), 2.5,
+          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DarkMatterPainter old) => true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EverythingGame — "Everything Everywhere"
+// Zoom out through scales of the universe, tapping correct elements.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _ScaleLevel {
+  final String name;
+  final String targetLabel;
+  final Color color;
+  final List<String> decoys;
+  _ScaleLevel(this.name, this.targetLabel, this.color, this.decoys);
+}
+
+class EverythingGame extends StatefulWidget {
+  const EverythingGame({Key? key}) : super(key: key);
+  @override
+  State<EverythingGame> createState() => _EverythingGameState();
+}
+
+class _EverythingGameState extends State<EverythingGame>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  final Random _rng = Random();
+
+  static final _levels = [
+    _ScaleLevel('Quark', 'Up Quark', const Color(0xFFE53935), ['Down', 'Charm', 'Strange']),
+    _ScaleLevel('Atom', 'Carbon', const Color(0xFF42A5F5), ['Helium', 'Neon', 'Iron']),
+    _ScaleLevel('Molecule', 'DNA', const Color(0xFF66BB6A), ['H2O', 'CO2', 'NaCl']),
+    _ScaleLevel('Cell', 'Neuron', const Color(0xFFAB47BC), ['Red Blood', 'Muscle', 'Skin']),
+    _ScaleLevel('Organism', 'Human', const Color(0xFFFF7043), ['Tree', 'Whale', 'Ant']),
+    _ScaleLevel('Planet', 'Earth', const Color(0xFF26C6DA), ['Mars', 'Venus', 'Jupiter']),
+    _ScaleLevel('Galaxy', 'Milky Way', const Color(0xFFFFCA28), ['Andromeda', 'Triangulum', 'Sombrero']),
+    _ScaleLevel('Universe', 'Everything', const Color(0xFFECEFF1), ['Nothing', 'Something', 'Anything']),
+  ];
+
+  int _currentLevel = 0;
+  double _zoomAnim = 0; // 0 = showing, 1 = zooming
+  bool _zooming = false;
+  bool _complete = false;
+  bool _wrongChoice = false;
+  double _wrongTimer = 0;
+  double _lastTime = 0;
+
+  // Element positions (shuffled each level)
+  List<Offset> _elementPositions = [];
+  List<String> _elementLabels = [];
+  int _correctIndex = 0;
+
+  final List<_JuiceParticle> _particles = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _setupLevel();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
+    _lastTime = _now();
+  }
+
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _setupLevel() {
+    if (_currentLevel >= _levels.length) {
+      _complete = true;
+      return;
+    }
+    final level = _levels[_currentLevel];
+    _elementLabels = [level.targetLabel, ...level.decoys]..shuffle(_rng);
+    _correctIndex = _elementLabels.indexOf(level.targetLabel);
+    _elementPositions = List.generate(_elementLabels.length, (i) {
+      final angle = i / _elementLabels.length * 2 * pi - pi / 2;
+      return Offset(0.5 + cos(angle) * 0.25, 0.5 + sin(angle) * 0.25);
+    });
+    _zooming = false;
+    _zoomAnim = 0;
+    _wrongChoice = false;
+  }
+
+  void _tick() {
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+
+    setState(() {
+      if (_zooming) {
+        _zoomAnim += dt * 1.5;
+        if (_zoomAnim >= 1.0) {
+          _zoomAnim = 0;
+          _zooming = false;
+          _currentLevel++;
+          _setupLevel();
+        }
+      }
+
+      if (_wrongChoice) {
+        _wrongTimer -= dt;
+        if (_wrongTimer <= 0) {
+          _wrongChoice = false;
+          if (_currentLevel > 0) {
+            _currentLevel--;
+            _setupLevel();
+          }
+        }
+      }
+
+      // Particles
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      _particles.removeWhere((p) => p.life <= 0);
+    });
+  }
+
+  void _onTapElement(int index) {
+    if (_zooming || _wrongChoice || _complete) return;
+    if (index == _correctIndex) {
+      // Correct! Start zoom
+      _zooming = true;
+      _zoomAnim = 0;
+      for (int i = 0; i < 15; i++) {
+        final a = _rng.nextDouble() * 2 * pi;
+        _particles.add(_JuiceParticle(
+          x: _elementPositions[index].dx,
+          y: _elementPositions[index].dy,
+          vx: cos(a) * 0.3, vy: sin(a) * 0.3,
+          life: 0.7, color: _levels[_currentLevel].color,
+        ));
+      }
+    } else {
+      // Wrong — zoom reset one level
+      _wrongChoice = true;
+      _wrongTimer = 1.0;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final w = constraints.maxWidth;
+      final h = constraints.maxHeight;
+
+      return GestureDetector(
+        onTapDown: (d) {
+          if (_complete || _zooming || _wrongChoice) return;
+          final pos = Offset(d.localPosition.dx / w, d.localPosition.dy / h);
+          for (int i = 0; i < _elementPositions.length; i++) {
+            if ((pos - _elementPositions[i]).distance < 0.08) {
+              _onTapElement(i);
+              return;
+            }
+          }
+        },
+        child: Container(
+          color: const Color(0xFF050510),
+          child: CustomPaint(
+            painter: _EverythingPainter(
+              levels: _levels,
+              currentLevel: _currentLevel,
+              elementPositions: _elementPositions,
+              elementLabels: _elementLabels,
+              correctIndex: _correctIndex,
+              zoomAnim: _zoomAnim,
+              zooming: _zooming,
+              wrongChoice: _wrongChoice,
+              complete: _complete,
+              particles: _particles,
+            ),
+            child: Stack(
+              children: [
+                // Scale label
+                if (!_complete)
+                  Positioned(
+                    top: 8, left: 0, right: 0,
+                    child: Center(
+                      child: Text(
+                        _currentLevel < _levels.length ? 'Scale: ${_levels[_currentLevel].name}' : '',
+                        style: TextStyle(
+                          fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold,
+                          color: _currentLevel < _levels.length ? _levels[_currentLevel].color.withValues(alpha: 0.7) : Colors.white54,
+                        ),
+                      ),
+                    ),
+                  ),
+                Positioned(
+                  top: 30, left: 0, right: 0,
+                  child: Center(
+                    child: Text(
+                      '${_currentLevel}/${_levels.length} scales',
+                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white30),
+                    ),
+                  ),
+                ),
+                if (_wrongChoice)
+                  Center(
+                    child: const Text(
+                      'Wrong! Zooming back...',
+                      style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.redAccent),
+                    ),
+                  ),
+                if (_complete)
+                  Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('You have seen', style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white54)),
+                        const SizedBox(height: 8),
+                        const Text('Everything', style: TextStyle(fontFamily: 'Avenir', fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white)),
+                        const SizedBox(height: 16),
+                        GestureDetector(
+                          onTap: () => setState(() { _currentLevel = 0; _complete = false; _setupLevel(); }),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
+                            child: const Text('See it again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (!_complete && !_zooming && !_wrongChoice && _currentLevel == 0)
+                  Positioned(
+                    bottom: 20, left: 0, right: 0,
+                    child: const Center(
+                      child: Text(
+                        'Tap the correct element to zoom out',
+                        style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white24),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _EverythingPainter extends CustomPainter {
+  final List<_ScaleLevel> levels;
+  final int currentLevel;
+  final List<Offset> elementPositions;
+  final List<String> elementLabels;
+  final int correctIndex;
+  final double zoomAnim;
+  final bool zooming, wrongChoice, complete;
+  final List<_JuiceParticle> particles;
+
+  _EverythingPainter({
+    required this.levels, required this.currentLevel,
+    required this.elementPositions, required this.elementLabels,
+    required this.correctIndex, required this.zoomAnim,
+    required this.zooming, required this.wrongChoice,
+    required this.complete, required this.particles,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF050510));
+
+    if (complete) return;
+    if (currentLevel >= levels.length) return;
+
+    final level = levels[currentLevel];
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    // Zoom animation: scale effect
+    double scale = 1.0;
+    double alpha = 1.0;
+    if (zooming) {
+      scale = 1.0 + zoomAnim * 3;
+      alpha = 1.0 - zoomAnim;
+    }
+
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.scale(scale);
+    canvas.translate(-cx, -cy);
+
+    // Central object representation
+    final centerR = 30.0;
+    canvas.drawCircle(Offset(cx, cy), centerR + 10, Paint()..color = level.color.withValues(alpha: 0.08 * alpha));
+    canvas.drawCircle(Offset(cx, cy), centerR, Paint()..color = level.color.withValues(alpha: 0.2 * alpha));
+    // Scale name at center
+    final centerTp = TextPainter(
+      text: TextSpan(text: level.name, style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: level.color.withValues(alpha: 0.6 * alpha))),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    centerTp.paint(canvas, Offset(cx - centerTp.width / 2, cy - centerTp.height / 2));
+
+    // Element options around the center
+    for (int i = 0; i < elementPositions.length; i++) {
+      final pos = Offset(elementPositions[i].dx * size.width, elementPositions[i].dy * size.height);
+      // Connecting line
+      canvas.drawLine(Offset(cx, cy), pos, Paint()..color = Colors.white.withValues(alpha: 0.05 * alpha)..strokeWidth = 1);
+      // Node
+      canvas.drawCircle(pos, 28, Paint()..color = level.color.withValues(alpha: 0.1 * alpha));
+      canvas.drawCircle(pos, 22, Paint()
+        ..color = level.color.withValues(alpha: 0.25 * alpha)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2);
+      // Label
+      final tp = TextPainter(
+        text: TextSpan(
+          text: elementLabels[i],
+          style: TextStyle(fontFamily: 'Avenir', fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white.withValues(alpha: 0.8 * alpha)),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
+    }
+
+    canvas.restore();
+
+    // Progress bar at bottom
+    final barY = size.height - 50;
+    final barW = size.width * 0.6;
+    final barX = (size.width - barW) / 2;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(barX, barY, barW, 6), const Radius.circular(3)),
+      Paint()..color = Colors.white.withValues(alpha: 0.1),
+    );
+    final progress = currentLevel / levels.length;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(barX, barY, barW * progress, 6), const Radius.circular(3)),
+      Paint()..color = level.color.withValues(alpha: 0.5),
+    );
+
+    // Particles
+    for (final p in particles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x * size.width, p.y * size.height), 3,
+          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _EverythingPainter old) => true;
 }

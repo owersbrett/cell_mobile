@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:flutter/material.dart';
@@ -63,9 +64,9 @@ class MiniGamePage extends StatelessWidget {
   String _gameName(BioScale scale) {
     switch (scale) {
       case BioScale.nothings: return 'Big Bang';
-      case BioScale.questions: return 'Catch the Light';
+      case BioScale.somethings: return 'Thought Catcher';
       case BioScale.particles: return 'Particle Accelerator';
-      case BioScale.atoms: return 'Electron Shell';
+      case BioScale.atoms: return 'Starch Factory';
       case BioScale.molecular: return 'Molecule Builder';
       case BioScale.organelle: return 'Cell Builder';
       case BioScale.cell: return 'Mitosis Rush';
@@ -78,15 +79,13 @@ class MiniGamePage extends StatelessWidget {
       case BioScale.financial: return 'Market Trader';
       case BioScale.global: return 'Feed the World';
       case BioScale.planets: return 'Orbit Catch';
-      case BioScale.solarSystems: return 'Planet Sorter';
+      case BioScale.solarSystems: return 'Orbital Mechanic';
       case BioScale.galactic: return 'Star Collector';
-      case BioScale.clusters: return 'Connect';
-      case BioScale.cosmicStructures: return 'Web Weaver';
-      case BioScale.bigQuestions: return 'Dark Matter Hunt';
-      case BioScale.universe: return 'Expand';
-      case BioScale.multiverse: return 'Choose Your Path';
-      case BioScale.multiverseAll: return 'Merge Realities';
-      case BioScale.universeAll: return 'Everything';
+      case BioScale.clusters: return 'Gravity Sling';
+      case BioScale.cosmicStructures: return 'Neuron Connect';
+      case BioScale.multiverseAll: return 'Reality Merge';
+      case BioScale.universeAll: return 'Everything Everywhere';
+      case BioScale.allThings: return 'All Things';
       case BioScale.infinities: return 'Count Forever';
     }
   }
@@ -94,7 +93,7 @@ class MiniGamePage extends StatelessWidget {
   Widget _buildGame(BioScale scale) {
     switch (scale) {
       case BioScale.nothings: return const _BigBangGame();
-      case BioScale.questions: return const _CatchTheFlashGame();
+      case BioScale.somethings: return const ThoughtCatcherGame();
       case BioScale.particles: return const _ParticleAcceleratorGame();
       case BioScale.atoms: return const _ElectronShellGame();
       case BioScale.molecular: return const _MoleculeBuilderGame();
@@ -110,13 +109,11 @@ class MiniGamePage extends StatelessWidget {
       case BioScale.planets: return const PlanetCatchGame();
       case BioScale.solarSystems: return const SolarSortGame();
       case BioScale.galactic: return const GalaxyCollectorGame();
-      case BioScale.clusters: return const CosmicWebGame();
-      case BioScale.cosmicStructures: return const CosmicWebGame();
-      case BioScale.bigQuestions: return const _CatchTheFlashGame();
-      case BioScale.universe: return const _BigBangGame();
-      case BioScale.multiverse: return const MultiverseChoiceGame();
-      case BioScale.multiverseAll: return const CosmicWebGame();
-      case BioScale.universeAll: return const _BigBangGame();
+      case BioScale.clusters: return const ClusterGravityGame();
+      case BioScale.cosmicStructures: return const NeuronConnectGame();
+      case BioScale.multiverseAll: return const RealityMergeGame();
+      case BioScale.universeAll: return const EverythingGame();
+      case BioScale.allThings: return const EverythingGame();
       case BioScale.infinities: return const InfinityCounterGame();
       default: return const _BigBangGame();
     }
@@ -430,28 +427,45 @@ class _ParticleAcceleratorGameState extends State<_ParticleAcceleratorGame>
   late AnimationController _ticker;
   final Random _rng = Random();
 
-  // Two orbiting particles — angles in radians
+  // Particle orbit angles (radians)
   double _angle1 = 0;
   double _angle2 = pi;
-  double _currentSpeed = 1.0;
-  static const double _criticalSpeed = 8.0;
 
-  // Debris from collisions
-  final List<_AccelDebris> _debris = [];
+  // Speed mechanics
+  double _speed = 0.0;
+  static const double _maxSpeed = 10.0;
+  static const double _drag = 0.55;
+  static const double _tapBoost = 0.7;
 
-  // Ring flash
-  double _ringFlash = 0;
-  // Collision burst position
-  Offset? _burstPos;
-  double _burstAge = 0;
+  // Target zone (fraction of _maxSpeed)
+  double _zoneMin = 0.35;
+  double _zoneMax = 0.65;
 
-  int _score = 0;
+  // Collision progress (0..1)
+  double _progress = 0.0;
+  static const double _fillRate = 1.0 / 3.0; // fills in ~3 seconds
+  static const double _drainRate = 0.15;
+
+  // Scoring
+  int _totalFunding = 0;
   int _collisions = 0;
-  double _lastTime = 0;
+  int _level = 1;
+  int _nextReward = 50;
 
-  // Colors for the two particles
-  Color _color1 = const Color(0xFF4FC3F7);
-  Color _color2 = const Color(0xFFFF7043);
+  // Timer
+  double _elapsed = 0.0;
+  static const double _gameDuration = 60.0;
+  bool _gameOver = false;
+
+  // Visual effects
+  double _ringFlash = 0.0;
+  double _screenShake = 0.0;
+  final List<_AccelDebris> _debris = [];
+  final List<_FundingPopup> _popups = [];
+  String? _levelText;
+  double _levelTextAge = 0.0;
+
+  double _lastTime = 0;
 
   @override
   void initState() {
@@ -464,8 +478,7 @@ class _ParticleAcceleratorGameState extends State<_ParticleAcceleratorGame>
     _lastTime = _now();
   }
 
-  double _now() =>
-      DateTime.now().microsecondsSinceEpoch / 1000000.0;
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1000000.0;
 
   @override
   void dispose() {
@@ -473,71 +486,159 @@ class _ParticleAcceleratorGameState extends State<_ParticleAcceleratorGame>
     super.dispose();
   }
 
+  void _resetGame() {
+    _speed = 0.0;
+    _progress = 0.0;
+    _totalFunding = 0;
+    _collisions = 0;
+    _level = 1;
+    _nextReward = 50;
+    _elapsed = 0.0;
+    _gameOver = false;
+    _ringFlash = 0.0;
+    _screenShake = 0.0;
+    _debris.clear();
+    _popups.clear();
+    _levelText = null;
+    _zoneMin = 0.35;
+    _zoneMax = 0.65;
+    _angle1 = 0;
+    _angle2 = pi;
+    _lastTime = _now();
+  }
+
   void _onTick() {
     final now = _now();
     final dt = (now - _lastTime).clamp(0.001, 0.05);
     _lastTime = now;
 
+    if (_gameOver) return;
+
     setState(() {
-      // Natural deceleration
-      _currentSpeed *= (1 - 0.08 * dt);
-      if (_currentSpeed < 1.0) _currentSpeed = 1.0;
+      _elapsed += dt;
 
-      // Move particles
-      _angle1 += _currentSpeed * dt;
-      _angle2 += _currentSpeed * dt;
+      // Check game over conditions
+      if (_elapsed >= _gameDuration || _speed > _maxSpeed) {
+        _gameOver = true;
+        return;
+      }
 
-      // Check collision (particles are on opposite sides, collision when
-      // they lap each other, i.e. when angle diff is small)
-      final diff = ((_angle1 - _angle2) % (2 * pi)).abs();
-      if (_currentSpeed >= _criticalSpeed && (diff < 0.15 || (2 * pi - diff) < 0.15)) {
-        _triggerCollision();
+      // Natural deceleration (drag)
+      _speed *= (1 - _drag * dt);
+      if (_speed < 0.01) _speed = 0.0;
+
+      // Move particles — speed maps to angular velocity
+      final angularVel = _speed * 2.0;
+      _angle1 += angularVel * dt;
+      _angle2 += (angularVel * 0.8 + 0.3) * dt;
+
+      // Check if speed is in the target zone
+      final normalizedSpeed = _speed / _maxSpeed;
+      final inZone = normalizedSpeed >= _zoneMin && normalizedSpeed <= _zoneMax;
+
+      if (inZone) {
+        _progress += _fillRate * dt;
+        if (_progress >= 1.0) {
+          _triggerCollision();
+        }
+      } else {
+        _progress -= _drainRate * dt;
+        if (_progress < 0) _progress = 0;
       }
 
       // Update debris
       for (final d in _debris) {
         d.x += d.vx * dt;
         d.y += d.vy * dt;
-        d.vx *= (1 - 0.5 * dt);
-        d.vy *= (1 - 0.5 * dt);
-        d.life -= dt * 0.4;
+        d.vx *= (1 - 1.5 * dt);
+        d.vy *= (1 - 1.5 * dt);
+        d.life -= dt * 0.5;
       }
       _debris.removeWhere((d) => d.life <= 0);
 
-      // Ring flash decay
-      if (_ringFlash > 0) _ringFlash = (_ringFlash - dt * 4).clamp(0.0, 1.0);
+      // Update popups
+      for (final p in _popups) {
+        p.y -= 40 * dt;
+        p.age += dt;
+      }
+      _popups.removeWhere((p) => p.age > 2.0);
 
-      // Burst decay
-      if (_burstPos != null) {
-        _burstAge += dt;
-        if (_burstAge > 0.6) _burstPos = null;
+      // Decay effects
+      if (_ringFlash > 0) _ringFlash = (_ringFlash - dt * 3).clamp(0.0, 1.0);
+      if (_screenShake > 0) {
+        _screenShake = (_screenShake - dt * 4).clamp(0.0, 1.0);
+      }
+
+      // Level text decay
+      if (_levelText != null) {
+        _levelTextAge += dt;
+        if (_levelTextAge > 2.0) _levelText = null;
       }
     });
   }
 
   void _triggerCollision() {
     _collisions++;
-    _score += (_currentSpeed * 10).toInt();
+    _totalFunding += _nextReward;
+    _progress = 0.0;
+    _ringFlash = 1.0;
+    _screenShake = 1.0;
 
-    // Reset
+    // Spawn popup
+    _popups.add(_FundingPopup(
+      text: '\$$_nextReward for potato research!',
+      y: 0,
+      age: 0,
+    ));
+
+    // Increase reward for next collision
+    _nextReward = (50 + _collisions * 25).clamp(50, 500);
+
+    // Reset speed
+    _speed = 0.0;
     _angle1 = 0;
     _angle2 = pi;
-    _currentSpeed = 1.0;
-    _ringFlash = 1.0;
 
-    // Spawn debris from the collision point
-    // Use center of screen as reference — actual position computed in paint
-    _burstPos = Offset.zero; // marker, actual pos computed from last angle
-    _burstAge = 0;
+    // Narrow the target zone for next level
+    _level++;
+    final zoneShrink = 0.03 * _collisions;
+    final zoneCenter = (_zoneMin + _zoneMax) / 2;
+    final halfWidth =
+        ((_zoneMax - _zoneMin) / 2 - zoneShrink).clamp(0.04, 0.15);
+    _zoneMin = (zoneCenter - halfWidth).clamp(0.1, 0.8);
+    _zoneMax = (zoneCenter + halfWidth).clamp(0.2, 0.9);
 
-    // Pick new colors
-    _color1 = HSVColor.fromAHSV(1, _rng.nextDouble() * 360, 0.7, 1).toColor();
-    _color2 = HSVColor.fromAHSV(1, _rng.nextDouble() * 360, 0.7, 1).toColor();
+    _levelText = 'Level $_level';
+    _levelTextAge = 0;
+
+    // Spawn debris burst (positions set to zero, repositioned in build)
+    for (int i = 0; i < 30; i++) {
+      final a = _rng.nextDouble() * 2 * pi;
+      final spd = 60 + _rng.nextDouble() * 250;
+      _debris.add(_AccelDebris(
+        x: 0,
+        y: 0,
+        vx: cos(a) * spd,
+        vy: sin(a) * spd,
+        life: 1.0,
+        color: HSVColor.fromAHSV(
+          1,
+          _rng.nextDouble() * 60 + 20,
+          0.8,
+          1,
+        ).toColor(),
+        radius: 2 + _rng.nextDouble() * 4,
+      ));
+    }
   }
 
   void _onTap() {
+    if (_gameOver) {
+      setState(_resetGame);
+      return;
+    }
     setState(() {
-      _currentSpeed += 0.5;
+      _speed += _tapBoost;
     });
   }
 
@@ -547,52 +648,44 @@ class _ParticleAcceleratorGameState extends State<_ParticleAcceleratorGame>
       onTapDown: (_) => _onTap(),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final center = Offset(
-            constraints.maxWidth / 2,
-            constraints.maxHeight / 2,
-          );
-          final ringRadius = min(constraints.maxWidth, constraints.maxHeight) * 0.35;
+          final w = constraints.maxWidth;
+          final h = constraints.maxHeight;
+          final ctr = Offset(w / 2, h / 2);
+          final ringR = min(w, h) * 0.32;
 
-          // Spawn debris at collision point in layout coordinates
-          if (_burstPos == Offset.zero && _burstAge < 0.02) {
-            // Use angle midpoint for burst position
-            final midAngle = _angle1;
-            final bx = center.dx + cos(midAngle) * ringRadius;
-            final by = center.dy + sin(midAngle) * ringRadius;
-            _burstPos = Offset(bx, by);
-
-            for (int i = 0; i < 20; i++) {
-              final a = _rng.nextDouble() * 2 * pi;
-              final spd = 80 + _rng.nextDouble() * 200;
-              _debris.add(_AccelDebris(
-                x: bx, y: by,
-                vx: cos(a) * spd, vy: sin(a) * spd,
-                life: 1.0,
-                color: HSVColor.fromAHSV(
-                  1, _rng.nextDouble() * 360, 0.8, 1,
-                ).toColor(),
-                radius: 2 + _rng.nextDouble() * 3,
-              ));
+          // Position debris at ring top on first frame
+          for (final d in _debris) {
+            if (d.x == 0 && d.y == 0) {
+              d.x = ctr.dx;
+              d.y = ctr.dy - ringR;
             }
           }
 
           return ClipRect(
             child: CustomPaint(
               painter: _AcceleratorPainter(
-                center: center,
-                ringRadius: ringRadius,
+                center: ctr,
+                ringRadius: ringR,
                 angle1: _angle1,
                 angle2: _angle2,
-                color1: _color1,
-                color2: _color2,
-                speed: _currentSpeed,
-                criticalSpeed: _criticalSpeed,
-                ringFlash: _ringFlash,
-                debris: _debris,
-                burstPos: _burstPos,
-                burstAge: _burstAge,
-                score: _score,
+                speed: _speed,
+                maxSpeed: _maxSpeed,
+                zoneMin: _zoneMin,
+                zoneMax: _zoneMax,
+                progress: _progress,
+                totalFunding: _totalFunding,
                 collisions: _collisions,
+                level: _level,
+                elapsed: _elapsed,
+                gameDuration: _gameDuration,
+                gameOver: _gameOver,
+                ringFlash: _ringFlash,
+                screenShake: _screenShake,
+                debris: _debris,
+                popups: _popups,
+                levelText: _levelText,
+                levelTextAge: _levelTextAge,
+                rng: _rng,
               ),
               size: Size.infinite,
             ),
@@ -603,13 +696,23 @@ class _ParticleAcceleratorGameState extends State<_ParticleAcceleratorGame>
   }
 }
 
+class _FundingPopup {
+  String text;
+  double y;
+  double age;
+  _FundingPopup({required this.text, required this.y, required this.age});
+}
+
 class _AccelDebris {
   double x, y, vx, vy, life, radius;
   Color color;
   _AccelDebris({
-    required this.x, required this.y,
-    required this.vx, required this.vy,
-    required this.life, required this.color,
+    required this.x,
+    required this.y,
+    required this.vx,
+    required this.vy,
+    required this.life,
+    required this.color,
     required this.radius,
   });
 }
@@ -618,136 +721,588 @@ class _AcceleratorPainter extends CustomPainter {
   final Offset center;
   final double ringRadius;
   final double angle1, angle2;
-  final Color color1, color2;
-  final double speed, criticalSpeed;
-  final double ringFlash;
+  final double speed, maxSpeed;
+  final double zoneMin, zoneMax;
+  final double progress;
+  final int totalFunding, collisions, level;
+  final double elapsed, gameDuration;
+  final bool gameOver;
+  final double ringFlash, screenShake;
   final List<_AccelDebris> debris;
-  final Offset? burstPos;
-  final double burstAge;
-  final int score, collisions;
+  final List<_FundingPopup> popups;
+  final String? levelText;
+  final double levelTextAge;
+  final Random rng;
 
   _AcceleratorPainter({
-    required this.center, required this.ringRadius,
-    required this.angle1, required this.angle2,
-    required this.color1, required this.color2,
-    required this.speed, required this.criticalSpeed,
-    required this.ringFlash, required this.debris,
-    required this.burstPos, required this.burstAge,
-    required this.score, required this.collisions,
+    required this.center,
+    required this.ringRadius,
+    required this.angle1,
+    required this.angle2,
+    required this.speed,
+    required this.maxSpeed,
+    required this.zoneMin,
+    required this.zoneMax,
+    required this.progress,
+    required this.totalFunding,
+    required this.collisions,
+    required this.level,
+    required this.elapsed,
+    required this.gameDuration,
+    required this.gameOver,
+    required this.ringFlash,
+    required this.screenShake,
+    required this.debris,
+    required this.popups,
+    required this.levelText,
+    required this.levelTextAge,
+    required this.rng,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
+    // Screen shake offset
+    if (screenShake > 0) {
+      final shakeX = (rng.nextDouble() - 0.5) * 8 * screenShake;
+      final shakeY = (rng.nextDouble() - 0.5) * 8 * screenShake;
+      canvas.save();
+      canvas.translate(shakeX, shakeY);
+    }
 
-    // Ring track
-    final speedRatio = (speed / criticalSpeed).clamp(0.0, 1.0);
-    final ringColor = Color.lerp(
-      const Color(0xFF333333),
-      const Color(0xFFFF4444),
-      speedRatio,
-    )!;
+    // Background
+    canvas.drawRect(
+        Offset.zero & size, Paint()..color = const Color(0xFF0A0A14));
+
+    // Subtle radial grid
+    _drawRadialGrid(canvas);
+
+    final normalizedSpeed = (speed / maxSpeed).clamp(0.0, 1.0);
+    final inZone = normalizedSpeed >= zoneMin && normalizedSpeed <= zoneMax;
+    final tooFast = normalizedSpeed > zoneMax;
+
+    if (!gameOver) {
+      _drawRing(canvas, normalizedSpeed, inZone, tooFast);
+      _drawParticles(canvas, normalizedSpeed, inZone, tooFast);
+      _drawSpeedGauge(canvas, size, normalizedSpeed);
+      _drawProgressBar(canvas, size);
+      _drawFundingCounter(canvas, size);
+      _drawTimer(canvas, size);
+      _drawDebris(canvas);
+      _drawPopups(canvas, size);
+      if (levelText != null) _drawLevelText(canvas, size);
+      _drawInstructions(canvas, size);
+    } else {
+      _drawGameOver(canvas, size);
+    }
+
+    // Screen flash on collision
+    if (ringFlash > 0.5) {
+      canvas.drawRect(
+        Offset.zero & size,
+        Paint()
+          ..color = Colors.white.withValues(alpha: (ringFlash - 0.5) * 0.6),
+      );
+    }
+
+    if (screenShake > 0) {
+      canvas.restore();
+    }
+  }
+
+  void _drawRadialGrid(Canvas canvas) {
+    final gridPaint = Paint()
+      ..color = const Color(0xFF1A1A2E)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.5;
+    for (int i = 1; i <= 6; i++) {
+      canvas.drawCircle(center, ringRadius * i * 0.3, gridPaint);
+    }
+    for (int i = 0; i < 12; i++) {
+      final a = i * pi / 6;
+      canvas.drawLine(
+        center,
+        Offset(center.dx + cos(a) * ringRadius * 1.8,
+            center.dy + sin(a) * ringRadius * 1.8),
+        gridPaint,
+      );
+    }
+  }
+
+  void _drawRing(
+      Canvas canvas, double normalizedSpeed, bool inZone, bool tooFast) {
+    Color ringColor;
+    double glowWidth;
+    double glowAlpha;
+
+    if (inZone) {
+      ringColor = const Color(0xFF4CAF50);
+      glowWidth = 8;
+      glowAlpha = 0.7;
+    } else if (tooFast) {
+      ringColor = const Color(0xFFFF1744);
+      glowWidth = 6 + sin(elapsed * 20) * 3;
+      glowAlpha = 0.8;
+    } else {
+      ringColor = const Color(0xFF444466);
+      glowWidth = 4;
+      glowAlpha = 0.3 + normalizedSpeed * 0.3;
+    }
+
+    if (ringFlash > 0) {
+      ringColor = Color.lerp(ringColor, Colors.white, ringFlash)!;
+      glowAlpha = glowAlpha + ringFlash * 0.3;
+    }
+
+    // Outer glow
     canvas.drawCircle(
-      center, ringRadius,
+      center,
+      ringRadius,
       Paint()
-        ..color = ringColor.withValues(alpha: 0.4 + ringFlash * 0.6)
+        ..color =
+            ringColor.withValues(alpha: (glowAlpha * 0.3).clamp(0.0, 1.0))
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 4 + ringFlash * 4,
+        ..strokeWidth = glowWidth + 8
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
     );
 
-    // Speed indicator ring (inner)
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: ringRadius - 12),
-      -pi / 2, 2 * pi * speedRatio, false,
+    // Main ring track
+    canvas.drawCircle(
+      center,
+      ringRadius,
       Paint()
-        ..color = Color.lerp(const Color(0xFF66BB6A), const Color(0xFFFF1744), speedRatio)!.withValues(alpha: 0.6)
+        ..color = ringColor.withValues(alpha: glowAlpha.clamp(0.0, 1.0))
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3,
+        ..strokeWidth = glowWidth,
     );
 
-    // Orbiting particle 1
+    // Inner edges
+    final edgePaint = Paint()
+      ..color = ringColor.withValues(alpha: (glowAlpha * 0.5).clamp(0.0, 1.0))
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    canvas.drawCircle(center, ringRadius - glowWidth / 2, edgePaint);
+    canvas.drawCircle(center, ringRadius + glowWidth / 2, edgePaint);
+  }
+
+  void _drawParticles(
+      Canvas canvas, double normalizedSpeed, bool inZone, bool tooFast) {
+    const color1 = Color(0xFF4FC3F7);
+    const color2 = Color(0xFFFF7043);
+
     final p1 = Offset(
       center.dx + cos(angle1) * ringRadius,
       center.dy + sin(angle1) * ringRadius,
     );
-    _drawGlowDot(canvas, p1, color1, 8);
-
-    // Orbiting particle 2
     final p2 = Offset(
       center.dx + cos(angle2) * ringRadius,
       center.dy + sin(angle2) * ringRadius,
     );
-    _drawGlowDot(canvas, p2, color2, 8);
 
-    // Debris
-    for (final d in debris) {
-      final a = d.life.clamp(0.0, 1.0);
-      canvas.drawCircle(
-        Offset(d.x, d.y), d.radius * a,
-        Paint()..color = d.color.withValues(alpha: a * 0.8),
+    // Trail length depends on speed state
+    final trailSteps = inZone ? 12 : (tooFast ? 8 : 4);
+    final trailSpacing = normalizedSpeed * 0.15 + 0.02;
+
+    for (int i = trailSteps; i > 0; i--) {
+      final t = i * trailSpacing;
+      final alpha = (1.0 - i / trailSteps) * 0.4;
+
+      final t1 = Offset(
+        center.dx + cos(angle1 - t) * ringRadius,
+        center.dy + sin(angle1 - t) * ringRadius,
       );
-    }
+      canvas.drawCircle(t1, 3,
+          Paint()..color = color1.withValues(alpha: alpha.clamp(0.0, 1.0)));
 
-    // Burst effect
-    if (burstPos != null && burstAge < 0.6) {
-      final br = 30 + burstAge * 200;
-      final ba = (1.0 - burstAge / 0.6).clamp(0.0, 1.0);
-      canvas.drawCircle(
-        burstPos!, br,
-        Paint()
-          ..color = Colors.white.withValues(alpha: ba * 0.5)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3,
+      final t2 = Offset(
+        center.dx +
+            cos(angle2 - t * 0.8 - 0.3 * t / trailSteps) * ringRadius,
+        center.dy +
+            sin(angle2 - t * 0.8 - 0.3 * t / trailSteps) * ringRadius,
       );
+      canvas.drawCircle(t2, 3,
+          Paint()..color = color2.withValues(alpha: alpha.clamp(0.0, 1.0)));
     }
 
-    // Score text
-    final tp = TextPainter(
-      text: TextSpan(
-        text: 'Collisions: $collisions   Score: $score',
-        style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white38),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas, Offset((size.width - tp.width) / 2, size.height - 50));
-
-    // Speed label
-    final spTp = TextPainter(
-      text: TextSpan(
-        text: 'Speed: ${speed.toStringAsFixed(1)}x',
-        style: TextStyle(
-          fontFamily: 'Avenir', fontSize: 14,
-          color: Color.lerp(Colors.white38, Colors.redAccent, speedRatio),
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    spTp.paint(canvas, Offset((size.width - spTp.width) / 2, size.height - 75));
-
-    // Hint
-    if (collisions == 0 && speed < 2) {
-      final hint = TextPainter(
-        text: const TextSpan(
-          text: 'Tap rapidly to accelerate!',
-          style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.white24),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      hint.paint(canvas, Offset(
-        (size.width - hint.width) / 2,
-        center.dy + ringRadius + 40,
-      ));
+    // Erratic jitter when too fast
+    if (tooFast) {
+      for (int i = 0; i < 4; i++) {
+        final jitter = (rng.nextDouble() - 0.5) * 12;
+        canvas.drawCircle(Offset(p1.dx + jitter, p1.dy + jitter), 2,
+            Paint()..color = color1.withValues(alpha: 0.3));
+        canvas.drawCircle(Offset(p2.dx + jitter, p2.dy + jitter), 2,
+            Paint()..color = color2.withValues(alpha: 0.3));
+      }
     }
+
+    _drawGlowDot(canvas, p1, color1, 7);
+    _drawGlowDot(canvas, p2, color2, 7);
   }
 
   void _drawGlowDot(Canvas canvas, Offset pos, Color color, double r) {
     final gradient = ui.Gradient.radial(
-      pos, r * 3,
-      [color.withValues(alpha: 0.6), color.withValues(alpha: 0)],
+      pos,
+      r * 3,
+      [color.withValues(alpha: 0.5), color.withValues(alpha: 0)],
     );
     canvas.drawCircle(pos, r * 3, Paint()..shader = gradient);
     canvas.drawCircle(pos, r, Paint()..color = color);
-    canvas.drawCircle(pos, r * 0.5, Paint()..color = Colors.white.withValues(alpha: 0.7));
+    canvas.drawCircle(
+        pos, r * 0.4, Paint()..color = Colors.white.withValues(alpha: 0.8));
+  }
+
+  void _drawSpeedGauge(Canvas canvas, Size size, double normalizedSpeed) {
+    const gaugeLeft = 20.0;
+    final gaugeTop = size.height * 0.2;
+    final gaugeHeight = size.height * 0.55;
+    const gaugeWidth = 24.0;
+
+    // Background
+    final bgRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(gaugeLeft, gaugeTop, gaugeWidth, gaugeHeight),
+      const Radius.circular(12),
+    );
+    canvas.drawRRect(bgRect, Paint()..color = const Color(0xFF1A1A2E));
+    canvas.drawRRect(
+      bgRect,
+      Paint()
+        ..color = const Color(0xFF333355)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+
+    // Target zone (green band)
+    final zoneTop = gaugeTop + gaugeHeight * (1.0 - zoneMax);
+    final zoneBottom = gaugeTop + gaugeHeight * (1.0 - zoneMin);
+    final zoneRect = Rect.fromLTRB(
+        gaugeLeft + 2, zoneTop, gaugeLeft + gaugeWidth - 2, zoneBottom);
+    canvas.drawRect(
+        zoneRect,
+        Paint()
+          ..color = const Color(0xFF4CAF50).withValues(alpha: 0.35));
+    canvas.drawRect(
+      zoneRect,
+      Paint()
+        ..color = const Color(0xFF4CAF50).withValues(alpha: 0.7)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+
+    // Speed fill bar
+    final fillHeight = gaugeHeight * normalizedSpeed;
+    final fillTop = gaugeTop + gaugeHeight - fillHeight;
+    Color fillColor;
+    if (normalizedSpeed > zoneMax) {
+      fillColor = const Color(0xFFFF1744);
+    } else if (normalizedSpeed >= zoneMin) {
+      fillColor = const Color(0xFF4CAF50);
+    } else {
+      fillColor = const Color(0xFF4FC3F7);
+    }
+
+    final fillRect = RRect.fromRectAndCorners(
+      Rect.fromLTWH(gaugeLeft + 4, fillTop, gaugeWidth - 8, fillHeight),
+      bottomLeft: const Radius.circular(8),
+      bottomRight: const Radius.circular(8),
+    );
+    canvas.drawRRect(
+        fillRect, Paint()..color = fillColor.withValues(alpha: 0.8));
+
+    // Speed indicator line
+    final indicatorY = gaugeTop + gaugeHeight * (1.0 - normalizedSpeed);
+    canvas.drawLine(
+      Offset(gaugeLeft - 4, indicatorY),
+      Offset(gaugeLeft + gaugeWidth + 4, indicatorY),
+      Paint()
+        ..color = Colors.white
+        ..strokeWidth = 2,
+    );
+
+    // Labels
+    final slowLabel = TextPainter(
+      text: const TextSpan(
+        text: 'SLOW',
+        style: TextStyle(
+            fontFamily: 'Avenir', fontSize: 9, color: Colors.white30),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    slowLabel.paint(
+      canvas,
+      Offset(gaugeLeft + (gaugeWidth - slowLabel.width) / 2,
+          gaugeTop + gaugeHeight + 4),
+    );
+
+    final fastLabel = TextPainter(
+      text: const TextSpan(
+        text: 'FAST',
+        style: TextStyle(
+            fontFamily: 'Avenir', fontSize: 9, color: Colors.white30),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    fastLabel.paint(
+      canvas,
+      Offset(gaugeLeft + (gaugeWidth - fastLabel.width) / 2, gaugeTop - 16),
+    );
+  }
+
+  void _drawProgressBar(Canvas canvas, Size size) {
+    const barLeft = 60.0;
+    final barRight = size.width - 20;
+    const barTop = 50.0;
+    const barHeight = 14.0;
+    final barWidth = barRight - barLeft;
+
+    // Label
+    final label = TextPainter(
+      text: const TextSpan(
+        text: 'COLLISION',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: Colors.white54,
+          letterSpacing: 2,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    label.paint(canvas, Offset(barLeft, barTop - 16));
+
+    // Background
+    final bgRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(barLeft, barTop, barWidth, barHeight),
+      const Radius.circular(7),
+    );
+    canvas.drawRRect(bgRect, Paint()..color = const Color(0xFF1A1A2E));
+    canvas.drawRRect(
+      bgRect,
+      Paint()
+        ..color = const Color(0xFF333355)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+
+    // Fill
+    if (progress > 0) {
+      final fillWidth = barWidth * progress.clamp(0.0, 1.0);
+      final fillRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(barLeft, barTop, fillWidth, barHeight),
+        const Radius.circular(7),
+      );
+      final fillPaint = Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(barLeft, barTop),
+          Offset(barLeft + fillWidth, barTop),
+          [const Color(0xFF4FC3F7), const Color(0xFFFFFFFF)],
+        );
+      canvas.drawRRect(fillRect, fillPaint);
+
+      // Glow on leading edge
+      if (progress > 0.05) {
+        canvas.drawCircle(
+          Offset(barLeft + fillWidth, barTop + barHeight / 2),
+          6,
+          Paint()
+            ..color = Colors.white.withValues(alpha: 0.4)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+      }
+    }
+  }
+
+  void _drawFundingCounter(Canvas canvas, Size size) {
+    final text = '\$$totalFunding for potato research';
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+          color: Color(0xFFE19816),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset(size.width - tp.width - 16, 14));
+  }
+
+  void _drawTimer(Canvas canvas, Size size) {
+    final remaining = (gameDuration - elapsed).clamp(0.0, gameDuration);
+    final secs = remaining.ceil();
+    final timerColor = secs <= 10 ? const Color(0xFFFF1744) : Colors.white54;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: '${secs}s',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+          color: timerColor,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, const Offset(16, 14));
+  }
+
+  void _drawDebris(Canvas canvas) {
+    for (final d in debris) {
+      final a = d.life.clamp(0.0, 1.0);
+      canvas.drawCircle(
+        Offset(d.x, d.y),
+        d.radius * a,
+        Paint()..color = d.color.withValues(alpha: a * 0.8),
+      );
+    }
+  }
+
+  void _drawPopups(Canvas canvas, Size size) {
+    for (final p in popups) {
+      final alpha = (1.0 - p.age / 2.0).clamp(0.0, 1.0);
+      final yPos = size.height * 0.35 + p.y;
+      final tp = TextPainter(
+        text: TextSpan(
+          text: p.text,
+          style: TextStyle(
+            fontFamily: 'Avenir',
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFFE19816).withValues(alpha: alpha),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset((size.width - tp.width) / 2, yPos));
+    }
+  }
+
+  void _drawLevelText(Canvas canvas, Size size) {
+    final alpha = (1.0 - levelTextAge / 2.0).clamp(0.0, 1.0);
+    final scale = 1.0 + levelTextAge * 0.3;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: levelText,
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 28 * scale,
+          fontWeight: FontWeight.w900,
+          color: Colors.white.withValues(alpha: alpha),
+          letterSpacing: 4,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(
+      canvas,
+      Offset((size.width - tp.width) / 2, center.dy - tp.height / 2),
+    );
+  }
+
+  void _drawInstructions(Canvas canvas, Size size) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: 'TAP to accelerate \u2022 Keep speed in the GREEN zone',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 13,
+          color: Colors.white.withValues(alpha: 0.25),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset((size.width - tp.width) / 2, size.height - 36));
+  }
+
+  void _drawGameOver(Canvas canvas, Size size) {
+    canvas.drawRect(
+        Offset.zero & size, Paint()..color = const Color(0xFF0A0A14));
+
+    // Title
+    final title = TextPainter(
+      text: const TextSpan(
+        text: 'RESEARCH COMPLETE',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 26,
+          fontWeight: FontWeight.w900,
+          color: Color(0xFFE19816),
+          letterSpacing: 3,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    title.paint(
+        canvas, Offset((size.width - title.width) / 2, size.height * 0.2));
+
+    // Stats
+    final stats = [
+      'Total Funding Raised: \$$totalFunding',
+      'Collisions Achieved: $collisions',
+      'Highest Level: $level',
+    ];
+    for (int i = 0; i < stats.length; i++) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: stats[i],
+          style: const TextStyle(
+            fontFamily: 'Avenir',
+            fontSize: 18,
+            color: Colors.white70,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas,
+          Offset((size.width - tp.width) / 2, size.height * 0.35 + i * 36));
+    }
+
+    // Restart button
+    const btnWidth = 260.0;
+    const btnHeight = 50.0;
+    final btnRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+        center: Offset(size.width / 2, size.height * 0.65),
+        width: btnWidth,
+        height: btnHeight,
+      ),
+      const Radius.circular(25),
+    );
+    canvas.drawRRect(btnRect, Paint()..color = const Color(0xFFE19816));
+
+    final btnText = TextPainter(
+      text: const TextSpan(
+        text: 'Fund More Research',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    btnText.paint(
+      canvas,
+      Offset((size.width - btnText.width) / 2,
+          size.height * 0.65 - btnText.height / 2),
+    );
+
+    // Potato accent
+    final potatoLabel = TextPainter(
+      text: const TextSpan(
+        text: 'Potato Particle Collider',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 14,
+          color: Colors.white24,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    potatoLabel.paint(canvas,
+        Offset((size.width - potatoLabel.width) / 2, size.height * 0.8));
   }
 
   @override
@@ -755,8 +1310,78 @@ class _AcceleratorPainter extends CustomPainter {
 }
 
 // ---------------------------------------------------------------------------
-// GAME 3: Electron Shell — drag electrons into correct orbital shells
+// GAME 3: Starch Factory — build starch chains inside a potato amyloplast
 // ---------------------------------------------------------------------------
+
+// ---- Data classes for Starch Factory ----
+
+enum _MoleculeType { glucose, water, phosphorus, nitrogen }
+
+class _FloatingMolecule {
+  double x, y, vx, vy;
+  _MoleculeType type;
+  double brownianTimer;
+  _FloatingMolecule({
+    required this.x, required this.y,
+    required this.vx, required this.vy,
+    required this.type,
+    this.brownianTimer = 0,
+  });
+}
+
+class _StarchNode {
+  double x, y;
+  bool isBranchPoint; // every 5th node can branch
+  bool branchGlowing; // actively glowing for branch creation
+  bool boosted; // phosphorus 2x bonus active
+  _StarchNode({
+    required this.x, required this.y,
+    this.isBranchPoint = false,
+    this.branchGlowing = false,
+    this.boosted = false,
+  });
+}
+
+class _StarchChain {
+  final List<_StarchNode> nodes;
+  double anchorX, anchorY;
+  double angle; // growth direction in radians
+  int parentChainIndex; // -1 for root chains
+  int branchFromNode; // node index in parent where this branched
+  int phosphorusRemaining; // remaining 2x-boosted attachments
+  _StarchChain({
+    required this.nodes,
+    required this.anchorX, required this.anchorY,
+    required this.angle,
+    this.parentChainIndex = -1,
+    this.branchFromNode = -1,
+    this.phosphorusRemaining = 0,
+  });
+
+  Offset get endPoint {
+    if (nodes.isEmpty) return Offset(anchorX, anchorY);
+    return Offset(nodes.last.x, nodes.last.y);
+  }
+}
+
+class _Amylase {
+  double x, y, vx, vy;
+  int targetChain;
+  double life; // seconds alive
+  _Amylase({
+    required this.x, required this.y,
+    required this.vx, required this.vy,
+    required this.targetChain,
+    this.life = 0,
+  });
+}
+
+class _ScorePopup {
+  double x, y;
+  String text;
+  double timer;
+  _ScorePopup({required this.x, required this.y, required this.text, this.timer = 1.5});
+}
 
 class _ElectronShellGame extends StatefulWidget {
   const _ElectronShellGame();
@@ -769,33 +1394,46 @@ class _ElectronShellGameState extends State<_ElectronShellGame>
   late AnimationController _ticker;
   final Random _rng = Random();
 
-  // Shells: 1s(2), 2s(2), 2p(6) — simplified to 3 rings with capacities
-  static const List<int> _shellCapacities = [2, 2, 6];
-  static const List<String> _shellNames = ['1s', '2s', '2p'];
-  static const List<double> _shellRadiiFractions = [0.15, 0.27, 0.40];
+  // Game state
+  bool _gameOver = false;
+  bool _started = false;
+  double _gameTime = 0;
+  int _level = 1;
+  double _levelTimer = 0;
 
-  // Elements to build
-  static const List<String> _elementNames = ['H', 'He', 'Li', 'Be', 'B', 'C'];
-  static const List<int> _elementElectrons = [1, 2, 3, 4, 5, 6];
+  // Demand bar: 0.0 = empty (game over), 1.0 = full
+  double _demand = 0.7;
+  double _drainRate = 0.03; // per second, increases with level
 
-  int _currentElement = 0;
-  List<int> _shellFills = [0, 0, 0]; // how many electrons placed in each shell
-  int _totalPlaced = 0;
+  // Scoring
   int _score = 0;
+  int _totalGlucoseAttached = 0;
+  int _branchesCreated = 0;
+  int _longestChain = 0;
+  double _comboTimer = 0;
+  int _comboCount = 0;
 
-  // Incoming electrons
-  final List<_Electron> _electrons = [];
-  double _spawnTimer = 0;
+  // Starch chains
+  final List<_StarchChain> _chains = [];
+  static const double _nodeSpacing = 22.0;
+
+  // Floating molecules (glucose + nutrients)
+  final List<_FloatingMolecule> _molecules = [];
+  double _glucoseSpawnTimer = 0;
+  double _nutrientSpawnTimer = 0;
+
+  // Amylase hazards
+  final List<_Amylase> _amylases = [];
+  double _amylaseSpawnTimer = 8.0;
+
+  // Nitrogen slow effect
+  double _nitrogenSlowTimer = 0;
 
   // Dragging
-  int? _dragIndex;
-  Offset _dragPos = Offset.zero;
+  int? _dragMoleculeIndex;
 
-  // Flash effects
-  double _correctFlash = 0;
-  double _wrongFlash = 0;
-  String _feedbackText = '';
-  double _feedbackTimer = 0;
+  // Score popups
+  final List<_ScorePopup> _popups = [];
 
   double _lastTime = 0;
   Size _size = Size.zero;
@@ -811,8 +1449,7 @@ class _ElectronShellGameState extends State<_ElectronShellGame>
     _lastTime = _now();
   }
 
-  double _now() =>
-      DateTime.now().microsecondsSinceEpoch / 1000000.0;
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1000000.0;
 
   @override
   void dispose() {
@@ -820,12 +1457,53 @@ class _ElectronShellGameState extends State<_ElectronShellGame>
     super.dispose();
   }
 
-  int _targetShellForNext() {
-    // Fill shells in order: 1s, 2s, 2p
-    for (int i = 0; i < _shellCapacities.length; i++) {
-      if (_shellFills[i] < _shellCapacities[i]) return i;
+  void _initGame() {
+    _chains.clear();
+    _molecules.clear();
+    _amylases.clear();
+    _popups.clear();
+    _demand = 0.7;
+    _drainRate = 0.03;
+    _score = 0;
+    _totalGlucoseAttached = 0;
+    _branchesCreated = 0;
+    _longestChain = 0;
+    _comboTimer = 0;
+    _comboCount = 0;
+    _level = 1;
+    _levelTimer = 0;
+    _gameTime = 0;
+    _gameOver = false;
+    _nitrogenSlowTimer = 0;
+    _glucoseSpawnTimer = 0;
+    _nutrientSpawnTimer = 3.0;
+    _amylaseSpawnTimer = 12.0;
+    _dragMoleculeIndex = null;
+
+    // Create initial anchor points on the right side
+    _spawnAnchors(3);
+  }
+
+  void _spawnAnchors(int count) {
+    final h = _size.height;
+    final w = _size.width;
+    if (h == 0 || w == 0) return;
+    final rightX = w * 0.85;
+    final spacing = h / (count + 1);
+    for (int i = 0; i < count; i++) {
+      final ay = spacing * (i + 1);
+      final chain = _StarchChain(
+        nodes: [
+          _StarchNode(x: rightX, y: ay, isBranchPoint: false, branchGlowing: false),
+          _StarchNode(x: rightX - _nodeSpacing, y: ay, isBranchPoint: false, branchGlowing: false),
+        ],
+        anchorX: rightX,
+        anchorY: ay,
+        angle: pi, // growing leftward
+        phosphorusRemaining: 0,
+      );
+      _chains.add(chain);
     }
-    return -1;
   }
 
   void _onTick() {
@@ -833,141 +1511,311 @@ class _ElectronShellGameState extends State<_ElectronShellGame>
     final dt = (now - _lastTime).clamp(0.001, 0.05);
     _lastTime = now;
     if (_size == Size.zero) return;
+    if (_gameOver || !_started) return;
 
     setState(() {
-      final center = Offset(_size.width / 2, _size.height / 2);
+      _gameTime += dt;
 
-      // Spawn electrons from edges
-      _spawnTimer -= dt;
-      if (_spawnTimer <= 0 && _electrons.length < 4) {
-        _spawnTimer = 1.5 + _rng.nextDouble();
-        final side = _rng.nextInt(4);
-        double sx, sy;
-        switch (side) {
-          case 0: sx = _rng.nextDouble() * _size.width; sy = -20; break;
-          case 1: sx = _size.width + 20; sy = _rng.nextDouble() * _size.height; break;
-          case 2: sx = _rng.nextDouble() * _size.width; sy = _size.height + 20; break;
-          default: sx = -20; sy = _rng.nextDouble() * _size.height; break;
+      // Level up every 30 seconds
+      _levelTimer += dt;
+      if (_levelTimer >= 30) {
+        _levelTimer -= 30;
+        _level++;
+        _drainRate += 0.008;
+        // Add more anchors at level 3, 5
+        if (_level == 3 || _level == 5) {
+          _spawnAnchors(1);
         }
-        // Velocity toward center
-        final dx = center.dx - sx;
-        final dy = center.dy - sy;
-        final dist = sqrt(dx * dx + dy * dy);
-        final spd = 30 + _rng.nextDouble() * 20;
-        _electrons.add(_Electron(
-          x: sx, y: sy,
-          vx: dx / dist * spd,
-          vy: dy / dist * spd,
-          decay: 8 + _rng.nextDouble() * 4, // seconds before it decays
-        ));
       }
 
-      // Update electrons
-      for (int i = _electrons.length - 1; i >= 0; i--) {
-        if (i == _dragIndex) continue; // skip dragged one
-        final e = _electrons[i];
-        e.x += e.vx * dt;
-        e.y += e.vy * dt;
-        // Drift toward center gently
-        final dx = center.dx - e.x;
-        final dy = center.dy - e.y;
-        final dist = sqrt(dx * dx + dy * dy);
-        if (dist > 10) {
-          e.vx += dx / dist * 8 * dt;
-          e.vy += dy / dist * 8 * dt;
+      // Drain demand bar
+      final effectiveDrain = _nitrogenSlowTimer > 0 ? _drainRate * 0.4 : _drainRate;
+      _demand -= effectiveDrain * dt;
+      if (_nitrogenSlowTimer > 0) _nitrogenSlowTimer -= dt;
+      if (_demand <= 0) {
+        _demand = 0;
+        _gameOver = true;
+        _updateLongestChain();
+        return;
+      }
+
+      // Combo decay
+      if (_comboTimer > 0) {
+        _comboTimer -= dt;
+        if (_comboTimer <= 0) _comboCount = 0;
+      }
+
+      // Spawn glucose from left
+      _glucoseSpawnTimer -= dt;
+      final maxMolecules = 5 + _level;
+      if (_glucoseSpawnTimer <= 0 && _molecules.length < maxMolecules) {
+        _glucoseSpawnTimer = (1.8 - _level * 0.08).clamp(0.5, 1.8);
+        _spawnMolecule(_MoleculeType.glucose);
+      }
+
+      // Spawn nutrients occasionally
+      _nutrientSpawnTimer -= dt;
+      if (_nutrientSpawnTimer <= 0) {
+        _nutrientSpawnTimer = 6.0 + _rng.nextDouble() * 4;
+        final types = [_MoleculeType.water, _MoleculeType.phosphorus, _MoleculeType.nitrogen];
+        _spawnMolecule(types[_rng.nextInt(types.length)]);
+      }
+
+      // Spawn amylases
+      _amylaseSpawnTimer -= dt;
+      if (_amylaseSpawnTimer <= 0 && _chains.isNotEmpty) {
+        _amylaseSpawnTimer = (10.0 - _level * 0.8).clamp(3.0, 10.0);
+        _spawnAmylase();
+      }
+
+      // Update floating molecules (Brownian motion)
+      for (int i = _molecules.length - 1; i >= 0; i--) {
+        if (i == _dragMoleculeIndex) continue;
+        final m = _molecules[i];
+        m.brownianTimer -= dt;
+        if (m.brownianTimer <= 0) {
+          m.brownianTimer = 0.3 + _rng.nextDouble() * 0.4;
+          m.vx += (_rng.nextDouble() - 0.5) * 30;
+          m.vy += (_rng.nextDouble() - 0.5) * 30;
         }
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
         // Damping
-        e.vx *= (1 - 0.3 * dt);
-        e.vy *= (1 - 0.3 * dt);
+        m.vx *= (1 - 0.5 * dt);
+        m.vy *= (1 - 0.5 * dt);
+        // Keep in left 70% of screen, bounce off edges
+        if (m.x < 10) { m.x = 10; m.vx = m.vx.abs(); }
+        if (m.x > _size.width * 0.7) { m.x = _size.width * 0.7; m.vx = -m.vx.abs(); }
+        if (m.y < 10) { m.y = 10; m.vy = m.vy.abs(); }
+        if (m.y > _size.height - 10) { m.y = _size.height - 10; m.vy = -m.vy.abs(); }
+      }
 
-        e.decay -= dt;
-        if (e.decay <= 0) {
-          _electrons.removeAt(i);
-          if (_dragIndex != null && _dragIndex! > i) _dragIndex = _dragIndex! - 1;
-          if (_dragIndex == i) _dragIndex = null;
+      // Update amylases — move toward chain ends
+      for (int i = _amylases.length - 1; i >= 0; i--) {
+        final a = _amylases[i];
+        a.life += dt;
+        if (a.targetChain >= _chains.length) {
+          a.targetChain = _rng.nextInt(_chains.length);
+        }
+        final target = _chains[a.targetChain].endPoint;
+        final dx = target.dx - a.x;
+        final dy = target.dy - a.y;
+        final dist = sqrt(dx * dx + dy * dy);
+        if (dist > 5) {
+          final spd = 40 + _level * 5;
+          a.x += dx / dist * spd * dt;
+          a.y += dy / dist * spd * dt;
+        }
+        // Check if it reached the chain end
+        if (dist < 15 && _chains[a.targetChain].nodes.length > 2) {
+          _chains[a.targetChain].nodes.removeLast();
+          _amylases.removeAt(i);
+          _popups.add(_ScorePopup(x: target.dx, y: target.dy, text: '-1', timer: 1.5));
         }
       }
 
-      // Flashes
-      if (_correctFlash > 0) _correctFlash = (_correctFlash - dt * 3).clamp(0.0, 1.0);
-      if (_wrongFlash > 0) _wrongFlash = (_wrongFlash - dt * 4).clamp(0.0, 1.0);
-      if (_feedbackTimer > 0) _feedbackTimer -= dt;
+      // Update branch point glowing
+      for (final chain in _chains) {
+        for (int j = 0; j < chain.nodes.length; j++) {
+          final node = chain.nodes[j];
+          // Every 5th node (index 4, 9, 14...) can be a branch point
+          node.isBranchPoint = ((j + 1) % 5 == 0) && j == chain.nodes.length - 1;
+          node.branchGlowing = node.isBranchPoint;
+        }
+      }
+
+      // Update popups
+      for (int i = _popups.length - 1; i >= 0; i--) {
+        _popups[i].timer -= dt;
+        _popups[i].y -= 30 * dt;
+        if (_popups[i].timer <= 0) _popups.removeAt(i);
+      }
     });
   }
 
+  void _spawnMolecule(_MoleculeType type) {
+    final y = 40 + _rng.nextDouble() * (_size.height - 80);
+    _molecules.add(_FloatingMolecule(
+      x: -15,
+      y: y,
+      vx: 30 + _rng.nextDouble() * 20,
+      vy: (_rng.nextDouble() - 0.5) * 20,
+      type: type,
+      brownianTimer: 0,
+    ));
+  }
+
+  void _spawnAmylase() {
+    final side = _rng.nextInt(3); // 0=top, 1=bottom, 2=left
+    double sx, sy;
+    switch (side) {
+      case 0: sx = _rng.nextDouble() * _size.width; sy = -20; break;
+      case 1: sx = _rng.nextDouble() * _size.width; sy = _size.height + 20; break;
+      default: sx = -20; sy = _rng.nextDouble() * _size.height; break;
+    }
+    _amylases.add(_Amylase(
+      x: sx, y: sy,
+      vx: 0, vy: 0,
+      targetChain: _rng.nextInt(_chains.length),
+      life: 0,
+    ));
+  }
+
+  void _updateLongestChain() {
+    for (final chain in _chains) {
+      if (chain.nodes.length > _longestChain) {
+        _longestChain = chain.nodes.length;
+      }
+    }
+  }
+
+  // --- Tap to destroy amylases or create branches ---
+  void _onTapDown(TapDownDetails details) {
+    if (_gameOver) return;
+    if (!_started) {
+      _started = true;
+      _initGame();
+      return;
+    }
+    final pos = details.localPosition;
+
+    // Check amylase taps first
+    for (int i = _amylases.length - 1; i >= 0; i--) {
+      final a = _amylases[i];
+      if ((Offset(a.x, a.y) - pos).distance < 30) {
+        _amylases.removeAt(i);
+        _score += 5;
+        _popups.add(_ScorePopup(x: pos.dx, y: pos.dy, text: '+5', timer: 1.5));
+        return;
+      }
+    }
+
+    // Check branch point taps
+    for (int ci = 0; ci < _chains.length; ci++) {
+      final chain = _chains[ci];
+      for (int ni = 0; ni < chain.nodes.length; ni++) {
+        final node = chain.nodes[ni];
+        if (node.branchGlowing && (Offset(node.x, node.y) - pos).distance < 20) {
+          // Create a branch
+          final branchAngle = chain.angle + ((_rng.nextBool() ? 1 : -1) * (pi / 5 + _rng.nextDouble() * pi / 6));
+          final newChain = _StarchChain(
+            nodes: [_StarchNode(x: node.x, y: node.y, isBranchPoint: false, branchGlowing: false)],
+            anchorX: node.x,
+            anchorY: node.y,
+            angle: branchAngle,
+            parentChainIndex: ci,
+            branchFromNode: ni,
+            phosphorusRemaining: 0,
+          );
+          _chains.add(newChain);
+          _branchesCreated++;
+          node.branchGlowing = false;
+          node.isBranchPoint = false;
+          _score += 20;
+          _popups.add(_ScorePopup(x: node.x, y: node.y, text: 'Branch! +20', timer: 1.5));
+          return;
+        }
+      }
+    }
+  }
+
   void _onPanStart(DragStartDetails d) {
+    if (_gameOver || !_started) return;
     final pos = d.localPosition;
-    for (int i = 0; i < _electrons.length; i++) {
-      final e = _electrons[i];
-      if ((Offset(e.x, e.y) - pos).distance < 30) {
-        _dragIndex = i;
-        _dragPos = pos;
+    for (int i = 0; i < _molecules.length; i++) {
+      final m = _molecules[i];
+      if ((Offset(m.x, m.y) - pos).distance < 28) {
+        _dragMoleculeIndex = i;
         return;
       }
     }
   }
 
   void _onPanUpdate(DragUpdateDetails d) {
-    if (_dragIndex == null) return;
-    _dragPos = d.localPosition;
-    final e = _electrons[_dragIndex!];
-    e.x = _dragPos.dx;
-    e.y = _dragPos.dy;
+    if (_dragMoleculeIndex == null) return;
+    if (_dragMoleculeIndex! >= _molecules.length) {
+      _dragMoleculeIndex = null;
+      return;
+    }
+    final m = _molecules[_dragMoleculeIndex!];
+    m.x = d.localPosition.dx;
+    m.y = d.localPosition.dy;
   }
 
   void _onPanEnd(DragEndDetails d) {
-    if (_dragIndex == null) return;
-    final center = Offset(_size.width / 2, _size.height / 2);
-    final baseR = min(_size.width, _size.height) / 2;
-    final e = _electrons[_dragIndex!];
-    final dist = (Offset(e.x, e.y) - center).distance;
+    if (_dragMoleculeIndex == null) return;
+    if (_dragMoleculeIndex! >= _molecules.length) {
+      _dragMoleculeIndex = null;
+      return;
+    }
+    final m = _molecules[_dragMoleculeIndex!];
+    final mPos = Offset(m.x, m.y);
 
-    // Determine which shell the drop is closest to
-    int closestShell = -1;
-    double closestDist = double.infinity;
-    for (int i = 0; i < _shellRadiiFractions.length; i++) {
-      final shellR = _shellRadiiFractions[i] * baseR;
-      final d2 = (dist - shellR).abs();
-      if (d2 < closestDist && d2 < 25) {
-        closestDist = d2;
-        closestShell = i;
+    // Find closest chain end
+    int bestChain = -1;
+    double bestDist = double.infinity;
+    for (int i = 0; i < _chains.length; i++) {
+      final ep = _chains[i].endPoint;
+      final d2 = (mPos - ep).distance;
+      if (d2 < bestDist) {
+        bestDist = d2;
+        bestChain = i;
       }
     }
 
-    final targetShell = _targetShellForNext();
+    if (bestChain >= 0 && bestDist < 35) {
+      final chain = _chains[bestChain];
+      switch (m.type) {
+        case _MoleculeType.glucose:
+          // Attach glucose to chain end
+          final end = chain.endPoint;
+          final nx = end.dx + cos(chain.angle) * _nodeSpacing;
+          final ny = end.dy + sin(chain.angle) * _nodeSpacing;
+          final isBoosted = chain.phosphorusRemaining > 0;
+          chain.nodes.add(_StarchNode(x: nx, y: ny, isBranchPoint: false, branchGlowing: false, boosted: isBoosted));
+          if (chain.phosphorusRemaining > 0) chain.phosphorusRemaining--;
+          _totalGlucoseAttached++;
 
-    if (closestShell >= 0 && closestShell == targetShell) {
-      // Correct placement
-      _shellFills[closestShell]++;
-      _totalPlaced++;
-      _score += 10;
-      _correctFlash = 1;
-      _electrons.removeAt(_dragIndex!);
-      _feedbackText = 'Correct! ${_shellNames[closestShell]}';
-      _feedbackTimer = 1.0;
+          // Scoring
+          int pts = 10;
+          if (isBoosted) pts *= 2;
+          // Branch chain bonus
+          if (chain.parentChainIndex >= 0) pts *= 2;
+          // Combo
+          _comboCount++;
+          _comboTimer = 2.0;
+          if (_comboCount > 1) pts = (pts * (1 + _comboCount * 0.2)).round();
 
-      // Check if element is complete
-      if (_totalPlaced >= _elementElectrons[_currentElement]) {
-        _score += 50;
-        _feedbackText = '${_elementNames[_currentElement]} complete!';
-        _feedbackTimer = 2.0;
-        if (_currentElement < _elementNames.length - 1) {
-          _currentElement++;
-          // Don't reset fills — they carry over (building up shells)
-        }
+          _score += pts;
+          _demand = (_demand + 0.04).clamp(0.0, 1.0);
+          _popups.add(_ScorePopup(x: nx, y: ny, text: '+$pts${_comboCount > 1 ? " x$_comboCount" : ""}', timer: 1.5));
+          _molecules.removeAt(_dragMoleculeIndex!);
+          break;
+        case _MoleculeType.water:
+          _demand = (_demand + 0.15).clamp(0.0, 1.0);
+          _popups.add(_ScorePopup(x: m.x, y: m.y, text: 'Hydrate!', timer: 1.5));
+          _molecules.removeAt(_dragMoleculeIndex!);
+          break;
+        case _MoleculeType.phosphorus:
+          chain.phosphorusRemaining += 5;
+          _popups.add(_ScorePopup(x: m.x, y: m.y, text: '2x Boost!', timer: 1.5));
+          _molecules.removeAt(_dragMoleculeIndex!);
+          break;
+        case _MoleculeType.nitrogen:
+          _nitrogenSlowTimer = 5.0;
+          _popups.add(_ScorePopup(x: m.x, y: m.y, text: 'Slow Drain!', timer: 1.5));
+          _molecules.removeAt(_dragMoleculeIndex!);
+          break;
       }
-    } else if (closestShell >= 0) {
-      // Wrong shell
-      _wrongFlash = 1;
-      _feedbackText = 'Wrong shell!';
-      _feedbackTimer = 1.0;
-      // Bounce away
-      final angle = _rng.nextDouble() * 2 * pi;
-      e.vx = cos(angle) * 120;
-      e.vy = sin(angle) * 120;
     }
+    _dragMoleculeIndex = null;
+  }
 
-    _dragIndex = null;
+  void _restart() {
+    setState(() {
+      _started = true;
+      _initGame();
+    });
   }
 
   @override
@@ -975,29 +1823,86 @@ class _ElectronShellGameState extends State<_ElectronShellGame>
     return LayoutBuilder(
       builder: (context, constraints) {
         _size = Size(constraints.maxWidth, constraints.maxHeight);
+        if (!_started) {
+          return GestureDetector(
+            onTapDown: _onTapDown,
+            child: CustomPaint(
+              painter: _StarchFactoryPainter(
+                size: _size,
+                chains: const [],
+                molecules: const [],
+                amylases: const [],
+                popups: const [],
+                demand: 0.7,
+                score: 0,
+                level: 1,
+                comboCount: 0,
+                gameOver: false,
+                started: false,
+                gameTime: 0,
+                totalGlucoseAttached: 0,
+                branchesCreated: 0,
+                longestChain: 0,
+                nitrogenSlowTimer: 0,
+                dragMoleculeIndex: null,
+              ),
+              size: Size.infinite,
+            ),
+          );
+        }
+        if (_gameOver) {
+          _updateLongestChain();
+          return GestureDetector(
+            onTap: _restart,
+            child: CustomPaint(
+              painter: _StarchFactoryPainter(
+                size: _size,
+                chains: _chains,
+                molecules: const [],
+                amylases: const [],
+                popups: const [],
+                demand: 0,
+                score: _score,
+                level: _level,
+                comboCount: 0,
+                gameOver: true,
+                started: true,
+                gameTime: _gameTime,
+                totalGlucoseAttached: _totalGlucoseAttached,
+                branchesCreated: _branchesCreated,
+                longestChain: _longestChain,
+                nitrogenSlowTimer: 0,
+                dragMoleculeIndex: null,
+              ),
+              size: Size.infinite,
+            ),
+          );
+        }
         return GestureDetector(
+          onTapDown: _onTapDown,
           onPanStart: _onPanStart,
           onPanUpdate: _onPanUpdate,
           onPanEnd: _onPanEnd,
           child: ClipRect(
             child: CustomPaint(
-              painter: _ElectronShellPainter(
+              painter: _StarchFactoryPainter(
                 size: _size,
-                shellFills: _shellFills,
-                shellCapacities: _shellCapacities,
-                shellRadiiFractions: _shellRadiiFractions,
-                shellNames: _shellNames,
-                electrons: _electrons,
-                dragIndex: _dragIndex,
-                correctFlash: _correctFlash,
-                wrongFlash: _wrongFlash,
+                chains: _chains,
+                molecules: _molecules,
+                amylases: _amylases,
+                popups: _popups,
+                demand: _demand,
                 score: _score,
-                currentElement: _currentElement,
-                elementNames: _elementNames,
-                elementElectrons: _elementElectrons,
-                totalPlaced: _totalPlaced,
-                feedbackText: _feedbackText,
-                feedbackTimer: _feedbackTimer,
+                level: _level,
+                comboCount: _comboCount,
+                gameOver: false,
+                started: true,
+                gameTime: _gameTime,
+                totalGlucoseAttached: _totalGlucoseAttached,
+                branchesCreated: _branchesCreated,
+                longestChain: _longestChain,
+                nitrogenSlowTimer: _nitrogenSlowTimer,
+                dragMoleculeIndex: _dragMoleculeIndex,
               ),
               size: Size.infinite,
             ),
@@ -1008,214 +1913,490 @@ class _ElectronShellGameState extends State<_ElectronShellGame>
   }
 }
 
-class _Electron {
-  double x, y, vx, vy, decay;
-  _Electron({
-    required this.x, required this.y,
-    required this.vx, required this.vy,
-    required this.decay,
-  });
-}
+// ---- CustomPainter for the Starch Factory game ----
 
-class _ElectronShellPainter extends CustomPainter {
+class _StarchFactoryPainter extends CustomPainter {
   final Size size;
-  final List<int> shellFills, shellCapacities;
-  final List<double> shellRadiiFractions;
-  final List<String> shellNames;
-  final List<_Electron> electrons;
-  final int? dragIndex;
-  final double correctFlash, wrongFlash;
-  final int score, currentElement, totalPlaced;
-  final List<String> elementNames;
-  final List<int> elementElectrons;
-  final String feedbackText;
-  final double feedbackTimer;
+  final List<_StarchChain> chains;
+  final List<_FloatingMolecule> molecules;
+  final List<_Amylase> amylases;
+  final List<_ScorePopup> popups;
+  final double demand;
+  final int score, level, comboCount;
+  final bool gameOver, started;
+  final double gameTime;
+  final int totalGlucoseAttached, branchesCreated, longestChain;
+  final double nitrogenSlowTimer;
+  final int? dragMoleculeIndex;
 
-  _ElectronShellPainter({
+  _StarchFactoryPainter({
     required this.size,
-    required this.shellFills, required this.shellCapacities,
-    required this.shellRadiiFractions, required this.shellNames,
-    required this.electrons, required this.dragIndex,
-    required this.correctFlash, required this.wrongFlash,
-    required this.score, required this.currentElement,
-    required this.elementNames, required this.elementElectrons,
-    required this.totalPlaced, required this.feedbackText,
-    required this.feedbackTimer,
+    required this.chains,
+    required this.molecules,
+    required this.amylases,
+    required this.popups,
+    required this.demand,
+    required this.score,
+    required this.level,
+    required this.comboCount,
+    required this.gameOver,
+    required this.started,
+    required this.gameTime,
+    required this.totalGlucoseAttached,
+    required this.branchesCreated,
+    required this.longestChain,
+    required this.nitrogenSlowTimer,
+    required this.dragMoleculeIndex,
   });
 
   @override
   void paint(Canvas canvas, Size s) {
-    canvas.drawRect(Offset.zero & s, Paint()..color = Colors.black);
+    // Dark amyloplast background
+    canvas.drawRect(
+      Offset.zero & s,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          Offset(s.width * 0.5, s.height * 0.5),
+          s.height * 0.8,
+          [const Color(0xFF1A1200), const Color(0xFF0A0800), Colors.black],
+          [0.0, 0.6, 1.0],
+        ),
+    );
 
-    final center = Offset(s.width / 2, s.height / 2);
-    final baseR = min(s.width, s.height) / 2;
+    // Subtle membrane outline
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(8, 8, s.width - 16, s.height - 16),
+        const Radius.circular(20),
+      ),
+      Paint()
+        ..color = const Color(0xFF3A2A00).withValues(alpha: 0.3)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
 
-    // Flash effects
-    if (correctFlash > 0) {
-      canvas.drawRect(
-        Offset.zero & s,
-        Paint()..color = Colors.greenAccent.withValues(alpha: correctFlash * 0.15),
-      );
+    if (!started) {
+      _drawStartScreen(canvas, s);
+      return;
     }
-    if (wrongFlash > 0) {
-      canvas.drawRect(
-        Offset.zero & s,
-        Paint()..color = Colors.redAccent.withValues(alpha: wrongFlash * 0.15),
-      );
+
+    if (gameOver) {
+      _drawGameOver(canvas, s);
+      return;
     }
 
-    // Draw shells
-    for (int i = 0; i < shellRadiiFractions.length; i++) {
-      final r = shellRadiiFractions[i] * baseR;
-      final filled = shellFills[i] >= shellCapacities[i];
-      canvas.drawCircle(
-        center, r,
-        Paint()
-          ..color = filled
-              ? const Color(0xFF4CAF50).withValues(alpha: 0.3)
-              : Colors.white.withValues(alpha: 0.12)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = filled ? 3 : 1.5,
-      );
+    // Draw demand bar at top
+    _drawDemandBar(canvas, s);
 
-      // Shell label
+    // Draw starch chains
+    for (final chain in chains) {
+      _drawChain(canvas, chain);
+    }
+
+    // Draw floating molecules
+    for (int i = 0; i < molecules.length; i++) {
+      _drawMolecule(canvas, molecules[i], i == dragMoleculeIndex);
+    }
+
+    // Draw amylases
+    for (final a in amylases) {
+      _drawAmylase(canvas, a);
+    }
+
+    // Draw popups
+    for (final p in popups) {
+      final alpha = (p.timer / 1.5).clamp(0.0, 1.0);
       final tp = TextPainter(
         text: TextSpan(
-          text: '${shellNames[i]} (${shellFills[i]}/${shellCapacities[i]})',
+          text: p.text,
           style: TextStyle(
-            fontFamily: 'Avenir', fontSize: 10,
-            color: filled ? const Color(0xFF81C784) : Colors.white30,
+            fontFamily: 'Avenir', fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: Colors.white.withValues(alpha: alpha),
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset(center.dx + r + 5, center.dy - tp.height / 2));
-
-      // Draw placed electrons on this shell
-      for (int j = 0; j < shellFills[i]; j++) {
-        final angle = (j / shellCapacities[i]) * 2 * pi - pi / 2;
-        final ex = center.dx + cos(angle) * r;
-        final ey = center.dy + sin(angle) * r;
-        canvas.drawCircle(
-          Offset(ex, ey), 6,
-          Paint()..color = const Color(0xFF64B5F6),
-        );
-        canvas.drawCircle(
-          Offset(ex, ey), 3,
-          Paint()..color = Colors.white.withValues(alpha: 0.7),
-        );
-      }
+      tp.paint(canvas, Offset(p.x - tp.width / 2, p.y));
     }
 
-    // Nucleus
-    canvas.drawCircle(
-      center, 18,
-      Paint()..color = const Color(0xFFFF7043).withValues(alpha: 0.8),
-    );
-    canvas.drawCircle(
-      center, 18,
-      Paint()
-        ..color = const Color(0xFFFFAB91).withValues(alpha: 0.4)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2,
-    );
-    // Element label on nucleus
-    final nucLabel = TextPainter(
+    // HUD: score, level, combo
+    final hudText = 'Score: $score    Level: $level'
+        '${comboCount > 1 ? "    Combo: x$comboCount" : ""}'
+        '${nitrogenSlowTimer > 0 ? "    SLOW" : ""}';
+    final hud = TextPainter(
       text: TextSpan(
-        text: currentElement < elementNames.length
-            ? elementNames[currentElement]
-            : 'C',
-        style: const TextStyle(
-          fontFamily: 'Avenir', fontSize: 14,
-          fontWeight: FontWeight.bold, color: Colors.white,
+        text: hudText,
+        style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white38),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    hud.paint(canvas, Offset((s.width - hud.width) / 2, s.height - 30));
+
+    // Time survived
+    final timeTp = TextPainter(
+      text: TextSpan(
+        text: '${gameTime.toStringAsFixed(0)}s',
+        style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white24),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    timeTp.paint(canvas, Offset(s.width - timeTp.width - 12, s.height - 28));
+  }
+
+  void _drawDemandBar(Canvas canvas, Size s) {
+    final barWidth = s.width - 40;
+    const barHeight = 14.0;
+    const barY = 6.0;
+    const barX = 20.0;
+
+    // Background
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(barX, barY, barWidth, barHeight),
+        const Radius.circular(7),
+      ),
+      Paint()..color = Colors.white.withValues(alpha: 0.08),
+    );
+
+    // Fill — gradient green to yellow to red
+    final fillWidth = barWidth * demand.clamp(0.0, 1.0);
+    Color barColor;
+    if (demand > 0.5) {
+      barColor = Color.lerp(const Color(0xFFFFEB3B), const Color(0xFF4CAF50), (demand - 0.5) * 2)!;
+    } else {
+      barColor = Color.lerp(const Color(0xFFF44336), const Color(0xFFFFEB3B), demand * 2)!;
+    }
+    if (fillWidth > 0) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(barX, barY, fillWidth, barHeight),
+          const Radius.circular(7),
+        ),
+        Paint()..color = barColor,
+      );
+    }
+
+    // Label
+    final label = TextPainter(
+      text: TextSpan(
+        text: 'STARCH DEMAND',
+        style: TextStyle(
+          fontFamily: 'Avenir', fontSize: 9, fontWeight: FontWeight.bold,
+          color: demand > 0.4 ? Colors.black54 : Colors.white54,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    nucLabel.paint(canvas, Offset(
-      center.dx - nucLabel.width / 2,
-      center.dy - nucLabel.height / 2,
-    ));
+    label.paint(canvas, Offset(barX + (barWidth - label.width) / 2, barY + 1));
+  }
 
-    // Free electrons
-    for (int i = 0; i < electrons.length; i++) {
-      final e = electrons[i];
-      final alpha = (e.decay / 3.0).clamp(0.0, 1.0);
-      final glow = Paint()
-        ..shader = ui.Gradient.radial(
-          Offset(e.x, e.y), 20,
-          [
-            const Color(0xFF64B5F6).withValues(alpha: alpha * 0.5),
-            Colors.transparent,
-          ],
+  void _drawChain(Canvas canvas, _StarchChain chain) {
+    if (chain.nodes.isEmpty) return;
+    const hexR = 8.0;
+
+    // Draw connections between nodes
+    for (int i = 1; i < chain.nodes.length; i++) {
+      final a = chain.nodes[i - 1];
+      final b = chain.nodes[i];
+      canvas.drawLine(
+        Offset(a.x, a.y),
+        Offset(b.x, b.y),
+        Paint()
+          ..color = const Color(0xFFE19816).withValues(alpha: 0.5)
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    // Draw each node as a hexagon
+    for (int i = 0; i < chain.nodes.length; i++) {
+      final node = chain.nodes[i];
+      _drawHexagon(canvas, Offset(node.x, node.y), hexR,
+        color: node.boosted
+            ? const Color(0xFFFFD54F)
+            : const Color(0xFFE19816),
+      );
+      // Glow for branch points
+      if (node.branchGlowing) {
+        canvas.drawCircle(
+          Offset(node.x, node.y),
+          hexR + 6,
+          Paint()
+            ..color = const Color(0xFFFFEB3B).withValues(alpha: 0.4)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2,
         );
-      canvas.drawCircle(Offset(e.x, e.y), 20, glow);
-      canvas.drawCircle(
-        Offset(e.x, e.y), 10,
-        Paint()..color = const Color(0xFF42A5F5).withValues(alpha: alpha),
-      );
-      canvas.drawCircle(
-        Offset(e.x, e.y), 5,
-        Paint()..color = Colors.white.withValues(alpha: alpha * 0.8),
-      );
-      // Decay indicator
-      if (e.decay < 3) {
-        final decayTp = TextPainter(
-          text: TextSpan(
-            text: '${e.decay.toStringAsFixed(0)}s',
+        canvas.drawCircle(
+          Offset(node.x, node.y),
+          hexR + 10,
+          Paint()
+            ..color = const Color(0xFFFFEB3B).withValues(alpha: 0.15)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1,
+        );
+      }
+    }
+
+    // Phosphorus indicator
+    if (chain.phosphorusRemaining > 0) {
+      final end = chain.endPoint;
+      final tp = TextPainter(
+        text: TextSpan(
+          text: '${chain.phosphorusRemaining}x',
+          style: const TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Color(0xFFCE93D8)),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(end.dx - tp.width / 2, end.dy - 18));
+    }
+
+    // Glow at chain end (attachment target)
+    final ep = chain.endPoint;
+    canvas.drawCircle(
+      ep,
+      14,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          ep, 14,
+          [const Color(0xFFE19816).withValues(alpha: 0.3), Colors.transparent],
+        ),
+    );
+  }
+
+  void _drawHexagon(Canvas canvas, Offset center, double radius, {required Color color}) {
+    final path = Path();
+    for (int i = 0; i < 6; i++) {
+      final angle = (i * pi / 3) - pi / 6;
+      final x = center.dx + cos(angle) * radius;
+      final y = center.dy + sin(angle) * radius;
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    path.close();
+    canvas.drawPath(path, Paint()..color = color);
+    canvas.drawPath(path, Paint()
+      ..color = color.withValues(alpha: 0.6)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5);
+  }
+
+  void _drawMolecule(Canvas canvas, _FloatingMolecule m, bool isDragging) {
+    final pos = Offset(m.x, m.y);
+    switch (m.type) {
+      case _MoleculeType.glucose:
+        // Amber hexagon with "G"
+        if (isDragging) {
+          canvas.drawCircle(pos, 22, Paint()
+            ..color = const Color(0xFFE19816).withValues(alpha: 0.2));
+        }
+        _drawHexagon(canvas, pos, 14, color: const Color(0xFFE19816));
+        final tp = TextPainter(
+          text: const TextSpan(
+            text: 'G',
             style: TextStyle(
-              fontFamily: 'Avenir', fontSize: 9,
-              color: Colors.redAccent.withValues(alpha: alpha),
+              fontFamily: 'Avenir', fontSize: 12,
+              fontWeight: FontWeight.bold, color: Colors.white,
             ),
           ),
           textDirection: TextDirection.ltr,
         )..layout();
-        decayTp.paint(canvas, Offset(e.x - decayTp.width / 2, e.y + 14));
-      }
-    }
-
-    // Feedback text
-    if (feedbackTimer > 0) {
-      final fb = TextPainter(
-        text: TextSpan(
-          text: feedbackText,
-          style: TextStyle(
-            fontFamily: 'Avenir', fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: Colors.white.withValues(alpha: feedbackTimer.clamp(0.0, 1.0)),
+        tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
+        break;
+      case _MoleculeType.water:
+        // Small blue circle
+        canvas.drawCircle(pos, 10, Paint()..color = const Color(0xFF42A5F5));
+        canvas.drawCircle(pos, 5, Paint()..color = Colors.white.withValues(alpha: 0.5));
+        final tp = TextPainter(
+          text: const TextSpan(
+            text: 'W',
+            style: TextStyle(fontFamily: 'Avenir', fontSize: 8, color: Colors.white),
           ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      fb.paint(canvas, Offset((s.width - fb.width) / 2, 40));
-    }
-
-    // Score & element progress
-    final scoreTp = TextPainter(
-      text: TextSpan(
-        text: 'Score: $score    Building: ${currentElement < elementNames.length ? elementNames[currentElement] : "Done!"}'
-            ' ($totalPlaced/${currentElement < elementElectrons.length ? elementElectrons[currentElement] : ""})',
-        style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white38),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    scoreTp.paint(canvas, Offset((s.width - scoreTp.width) / 2, s.height - 50));
-
-    // Hint
-    if (score == 0) {
-      final hint = TextPainter(
-        text: const TextSpan(
-          text: 'Drag electrons into the correct shell',
-          style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white24),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      hint.paint(canvas, Offset((s.width - hint.width) / 2, s.height - 80));
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
+        break;
+      case _MoleculeType.phosphorus:
+        // Purple diamond
+        final path = Path()
+          ..moveTo(pos.dx, pos.dy - 12)
+          ..lineTo(pos.dx + 10, pos.dy)
+          ..lineTo(pos.dx, pos.dy + 12)
+          ..lineTo(pos.dx - 10, pos.dy)
+          ..close();
+        canvas.drawPath(path, Paint()..color = const Color(0xFFCE93D8));
+        canvas.drawPath(path, Paint()
+          ..color = const Color(0xFFAB47BC)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5);
+        final tp = TextPainter(
+          text: const TextSpan(
+            text: 'P',
+            style: TextStyle(fontFamily: 'Avenir', fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
+        break;
+      case _MoleculeType.nitrogen:
+        // Green circle
+        canvas.drawCircle(pos, 11, Paint()..color = const Color(0xFF66BB6A));
+        canvas.drawCircle(pos, 6, Paint()..color = const Color(0xFFA5D6A7).withValues(alpha: 0.5));
+        final tp = TextPainter(
+          text: const TextSpan(
+            text: 'N',
+            style: TextStyle(fontFamily: 'Avenir', fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
+        break;
     }
   }
 
+  void _drawAmylase(Canvas canvas, _Amylase a) {
+    final pos = Offset(a.x, a.y);
+    // Red jagged blob
+    final path = Path();
+    const spikes = 8;
+    for (int i = 0; i < spikes; i++) {
+      final angle = (i / spikes) * 2 * pi;
+      final r = (i % 2 == 0) ? 14.0 : 8.0;
+      final x = pos.dx + cos(angle) * r;
+      final y = pos.dy + sin(angle) * r;
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    path.close();
+    canvas.drawPath(path, Paint()..color = const Color(0xFFF44336).withValues(alpha: 0.85));
+    canvas.drawPath(path, Paint()
+      ..color = const Color(0xFFFF8A80)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5);
+    // "E" label
+    final tp = TextPainter(
+      text: const TextSpan(
+        text: 'E',
+        style: TextStyle(fontFamily: 'Avenir', fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset(pos.dx - tp.width / 2, pos.dy - tp.height / 2));
+  }
+
+  void _drawStartScreen(Canvas canvas, Size s) {
+    final title = TextPainter(
+      text: const TextSpan(
+        text: 'Starch Factory',
+        style: TextStyle(
+          fontFamily: 'Avenir', fontSize: 28,
+          fontWeight: FontWeight.bold,
+          color: Color(0xFFE19816),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    title.paint(canvas, Offset((s.width - title.width) / 2, s.height * 0.25));
+
+    final sub = TextPainter(
+      text: const TextSpan(
+        text: 'Inside the Amyloplast',
+        style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white30),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    sub.paint(canvas, Offset((s.width - sub.width) / 2, s.height * 0.25 + 36));
+
+    const instructions = [
+      'Drag glucose (G) to chain ends to build starch',
+      'Tap glowing nodes to create branches (2x points)',
+      'Water (W) boosts the demand bar',
+      'Phosphorus (P) gives 2x points on a chain',
+      'Nitrogen (N) slows demand drain',
+      'Tap red amylases (E) before they eat chains',
+      'Keep the demand bar from emptying!',
+    ];
+    for (int i = 0; i < instructions.length; i++) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: instructions[i],
+          style: const TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white24),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset((s.width - tp.width) / 2, s.height * 0.40 + i * 22));
+    }
+
+    final tap = TextPainter(
+      text: const TextSpan(
+        text: 'Tap to start',
+        style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.white54),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tap.paint(canvas, Offset((s.width - tap.width) / 2, s.height * 0.82));
+  }
+
+  void _drawGameOver(Canvas canvas, Size s) {
+    // Draw remaining chains faintly
+    for (final chain in chains) {
+      _drawChain(canvas, chain);
+    }
+
+    // Dark overlay
+    canvas.drawRect(Offset.zero & s, Paint()..color = Colors.black.withValues(alpha: 0.7));
+
+    final title = TextPainter(
+      text: const TextSpan(
+        text: 'CELL STARVED',
+        style: TextStyle(
+          fontFamily: 'Avenir', fontSize: 26,
+          fontWeight: FontWeight.bold,
+          color: Color(0xFFF44336),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    title.paint(canvas, Offset((s.width - title.width) / 2, s.height * 0.2));
+
+    final stats = [
+      'Score: $score',
+      'Time Survived: ${gameTime.toStringAsFixed(1)}s',
+      'Level Reached: $level',
+      'Glucose Attached: $totalGlucoseAttached',
+      'Chains Built: ${chains.length}',
+      'Branches Created: $branchesCreated',
+      'Longest Chain: $longestChain nodes',
+    ];
+    for (int i = 0; i < stats.length; i++) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: stats[i],
+          style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white54),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset((s.width - tp.width) / 2, s.height * 0.35 + i * 28));
+    }
+
+    final tap = TextPainter(
+      text: const TextSpan(
+        text: 'Tap to play again',
+        style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.white38),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tap.paint(canvas, Offset((s.width - tap.width) / 2, s.height * 0.82));
+  }
+
   @override
-  bool shouldRepaint(covariant _ElectronShellPainter old) => true;
+  bool shouldRepaint(covariant _StarchFactoryPainter old) => true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,6 +2430,30 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
   // Success flash
   double _successFlash = 0;
 
+  // --- Timer ---
+  double _timeRemaining = 60.0;
+  bool _gameOver = false;
+
+  // --- Cosmic Rays ---
+  final List<_CosmicRay> _cosmicRays = [];
+  double _nextRayTimer = 5.0; // seconds until next ray
+  // Warning flash: which edge (0=top,1=right,2=bottom,3=left), remaining time
+  int? _warningEdge;
+  double _warningTimer = 0;
+  bool _rayPending = false;
+
+  // --- Heat / Temperature ---
+  double _temperature = 0.0; // 0.0 (cool) to 1.0 (critical)
+
+  // --- Combo System ---
+  int _combo = 0;
+  int _highestCombo = 0;
+  double _comboTimer = 0; // time since last bond, resets combo at 3s
+  double _comboDisplayTimer = 0; // for visual pop effect
+
+  // --- Game Over stats ---
+  final Map<String, int> _moleculesBuilt = {};
+
   static const Map<String, Color> _atomColors = {
     'H': Color(0xFFE0E0E0),
     'O': Color(0xFFE53935),
@@ -1281,6 +2486,7 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
     )..addListener(_onTick);
     _ticker.forward();
     _lastTime = _now();
+    _nextRayTimer = 5.0 + _rng.nextDouble() * 3.0;
   }
 
   double _now() =>
@@ -1290,6 +2496,30 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
   void dispose() {
     _ticker.dispose();
     super.dispose();
+  }
+
+  void _resetGame() {
+    _atoms.clear();
+    _popups.clear();
+    _cosmicRays.clear();
+    _moleculesBuilt.clear();
+    _score = 0;
+    _spawnTimer = 0;
+    _timeRemaining = 60.0;
+    _gameOver = false;
+    _dragIndex = null;
+    _bounceFlash = 0;
+    _successFlash = 0;
+    _temperature = 0.0;
+    _combo = 0;
+    _highestCombo = 0;
+    _comboTimer = 0;
+    _comboDisplayTimer = 0;
+    _nextRayTimer = 5.0 + _rng.nextDouble() * 3.0;
+    _warningEdge = null;
+    _warningTimer = 0;
+    _rayPending = false;
+    _lastTime = _now();
   }
 
   void _spawnAtom() {
@@ -1318,29 +2548,158 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
     ));
   }
 
+  void _spawnCosmicRay() {
+    if (_size == Size.zero) return;
+    final edge = _rng.nextInt(4); // 0=top,1=right,2=bottom,3=left
+    double sx, sy, ex, ey;
+    switch (edge) {
+      case 0: // top
+        sx = _rng.nextDouble() * _size.width;
+        sy = -10;
+        ex = _rng.nextDouble() * _size.width;
+        ey = _size.height + 10;
+        break;
+      case 1: // right
+        sx = _size.width + 10;
+        sy = _rng.nextDouble() * _size.height;
+        ex = -10;
+        ey = _rng.nextDouble() * _size.height;
+        break;
+      case 2: // bottom
+        sx = _rng.nextDouble() * _size.width;
+        sy = _size.height + 10;
+        ex = _rng.nextDouble() * _size.width;
+        ey = -10;
+        break;
+      default: // left
+        sx = -10;
+        sy = _rng.nextDouble() * _size.height;
+        ex = _size.width + 10;
+        ey = _rng.nextDouble() * _size.height;
+        break;
+    }
+    final dx = ex - sx;
+    final dy = ey - sy;
+    final dist = sqrt(dx * dx + dy * dy);
+    final speed = 400 + _rng.nextDouble() * 200;
+    _cosmicRays.add(_CosmicRay(
+      x: sx, y: sy,
+      vx: dx / dist * speed,
+      vy: dy / dist * speed,
+      trail: [Offset(sx, sy)],
+      age: 0,
+    ));
+  }
+
   void _onTick() {
     final now = _now();
     final dt = (now - _lastTime).clamp(0.001, 0.05);
     _lastTime = now;
-    if (_size == Size.zero) return;
+    if (_size == Size.zero || _gameOver) return;
 
     setState(() {
-      // Spawn
+      // --- Countdown Timer ---
+      _timeRemaining -= dt;
+      if (_timeRemaining <= 0) {
+        _timeRemaining = 0;
+        _gameOver = true;
+        return;
+      }
+
+      // --- Combo timer ---
+      if (_combo > 0) {
+        _comboTimer += dt;
+        if (_comboTimer >= 3.0) {
+          _combo = 0;
+          _comboTimer = 0;
+        }
+      }
+      if (_comboDisplayTimer > 0) {
+        _comboDisplayTimer -= dt;
+      }
+
+      // --- Temperature ---
+      // Rises slowly over time, faster as game progresses
+      final elapsed = 60.0 - _timeRemaining;
+      final heatRate = 0.008 + elapsed * 0.0003;
+      _temperature = (_temperature + heatRate * dt).clamp(0.0, 1.0);
+
+      // Brownian motion factor based on temperature
+      final brownian = _temperature * 80;
+
+      // --- Spawn atoms ---
       _spawnTimer -= dt;
       if (_spawnTimer <= 0 && _atoms.length < 15) {
         _spawnTimer = 0.8 + _rng.nextDouble() * 0.8;
         _spawnAtom();
       }
 
-      // Update atoms
+      // --- Cosmic Ray warning & spawning ---
+      _nextRayTimer -= dt;
+      if (_nextRayTimer <= 0.5 && !_rayPending) {
+        // Start warning
+        _warningEdge = _rng.nextInt(4);
+        _warningTimer = 0.5;
+        _rayPending = true;
+      }
+      if (_warningTimer > 0) {
+        _warningTimer -= dt;
+      }
+      if (_nextRayTimer <= 0) {
+        _spawnCosmicRay();
+        _nextRayTimer = 5.0 + _rng.nextDouble() * 3.0;
+        _rayPending = false;
+        _warningEdge = null;
+      }
+
+      // --- Update cosmic rays ---
+      for (final ray in _cosmicRays) {
+        ray.x += ray.vx * dt;
+        ray.y += ray.vy * dt;
+        ray.age += dt;
+        ray.trail.add(Offset(ray.x, ray.y));
+        if (ray.trail.length > 20) {
+          ray.trail.removeAt(0);
+        }
+
+        // Check collision with atoms
+        final hitIndices = <int>[];
+        for (int i = 0; i < _atoms.length; i++) {
+          final a = _atoms[i];
+          final r = _atomRadii[a.type]! + 8; // collision radius
+          final dist = (Offset(ray.x, ray.y) - Offset(a.x, a.y)).distance;
+          if (dist < r) {
+            hitIndices.add(i);
+          }
+        }
+        // Scatter hit atoms
+        for (final i in hitIndices) {
+          final a = _atoms[i];
+          final angle = _rng.nextDouble() * 2 * pi;
+          final scatterSpeed = 120 + _rng.nextDouble() * 100;
+          a.vx = cos(angle) * scatterSpeed;
+          a.vy = sin(angle) * scatterSpeed;
+        }
+      }
+      // Remove off-screen rays
+      _cosmicRays.removeWhere((r) =>
+        r.x < -50 || r.x > _size.width + 50 ||
+        r.y < -50 || r.y > _size.height + 50);
+
+      // --- Update atoms ---
       for (int i = 0; i < _atoms.length; i++) {
         if (i == _dragIndex) continue;
         final a = _atoms[i];
+        // Apply Brownian motion based on temperature
+        a.vx += (_rng.nextDouble() - 0.5) * brownian * dt * 10;
+        a.vy += (_rng.nextDouble() - 0.5) * brownian * dt * 10;
+
         a.x += a.vx * dt;
         a.y += a.vy * dt;
-        // Damping
-        a.vx *= (1 - 0.3 * dt);
-        a.vy *= (1 - 0.3 * dt);
+        // Damping (less damping at higher temps)
+        final dampFactor = 0.3 - _temperature * 0.2;
+        a.vx *= (1 - dampFactor.clamp(0.05, 0.3) * dt);
+        a.vy *= (1 - dampFactor.clamp(0.05, 0.3) * dt);
         // Bounce off walls
         final r = _atomRadii[a.type]!;
         if (a.x < r) { a.x = r; a.vx = a.vx.abs(); }
@@ -1385,6 +2744,7 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
   }
 
   void _onPanStart(DragStartDetails d) {
+    if (_gameOver) return;
     final pos = d.localPosition;
     for (int i = _atoms.length - 1; i >= 0; i--) {
       final a = _atoms[i];
@@ -1397,6 +2757,7 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
   }
 
   void _onPanUpdate(DragUpdateDetails d) {
+    if (_gameOver) return;
     if (_dragIndex == null || _dragIndex! >= _atoms.length) return;
     final a = _atoms[_dragIndex!];
     a.x = d.localPosition.dx;
@@ -1406,6 +2767,7 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
   }
 
   void _onPanEnd(DragEndDetails d) {
+    if (_gameOver) return;
     if (_dragIndex == null || _dragIndex! >= _atoms.length) {
       _dragIndex = null;
       return;
@@ -1433,8 +2795,26 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
       if (_recipes.containsKey(key)) {
         // Success! Form molecule
         final molName = _recipes[key]!;
-        _score++;
+
+        // Combo system
+        if (_comboTimer < 3.0 && _combo > 0) {
+          _combo++;
+        } else {
+          _combo = 1;
+        }
+        _comboTimer = 0;
+        _comboDisplayTimer = 1.5;
+        if (_combo > _highestCombo) _highestCombo = _combo;
+
+        // Score with combo multiplier
+        _score += _combo;
         _successFlash = 1;
+
+        // Cool the system (successful bond reduces temperature)
+        _temperature = (_temperature - 0.08).clamp(0.0, 1.0);
+
+        // Track molecules built
+        _moleculesBuilt[molName] = (_moleculesBuilt[molName] ?? 0) + 1;
 
         // Compute center of group
         double cx = 0, cy = 0;
@@ -1445,8 +2825,9 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
         cx /= group.length;
         cy /= group.length;
 
+        final comboText = _combo > 1 ? ' x$_combo' : '';
         _popups.add(_MoleculePopup(
-          text: molName,
+          text: '$molName$comboText',
           x: cx, y: cy,
           life: 2.0,
         ));
@@ -1481,6 +2862,9 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
 
   @override
   Widget build(BuildContext context) {
+    if (_gameOver) {
+      return _buildGameOverScreen();
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
         _size = Size(constraints.maxWidth, constraints.maxHeight);
@@ -1499,12 +2883,122 @@ class _MoleculeBuilderGameState extends State<_MoleculeBuilderGame>
                 bounceFlash: _bounceFlash,
                 successFlash: _successFlash,
                 score: _score,
+                timeRemaining: _timeRemaining,
+                temperature: _temperature,
+                combo: _combo,
+                comboDisplayTimer: _comboDisplayTimer,
+                cosmicRays: _cosmicRays,
+                warningEdge: _warningEdge,
+                warningTimer: _warningTimer,
               ),
               size: Size.infinite,
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildGameOverScreen() {
+    final totalMolecules = _moleculesBuilt.values.fold<int>(0, (a, b) => a + b);
+    return Container(
+      color: const Color(0xFF050510),
+      child: Center(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'GAME OVER',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 36,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  letterSpacing: 4,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'Score: $_score',
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.greenAccent,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Highest Combo: x$_highestCombo',
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 18,
+                  color: Colors.amberAccent,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Molecules Built: $totalMolecules',
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 18,
+                  color: Colors.white70,
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (_moleculesBuilt.isNotEmpty) ...[
+                const Text(
+                  'Breakdown:',
+                  style: TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white54,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ..._moleculesBuilt.entries.map((e) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(
+                    '${e.key}  x${e.value}',
+                    style: const TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 20,
+                      color: Colors.white60,
+                    ),
+                  ),
+                )),
+              ],
+              const SizedBox(height: 32),
+              GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _resetGame();
+                  });
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: Colors.greenAccent.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.greenAccent, width: 1.5),
+                  ),
+                  child: const Text(
+                    'Play Again',
+                    style: TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.greenAccent,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1529,6 +3023,18 @@ class _MoleculePopup {
   });
 }
 
+class _CosmicRay {
+  double x, y, vx, vy;
+  double age;
+  List<Offset> trail;
+  _CosmicRay({
+    required this.x, required this.y,
+    required this.vx, required this.vy,
+    required this.trail,
+    required this.age,
+  });
+}
+
 class _MoleculeBuilderPainter extends CustomPainter {
   final List<_FloatingAtom> atoms;
   final Map<String, Color> atomColors;
@@ -1537,12 +3043,23 @@ class _MoleculeBuilderPainter extends CustomPainter {
   final List<_MoleculePopup> popups;
   final double bounceFlash, successFlash;
   final int score;
+  final double timeRemaining;
+  final double temperature;
+  final int combo;
+  final double comboDisplayTimer;
+  final List<_CosmicRay> cosmicRays;
+  final int? warningEdge;
+  final double warningTimer;
 
   _MoleculeBuilderPainter({
     required this.atoms, required this.atomColors,
     required this.atomRadii, required this.dragIndex,
     required this.popups, required this.bounceFlash,
     required this.successFlash, required this.score,
+    required this.timeRemaining, required this.temperature,
+    required this.combo, required this.comboDisplayTimer,
+    required this.cosmicRays, required this.warningEdge,
+    required this.warningTimer,
   });
 
   @override
@@ -1561,6 +3078,59 @@ class _MoleculeBuilderPainter extends CustomPainter {
         Offset.zero & size,
         Paint()..color = Colors.orangeAccent.withValues(alpha: bounceFlash * 0.1),
       );
+    }
+
+    // --- Warning edge flash for incoming cosmic ray ---
+    if (warningEdge != null && warningTimer > 0) {
+      final flashAlpha = (warningTimer / 0.5).clamp(0.0, 1.0) * 0.4;
+      final warnColor = Colors.red.withValues(alpha: flashAlpha);
+      final warnPaint = Paint()..color = warnColor;
+      const edgeThickness = 6.0;
+      switch (warningEdge!) {
+        case 0: // top
+          canvas.drawRect(Rect.fromLTWH(0, 0, size.width, edgeThickness), warnPaint);
+          break;
+        case 1: // right
+          canvas.drawRect(Rect.fromLTWH(size.width - edgeThickness, 0, edgeThickness, size.height), warnPaint);
+          break;
+        case 2: // bottom
+          canvas.drawRect(Rect.fromLTWH(0, size.height - edgeThickness, size.width, edgeThickness), warnPaint);
+          break;
+        case 3: // left
+          canvas.drawRect(Rect.fromLTWH(0, 0, edgeThickness, size.height), warnPaint);
+          break;
+      }
+    }
+
+    // --- Cosmic Rays (trail + particle) ---
+    for (final ray in cosmicRays) {
+      // Trail
+      if (ray.trail.length >= 2) {
+        for (int j = 1; j < ray.trail.length; j++) {
+          final alpha = j / ray.trail.length;
+          final trailPaint = Paint()
+            ..color = Color.lerp(
+              Colors.orange.withValues(alpha: alpha * 0.3),
+              Colors.red.withValues(alpha: alpha * 0.8),
+              alpha,
+            )!
+            ..strokeWidth = 3.0 * alpha
+            ..strokeCap = StrokeCap.round
+            ..style = PaintingStyle.stroke;
+          canvas.drawLine(ray.trail[j - 1], ray.trail[j], trailPaint);
+        }
+      }
+      // Head glow
+      final headPos = Offset(ray.x, ray.y);
+      final glowPaint = Paint()
+        ..shader = ui.Gradient.radial(
+          headPos, 18,
+          [Colors.orangeAccent.withValues(alpha: 0.8), Colors.red.withValues(alpha: 0.0)],
+        );
+      canvas.drawCircle(headPos, 18, glowPaint);
+      // Core
+      canvas.drawCircle(headPos, 4, Paint()..color = Colors.white);
+      canvas.drawCircle(headPos, 6, Paint()..color = Colors.orangeAccent);
     }
 
     // Atoms
@@ -1641,7 +3211,56 @@ class _MoleculeBuilderPainter extends CustomPainter {
       tp.paint(canvas, Offset(p.x - tp.width / 2, p.y - tp.height / 2));
     }
 
-    // Recipe hints
+    // --- Timer display (top center) ---
+    final timerSeconds = timeRemaining.ceil();
+    final timerColor = timeRemaining <= 10
+        ? Color.lerp(Colors.red, Colors.white, (timeRemaining % 1.0))!
+        : Colors.white70;
+    final timerTp = TextPainter(
+      text: TextSpan(
+        text: '${timerSeconds}s',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: timeRemaining <= 10 ? 32 : 24,
+          fontWeight: FontWeight.bold,
+          color: timerColor,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    timerTp.paint(canvas, Offset((size.width - timerTp.width) / 2, 8));
+
+    // --- Temperature gauge (right side) ---
+    _drawTemperatureGauge(canvas, size);
+
+    // --- Combo display ---
+    if (combo > 1 && comboDisplayTimer > 0) {
+      final comboAlpha = comboDisplayTimer.clamp(0.0, 1.0);
+      final comboSize = 24.0 + combo * 6.0;
+      final comboColor = combo >= 4
+          ? Colors.amberAccent
+          : combo >= 3
+              ? Colors.orangeAccent
+              : Colors.yellowAccent;
+      final comboTp = TextPainter(
+        text: TextSpan(
+          text: 'COMBO x$combo',
+          style: TextStyle(
+            fontFamily: 'Avenir',
+            fontSize: comboSize.clamp(24.0, 60.0),
+            fontWeight: FontWeight.bold,
+            color: comboColor.withValues(alpha: comboAlpha),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      comboTp.paint(
+        canvas,
+        Offset((size.width - comboTp.width) / 2, size.height * 0.15),
+      );
+    }
+
+    // Recipe hints (moved down to avoid timer)
     final recipes = ['H+H = H\u2082', 'H+O+H = H\u2082O', 'C+O+O = CO\u2082', 'N+N = N\u2082'];
     for (int i = 0; i < recipes.length; i++) {
       final tp = TextPainter(
@@ -1651,13 +3270,13 @@ class _MoleculeBuilderPainter extends CustomPainter {
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset(8, 8 + i * 16.0));
+      tp.paint(canvas, Offset(8, 40 + i * 16.0));
     }
 
     // Score
     final scoreTp = TextPainter(
       text: TextSpan(
-        text: 'Molecules: $score',
+        text: 'Score: $score',
         style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white38),
       ),
       textDirection: TextDirection.ltr,
@@ -1665,7 +3284,7 @@ class _MoleculeBuilderPainter extends CustomPainter {
     scoreTp.paint(canvas, Offset((size.width - scoreTp.width) / 2, size.height - 50));
 
     // Hint
-    if (score == 0) {
+    if (score == 0 && timeRemaining > 55) {
       final hint = TextPainter(
         text: const TextSpan(
           text: 'Drag atoms together to bond them',
@@ -1675,6 +3294,66 @@ class _MoleculeBuilderPainter extends CustomPainter {
       )..layout();
       hint.paint(canvas, Offset((size.width - hint.width) / 2, size.height - 80));
     }
+  }
+
+  void _drawTemperatureGauge(Canvas canvas, Size size) {
+    final gaugeX = size.width - 28;
+    const gaugeTop = 50.0;
+    final gaugeHeight = size.height * 0.35;
+    const gaugeWidth = 14.0;
+
+    // Background
+    final bgRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(gaugeX, gaugeTop, gaugeWidth, gaugeHeight),
+      const Radius.circular(7),
+    );
+    canvas.drawRRect(bgRect, Paint()..color = Colors.white.withValues(alpha: 0.1));
+
+    // Fill (bottom-up)
+    final fillHeight = gaugeHeight * temperature;
+    final fillTop = gaugeTop + gaugeHeight - fillHeight;
+    final fillColor = Color.lerp(
+      const Color(0xFF2196F3), // blue (cool)
+      const Color(0xFFFF1744), // red (hot)
+      temperature,
+    )!;
+    final fillRect = RRect.fromRectAndCorners(
+      Rect.fromLTWH(gaugeX, fillTop, gaugeWidth, fillHeight),
+      bottomLeft: const Radius.circular(7),
+      bottomRight: const Radius.circular(7),
+      topLeft: temperature >= 0.98 ? const Radius.circular(7) : Radius.zero,
+      topRight: temperature >= 0.98 ? const Radius.circular(7) : Radius.zero,
+    );
+    canvas.drawRRect(fillRect, Paint()..color = fillColor);
+
+    // Border
+    canvas.drawRRect(
+      bgRect,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.3)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+
+    // Label
+    final labelTp = TextPainter(
+      text: TextSpan(
+        text: temperature >= 0.8 ? 'HOT' : 'TEMP',
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 9,
+          fontWeight: FontWeight.bold,
+          color: temperature >= 0.8
+              ? Colors.redAccent.withValues(alpha: 0.9)
+              : Colors.white38,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    labelTp.paint(
+      canvas,
+      Offset(gaugeX + (gaugeWidth - labelTp.width) / 2, gaugeTop + gaugeHeight + 4),
+    );
   }
 
   @override
@@ -2652,4 +4331,686 @@ class _Particle {
   double x, y, vx, vy, life;
   Color color;
   _Particle({required this.x, required this.y, required this.vx, required this.vy, required this.life, required this.color});
+}
+
+// ---------------------------------------------------------------------------
+// ThoughtCatcherGame — "Thought Catcher"
+// Shapes materialize with concept words. Match shape to word to score.
+// ---------------------------------------------------------------------------
+
+class _ThoughtShape {
+  double x, y;
+  double life, maxLife;
+  int shapeType; // 0=circle, 1=triangle, 2=spiral, 3=diamond
+  int conceptIndex;
+  bool matched;
+  bool shattered;
+  double shatterTimer;
+  _ThoughtShape({
+    required this.x, required this.y,
+    required this.life, required this.shapeType,
+    required this.conceptIndex,
+  }) : maxLife = life, matched = false, shattered = false, shatterTimer = 0;
+}
+
+class ThoughtCatcherGame extends StatefulWidget {
+  const ThoughtCatcherGame({Key? key}) : super(key: key);
+  @override
+  State<ThoughtCatcherGame> createState() => _ThoughtCatcherGameState();
+}
+
+class _ThoughtCatcherGameState extends State<ThoughtCatcherGame>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  final Random _rng = Random();
+
+  static const _concepts = ['Spirit', 'Light', 'Idea', 'Self'];
+  static const _shapeColors = [Color(0xFF80DEEA), Color(0xFFFFF176), Color(0xFFCE93D8), Color(0xFFA5D6A7)];
+
+  final List<_ThoughtShape> _shapes = [];
+  int _score = 0;
+  int _misses = 0;
+  double _spawnTimer = 0;
+  double _spawnInterval = 2.5;
+  double _lastTime = 0;
+  Size _size = Size.zero;
+
+  int? _tappedShape;
+  int? _selectedWord;
+  double _glowFlash = 0;
+
+  final List<_Particle> _particles = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
+    _lastTime = _now();
+  }
+
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _tick() {
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+
+    setState(() {
+      // Spawn shapes
+      _spawnTimer -= dt;
+      if (_spawnTimer <= 0 && _shapes.length < 4) {
+        _spawnTimer = _spawnInterval;
+        if (_size != Size.zero) {
+          final concept = _rng.nextInt(4);
+          _shapes.add(_ThoughtShape(
+            x: 0.15 + _rng.nextDouble() * 0.7,
+            y: 0.15 + _rng.nextDouble() * 0.5,
+            life: 3.0 + _rng.nextDouble(),
+            shapeType: concept, // shape matches concept
+            conceptIndex: concept,
+          ));
+        }
+        // Speed up over time
+        _spawnInterval = (_spawnInterval - 0.03).clamp(0.8, 3.0);
+      }
+
+      // Update shapes
+      for (int i = _shapes.length - 1; i >= 0; i--) {
+        final s = _shapes[i];
+        if (s.matched) {
+          s.shatterTimer += dt;
+          if (s.shatterTimer > 0.5) _shapes.removeAt(i);
+          continue;
+        }
+        if (s.shattered) {
+          s.shatterTimer += dt;
+          if (s.shatterTimer > 0.4) _shapes.removeAt(i);
+          continue;
+        }
+        s.life -= dt;
+        if (s.life <= 0) {
+          _misses++;
+          _shapes.removeAt(i);
+        }
+      }
+
+      // Flash decay
+      if (_glowFlash > 0) _glowFlash = (_glowFlash - dt * 3).clamp(0.0, 1.0);
+
+      // Particles
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      _particles.removeWhere((p) => p.life <= 0);
+    });
+  }
+
+  void _onTapShape(int shapeIdx) {
+    _tappedShape = shapeIdx;
+    if (_selectedWord != null) {
+      _tryMatch();
+    }
+  }
+
+  void _onSelectWord(int wordIdx) {
+    _selectedWord = wordIdx;
+    if (_tappedShape != null) {
+      _tryMatch();
+    }
+  }
+
+  void _tryMatch() {
+    if (_tappedShape == null || _selectedWord == null) return;
+    if (_tappedShape! >= _shapes.length) {
+      _tappedShape = null;
+      _selectedWord = null;
+      return;
+    }
+    final shape = _shapes[_tappedShape!];
+    if (shape.conceptIndex == _selectedWord) {
+      // Correct match
+      shape.matched = true;
+      shape.shatterTimer = 0;
+      _score++;
+      _glowFlash = 1;
+      // Glow particles
+      for (int i = 0; i < 10; i++) {
+        final a = _rng.nextDouble() * 2 * pi;
+        _particles.add(_Particle(
+          x: shape.x, y: shape.y,
+          vx: cos(a) * 0.15, vy: sin(a) * 0.15,
+          life: 0.6, color: _shapeColors[shape.conceptIndex],
+        ));
+      }
+    } else {
+      // Wrong match — shatter
+      shape.shattered = true;
+      shape.shatterTimer = 0;
+      for (int i = 0; i < 8; i++) {
+        final a = _rng.nextDouble() * 2 * pi;
+        _particles.add(_Particle(
+          x: shape.x, y: shape.y,
+          vx: cos(a) * 0.2, vy: sin(a) * 0.2,
+          life: 0.4, color: Colors.grey,
+        ));
+      }
+    }
+    _tappedShape = null;
+    _selectedWord = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      _size = Size(constraints.maxWidth, constraints.maxHeight);
+      final w = constraints.maxWidth;
+      final h = constraints.maxHeight;
+
+      return Container(
+        color: const Color(0xFF0A0A14),
+        child: Stack(
+          children: [
+            // Custom paint for shapes and particles
+            CustomPaint(
+              painter: _ThoughtPainter(
+                shapes: _shapes, shapeColors: _shapeColors,
+                particles: _particles, glowFlash: _glowFlash,
+                tappedShape: _tappedShape,
+                w: w, h: h,
+              ),
+              size: Size.infinite,
+            ),
+
+            // Tap detection on shapes
+            ...List.generate(_shapes.length, (i) {
+              final s = _shapes[i];
+              if (s.matched || s.shattered) return const SizedBox.shrink();
+              return Positioned(
+                left: s.x * w - 25,
+                top: s.y * h - 25,
+                child: GestureDetector(
+                  onTap: () => _onTapShape(i),
+                  child: Container(
+                    width: 50, height: 50,
+                    color: Colors.transparent,
+                  ),
+                ),
+              );
+            }),
+
+            // Score
+            Positioned(
+              top: 8, left: 0, right: 0,
+              child: Center(
+                child: Text(
+                  'Score: $_score   Missed: $_misses',
+                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white38),
+                ),
+              ),
+            ),
+
+            // Word buttons at bottom
+            Positioned(
+              bottom: 30, left: 16, right: 16,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: List.generate(4, (i) {
+                  final isSelected = _selectedWord == i;
+                  return GestureDetector(
+                    onTap: () => _onSelectWord(i),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        color: isSelected ? _shapeColors[i].withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.05),
+                        border: Border.all(color: isSelected ? _shapeColors[i] : Colors.white.withValues(alpha: 0.15)),
+                      ),
+                      child: Text(
+                        _concepts[i],
+                        style: TextStyle(
+                          fontFamily: 'Avenir', fontSize: 13,
+                          color: isSelected ? _shapeColors[i] : Colors.white54,
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ),
+
+            if (_score == 0 && _shapes.isEmpty)
+              Positioned(
+                bottom: 80, left: 0, right: 0,
+                child: const Center(child: Text('Tap a shape, then its matching word', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Color(0x33FFFFFF)))),
+              ),
+          ],
+        ),
+      );
+    });
+  }
+}
+
+class _ThoughtPainter extends CustomPainter {
+  final List<_ThoughtShape> shapes;
+  final List<Color> shapeColors;
+  final List<_Particle> particles;
+  final double glowFlash;
+  final int? tappedShape;
+  final double w, h;
+
+  _ThoughtPainter({
+    required this.shapes, required this.shapeColors,
+    required this.particles, required this.glowFlash,
+    required this.tappedShape, required this.w, required this.h,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF0A0A14));
+
+    // Ambient glow
+    if (glowFlash > 0) {
+      canvas.drawRect(Offset.zero & size, Paint()..color = Colors.white.withValues(alpha: glowFlash * 0.04));
+    }
+
+    // Shapes
+    for (int i = 0; i < shapes.length; i++) {
+      final s = shapes[i];
+      final px = s.x * size.width;
+      final py = s.y * size.height;
+      final color = shapeColors[s.conceptIndex];
+      final alpha = s.matched ? (1.0 - s.shatterTimer * 2).clamp(0.0, 1.0) :
+                     s.shattered ? (1.0 - s.shatterTimer * 2.5).clamp(0.0, 1.0) :
+                     (s.life / s.maxLife).clamp(0.2, 0.8);
+      final isSelected = i == tappedShape;
+
+      // Outer glow
+      final glowR = isSelected ? 35.0 : 25.0;
+      canvas.drawCircle(Offset(px, py), glowR, Paint()..color = color.withValues(alpha: alpha * (isSelected ? 0.2 : 0.08)));
+
+      // Draw shape based on type
+      final paint = Paint()..color = color.withValues(alpha: alpha * 0.7);
+      final strokePaint = Paint()..color = color.withValues(alpha: alpha)..style = PaintingStyle.stroke..strokeWidth = 2;
+      switch (s.shapeType) {
+        case 0: // Circle
+          canvas.drawCircle(Offset(px, py), 16, paint);
+          canvas.drawCircle(Offset(px, py), 16, strokePaint);
+          break;
+        case 1: // Triangle
+          final path = Path();
+          path.moveTo(px, py - 18);
+          path.lineTo(px - 16, py + 12);
+          path.lineTo(px + 16, py + 12);
+          path.close();
+          canvas.drawPath(path, paint);
+          canvas.drawPath(path, strokePaint);
+          break;
+        case 2: // Spiral (approximated as ring)
+          canvas.drawCircle(Offset(px, py), 14, strokePaint);
+          canvas.drawCircle(Offset(px, py), 8, Paint()..color = color.withValues(alpha: alpha * 0.4)..style = PaintingStyle.stroke..strokeWidth = 1.5);
+          canvas.drawCircle(Offset(px, py), 3, Paint()..color = color.withValues(alpha: alpha * 0.6));
+          break;
+        case 3: // Diamond
+          final path = Path();
+          path.moveTo(px, py - 18);
+          path.lineTo(px + 14, py);
+          path.lineTo(px, py + 18);
+          path.lineTo(px - 14, py);
+          path.close();
+          canvas.drawPath(path, paint);
+          canvas.drawPath(path, strokePaint);
+          break;
+      }
+
+      // Life indicator
+      if (!s.matched && !s.shattered) {
+        final lifeW = 24 * (s.life / s.maxLife);
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(Rect.fromLTWH(px - 12, py + 22, 24, 2), const Radius.circular(1)),
+          Paint()..color = Colors.white.withValues(alpha: 0.1),
+        );
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(Rect.fromLTWH(px - 12, py + 22, lifeW, 2), const Radius.circular(1)),
+          Paint()..color = color.withValues(alpha: alpha * 0.5),
+        );
+      }
+    }
+
+    // Particles
+    for (final p in particles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x * size.width, p.y * size.height), 2.5,
+          Paint()..color = p.color.withValues(alpha: (p.life / 0.6).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ThoughtPainter old) => true;
+}
+
+// ---------------------------------------------------------------------------
+// LightSpeedGame — "Light Speed"
+// Side-scrolling photon dodging gravity wells. Distance = score in light-years.
+// ---------------------------------------------------------------------------
+
+class _GravityObstacle {
+  double x, y, radius, mass;
+  Color color;
+  _GravityObstacle({required this.x, required this.y, required this.radius, required this.mass, required this.color});
+}
+
+class LightSpeedGame extends StatefulWidget {
+  const LightSpeedGame({Key? key}) : super(key: key);
+  @override
+  State<LightSpeedGame> createState() => _LightSpeedGameState();
+}
+
+class _LightSpeedGameState extends State<LightSpeedGame>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  final Random _rng = Random();
+
+  double _photonY = 0.5; // normalized Y position
+  double _photonVy = 0;
+  double _distance = 0; // light-years
+  double _speed = 180; // pixels/sec scrolling
+  bool _gameOver = false;
+  double _lastTime = 0;
+  Size _size = Size.zero;
+
+  final List<_GravityObstacle> _obstacles = [];
+  double _spawnTimer = 0;
+  final List<Offset> _trail = [];
+  final List<_Particle> _particles = [];
+
+  // Star field
+  final List<Offset> _stars = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
+    _lastTime = _now();
+    // Pre-generate stars
+    for (int i = 0; i < 60; i++) {
+      _stars.add(Offset(_rng.nextDouble(), _rng.nextDouble()));
+    }
+  }
+
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _tick() {
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+    if (_gameOver || _size == Size.zero) return;
+
+    setState(() {
+      _distance += dt * _speed * 0.01; // Convert to light-years-ish
+      _speed += dt * 3; // Gradually speed up
+
+      // Photon physics — damping
+      _photonVy *= (1 - 2 * dt);
+      _photonY += _photonVy * dt;
+
+      // Apply gravity from obstacles
+      final photonX = 0.15; // fixed X position on screen (normalized)
+      for (final obs in _obstacles) {
+        final dx = obs.x - photonX;
+        final dy = obs.y - _photonY;
+        final dist = sqrt(dx * dx + dy * dy).clamp(0.02, 2.0);
+        final force = obs.mass * 0.003 / (dist * dist);
+        _photonVy += dy / dist * force;
+      }
+
+      // Bounds
+      if (_photonY < 0.02 || _photonY > 0.98) {
+        _photonY = _photonY.clamp(0.02, 0.98);
+        _photonVy = 0;
+      }
+
+      // Trail
+      _trail.add(Offset(photonX, _photonY));
+      if (_trail.length > 30) _trail.removeAt(0);
+
+      // Move obstacles
+      for (final obs in _obstacles) {
+        obs.x -= _speed / _size.width * dt;
+      }
+      _obstacles.removeWhere((o) => o.x < -0.15);
+
+      // Collision check
+      for (final obs in _obstacles) {
+        final dx = obs.x - photonX;
+        final dy = obs.y - _photonY;
+        final dist = sqrt(dx * dx + dy * dy);
+        if (dist < obs.radius + 0.02) {
+          _gameOver = true;
+          for (int i = 0; i < 15; i++) {
+            final a = _rng.nextDouble() * 2 * pi;
+            _particles.add(_Particle(
+              x: photonX, y: _photonY,
+              vx: cos(a) * 0.3, vy: sin(a) * 0.3,
+              life: 0.6, color: Colors.yellowAccent,
+            ));
+          }
+          break;
+        }
+      }
+
+      // Spawn obstacles
+      _spawnTimer -= dt;
+      if (_spawnTimer <= 0) {
+        _spawnTimer = 0.8 + _rng.nextDouble() * 1.2;
+        final isBH = _rng.nextDouble() < 0.3; // black hole vs star
+        _obstacles.add(_GravityObstacle(
+          x: 1.2,
+          y: 0.1 + _rng.nextDouble() * 0.8,
+          radius: isBH ? 0.03 + _rng.nextDouble() * 0.02 : 0.04 + _rng.nextDouble() * 0.04,
+          mass: isBH ? 1.5 + _rng.nextDouble() : 0.5 + _rng.nextDouble() * 0.5,
+          color: isBH ? const Color(0xFF1A1A2E) : Colors.amber,
+        ));
+      }
+
+      // Move stars
+      for (int i = 0; i < _stars.length; i++) {
+        var sx = _stars[i].dx - _speed * 0.0002 * dt;
+        if (sx < 0) sx += 1;
+        _stars[i] = Offset(sx, _stars[i].dy);
+      }
+
+      // Particles
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      _particles.removeWhere((p) => p.life <= 0);
+    });
+  }
+
+  void _restart() {
+    setState(() {
+      _photonY = 0.5;
+      _photonVy = 0;
+      _distance = 0;
+      _speed = 180;
+      _gameOver = false;
+      _obstacles.clear();
+      _trail.clear();
+      _particles.clear();
+      _spawnTimer = 1;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      _size = Size(constraints.maxWidth, constraints.maxHeight);
+      return GestureDetector(
+        onPanUpdate: (d) {
+          if (_gameOver) return;
+          _photonVy += d.delta.dy / _size.height * -3;
+        },
+        onTapDown: (_) {
+          if (_gameOver) _restart();
+        },
+        child: Container(
+          color: Colors.black,
+          child: CustomPaint(
+            painter: _LightSpeedPainter(
+              photonY: _photonY, trail: _trail,
+              obstacles: _obstacles, stars: _stars,
+              particles: _particles, distance: _distance,
+              gameOver: _gameOver,
+            ),
+            child: Stack(
+              children: [
+                // Distance HUD
+                Positioned(
+                  top: 8, left: 0, right: 0,
+                  child: Center(
+                    child: Text(
+                      '${_distance.toStringAsFixed(1)} light-years',
+                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.yellowAccent),
+                    ),
+                  ),
+                ),
+                if (_gameOver)
+                  Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('Absorbed!', style: TextStyle(fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                        const SizedBox(height: 8),
+                        Text('Distance: ${_distance.toStringAsFixed(1)} ly', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white54)),
+                        const SizedBox(height: 12),
+                        const Text('Tap to restart', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white30)),
+                      ],
+                    ),
+                  ),
+                if (!_gameOver && _distance < 1)
+                  Positioned(
+                    bottom: 20, left: 0, right: 0,
+                    child: const Center(child: Text('Swipe up/down to dodge gravity wells', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Color(0x33FFFFFF)))),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+class _LightSpeedPainter extends CustomPainter {
+  final double photonY;
+  final List<Offset> trail;
+  final List<_GravityObstacle> obstacles;
+  final List<Offset> stars;
+  final List<_Particle> particles;
+  final double distance;
+  final bool gameOver;
+
+  _LightSpeedPainter({
+    required this.photonY, required this.trail,
+    required this.obstacles, required this.stars,
+    required this.particles, required this.distance,
+    required this.gameOver,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
+
+    // Stars
+    for (final s in stars) {
+      canvas.drawCircle(
+        Offset(s.dx * size.width, s.dy * size.height),
+        0.5 + (s.dx * 3 % 1) * 0.8,
+        Paint()..color = Colors.white.withValues(alpha: 0.1 + (s.dy * 5 % 1) * 0.15),
+      );
+    }
+
+    // Obstacles
+    for (final obs in obstacles) {
+      final ox = obs.x * size.width;
+      final oy = obs.y * size.height;
+      final or2 = obs.radius * size.width;
+      final isBH = obs.color == const Color(0xFF1A1A2E);
+      if (isBH) {
+        // Black hole
+        canvas.drawCircle(Offset(ox, oy), or2 + 12, Paint()..color = Colors.deepPurple.withValues(alpha: 0.08));
+        canvas.drawCircle(Offset(ox, oy), or2 + 6, Paint()..color = Colors.deepPurple.withValues(alpha: 0.12));
+        canvas.drawCircle(Offset(ox, oy), or2, Paint()..color = const Color(0xFF0D0D1A));
+        canvas.drawCircle(Offset(ox, oy), or2, Paint()
+          ..color = Colors.deepPurple.withValues(alpha: 0.4)
+          ..style = PaintingStyle.stroke..strokeWidth = 1.5);
+      } else {
+        // Star
+        final glow = Paint()..shader = ui.Gradient.radial(
+          Offset(ox, oy), or2 * 2.5,
+          [obs.color.withValues(alpha: 0.2), Colors.transparent],
+        );
+        canvas.drawCircle(Offset(ox, oy), or2 * 2.5, glow);
+        canvas.drawCircle(Offset(ox, oy), or2, Paint()..color = obs.color.withValues(alpha: 0.8));
+        canvas.drawCircle(Offset(ox, oy), or2 * 0.4, Paint()..color = Colors.white.withValues(alpha: 0.5));
+      }
+    }
+
+    // Trail
+    final photonX = 0.15 * size.width;
+    if (trail.length > 1) {
+      for (int i = 1; i < trail.length; i++) {
+        final alpha = i / trail.length * 0.5;
+        canvas.drawLine(
+          Offset(photonX - (trail.length - i) * 2, trail[i - 1].dy * size.height),
+          Offset(photonX - (trail.length - i - 1) * 2, trail[i].dy * size.height),
+          Paint()..color = Colors.yellowAccent.withValues(alpha: alpha)..strokeWidth = 2,
+        );
+      }
+    }
+
+    // Photon
+    if (!gameOver) {
+      final py = photonY * size.height;
+      canvas.drawCircle(Offset(photonX, py), 10, Paint()..color = Colors.yellowAccent.withValues(alpha: 0.15));
+      canvas.drawCircle(Offset(photonX, py), 5, Paint()..color = Colors.yellowAccent.withValues(alpha: 0.6));
+      canvas.drawCircle(Offset(photonX, py), 2.5, Paint()..color = Colors.white.withValues(alpha: 0.9));
+    }
+
+    // Particles
+    for (final p in particles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x * size.width, p.y * size.height), 2.5,
+          Paint()..color = p.color.withValues(alpha: (p.life / 0.6).clamp(0.0, 1.0)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LightSpeedPainter old) => true;
 }

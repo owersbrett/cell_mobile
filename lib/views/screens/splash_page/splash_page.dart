@@ -71,7 +71,7 @@ class SplashPage extends StatelessWidget {
                   ),
                 ),
                 child: Text(
-                  'Explore The Cell',
+                  'Play',
                   style: TextStyle(
                     fontFamily: 'Avenir',
                     fontSize: 18,
