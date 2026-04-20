@@ -4334,23 +4334,33 @@ class _Particle {
 }
 
 // ---------------------------------------------------------------------------
-// ThoughtCatcherGame — "Thought Catcher"
-// Shapes materialize with concept words. Match shape to word to score.
+// ThoughtCatcherGame — "Catch the Thought"
+// Glowing thought bubbles float upward. Tap the bubble matching the target word.
 // ---------------------------------------------------------------------------
 
-class _ThoughtShape {
-  double x, y;
-  double life, maxLife;
-  int shapeType; // 0=circle, 1=triangle, 2=spiral, 3=diamond
-  int conceptIndex;
-  bool matched;
-  bool shattered;
-  double shatterTimer;
-  _ThoughtShape({
-    required this.x, required this.y,
-    required this.life, required this.shapeType,
-    required this.conceptIndex,
-  }) : maxLife = life, matched = false, shattered = false, shatterTimer = 0;
+class _ThoughtBubble {
+  double x; // normalized 0..1
+  double y; // normalized 0..1 (1 = bottom, 0 = top)
+  double speed; // normalized units per second
+  double radius; // pixel radius
+  int wordIndex;
+  double wigglePhase;
+  double wiggleAmplitude; // 0 for levels 1-2, > 0 for level 3
+  bool popping; // correct catch animation
+  bool shattering; // wrong tap animation
+  double animTimer;
+
+  _ThoughtBubble({
+    required this.x,
+    required this.y,
+    required this.speed,
+    required this.radius,
+    required this.wordIndex,
+    this.wigglePhase = 0,
+    this.wiggleAmplitude = 0,
+  })  : popping = false,
+        shattering = false,
+        animTimer = 0;
 }
 
 class ThoughtCatcherGame extends StatefulWidget {
@@ -4364,33 +4374,87 @@ class _ThoughtCatcherGameState extends State<ThoughtCatcherGame>
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  static const _concepts = ['Spirit', 'Light', 'Idea', 'Self'];
-  static const _shapeColors = [Color(0xFF80DEEA), Color(0xFFFFF176), Color(0xFFCE93D8), Color(0xFFA5D6A7)];
+  static const _allWords = [
+    'Spirit', 'Light', 'Idea', 'Self', 'Truth', 'Wonder', 'Being', 'Dream'
+  ];
+  static const _bubbleColors = [
+    Color(0xFF80DEEA), Color(0xFFFFF176), Color(0xFFCE93D8), Color(0xFFA5D6A7),
+    Color(0xFFEF9A9A), Color(0xFFFFCC80), Color(0xFF90CAF9), Color(0xFFB39DDB),
+  ];
 
-  final List<_ThoughtShape> _shapes = [];
-  int _score = 0;
-  int _misses = 0;
-  double _spawnTimer = 0;
-  double _spawnInterval = 2.5;
-  double _lastTime = 0;
-  Size _size = Size.zero;
-
-  int? _tappedShape;
-  int? _selectedWord;
-  double _glowFlash = 0;
-
+  final List<_ThoughtBubble> _bubbles = [];
   final List<_Particle> _particles = [];
+
+  int _score = 0;
+  int _lives = 5;
+  int _streak = 0;
+  int _bestStreak = 0;
+  int _highScore = 0;
+  int _targetWordIndex = 0;
+  bool _gameOver = false;
+  double _lastTime = 0;
+  double _startTime = 0;
+  Size _size = Size.zero;
+  double _spawnTimer = 0;
+  double _targetFlash = 0; // flash animation when target changes
+  double _targetScale = 1.0; // zoom animation for new target
+  double _pulsePhase = 0; // subtle pulse on the target word
 
   @override
   void initState() {
     super.initState();
+    _loadHighScore();
+    _targetWordIndex = _rng.nextInt(_wordsInPlay);
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick)
       ..forward();
     _lastTime = _now();
+    _startTime = _lastTime;
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  Future<void> _loadHighScore() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _highScore = prefs.getInt('thought_catcher_high_score') ?? 0;
+    });
+  }
+
+  Future<void> _saveHighScore() async {
+    if (_score > _highScore) {
+      _highScore = _score;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('thought_catcher_high_score', _score);
+    }
+  }
+
+  // Difficulty helpers
+  int get _wordsInPlay {
+    if (_score < 5) return 4;
+    if (_score < 15) return 6;
+    return 8;
+  }
+
+  int get _maxBubbles {
+    if (_score < 5) return 2;
+    if (_score < 15) return 3;
+    return 5;
+  }
+
+  double get _baseSpeed {
+    if (_score < 5) return 0.06;
+    if (_score < 15) return 0.10;
+    return 0.14;
+  }
+
+  double get _spawnInterval {
+    if (_score < 5) return 2.2;
+    if (_score < 15) return 1.5;
+    return 1.0;
+  }
+
+  bool get _wiggleEnabled => _score >= 15;
 
   @override
   void dispose() {
@@ -4398,52 +4462,104 @@ class _ThoughtCatcherGameState extends State<ThoughtCatcherGame>
     super.dispose();
   }
 
+  void _pickNewTarget() {
+    final oldTarget = _targetWordIndex;
+    // Pick a different word from the pool
+    int next = _rng.nextInt(_wordsInPlay);
+    while (next == oldTarget && _wordsInPlay > 1) {
+      next = _rng.nextInt(_wordsInPlay);
+    }
+    _targetWordIndex = next;
+    _targetFlash = 1.0;
+    _targetScale = 1.3;
+  }
+
+  void _restart() {
+    setState(() {
+      _bubbles.clear();
+      _particles.clear();
+      _score = 0;
+      _lives = 5;
+      _streak = 0;
+      _bestStreak = 0;
+      _gameOver = false;
+      _spawnTimer = 0;
+      _targetFlash = 0;
+      _targetScale = 1.0;
+      _targetWordIndex = _rng.nextInt(4); // reset to level 1 pool
+      _lastTime = _now();
+      _startTime = _lastTime;
+    });
+  }
+
   void _tick() {
+    if (_gameOver) return;
     final now = _now();
     final dt = (now - _lastTime).clamp(0.001, 0.05);
     _lastTime = now;
 
     setState(() {
-      // Spawn shapes
+      _pulsePhase += dt * 2.5;
+
+      // Spawn bubbles
       _spawnTimer -= dt;
-      if (_spawnTimer <= 0 && _shapes.length < 4) {
-        _spawnTimer = _spawnInterval;
-        if (_size != Size.zero) {
-          final concept = _rng.nextInt(4);
-          _shapes.add(_ThoughtShape(
-            x: 0.15 + _rng.nextDouble() * 0.7,
-            y: 0.15 + _rng.nextDouble() * 0.5,
-            life: 3.0 + _rng.nextDouble(),
-            shapeType: concept, // shape matches concept
-            conceptIndex: concept,
-          ));
-        }
-        // Speed up over time
-        _spawnInterval = (_spawnInterval - 0.03).clamp(0.8, 3.0);
+      final activeBubbles = _bubbles.where((b) => !b.popping && !b.shattering).length;
+      if (_spawnTimer <= 0 && activeBubbles < _maxBubbles && _size != Size.zero) {
+        _spawnTimer = _spawnInterval * (0.8 + _rng.nextDouble() * 0.4);
+        _spawnBubble();
       }
 
-      // Update shapes
-      for (int i = _shapes.length - 1; i >= 0; i--) {
-        final s = _shapes[i];
-        if (s.matched) {
-          s.shatterTimer += dt;
-          if (s.shatterTimer > 0.5) _shapes.removeAt(i);
+      // Ensure at least one target-word bubble is present or coming soon
+      final hasTarget = _bubbles.any((b) =>
+          b.wordIndex == _targetWordIndex && !b.popping && !b.shattering);
+      if (!hasTarget && activeBubbles > 0 && _spawnTimer > _spawnInterval * 0.5) {
+        _spawnTimer = 0.3; // force a spawn soon
+      }
+
+      // Update bubbles
+      for (int i = _bubbles.length - 1; i >= 0; i--) {
+        final b = _bubbles[i];
+
+        if (b.popping) {
+          b.animTimer += dt;
+          if (b.animTimer > 0.4) _bubbles.removeAt(i);
           continue;
         }
-        if (s.shattered) {
-          s.shatterTimer += dt;
-          if (s.shatterTimer > 0.4) _shapes.removeAt(i);
+        if (b.shattering) {
+          b.animTimer += dt;
+          if (b.animTimer > 0.35) _bubbles.removeAt(i);
           continue;
         }
-        s.life -= dt;
-        if (s.life <= 0) {
-          _misses++;
-          _shapes.removeAt(i);
+
+        // Float upward
+        b.y -= b.speed * dt;
+
+        // Wiggle sideways for level 3
+        if (b.wiggleAmplitude > 0) {
+          b.wigglePhase += dt * 3;
+          b.x += sin(b.wigglePhase) * b.wiggleAmplitude * dt;
+          b.x = b.x.clamp(0.08, 0.92);
+        }
+
+        // Floated off the top
+        if (b.y < -0.05) {
+          if (b.wordIndex == _targetWordIndex) {
+            // Missed the right bubble
+            _lives--;
+            _streak = 0;
+            if (_lives <= 0) {
+              _gameOver = true;
+              _saveHighScore();
+            }
+          }
+          // Wrong bubbles floating off = no penalty
+          _bubbles.removeAt(i);
         }
       }
 
-      // Flash decay
-      if (_glowFlash > 0) _glowFlash = (_glowFlash - dt * 3).clamp(0.0, 1.0);
+      // Target flash/scale decay
+      if (_targetFlash > 0) _targetFlash = (_targetFlash - dt * 3).clamp(0.0, 1.0);
+      if (_targetScale > 1.0) _targetScale = (_targetScale - dt * 2).clamp(1.0, 1.5);
 
       // Particles
       for (final p in _particles) {
@@ -4455,58 +4571,77 @@ class _ThoughtCatcherGameState extends State<ThoughtCatcherGame>
     });
   }
 
-  void _onTapShape(int shapeIdx) {
-    _tappedShape = shapeIdx;
-    if (_selectedWord != null) {
-      _tryMatch();
-    }
+  void _spawnBubble() {
+    // Guarantee at least one target bubble exists among current bubbles
+    final hasTarget = _bubbles.any((b) =>
+        b.wordIndex == _targetWordIndex && !b.popping && !b.shattering);
+    final wordIdx = hasTarget
+        ? _rng.nextInt(_wordsInPlay)
+        : _targetWordIndex;
+
+    final speed = _baseSpeed * (0.8 + _rng.nextDouble() * 0.4);
+    _bubbles.add(_ThoughtBubble(
+      x: 0.1 + _rng.nextDouble() * 0.8,
+      y: 1.05, // start just below screen
+      speed: speed,
+      radius: 32 + _rng.nextDouble() * 8,
+      wordIndex: wordIdx,
+      wigglePhase: _rng.nextDouble() * 2 * pi,
+      wiggleAmplitude: _wiggleEnabled ? 0.02 + _rng.nextDouble() * 0.03 : 0,
+    ));
   }
 
-  void _onSelectWord(int wordIdx) {
-    _selectedWord = wordIdx;
-    if (_tappedShape != null) {
-      _tryMatch();
-    }
-  }
+  void _onTapBubble(int index) {
+    if (_gameOver) return;
+    if (index >= _bubbles.length) return;
+    final b = _bubbles[index];
+    if (b.popping || b.shattering) return;
 
-  void _tryMatch() {
-    if (_tappedShape == null || _selectedWord == null) return;
-    if (_tappedShape! >= _shapes.length) {
-      _tappedShape = null;
-      _selectedWord = null;
-      return;
-    }
-    final shape = _shapes[_tappedShape!];
-    if (shape.conceptIndex == _selectedWord) {
-      // Correct match
-      shape.matched = true;
-      shape.shatterTimer = 0;
-      _score++;
-      _glowFlash = 1;
-      // Glow particles
+    final px = b.x;
+    final py = b.y;
+
+    if (b.wordIndex == _targetWordIndex) {
+      // Correct!
+      b.popping = true;
+      b.animTimer = 0;
+      _streak++;
+      if (_streak > _bestStreak) _bestStreak = _streak;
+      final multiplier = _streak >= 3 ? 2 : 1;
+      _score += multiplier;
+      // Colored light particles
+      for (int i = 0; i < 14; i++) {
+        final a = _rng.nextDouble() * 2 * pi;
+        final sp = 0.08 + _rng.nextDouble() * 0.15;
+        _particles.add(_Particle(
+          x: px, y: py,
+          vx: cos(a) * sp, vy: sin(a) * sp,
+          life: 0.5 + _rng.nextDouble() * 0.3,
+          color: _bubbleColors[b.wordIndex % _bubbleColors.length],
+        ));
+      }
+      _pickNewTarget();
+    } else {
+      // Wrong!
+      b.shattering = true;
+      b.animTimer = 0;
+      _lives--;
+      _streak = 0;
+      // Grey fragment particles
       for (int i = 0; i < 10; i++) {
         final a = _rng.nextDouble() * 2 * pi;
+        final sp = 0.06 + _rng.nextDouble() * 0.12;
         _particles.add(_Particle(
-          x: shape.x, y: shape.y,
-          vx: cos(a) * 0.15, vy: sin(a) * 0.15,
-          life: 0.6, color: _shapeColors[shape.conceptIndex],
+          x: px, y: py,
+          vx: cos(a) * sp, vy: sin(a) * sp,
+          life: 0.3 + _rng.nextDouble() * 0.2,
+          color: Colors.grey,
         ));
       }
-    } else {
-      // Wrong match — shatter
-      shape.shattered = true;
-      shape.shatterTimer = 0;
-      for (int i = 0; i < 8; i++) {
-        final a = _rng.nextDouble() * 2 * pi;
-        _particles.add(_Particle(
-          x: shape.x, y: shape.y,
-          vx: cos(a) * 0.2, vy: sin(a) * 0.2,
-          life: 0.4, color: Colors.grey,
-        ));
+      if (_lives <= 0) {
+        _gameOver = true;
+        _saveHighScore();
       }
     }
-    _tappedShape = null;
-    _selectedWord = null;
   }
 
   @override
@@ -4517,188 +4652,343 @@ class _ThoughtCatcherGameState extends State<ThoughtCatcherGame>
       final h = constraints.maxHeight;
 
       return Container(
-        color: const Color(0xFF0A0A14),
+        color: const Color(0xFF070B1A),
         child: Stack(
           children: [
-            // Custom paint for shapes and particles
+            // Background + bubble + particle painter
             CustomPaint(
-              painter: _ThoughtPainter(
-                shapes: _shapes, shapeColors: _shapeColors,
-                particles: _particles, glowFlash: _glowFlash,
-                tappedShape: _tappedShape,
+              painter: _ThoughtBubblePainter(
+                bubbles: _bubbles,
+                particles: _particles,
+                bubbleColors: _bubbleColors,
+                allWords: _allWords,
                 w: w, h: h,
               ),
               size: Size.infinite,
             ),
 
-            // Tap detection on shapes
-            ...List.generate(_shapes.length, (i) {
-              final s = _shapes[i];
-              if (s.matched || s.shattered) return const SizedBox.shrink();
+            // Target word at top
+            Positioned(
+              top: 24, left: 0, right: 0,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'CATCH',
+                      style: TextStyle(
+                        fontFamily: 'Avenir', fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        letterSpacing: 3,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Transform.scale(
+                      scale: _targetScale,
+                      child: Text(
+                        _allWords[_targetWordIndex].toUpperCase(),
+                        style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                          color: Color.lerp(
+                            Colors.white,
+                            _bubbleColors[_targetWordIndex % _bubbleColors.length],
+                            0.4 + sin(_pulsePhase) * 0.15,
+                          ),
+                          shadows: [
+                            Shadow(
+                              color: _bubbleColors[_targetWordIndex % _bubbleColors.length]
+                                  .withValues(alpha: 0.5 + sin(_pulsePhase) * 0.2),
+                              blurRadius: 16 + sin(_pulsePhase) * 4,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Flash overlay when target changes
+            if (_targetFlash > 0)
+              IgnorePointer(
+                child: Container(
+                  color: Colors.white.withValues(alpha: _targetFlash * 0.08),
+                ),
+              ),
+
+            // Tap detection on bubbles
+            ...List.generate(_bubbles.length, (i) {
+              final b = _bubbles[i];
+              if (b.popping || b.shattering) return const SizedBox.shrink();
+              final bx = b.x * w;
+              final by = b.y * h;
+              final r = b.radius;
               return Positioned(
-                left: s.x * w - 25,
-                top: s.y * h - 25,
+                left: bx - r,
+                top: by - r,
                 child: GestureDetector(
-                  onTap: () => _onTapShape(i),
+                  onTap: () => _onTapBubble(i),
                   child: Container(
-                    width: 50, height: 50,
+                    width: r * 2,
+                    height: r * 2,
                     color: Colors.transparent,
                   ),
                 ),
               );
             }),
 
-            // Score
+            // Bottom HUD: score, lives, streak
             Positioned(
-              top: 8, left: 0, right: 0,
-              child: Center(
-                child: Text(
-                  'Score: $_score   Missed: $_misses',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white38),
-                ),
-              ),
-            ),
-
-            // Word buttons at bottom
-            Positioned(
-              bottom: 30, left: 16, right: 16,
+              bottom: 20, left: 16, right: 16,
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: List.generate(4, (i) {
-                  final isSelected = _selectedWord == i;
-                  return GestureDetector(
-                    onTap: () => _onSelectWord(i),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        color: isSelected ? _shapeColors[i].withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.05),
-                        border: Border.all(color: isSelected ? _shapeColors[i] : Colors.white.withValues(alpha: 0.15)),
-                      ),
-                      child: Text(
-                        _concepts[i],
-                        style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 13,
-                          color: isSelected ? _shapeColors[i] : Colors.white54,
-                        ),
-                      ),
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Score
+                  Text(
+                    'Score: $_score',
+                    style: const TextStyle(
+                      fontFamily: 'Avenir', fontSize: 14, color: Colors.white54,
                     ),
-                  );
-                }),
+                  ),
+                  // Lives as orbs
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: List.generate(5, (i) {
+                      final alive = i < _lives;
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 3),
+                        child: Container(
+                          width: 12, height: 12,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: alive
+                                ? const Color(0xFF80DEEA).withValues(alpha: 0.8)
+                                : Colors.white.withValues(alpha: 0.1),
+                            boxShadow: alive
+                                ? [BoxShadow(color: const Color(0xFF80DEEA).withValues(alpha: 0.4), blurRadius: 6)]
+                                : null,
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                  // Streak
+                  Text(
+                    'Streak: $_streak${_streak >= 3 ? ' (2x)' : ''}',
+                    style: TextStyle(
+                      fontFamily: 'Avenir', fontSize: 14,
+                      color: _streak >= 3 ? const Color(0xFFFFF176) : Colors.white54,
+                    ),
+                  ),
+                ],
               ),
             ),
 
-            if (_score == 0 && _shapes.isEmpty)
-              Positioned(
-                bottom: 80, left: 0, right: 0,
-                child: const Center(child: Text('Tap a shape, then its matching word', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Color(0x33FFFFFF)))),
-              ),
+            // Game over overlay
+            if (_gameOver)
+              _buildGameOver(w, h),
           ],
         ),
       );
     });
   }
+
+  Widget _buildGameOver(double w, double h) {
+    final elapsed = _lastTime - _startTime;
+    final minutes = (elapsed / 60).floor();
+    final seconds = (elapsed % 60).floor();
+    final timeStr = '${minutes}m ${seconds}s';
+
+    return Container(
+      color: const Color(0xDD070B1A),
+      width: w,
+      height: h,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'GAME OVER',
+              style: TextStyle(
+                fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold,
+                color: Colors.white70, letterSpacing: 4,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'Score: $_score',
+              style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, color: Colors.white60),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Best Streak: $_bestStreak',
+              style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white38),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Time: $timeStr',
+              style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white38),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'High Score: $_highScore',
+              style: TextStyle(
+                fontFamily: 'Avenir', fontSize: 16,
+                color: _score >= _highScore && _score > 0
+                    ? const Color(0xFFFFF176)
+                    : Colors.white38,
+              ),
+            ),
+            const SizedBox(height: 32),
+            GestureDetector(
+              onTap: _restart,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF80DEEA).withValues(alpha: 0.5)),
+                  color: const Color(0xFF80DEEA).withValues(alpha: 0.08),
+                ),
+                child: const Text(
+                  'Think Again',
+                  style: TextStyle(
+                    fontFamily: 'Avenir', fontSize: 18, color: Color(0xFF80DEEA),
+                    letterSpacing: 1,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
-class _ThoughtPainter extends CustomPainter {
-  final List<_ThoughtShape> shapes;
-  final List<Color> shapeColors;
+class _ThoughtBubblePainter extends CustomPainter {
+  final List<_ThoughtBubble> bubbles;
   final List<_Particle> particles;
-  final double glowFlash;
-  final int? tappedShape;
+  final List<Color> bubbleColors;
+  final List<String> allWords;
   final double w, h;
 
-  _ThoughtPainter({
-    required this.shapes, required this.shapeColors,
-    required this.particles, required this.glowFlash,
-    required this.tappedShape, required this.w, required this.h,
+  _ThoughtBubblePainter({
+    required this.bubbles,
+    required this.particles,
+    required this.bubbleColors,
+    required this.allWords,
+    required this.w,
+    required this.h,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF0A0A14));
+    // Deep dark blue-black background
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF070B1A));
 
-    // Ambient glow
-    if (glowFlash > 0) {
-      canvas.drawRect(Offset.zero & size, Paint()..color = Colors.white.withValues(alpha: glowFlash * 0.04));
-    }
+    // Draw bubbles
+    for (final b in bubbles) {
+      final px = b.x * size.width;
+      final py = b.y * size.height;
+      final r = b.radius;
+      final color = bubbleColors[b.wordIndex % bubbleColors.length];
 
-    // Shapes
-    for (int i = 0; i < shapes.length; i++) {
-      final s = shapes[i];
-      final px = s.x * size.width;
-      final py = s.y * size.height;
-      final color = shapeColors[s.conceptIndex];
-      final alpha = s.matched ? (1.0 - s.shatterTimer * 2).clamp(0.0, 1.0) :
-                     s.shattered ? (1.0 - s.shatterTimer * 2.5).clamp(0.0, 1.0) :
-                     (s.life / s.maxLife).clamp(0.2, 0.8);
-      final isSelected = i == tappedShape;
+      if (b.popping) {
+        // Expanding ring that fades out
+        final t = b.animTimer / 0.4;
+        final expandR = r * (1.0 + t * 1.5);
+        final alpha = (1.0 - t).clamp(0.0, 1.0);
+        canvas.drawCircle(
+          Offset(px, py), expandR,
+          Paint()
+            ..color = color.withValues(alpha: alpha * 0.4)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 3 * (1.0 - t),
+        );
+        continue;
+      }
+
+      if (b.shattering) {
+        // Shrink and fade
+        final t = b.animTimer / 0.35;
+        final shrinkR = r * (1.0 - t * 0.8);
+        final alpha = (1.0 - t).clamp(0.0, 1.0);
+        if (shrinkR > 0) {
+          canvas.drawCircle(
+            Offset(px, py), shrinkR,
+            Paint()..color = Colors.grey.withValues(alpha: alpha * 0.3),
+          );
+        }
+        continue;
+      }
 
       // Outer glow
-      final glowR = isSelected ? 35.0 : 25.0;
-      canvas.drawCircle(Offset(px, py), glowR, Paint()..color = color.withValues(alpha: alpha * (isSelected ? 0.2 : 0.08)));
+      final glowPaint = Paint()
+        ..color = color.withValues(alpha: 0.12)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12);
+      canvas.drawCircle(Offset(px, py), r + 6, glowPaint);
 
-      // Draw shape based on type
-      final paint = Paint()..color = color.withValues(alpha: alpha * 0.7);
-      final strokePaint = Paint()..color = color.withValues(alpha: alpha)..style = PaintingStyle.stroke..strokeWidth = 2;
-      switch (s.shapeType) {
-        case 0: // Circle
-          canvas.drawCircle(Offset(px, py), 16, paint);
-          canvas.drawCircle(Offset(px, py), 16, strokePaint);
-          break;
-        case 1: // Triangle
-          final path = Path();
-          path.moveTo(px, py - 18);
-          path.lineTo(px - 16, py + 12);
-          path.lineTo(px + 16, py + 12);
-          path.close();
-          canvas.drawPath(path, paint);
-          canvas.drawPath(path, strokePaint);
-          break;
-        case 2: // Spiral (approximated as ring)
-          canvas.drawCircle(Offset(px, py), 14, strokePaint);
-          canvas.drawCircle(Offset(px, py), 8, Paint()..color = color.withValues(alpha: alpha * 0.4)..style = PaintingStyle.stroke..strokeWidth = 1.5);
-          canvas.drawCircle(Offset(px, py), 3, Paint()..color = color.withValues(alpha: alpha * 0.6));
-          break;
-        case 3: // Diamond
-          final path = Path();
-          path.moveTo(px, py - 18);
-          path.lineTo(px + 14, py);
-          path.lineTo(px, py + 18);
-          path.lineTo(px - 14, py);
-          path.close();
-          canvas.drawPath(path, paint);
-          canvas.drawPath(path, strokePaint);
-          break;
-      }
+      // Translucent bubble fill
+      canvas.drawCircle(
+        Offset(px, py), r,
+        Paint()..color = color.withValues(alpha: 0.12),
+      );
 
-      // Life indicator
-      if (!s.matched && !s.shattered) {
-        final lifeW = 24 * (s.life / s.maxLife);
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(Rect.fromLTWH(px - 12, py + 22, 24, 2), const Radius.circular(1)),
-          Paint()..color = Colors.white.withValues(alpha: 0.1),
-        );
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(Rect.fromLTWH(px - 12, py + 22, lifeW, 2), const Radius.circular(1)),
-          Paint()..color = color.withValues(alpha: alpha * 0.5),
-        );
-      }
+      // Bubble border
+      canvas.drawCircle(
+        Offset(px, py), r,
+        Paint()
+          ..color = color.withValues(alpha: 0.35)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+
+      // Specular highlight
+      canvas.drawCircle(
+        Offset(px - r * 0.25, py - r * 0.3),
+        r * 0.25,
+        Paint()..color = Colors.white.withValues(alpha: 0.12),
+      );
+
+      // Word text inside bubble
+      final word = allWords[b.wordIndex];
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: word,
+          style: TextStyle(
+            fontSize: 13,
+            fontFamily: 'Avenir',
+            fontWeight: FontWeight.w600,
+            color: Colors.white.withValues(alpha: 0.9),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout();
+      textPainter.paint(
+        canvas,
+        Offset(px - textPainter.width / 2, py - textPainter.height / 2),
+      );
     }
 
     // Particles
     for (final p in particles) {
       if (p.life > 0) {
+        final alpha = (p.life / 0.6).clamp(0.0, 1.0);
         canvas.drawCircle(
-          Offset(p.x * size.width, p.y * size.height), 2.5,
-          Paint()..color = p.color.withValues(alpha: (p.life / 0.6).clamp(0.0, 1.0)),
+          Offset(p.x * size.width, p.y * size.height),
+          2.5,
+          Paint()..color = p.color.withValues(alpha: alpha),
         );
       }
     }
   }
 
   @override
-  bool shouldRepaint(covariant _ThoughtPainter old) => true;
+  bool shouldRepaint(covariant _ThoughtBubblePainter old) => true;
 }
 
 // ---------------------------------------------------------------------------
