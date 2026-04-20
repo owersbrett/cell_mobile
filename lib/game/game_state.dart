@@ -119,24 +119,28 @@ class EjectedMass {
 class CellBlob {
   final Vec2 position;
   final Vec2 velocity;
-  final double mass; // mass determines radius
-  final double mergeTimer; // seconds until this blob can re-merge
+  final double mass;
+  final double mergeTimer;
+  final double dashTime; // remaining dash boost seconds
 
   const CellBlob({
     required this.position,
     required this.velocity,
     required this.mass,
     this.mergeTimer = 0,
+    this.dashTime = 0,
   });
 
   double get radius => sqrt(mass) * 2.0;
+  bool get isDashing => dashTime > 0;
 
-  CellBlob copyWith({Vec2? position, Vec2? velocity, double? mass, double? mergeTimer}) {
+  CellBlob copyWith({Vec2? position, Vec2? velocity, double? mass, double? mergeTimer, double? dashTime}) {
     return CellBlob(
       position: position ?? this.position,
       velocity: velocity ?? this.velocity,
       mass: mass ?? this.mass,
       mergeTimer: mergeTimer ?? this.mergeTimer,
+      dashTime: dashTime ?? this.dashTime,
     );
   }
 }

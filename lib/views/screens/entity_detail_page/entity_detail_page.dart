@@ -13,6 +13,7 @@ class EntityDetailPage extends StatelessWidget {
   const EntityDetailPage({Key? key}) : super(key: key);
 
   static const _scaleColors = <BioScale, Color>{
+    BioScale.somethings: Color(0xFF7E57C2),
     BioScale.molecular: Color(0xFF00BCD4),
     BioScale.organelle: Color(0xFF9C27B0),
     BioScale.cell: Color(0xFF009688),
@@ -24,9 +25,11 @@ class EntityDetailPage extends StatelessWidget {
     BioScale.supplyChain: Color(0xFF78909C),
     BioScale.financial: Color(0xFFE19816),
     BioScale.global: Color(0xFFE16416),
+    BioScale.allThings: Color(0xFFB0BEC5),
   };
 
   static const _scaleIcons = <BioScale, IconData>{
+    BioScale.somethings: Icons.auto_awesome,
     BioScale.molecular: Icons.science,
     BioScale.organelle: Icons.blur_circular,
     BioScale.cell: Icons.grid_view,
@@ -38,9 +41,11 @@ class EntityDetailPage extends StatelessWidget {
     BioScale.supplyChain: Icons.local_shipping,
     BioScale.financial: Icons.trending_up,
     BioScale.global: Icons.public,
+    BioScale.allThings: Icons.all_inclusive,
   };
 
   static const _scaleLabels = <BioScale, String>{
+    BioScale.somethings: 'Somethings',
     BioScale.molecular: 'Molecular',
     BioScale.organelle: 'Organelle',
     BioScale.cell: 'Cell',
@@ -52,6 +57,7 @@ class EntityDetailPage extends StatelessWidget {
     BioScale.supplyChain: 'Supply Chain',
     BioScale.financial: 'Financial',
     BioScale.global: 'Global',
+    BioScale.allThings: 'All Things',
   };
 
   @override

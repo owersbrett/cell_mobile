@@ -13,6 +13,7 @@ class ScaleCard extends StatelessWidget {
   final bool isSelected;
   final bool hasInteractive;
   final VoidCallback? onInteractiveTap;
+  final VoidCallback? onPlayTap;
 
   const ScaleCard({
     Key? key,
@@ -27,6 +28,7 @@ class ScaleCard extends StatelessWidget {
     this.isSelected = false,
     this.hasInteractive = false,
     this.onInteractiveTap,
+    this.onPlayTap,
   }) : super(key: key);
 
   @override
@@ -97,38 +99,57 @@ class ScaleCard extends StatelessWidget {
                     ],
                   ),
                   const Spacer(),
-                  // Interactive enter button
-                  if (hasInteractive && onInteractiveTap != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: GestureDetector(
-                        onTap: onInteractiveTap,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: color.withValues(alpha: 0.25),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: color.withValues(alpha: 0.4)),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.play_circle_filled, color: color, size: 14),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Enter',
-                                style: TextStyle(
-                                  fontFamily: 'Avenir',
-                                  fontSize: 11,
-                                  color: color,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                  // Action buttons row
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      children: [
+                        // Enter button (organelles only)
+                        if (hasInteractive && onInteractiveTap != null)
+                          GestureDetector(
+                            onTap: onInteractiveTap,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              margin: const EdgeInsets.only(right: 6),
+                              decoration: BoxDecoration(
+                                color: color.withValues(alpha: 0.25),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: color.withValues(alpha: 0.4)),
                               ),
-                            ],
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.visibility, color: color, size: 12),
+                                  const SizedBox(width: 3),
+                                  Text('Enter', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: color, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
+                        // Play button (all scales)
+                        if (onPlayTap != null)
+                          GestureDetector(
+                            onTap: onPlayTap,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFAADD44).withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFFAADD44).withValues(alpha: 0.3)),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.play_arrow, color: Color(0xFFAADD44), size: 12),
+                                  SizedBox(width: 3),
+                                  Text('Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Color(0xFFAADD44), fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
+                  ),
                   // Bottom: name + subtitle
                   Text(
                     label,
