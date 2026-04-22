@@ -4494,33 +4494,53 @@ class _Particle {
 }
 
 // ---------------------------------------------------------------------------
-// ThoughtCatcherGame — "Catch the Thought"
-// Glowing thought bubbles float upward. Tap the bubble matching the target word.
+// ThoughtCatcherGame — "Somethings"
+// Circles materialise, shrink to a bright peak, then expand and vanish.
+// Hold to grow a capture circle — engulf as many as you can.
 // ---------------------------------------------------------------------------
 
-class _ThoughtBubble {
-  double x; // normalized 0..1
-  double y; // normalized 0..1 (1 = bottom, 0 = top)
-  double speed; // normalized units per second
-  double radius; // pixel radius
-  int wordIndex;
-  double wigglePhase;
-  double wiggleAmplitude; // 0 for levels 1-2, > 0 for level 3
-  bool popping; // correct catch animation
-  bool shattering; // wrong tap animation
-  double animTimer;
+class _SomethingBlip {
+  double x, y;       // pixel position
+  double baseRadius; // "medium" size
+  double age;        // seconds since spawn
+  double lifetime;   // total duration
+  bool captured;
 
-  _ThoughtBubble({
-    required this.x,
-    required this.y,
-    required this.speed,
-    required this.radius,
-    required this.wordIndex,
-    this.wigglePhase = 0,
-    this.wiggleAmplitude = 0,
-  })  : popping = false,
-        shattering = false,
-        animTimer = 0;
+  _SomethingBlip({
+    required this.x, required this.y,
+    required this.baseRadius,
+    required this.lifetime,
+  })  : age = 0, captured = false;
+
+  double get phase => (age / lifetime).clamp(0.0, 1.0);
+
+  // Keyframe interpolation — [phase, value] pairs
+  // Radius: medium → smaller → smallest → bigger → biggest → gone
+  static const _rT = [0.00, 0.06, 0.22, 0.38, 0.52, 0.68, 0.82, 0.94, 1.00];
+  static const _rV = [0.00, 0.75, 0.52, 0.28, 0.28, 0.52, 0.75, 1.05, 0.00];
+  // Opacity: faded → bright → peak → bright → faded → gone
+  static const _aT = [0.00, 0.06, 0.22, 0.38, 0.52, 0.68, 0.82, 0.94, 1.00];
+  static const _aV = [0.00, 0.18, 0.42, 0.92, 0.92, 0.42, 0.18, 0.06, 0.00];
+
+  static double _lerpKeys(List<double> ts, List<double> vs, double p) {
+    for (int i = 1; i < ts.length; i++) {
+      if (p <= ts[i]) {
+        final t = (p - ts[i - 1]) / (ts[i] - ts[i - 1]);
+        return vs[i - 1] + (vs[i] - vs[i - 1]) * t;
+      }
+    }
+    return vs.last;
+  }
+
+  double get currentRadius => baseRadius * _lerpKeys(_rT, _rV, phase);
+  double get currentOpacity => _lerpKeys(_aT, _aV, phase);
+
+  int get scoreValue {
+    final p = phase;
+    if (p >= 0.36 && p <= 0.54) return 5; // peak — smallest
+    if (p >= 0.20 && p <= 0.70) return 2; // mid
+    return 1;
+  }
 }
 
 class ThoughtCatcherGame extends StatefulWidget {
@@ -4534,621 +4554,386 @@ class _ThoughtCatcherGameState extends State<ThoughtCatcherGame>
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  static const _allWords = [
-    'Spirit', 'Light', 'Idea', 'Self', 'Truth', 'Wonder', 'Being', 'Dream'
-  ];
-  static const _bubbleColors = [
-    Color(0xFF80DEEA), Color(0xFFFFF176), Color(0xFFCE93D8), Color(0xFFA5D6A7),
-    Color(0xFFEF9A9A), Color(0xFFFFCC80), Color(0xFF90CAF9), Color(0xFFB39DDB),
-  ];
-
-  final List<_ThoughtBubble> _bubbles = [];
-  final List<_Particle> _particles = [];
-
+  // Clock
+  double _timeRemaining = 22.0;
+  double _elapsed = 0.0;
   int _score = 0;
-  int _lives = 5;
-  int _streak = 0;
-  int _bestStreak = 0;
-  int _highScore = 0;
-  int _targetWordIndex = 0;
   bool _gameOver = false;
-  double _lastTime = 0;
-  double _startTime = 0;
-  Size _size = Size.zero;
-  double _spawnTimer = 0;
-  double _targetFlash = 0; // flash animation when target changes
-  double _targetScale = 1.0; // zoom animation for new target
-  double _pulsePhase = 0; // subtle pulse on the target word
+  bool _started = false;
+
+  // Blips (the materialising circles)
+  final List<_SomethingBlip> _blips = [];
+  double _spawnTimer = 0.0;
+
+  // Hotspots — clusters form around these points (normalised 0-1)
+  static const _hotspots = [
+    Offset(0.25, 0.30), Offset(0.72, 0.28),
+    Offset(0.50, 0.58), Offset(0.28, 0.76),
+  ];
+  // Burst cooldown per hotspot
+  final List<double> _burstCooldowns = [0, 0, 0, 0];
+
+  // Player hold-to-grow circle
+  bool _holding = false;
+  Offset _holdPos = Offset.zero;
+  double _playerRadius = 0.0;
+  static const double _growRate = 75.0;
+
+  // Popups
+  final List<_BangPopup> _popups = [];
+  double _flashAlpha = 0.0;
+
+  Size _sz = Size.zero;
+  double _lastTime = 0.0;
 
   @override
   void initState() {
     super.initState();
-    _loadHighScore();
-    _targetWordIndex = _rng.nextInt(_wordsInPlay);
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
+      ..addListener(_tick)..forward();
     _lastTime = _now();
-    _startTime = _lastTime;
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
 
-  Future<void> _loadHighScore() async {
-    final prefs = await SharedPreferences.getInstance();
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  double get _spawnInterval => (0.7 - (_elapsed / 30 * 0.35)).clamp(0.35, 0.7);
+
+  // ---- tick ---------------------------------------------------------------
+
+  void _tick() {
+    final now = _now();
+    final dt = (now - _lastTime).clamp(0.001, 0.05);
+    _lastTime = now;
+    if (_gameOver || !_started) return;
+
     setState(() {
-      _highScore = prefs.getInt('thought_catcher_high_score') ?? 0;
+      _timeRemaining -= dt;
+      _elapsed += dt;
+      if (_timeRemaining <= 0) {
+        _timeRemaining = 0; _gameOver = true; _holding = false; return;
+      }
+
+      // Grow player circle
+      if (_holding) _playerRadius += _growRate * dt;
+
+      // Age blips & cull dead ones
+      for (final b in _blips) b.age += dt;
+      _blips.removeWhere((b) => b.phase >= 1.0 || b.captured);
+
+      // Spawn
+      _spawnTimer -= dt;
+      for (int i = 0; i < _burstCooldowns.length; i++) {
+        if (_burstCooldowns[i] > 0) _burstCooldowns[i] -= dt;
+      }
+      if (_spawnTimer <= 0 && _sz != Size.zero) {
+        _spawnBlips();
+        _spawnTimer = _spawnInterval;
+      }
+
+      // Flash & popups
+      if (_flashAlpha > 0) _flashAlpha = (_flashAlpha - dt * 4).clamp(0.0, 1.0);
+      for (final p in _popups) { p.age += dt; p.y -= 36 * dt; }
+      _popups.removeWhere((p) => p.age > 1.3);
     });
   }
 
-  Future<void> _saveHighScore() async {
-    if (_score > _highScore) {
-      _highScore = _score;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('thought_catcher_high_score', _score);
+  // ---- spawning -----------------------------------------------------------
+
+  void _spawnBlips() {
+    final sz = _sz;
+
+    // Chance of hotspot burst (spawn 3-4 near one hotspot)
+    for (int h = 0; h < _hotspots.length; h++) {
+      if (_burstCooldowns[h] <= 0 && _rng.nextDouble() < 0.08) {
+        _burstCooldowns[h] = 4.0 + _rng.nextDouble() * 3;
+        final count = 3 + _rng.nextInt(2);
+        for (int i = 0; i < count; i++) {
+          _spawnNear(_hotspots[h], sz, staggerDelay: i * 0.35);
+        }
+        return; // burst replaces normal spawn this tick
+      }
+    }
+
+    // Normal spawn: 60 % near a hotspot, 40 % random
+    if (_rng.nextDouble() < 0.6) {
+      final h = _hotspots[_rng.nextInt(_hotspots.length)];
+      _spawnNear(h, sz);
+    } else {
+      final x = sz.width * (0.1 + _rng.nextDouble() * 0.8);
+      final y = sz.height * (0.12 + _rng.nextDouble() * 0.72);
+      _blips.add(_SomethingBlip(
+        x: x, y: y,
+        baseRadius: 38 + _rng.nextDouble() * 28,
+        lifetime: 3.8 + _rng.nextDouble() * 1.0,
+      ));
     }
   }
 
-  // Difficulty helpers
-  int get _wordsInPlay {
-    if (_score < 5) return 4;
-    if (_score < 15) return 6;
-    return 8;
+  void _spawnNear(Offset hotspot, Size sz, {double staggerDelay = 0}) {
+    final x = sz.width * hotspot.dx + (_rng.nextDouble() - 0.5) * 70;
+    final y = sz.height * hotspot.dy + (_rng.nextDouble() - 0.5) * 70;
+    final b = _SomethingBlip(
+      x: x.clamp(20, sz.width - 20),
+      y: y.clamp(40, sz.height - 40),
+      baseRadius: 38 + _rng.nextDouble() * 28,
+      lifetime: 3.8 + _rng.nextDouble() * 1.0,
+    );
+    // Negative age = delayed start
+    b.age = -staggerDelay;
+    _blips.add(b);
   }
 
-  int get _maxBubbles {
-    if (_score < 5) return 2;
-    if (_score < 15) return 3;
-    return 5;
+  // ---- input --------------------------------------------------------------
+
+  void _beginHold(Offset pos) {
+    if (_gameOver) { _restart(); return; }
+    if (!_started) _started = true;
+    if (_holding) { _holdPos = pos; return; }
+    _holding = true;
+    _holdPos = pos;
+    _playerRadius = 0;
   }
 
-  double get _baseSpeed {
-    if (_score < 5) return 0.06;
-    if (_score < 15) return 0.10;
-    return 0.14;
+  void _endHold() {
+    if (!_holding) return;
+    _holding = false;
+    if (_playerRadius < 10) { _playerRadius = 0; return; }
+    _capture();
+    _playerRadius = 0;
   }
 
-  double get _spawnInterval {
-    if (_score < 5) return 2.2;
-    if (_score < 15) return 1.5;
-    return 1.0;
-  }
+  void _capture() {
+    int total = 0;
+    int caught = 0;
 
-  bool get _wiggleEnabled => _score >= 15;
+    for (final b in _blips) {
+      if (b.captured || b.age < 0) continue;
+      final r = b.currentRadius;
+      if (r < 1) continue;
 
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+      // Target center must be inside player circle
+      final dx = b.x - _holdPos.dx;
+      final dy = b.y - _holdPos.dy;
+      if (sqrt(dx * dx + dy * dy) > _playerRadius) continue;
 
-  void _pickNewTarget() {
-    final oldTarget = _targetWordIndex;
-    // Pick a different word from the pool
-    int next = _rng.nextInt(_wordsInPlay);
-    while (next == oldTarget && _wordsInPlay > 1) {
-      next = _rng.nextInt(_wordsInPlay);
+      b.captured = true;
+      caught++;
+      final pts = b.scoreValue;
+      total += pts;
+
+      _popups.add(_BangPopup(
+        x: b.x, y: b.y,
+        text: '+$pts',
+        color: pts == 5
+            ? const Color(0xFFFFD700)
+            : pts == 2 ? Colors.white : Colors.white60,
+      ));
     }
-    _targetWordIndex = next;
-    _targetFlash = 1.0;
-    _targetScale = 1.3;
+
+    if (caught > 0) {
+      _score += total;
+      _flashAlpha = caught >= 3 ? 0.3 : caught >= 2 ? 0.15 : 0.07;
+
+      if (caught >= 3) {
+        _popups.add(_BangPopup(
+          x: _holdPos.dx, y: _holdPos.dy - _playerRadius - 10,
+          text: 'x$caught',
+          color: const Color(0xFF80DEEA),
+        ));
+      }
+    }
   }
 
   void _restart() {
     setState(() {
-      _bubbles.clear();
-      _particles.clear();
-      _score = 0;
-      _lives = 5;
-      _streak = 0;
-      _bestStreak = 0;
-      _gameOver = false;
-      _spawnTimer = 0;
-      _targetFlash = 0;
-      _targetScale = 1.0;
-      _targetWordIndex = _rng.nextInt(4); // reset to level 1 pool
-      _lastTime = _now();
-      _startTime = _lastTime;
+      _timeRemaining = 22; _elapsed = 0; _score = 0;
+      _gameOver = false; _started = false;
+      _holding = false; _playerRadius = 0;
+      _blips.clear(); _popups.clear(); _spawnTimer = 0;
+      for (int i = 0; i < _burstCooldowns.length; i++) _burstCooldowns[i] = 0;
     });
   }
 
-  void _tick() {
-    if (_gameOver) return;
-    final now = _now();
-    final dt = (now - _lastTime).clamp(0.001, 0.05);
-    _lastTime = now;
-
-    setState(() {
-      _pulsePhase += dt * 2.5;
-
-      // Spawn bubbles
-      _spawnTimer -= dt;
-      final activeBubbles = _bubbles.where((b) => !b.popping && !b.shattering).length;
-      if (_spawnTimer <= 0 && activeBubbles < _maxBubbles && _size != Size.zero) {
-        _spawnTimer = _spawnInterval * (0.8 + _rng.nextDouble() * 0.4);
-        _spawnBubble();
-      }
-
-      // Ensure at least one target-word bubble is present or coming soon
-      final hasTarget = _bubbles.any((b) =>
-          b.wordIndex == _targetWordIndex && !b.popping && !b.shattering);
-      if (!hasTarget && activeBubbles > 0 && _spawnTimer > _spawnInterval * 0.5) {
-        _spawnTimer = 0.3; // force a spawn soon
-      }
-
-      // Update bubbles
-      for (int i = _bubbles.length - 1; i >= 0; i--) {
-        final b = _bubbles[i];
-
-        if (b.popping) {
-          b.animTimer += dt;
-          if (b.animTimer > 0.4) _bubbles.removeAt(i);
-          continue;
-        }
-        if (b.shattering) {
-          b.animTimer += dt;
-          if (b.animTimer > 0.35) _bubbles.removeAt(i);
-          continue;
-        }
-
-        // Float upward
-        b.y -= b.speed * dt;
-
-        // Wiggle sideways for level 3
-        if (b.wiggleAmplitude > 0) {
-          b.wigglePhase += dt * 3;
-          b.x += sin(b.wigglePhase) * b.wiggleAmplitude * dt;
-          b.x = b.x.clamp(0.08, 0.92);
-        }
-
-        // Floated off the top
-        if (b.y < -0.05) {
-          if (b.wordIndex == _targetWordIndex) {
-            // Missed the right bubble
-            _lives--;
-            _streak = 0;
-            if (_lives <= 0) {
-              _gameOver = true;
-              _saveHighScore();
-            }
-          }
-          // Wrong bubbles floating off = no penalty
-          _bubbles.removeAt(i);
-        }
-      }
-
-      // Target flash/scale decay
-      if (_targetFlash > 0) _targetFlash = (_targetFlash - dt * 3).clamp(0.0, 1.0);
-      if (_targetScale > 1.0) _targetScale = (_targetScale - dt * 2).clamp(1.0, 1.5);
-
-      // Particles
-      for (final p in _particles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.life -= dt;
-      }
-      _particles.removeWhere((p) => p.life <= 0);
-    });
-  }
-
-  void _spawnBubble() {
-    // Guarantee at least one target bubble exists among current bubbles
-    final hasTarget = _bubbles.any((b) =>
-        b.wordIndex == _targetWordIndex && !b.popping && !b.shattering);
-    final wordIdx = hasTarget
-        ? _rng.nextInt(_wordsInPlay)
-        : _targetWordIndex;
-
-    final speed = _baseSpeed * (0.8 + _rng.nextDouble() * 0.4);
-    _bubbles.add(_ThoughtBubble(
-      x: 0.1 + _rng.nextDouble() * 0.8,
-      y: 1.05, // start just below screen
-      speed: speed,
-      radius: 32 + _rng.nextDouble() * 8,
-      wordIndex: wordIdx,
-      wigglePhase: _rng.nextDouble() * 2 * pi,
-      wiggleAmplitude: _wiggleEnabled ? 0.02 + _rng.nextDouble() * 0.03 : 0,
-    ));
-  }
-
-  void _onTapBubble(int index) {
-    if (_gameOver) return;
-    if (index >= _bubbles.length) return;
-    final b = _bubbles[index];
-    if (b.popping || b.shattering) return;
-
-    final px = b.x;
-    final py = b.y;
-
-    if (b.wordIndex == _targetWordIndex) {
-      // Correct!
-      b.popping = true;
-      b.animTimer = 0;
-      _streak++;
-      if (_streak > _bestStreak) _bestStreak = _streak;
-      final multiplier = _streak >= 3 ? 2 : 1;
-      _score += multiplier;
-      // Colored light particles
-      for (int i = 0; i < 14; i++) {
-        final a = _rng.nextDouble() * 2 * pi;
-        final sp = 0.08 + _rng.nextDouble() * 0.15;
-        _particles.add(_Particle(
-          x: px, y: py,
-          vx: cos(a) * sp, vy: sin(a) * sp,
-          life: 0.5 + _rng.nextDouble() * 0.3,
-          color: _bubbleColors[b.wordIndex % _bubbleColors.length],
-        ));
-      }
-      _pickNewTarget();
-    } else {
-      // Wrong!
-      b.shattering = true;
-      b.animTimer = 0;
-      _lives--;
-      _streak = 0;
-      // Grey fragment particles
-      for (int i = 0; i < 10; i++) {
-        final a = _rng.nextDouble() * 2 * pi;
-        final sp = 0.06 + _rng.nextDouble() * 0.12;
-        _particles.add(_Particle(
-          x: px, y: py,
-          vx: cos(a) * sp, vy: sin(a) * sp,
-          life: 0.3 + _rng.nextDouble() * 0.2,
-          color: Colors.grey,
-        ));
-      }
-      if (_lives <= 0) {
-        _gameOver = true;
-        _saveHighScore();
-      }
-    }
-  }
+  // ---- build --------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      _size = Size(constraints.maxWidth, constraints.maxHeight);
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
-
-      return Container(
-        color: const Color(0xFF070B1A),
-        child: Stack(
-          children: [
-            // Background + bubble + particle painter
-            CustomPaint(
-              painter: _ThoughtBubblePainter(
-                bubbles: _bubbles,
-                particles: _particles,
-                bubbleColors: _bubbleColors,
-                allWords: _allWords,
-                w: w, h: h,
-              ),
-              size: Size.infinite,
+    return LayoutBuilder(builder: (context, box) {
+      _sz = Size(box.maxWidth, box.maxHeight);
+      return GestureDetector(
+        onTapDown: (d) => _beginHold(d.localPosition),
+        onTapUp: (_) => _endHold(),
+        onPanStart: (d) => _beginHold(d.localPosition),
+        onPanUpdate: (d) { _holdPos = d.localPosition; },
+        onPanEnd: (_) => _endHold(),
+        child: ClipRect(
+          child: CustomPaint(
+            painter: _SomethingsPainter(
+              blips: _blips,
+              holding: _holding,
+              holdPos: _holdPos,
+              playerRadius: _playerRadius,
+              popups: _popups,
+              hotspots: _hotspots,
+              timeRemaining: _timeRemaining,
+              score: _score,
+              gameOver: _gameOver,
+              started: _started,
+              flashAlpha: _flashAlpha,
             ),
-
-            // Target word at top
-            Positioned(
-              top: 24, left: 0, right: 0,
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'CATCH',
-                      style: TextStyle(
-                        fontFamily: 'Avenir', fontSize: 12,
-                        color: Colors.white.withValues(alpha: 0.4),
-                        letterSpacing: 3,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Transform.scale(
-                      scale: _targetScale,
-                      child: Text(
-                        _allWords[_targetWordIndex].toUpperCase(),
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: Color.lerp(
-                            Colors.white,
-                            _bubbleColors[_targetWordIndex % _bubbleColors.length],
-                            0.4 + sin(_pulsePhase) * 0.15,
-                          ),
-                          shadows: [
-                            Shadow(
-                              color: _bubbleColors[_targetWordIndex % _bubbleColors.length]
-                                  .withValues(alpha: 0.5 + sin(_pulsePhase) * 0.2),
-                              blurRadius: 16 + sin(_pulsePhase) * 4,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            // Flash overlay when target changes
-            if (_targetFlash > 0)
-              IgnorePointer(
-                child: Container(
-                  color: Colors.white.withValues(alpha: _targetFlash * 0.08),
-                ),
-              ),
-
-            // Tap detection on bubbles
-            ...List.generate(_bubbles.length, (i) {
-              final b = _bubbles[i];
-              if (b.popping || b.shattering) return const SizedBox.shrink();
-              final bx = b.x * w;
-              final by = b.y * h;
-              final r = b.radius;
-              return Positioned(
-                left: bx - r,
-                top: by - r,
-                child: GestureDetector(
-                  onTap: () => _onTapBubble(i),
-                  child: Container(
-                    width: r * 2,
-                    height: r * 2,
-                    color: Colors.transparent,
-                  ),
-                ),
-              );
-            }),
-
-            // Bottom HUD: score, lives, streak
-            Positioned(
-              bottom: 20, left: 16, right: 16,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // Score
-                  Text(
-                    'Score: $_score',
-                    style: const TextStyle(
-                      fontFamily: 'Avenir', fontSize: 14, color: Colors.white54,
-                    ),
-                  ),
-                  // Lives as orbs
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: List.generate(5, (i) {
-                      final alive = i < _lives;
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 3),
-                        child: Container(
-                          width: 12, height: 12,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: alive
-                                ? const Color(0xFF80DEEA).withValues(alpha: 0.8)
-                                : Colors.white.withValues(alpha: 0.1),
-                            boxShadow: alive
-                                ? [BoxShadow(color: const Color(0xFF80DEEA).withValues(alpha: 0.4), blurRadius: 6)]
-                                : null,
-                          ),
-                        ),
-                      );
-                    }),
-                  ),
-                  // Streak
-                  Text(
-                    'Streak: $_streak${_streak >= 3 ? ' (2x)' : ''}',
-                    style: TextStyle(
-                      fontFamily: 'Avenir', fontSize: 14,
-                      color: _streak >= 3 ? const Color(0xFFFFF176) : Colors.white54,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // Game over overlay
-            if (_gameOver)
-              _buildGameOver(w, h),
-          ],
+            size: Size.infinite,
+          ),
         ),
       );
     });
   }
-
-  Widget _buildGameOver(double w, double h) {
-    final elapsed = _lastTime - _startTime;
-    final minutes = (elapsed / 60).floor();
-    final seconds = (elapsed % 60).floor();
-    final timeStr = '${minutes}m ${seconds}s';
-
-    return Container(
-      color: const Color(0xDD070B1A),
-      width: w,
-      height: h,
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'GAME OVER',
-              style: TextStyle(
-                fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold,
-                color: Colors.white70, letterSpacing: 4,
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'Score: $_score',
-              style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, color: Colors.white60),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Best Streak: $_bestStreak',
-              style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white38),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Time: $timeStr',
-              style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white38),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'High Score: $_highScore',
-              style: TextStyle(
-                fontFamily: 'Avenir', fontSize: 16,
-                color: _score >= _highScore && _score > 0
-                    ? const Color(0xFFFFF176)
-                    : Colors.white38,
-              ),
-            ),
-            const SizedBox(height: 32),
-            GestureDetector(
-              onTap: _restart,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF80DEEA).withValues(alpha: 0.5)),
-                  color: const Color(0xFF80DEEA).withValues(alpha: 0.08),
-                ),
-                child: const Text(
-                  'Think Again',
-                  style: TextStyle(
-                    fontFamily: 'Avenir', fontSize: 18, color: Color(0xFF80DEEA),
-                    letterSpacing: 1,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
-class _ThoughtBubblePainter extends CustomPainter {
-  final List<_ThoughtBubble> bubbles;
-  final List<_Particle> particles;
-  final List<Color> bubbleColors;
-  final List<String> allWords;
-  final double w, h;
+// ---- painter --------------------------------------------------------------
 
-  _ThoughtBubblePainter({
-    required this.bubbles,
-    required this.particles,
-    required this.bubbleColors,
-    required this.allWords,
-    required this.w,
-    required this.h,
+class _SomethingsPainter extends CustomPainter {
+  final List<_SomethingBlip> blips;
+  final bool holding;
+  final Offset holdPos;
+  final double playerRadius;
+  final List<_BangPopup> popups;
+  final List<Offset> hotspots;
+  final double timeRemaining;
+  final int score;
+  final bool gameOver;
+  final bool started;
+  final double flashAlpha;
+
+  _SomethingsPainter({
+    required this.blips, required this.holding,
+    required this.holdPos, required this.playerRadius,
+    required this.popups, required this.hotspots,
+    required this.timeRemaining, required this.score,
+    required this.gameOver, required this.started,
+    required this.flashAlpha,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Deep dark blue-black background
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF070B1A));
+    canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
 
-    // Draw bubbles
-    for (final b in bubbles) {
-      final px = b.x * size.width;
-      final py = b.y * size.height;
-      final r = b.radius;
-      final color = bubbleColors[b.wordIndex % bubbleColors.length];
-
-      if (b.popping) {
-        // Expanding ring that fades out
-        final t = b.animTimer / 0.4;
-        final expandR = r * (1.0 + t * 1.5);
-        final alpha = (1.0 - t).clamp(0.0, 1.0);
-        canvas.drawCircle(
-          Offset(px, py), expandR,
-          Paint()
-            ..color = color.withValues(alpha: alpha * 0.4)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 3 * (1.0 - t),
-        );
-        continue;
-      }
-
-      if (b.shattering) {
-        // Shrink and fade
-        final t = b.animTimer / 0.35;
-        final shrinkR = r * (1.0 - t * 0.8);
-        final alpha = (1.0 - t).clamp(0.0, 1.0);
-        if (shrinkR > 0) {
-          canvas.drawCircle(
-            Offset(px, py), shrinkR,
-            Paint()..color = Colors.grey.withValues(alpha: alpha * 0.3),
-          );
-        }
-        continue;
-      }
-
-      // Outer glow
-      final glowPaint = Paint()
-        ..color = color.withValues(alpha: 0.12)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12);
-      canvas.drawCircle(Offset(px, py), r + 6, glowPaint);
-
-      // Translucent bubble fill
-      canvas.drawCircle(
-        Offset(px, py), r,
-        Paint()..color = color.withValues(alpha: 0.12),
-      );
-
-      // Bubble border
-      canvas.drawCircle(
-        Offset(px, py), r,
-        Paint()
-          ..color = color.withValues(alpha: 0.35)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5,
-      );
-
-      // Specular highlight
-      canvas.drawCircle(
-        Offset(px - r * 0.25, py - r * 0.3),
-        r * 0.25,
-        Paint()..color = Colors.white.withValues(alpha: 0.12),
-      );
-
-      // Word text inside bubble
-      final word = allWords[b.wordIndex];
-      final textPainter = TextPainter(
-        text: TextSpan(
-          text: word,
-          style: TextStyle(
-            fontSize: 13,
-            fontFamily: 'Avenir',
-            fontWeight: FontWeight.w600,
-            color: Colors.white.withValues(alpha: 0.9),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      );
-      textPainter.layout();
-      textPainter.paint(
-        canvas,
-        Offset(px - textPainter.width / 2, py - textPainter.height / 2),
-      );
+    // Flash
+    if (flashAlpha > 0) {
+      canvas.drawRect(Offset.zero & size,
+        Paint()..color = Colors.white.withValues(alpha: flashAlpha * 0.45));
     }
 
-    // Particles
-    for (final p in particles) {
-      if (p.life > 0) {
-        final alpha = (p.life / 0.6).clamp(0.0, 1.0);
-        canvas.drawCircle(
-          Offset(p.x * size.width, p.y * size.height),
-          2.5,
-          Paint()..color = p.color.withValues(alpha: alpha),
-        );
+    // Subtle hotspot hints (very faint persistent glow)
+    if (started && !gameOver) {
+      for (final h in hotspots) {
+        final c = Offset(h.dx * size.width, h.dy * size.height);
+        canvas.drawCircle(c, 50, Paint()
+          ..shader = ui.Gradient.radial(c, 50,
+            [Colors.white.withValues(alpha: 0.025), Colors.transparent]));
       }
+    }
+
+    // ---- blips ----
+    for (final b in blips) {
+      if (b.age < 0) continue; // stagger-delayed, not yet visible
+      final r = b.currentRadius;
+      final a = b.currentOpacity;
+      if (r < 0.5 || a < 0.01) continue;
+
+      final c = Offset(b.x, b.y);
+      final isPeak = b.scoreValue == 5;
+
+      // Glow at peak
+      if (isPeak) {
+        canvas.drawCircle(c, r * 1.6, Paint()
+          ..shader = ui.Gradient.radial(c, r * 1.6,
+            [Colors.white.withValues(alpha: a * 0.12), Colors.transparent]));
+      }
+
+      // Fill
+      canvas.drawCircle(c, r, Paint()
+        ..color = Colors.white.withValues(alpha: a * 0.10));
+
+      // Ring
+      canvas.drawCircle(c, r, Paint()
+        ..color = Colors.white.withValues(alpha: a * (isPeak ? 0.85 : 0.50))
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = isPeak ? 2.0 : 1.2);
+    }
+
+    // ---- player circle ----
+    if (holding && playerRadius > 3) {
+      canvas.drawCircle(holdPos, playerRadius * 1.15, Paint()
+        ..shader = ui.Gradient.radial(holdPos, playerRadius * 1.15,
+          [Colors.white.withValues(alpha: 0.06), Colors.transparent]));
+      canvas.drawCircle(holdPos, playerRadius, Paint()
+        ..color = Colors.white.withValues(alpha: 0.10));
+      canvas.drawCircle(holdPos, playerRadius, Paint()
+        ..color = Colors.white.withValues(alpha: 0.6)
+        ..style = PaintingStyle.stroke..strokeWidth = 1.8);
+      canvas.drawCircle(holdPos, 2.5, Paint()
+        ..color = Colors.white.withValues(alpha: 0.7));
+    }
+
+    // ---- popups ----
+    for (final p in popups) {
+      final al = (1.0 - p.age / 1.3).clamp(0.0, 1.0);
+      final s = 1.0 + p.age * 0.2;
+      final tp = TextPainter(
+        text: TextSpan(text: p.text,
+          style: TextStyle(fontFamily: 'Avenir', fontSize: 22 * s,
+            fontWeight: FontWeight.bold,
+            color: p.color.withValues(alpha: al))),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(p.x - tp.width / 2, p.y - tp.height / 2));
+    }
+
+    // ---- HUD ----
+    if (started || gameOver) {
+      final tc = timeRemaining < 5
+          ? Color.lerp(const Color(0xFFFF5252), Colors.white,
+              (timeRemaining / 5).clamp(0.0, 1.0))!
+          : Colors.white70;
+      _centeredText(canvas, size, timeRemaining.toStringAsFixed(1),
+        34, tc, -size.height / 2 + 44);
+      _centeredText(canvas, size, '$score', 18, Colors.white38,
+        size.height / 2 - 48);
+    }
+
+    // Pre-game
+    if (!started && !gameOver) {
+      _centeredText(canvas, size, 'Hold to capture.', 18, Colors.white24, -14);
+      _centeredText(canvas, size, 'Engulf the circles. 22 seconds.', 13,
+        Colors.white12, 14);
+    }
+
+    // Game over
+    if (gameOver) {
+      _centeredText(canvas, size, 'TIME', 44, Colors.white54, -36);
+      _centeredText(canvas, size, '$score', 56, Colors.white70, 24);
+      _centeredText(canvas, size, 'tap to restart', 14, Colors.white24, 72);
     }
   }
 
+  void _centeredText(Canvas c, Size s, String text, double fs, Color col,
+      double yOff) {
+    final tp = TextPainter(
+      text: TextSpan(text: text,
+        style: TextStyle(fontFamily: 'Avenir', fontSize: fs,
+          fontWeight: FontWeight.w300, color: col)),
+      textAlign: TextAlign.center,
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(c, Offset((s.width - tp.width) / 2,
+      (s.height - tp.height) / 2 + yOff));
+  }
+
   @override
-  bool shouldRepaint(covariant _ThoughtBubblePainter old) => true;
+  bool shouldRepaint(covariant _SomethingsPainter old) => true;
 }
 
 // ---------------------------------------------------------------------------
