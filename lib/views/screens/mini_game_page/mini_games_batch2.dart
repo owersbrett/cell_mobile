@@ -20,418 +20,6 @@ class _FxParticle {
 }
 
 // ============================================================================
-// 1. TissueLayerGame — "Layer Rush"
-// ============================================================================
-
-enum _TissueType { dermal, ground, vascular, meristematic }
-
-class _TissueLayer {
-  final _TissueType type;
-  double x; // 0..1 horizontal position
-  double y; // 0..1 vertical position (0 = top)
-  bool placed = false;
-  bool crumbling = false;
-  double crumbleTimer = 0;
-  _TissueLayer({
-    required this.type,
-    this.x = 0.5,
-    this.y = 0,
-  });
-}
-
-Color _tissueColor(_TissueType t) {
-  switch (t) {
-    case _TissueType.dermal:
-      return const Color(0xFF42A5F5);
-    case _TissueType.ground:
-      return const Color(0xFF66BB6A);
-    case _TissueType.vascular:
-      return const Color(0xFFEF5350);
-    case _TissueType.meristematic:
-      return const Color(0xFFFFEE58);
-  }
-}
-
-String _tissueName(_TissueType t) {
-  switch (t) {
-    case _TissueType.dermal:
-      return 'Dermal';
-    case _TissueType.ground:
-      return 'Ground';
-    case _TissueType.vascular:
-      return 'Vascular';
-    case _TissueType.meristematic:
-      return 'Meristematic';
-  }
-}
-
-// Correct stacking order bottom-to-top:
-// Vascular (deepest), Ground, Meristematic, Dermal (outermost)
-const _correctOrder = [
-  _TissueType.vascular,
-  _TissueType.ground,
-  _TissueType.meristematic,
-  _TissueType.dermal,
-];
-
-class TissueLayerGame extends StatefulWidget {
-  const TissueLayerGame({Key? key}) : super(key: key);
-  @override
-  State<TissueLayerGame> createState() => _TissueLayerGameState();
-}
-
-class _TissueLayerGameState extends State<TissueLayerGame>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ticker;
-  final Random _rng = Random();
-
-  int _score = 0;
-  int _lives = 3;
-  bool _gameOver = false;
-  double _speed = 0.15; // units per second (fraction of screen height)
-  double _lastTime = 0;
-
-  _TissueLayer? _falling;
-  final List<_TissueLayer> _placed = [];
-  final List<_FxParticle> _particles = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _ticker = AnimationController(
-      vsync: this,
-      duration: const Duration(days: 1),
-    )..addListener(_update);
-    _ticker.forward();
-    _spawnLayer();
-  }
-
-  @override
-  void dispose() {
-    _ticker.dispose();
-    super.dispose();
-  }
-
-  void _spawnLayer() {
-    final type = _TissueType.values[_rng.nextInt(_TissueType.values.length)];
-    _falling = _TissueLayer(type: type, x: 0.5, y: 0);
-  }
-
-  void _update() {
-    if (_gameOver) return;
-    final now = _ticker.lastElapsedDuration?.inMicroseconds ?? 0;
-    final t = now / 1e6;
-    final dt = _lastTime == 0 ? 0.016 : (t - _lastTime).clamp(0, 0.05);
-    _lastTime = t;
-
-    setState(() {
-      // Update particles
-      for (final p in _particles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.vy += 200 * dt;
-        p.life -= dt;
-      }
-      _particles.removeWhere((p) => p.life <= 0);
-
-      // Update crumbling layers
-      _placed.removeWhere((l) {
-        if (l.crumbling) {
-          l.crumbleTimer -= dt;
-          return l.crumbleTimer <= 0;
-        }
-        return false;
-      });
-
-      // Update falling layer
-      if (_falling != null) {
-        _falling!.y += _speed * dt;
-
-        // Landing zone
-        final landingY = 1.0 - (_placed.where((l) => !l.crumbling).length + 1) * 0.08;
-        if (_falling!.y >= landingY) {
-          _falling!.y = landingY;
-          _checkPlacement();
-        }
-      }
-    });
-  }
-
-  void _checkPlacement() {
-    final layer = _falling!;
-    final placedNonCrumbling = _placed.where((l) => !l.crumbling).toList();
-    final nextIndex = placedNonCrumbling.length;
-
-    if (nextIndex < _correctOrder.length &&
-        layer.type == _correctOrder[nextIndex]) {
-      // Correct
-      layer.placed = true;
-      _placed.add(layer);
-      _score += 10 + (nextIndex * 5);
-      _speed += 0.02;
-      _emitParticles(layer.x, layer.y, _tissueColor(layer.type), 15);
-    } else {
-      // Wrong — crumble
-      layer.crumbling = true;
-      layer.crumbleTimer = 0.5;
-      _placed.add(layer);
-      _lives--;
-      _emitParticles(layer.x, layer.y, Colors.grey, 10);
-      if (_lives <= 0) {
-        _gameOver = true;
-      }
-    }
-    _falling = null;
-    if (!_gameOver) {
-      // Check if we completed a full set
-      final correctCount =
-          _placed.where((l) => l.placed && !l.crumbling).length;
-      if (correctCount >= _correctOrder.length) {
-        _score += 50; // bonus
-        _placed.clear();
-        _speed += 0.05;
-      }
-      _spawnLayer();
-    }
-  }
-
-  void _emitParticles(double nx, double ny, Color c, int count) {
-    for (int i = 0; i < count; i++) {
-      _particles.add(_FxParticle(
-        x: nx * 400 + (_rng.nextDouble() - 0.5) * 60,
-        y: ny * 700 + (_rng.nextDouble() - 0.5) * 20,
-        vx: (_rng.nextDouble() - 0.5) * 200,
-        vy: -_rng.nextDouble() * 150 - 50,
-        life: 0.6 + _rng.nextDouble() * 0.4,
-        color: c,
-        size: 3 + _rng.nextDouble() * 3,
-      ));
-    }
-  }
-
-  void _restart() {
-    setState(() {
-      _score = 0;
-      _lives = 3;
-      _gameOver = false;
-      _speed = 0.15;
-      _lastTime = 0;
-      _placed.clear();
-      _particles.clear();
-      _falling = null;
-      _spawnLayer();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
-      return GestureDetector(
-        onHorizontalDragUpdate: (details) {
-          if (_falling != null && !_gameOver) {
-            setState(() {
-              _falling!.x =
-                  (_falling!.x + details.delta.dx / w).clamp(0.1, 0.9);
-            });
-          }
-        },
-        onTap: _gameOver ? _restart : null,
-        child: Container(
-          color: const Color(0xFF1A1A2E),
-          child: Stack(
-            children: [
-              // Placed layers
-              ..._placed.map((layer) {
-                final lw = w * 0.7;
-                final lh = h * 0.06;
-                final opacity =
-                    layer.crumbling ? (layer.crumbleTimer / 0.5) : 1.0;
-                return Positioned(
-                  left: layer.x * w - lw / 2,
-                  top: layer.y * h - lh / 2,
-                  child: Opacity(
-                    opacity: opacity.clamp(0, 1),
-                    child: Container(
-                      width: lw,
-                      height: lh,
-                      decoration: BoxDecoration(
-                        color: _tissueColor(layer.type)
-                            .withValues(alpha: layer.crumbling ? 0.3 : 0.6),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: _tissueColor(layer.type)
-                              .withValues(alpha: layer.crumbling ? 0.2 : 0.8),
-                        ),
-                      ),
-                      child: Center(
-                        child: Text(
-                          _tissueName(layer.type),
-                          style: const TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 12,
-                            color: Colors.white70,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }),
-              // Falling layer
-              if (_falling != null) ...[
-                Positioned(
-                  left: _falling!.x * w - w * 0.35,
-                  top: _falling!.y * h - h * 0.03,
-                  child: Container(
-                    width: w * 0.7,
-                    height: h * 0.06,
-                    decoration: BoxDecoration(
-                      color:
-                          _tissueColor(_falling!.type).withValues(alpha: 0.7),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: _tissueColor(_falling!.type),
-                        width: 2,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: _tissueColor(_falling!.type)
-                              .withValues(alpha: 0.4),
-                          blurRadius: 12,
-                        ),
-                      ],
-                    ),
-                    child: Center(
-                      child: Text(
-                        _tissueName(_falling!.type),
-                        style: const TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-              // Particles
-              ..._particles.where((p) => p.life > 0).map((p) => Positioned(
-                    left: p.x - p.size / 2,
-                    top: p.y - p.size / 2,
-                    child: Container(
-                      width: p.size,
-                      height: p.size,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: p.color.withValues(alpha: p.life.clamp(0, 1)),
-                      ),
-                    ),
-                  )),
-              // HUD
-              Positioned(
-                top: 8,
-                left: 16,
-                child: Text(
-                  'Score: $_score',
-                  style: const TextStyle(
-                    fontFamily: 'Avenir',
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white70,
-                  ),
-                ),
-              ),
-              Positioned(
-                top: 8,
-                right: 16,
-                child: Row(
-                  children: List.generate(
-                    3,
-                    (i) => Padding(
-                      padding: const EdgeInsets.only(left: 4),
-                      child: Icon(
-                        Icons.favorite,
-                        size: 20,
-                        color: i < _lives
-                            ? const Color(0xFFEF5350)
-                            : Colors.white12,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              // Next expected
-              Positioned(
-                top: 32,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Builder(builder: (_) {
-                    final nextIdx =
-                        _placed.where((l) => l.placed && !l.crumbling).length;
-                    if (nextIdx < _correctOrder.length) {
-                      return Text(
-                        'Need: ${_tissueName(_correctOrder[nextIdx])}',
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 12,
-                          color: _tissueColor(_correctOrder[nextIdx])
-                              .withValues(alpha: 0.7),
-                        ),
-                      );
-                    }
-                    return const SizedBox.shrink();
-                  }),
-                ),
-              ),
-              // Game over
-              if (_gameOver)
-                Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text(
-                        'Game Over',
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white70,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Score: $_score',
-                        style: const TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 20,
-                          color: Colors.white54,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Tap to restart',
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 14,
-                          color: Colors.white38,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        ),
-      );
-    });
-  }
-}
-
-// ============================================================================
 // 2. OrganGrowGame — "Grow the Plant"
 // ============================================================================
 
@@ -478,7 +66,7 @@ class _OrganGrowGameState extends State<OrganGrowGame>
 
   double _lastTime = 0;
   int _score = 0;
-  double _plantHeight = 40; // pixels from bottom
+  double _plantHeight = 60; // pixels from bottom
   double _health = 1.0;
   bool _gameOver = false;
 
@@ -590,20 +178,20 @@ class _OrganGrowGameState extends State<OrganGrowGame>
           } else if (r.isSun) {
             // Sun caught by leaves (top area of plant)
             final leafZone = 1.0 - _plantHeight / 700;
-            if (dx < 0.1 && r.y > leafZone && r.y < leafZone + 0.15) {
+            if (dx < 0.15 && r.y > leafZone && r.y < leafZone + 0.25) {
               r.collected = true;
               _sunCollected++;
               _leafFlashTimer = 0.3;
-              _grow(2);
+              _grow(5);
               _emitFx(r.x, r.y, const Color(0xFFFFEB3B), 6);
             }
           } else {
-            // Water caught by roots (bottom area)
-            if (dx < 0.12 && r.y > 0.85) {
+            // Water caught by roots (just above ground)
+            if (dx < 0.18 && r.y > 0.72 && r.y < 0.88) {
               r.collected = true;
               _waterCollected++;
               _rootFlashTimer = 0.3;
-              _grow(1.5);
+              _grow(4);
               _emitFx(r.x, r.y, const Color(0xFF42A5F5), 6);
             }
           }
@@ -674,7 +262,7 @@ class _OrganGrowGameState extends State<OrganGrowGame>
   void _restart() {
     setState(() {
       _score = 0;
-      _plantHeight = 40;
+      _plantHeight = 60;
       _health = 1.0;
       _gameOver = false;
       _lastTime = 0;
@@ -811,7 +399,7 @@ class _OrganGrowGameState extends State<OrganGrowGame>
               // Score — Height and Tubers
               Positioned(
                 top: 8,
-                right: 16,
+                right: 24,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
@@ -3666,7 +3254,7 @@ class _SupplyChainGameState extends State<SupplyChainGame>
     final w = box?.size.width ?? 400;
     final h = box?.size.height ?? 600;
     final dist = (_nodeCenter(a, w, h) - _nodeCenter(b, w, h)).distance;
-    return dist < 150;
+    return dist < 260;
   }
 
   bool _pipeExists(int a, int b) {
@@ -3686,7 +3274,7 @@ class _SupplyChainGameState extends State<SupplyChainGame>
 
   int? _nodeAtPosition(Offset pos, double w, double h) {
     for (int i = 0; i < _nodes.length; i++) {
-      if ((pos - _nodeCenter(i, w, h)).distance < 44) return i;
+      if ((pos - _nodeCenter(i, w, h)).distance < 56) return i;
     }
     return null;
   }
@@ -3762,6 +3350,17 @@ class _SupplyChainGameState extends State<SupplyChainGame>
     for (int i = 0; i < _pipes.length; i++) { final a = _nodeCenter(_pipes[i].fromIdx, w, h), b = _nodeCenter(_pipes[i].toIdx, w, h); final ab = b - a, ap = pos - a; final t2 = ((ap.dx * ab.dx + ap.dy * ab.dy) / (ab.dx * ab.dx + ab.dy * ab.dy + 0.0001)).clamp(0.0, 1.0); final d = (pos - (a + ab * t2)).distance; if (d < bestD) { bestD = d; best = i; } }
     if (best != null) setState(() { _pipes.removeAt(best!); });
   }
+  Set<int> _getEligibleTargets(int fromIdx, double w, double h) {
+    final targets = <int>{};
+    for (int i = 0; i < _nodes.length; i++) {
+      if (i == fromIdx) continue;
+      if (_pipeExists(fromIdx, i)) continue;
+      final dist = (_nodeCenter(fromIdx, w, h) - _nodeCenter(i, w, h)).distance;
+      if (dist < 260) targets.add(i);
+    }
+    return targets;
+  }
+
   void _nextLevel() { setState(() { _loadLevel(_currentLevel + 1); _lastTime = 0; }); }
 
   void _restart() { setState(() { _score = 0; _jams = 0; _totalTime = 0; _gameWon = false; _loadLevel(0); _lastTime = 0; }); }
@@ -3780,7 +3379,7 @@ class _SupplyChainGameState extends State<SupplyChainGame>
           color: const Color(0xFF1A1A2E),
           child: Stack(
             children: [
-            CustomPaint(size: Size(w, h), painter: _PipeGridPainter(nodes: _nodes, pipes: _pipes, travelers: _travelers, nodeCenter: (i) => _nodeCenter(i, w, h), dragFrom: _dragFromNode != null ? _nodeCenter(_dragFromNode!, w, h) : null, dragTo: _dragCurrent)),
+            CustomPaint(size: Size(w, h), painter: _PipeGridPainter(nodes: _nodes, pipes: _pipes, travelers: _travelers, nodeCenter: (i) => _nodeCenter(i, w, h), dragFrom: _dragFromNode != null ? _nodeCenter(_dragFromNode!, w, h) : null, dragTo: _dragCurrent, eligibleTargets: _dragFromNode != null ? _getEligibleTargets(_dragFromNode!, w, h) : const {})),
             ..._nodes.asMap().entries.map((e) { final i = e.key; final n = e.value; final c = _nodeCenter(i, w, h); final s = n.type == _PipeNodeType.splitter ? 36.0 : 42.0; return Positioned(left: c.dx - s / 2, top: c.dy - s / 2, child: _buildNodeWidget(n, s, _pipeNodeColor(n.type))); }),
             ..._nodes.asMap().entries.map((e) { final n = e.value; final c = _nodeCenter(e.key, w, h); String l = _pipeNodeLabel(n.type); if (_isDest(n.type)) l += '\n(${_scProductName(_destWants(n.type))})'; return Positioned(left: c.dx - 30, top: c.dy + 24, child: SizedBox(width: 60, child: Text(l, textAlign: TextAlign.center, style: const TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white54, height: 1.2)))); }),
             ..._nodes.asMap().entries.where((e) => _isDest(e.value.type)).map((e) { final n = e.value; final c = _nodeCenter(e.key, w, h); final nd = _levels[_currentLevel].requiredPerDest; return Positioned(left: c.dx - 15, top: c.dy - 32, child: Container(padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)), child: Text('${n.deliveredCount}/$nd', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, fontWeight: FontWeight.bold, color: n.deliveredCount >= nd ? const Color(0xFF4CAF50) : Colors.white70)))); }),
@@ -3795,4 +3394,4 @@ class _SupplyChainGameState extends State<SupplyChainGame>
   Widget _buildNodeWidget(_PipeNode node, double size, Color color) { final isJ = node.jammed; final isP = node.processing; final gl = node.glowTimer > 0; double sx = 0; if (isJ) sx = (node.jamTimer * 40).remainder(2.0) > 1.0 ? 3.0 : -3.0; final bg = isJ ? Colors.red.withValues(alpha: 0.6) : isP ? color.withValues(alpha: 0.7) : color.withValues(alpha: 0.3); final bc = gl ? const Color(0xFF4CAF50) : isJ ? Colors.red : color.withValues(alpha: 0.8); final sh = <BoxShadow>[if (gl) BoxShadow(color: const Color(0xFF4CAF50).withValues(alpha: 0.6), blurRadius: 14), if (isJ) BoxShadow(color: Colors.red.withValues(alpha: 0.5), blurRadius: 10)]; final lbl = Text(_pipeNodeLabel(node.type)[0], style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white)); Widget shape; if (node.type == _PipeNodeType.splitter) { shape = Transform.rotate(angle: 0.785398, child: Container(width: size * 0.75, height: size * 0.75, decoration: BoxDecoration(color: bg, border: Border.all(color: bc, width: 2), boxShadow: sh))); } else if (node.type == _PipeNodeType.farm || _isDest(node.type)) { shape = Container(width: size, height: size, decoration: BoxDecoration(shape: BoxShape.circle, color: bg, border: Border.all(color: bc, width: gl ? 3 : 2), boxShadow: sh), child: Center(child: lbl)); } else { shape = Container(width: size, height: size, decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), color: bg, border: Border.all(color: bc, width: 2), boxShadow: sh), child: Center(child: lbl)); } if (isP) shape = Stack(alignment: Alignment.center, children: [shape, SizedBox(width: size + 4, height: size + 4, child: CircularProgressIndicator(value: node.processTimer, strokeWidth: 2, color: color))]); return Transform.translate(offset: Offset(sx, 0), child: shape); }
   Widget _buildOverlay({required String title, required String subtitle, required String buttonText, required VoidCallback onButton}) { return Positioned.fill(child: Container(color: Colors.black.withValues(alpha: 0.7), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(title, style: const TextStyle(fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)), const SizedBox(height: 8), Text(subtitle, style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)), const SizedBox(height: 20), GestureDetector(onTap: onButton, child: Container(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), color: const Color(0xFF4CAF50)), child: Text(buttonText, style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)))), const SizedBox(height: 12), GestureDetector(onTap: _restart, child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6), decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.white24)), child: const Text('Restart All', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white54))))])))); }
 }
-class _PipeGridPainter extends CustomPainter { final List<_PipeNode> nodes; final List<_Pipe> pipes; final List<_TravelingPotato> travelers; final Offset Function(int) nodeCenter; final Offset? dragFrom; final Offset? dragTo; _PipeGridPainter({required this.nodes, required this.pipes, required this.travelers, required this.nodeCenter, this.dragFrom, this.dragTo}); @override void paint(Canvas canvas, Size size) { final gp = Paint()..color = Colors.white.withValues(alpha: 0.03)..strokeWidth = 1; for (double x = 0; x < size.width; x += 40) canvas.drawLine(Offset(x, 0), Offset(x, size.height), gp); for (double y = 0; y < size.height; y += 40) canvas.drawLine(Offset(0, y), Offset(size.width, y), gp); for (final pipe in pipes) { final f = nodeCenter(pipe.fromIdx), t2 = nodeCenter(pipe.toIdx); bool act = false; for (final tr in travelers) { if ((tr.fromNodeIdx == pipe.fromIdx && tr.toNodeIdx == pipe.toIdx) || (tr.fromNodeIdx == pipe.toIdx && tr.toNodeIdx == pipe.fromIdx)) { act = true; break; } } canvas.drawLine(f, t2, Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.08))..strokeWidth = 12..strokeCap = StrokeCap.round); canvas.drawLine(f, t2, Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.15))..strokeWidth = 8..strokeCap = StrokeCap.round); final mid = Offset.lerp(f, t2, 0.5)!; final dir = t2 - f; final len = dir.distance; if (len > 0) { final nm = Offset(dir.dx / len, dir.dy / len); canvas.drawPath(Path()..moveTo((mid + nm * 8).dx, (mid + nm * 8).dy)..lineTo((mid + Offset(-nm.dy, nm.dx) * 4).dx, (mid + Offset(-nm.dy, nm.dx) * 4).dy)..lineTo((mid + Offset(nm.dy, -nm.dx) * 4).dx, (mid + Offset(nm.dy, -nm.dx) * 4).dy)..close(), Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.2))..style = PaintingStyle.fill); } } if (dragFrom != null && dragTo != null) canvas.drawLine(dragFrom!, dragTo!, Paint()..color = Colors.white.withValues(alpha: 0.3)..strokeWidth = 4..strokeCap = StrokeCap.round); for (final trav in travelers) { final f = nodeCenter(trav.fromNodeIdx), t2 = nodeCenter(trav.toNodeIdx); final pos = Offset.lerp(f, t2, trav.progress.clamp(0.0, 1.0))!; final col = _scProductColor(trav.product); switch (trav.product) { case _PotatoProduct.raw: canvas.drawCircle(pos, 7, Paint()..color = col); canvas.drawCircle(pos + const Offset(2, -2), 3, Paint()..color = col.withValues(alpha: 0.6)); break; case _PotatoProduct.clean: canvas.drawCircle(pos, 7, Paint()..color = col); break; case _PotatoProduct.peeled: canvas.drawCircle(pos, 7, Paint()..color = col); canvas.drawCircle(pos, 7, Paint()..color = Colors.white.withValues(alpha: 0.3)..style = PaintingStyle.stroke..strokeWidth = 1); break; case _PotatoProduct.fries: for (int i = -1; i <= 1; i++) canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromCenter(center: pos + Offset(i * 4.0, 0), width: 3, height: 12), const Radius.circular(1)), Paint()..color = col); break; case _PotatoProduct.baked: canvas.drawOval(Rect.fromCenter(center: pos, width: 14, height: 10), Paint()..color = col); for (int i = -1; i <= 1; i++) canvas.drawPath(Path()..moveTo(pos.dx + i * 4, pos.dy - 6)..quadraticBezierTo(pos.dx + i * 4 + 2, pos.dy - 10, pos.dx + i * 4, pos.dy - 14), Paint()..color = Colors.white.withValues(alpha: 0.4)..strokeWidth = 1..style = PaintingStyle.stroke); break; case _PotatoProduct.chips: for (int i = 0; i < 3; i++) canvas.drawCircle(pos + Offset((i - 1) * 5.0, (i % 2 == 0 ? -2 : 2).toDouble()), 3.5, Paint()..color = col); break; } } } @override bool shouldRepaint(covariant _PipeGridPainter old) => true; }
+class _PipeGridPainter extends CustomPainter { final List<_PipeNode> nodes; final List<_Pipe> pipes; final List<_TravelingPotato> travelers; final Offset Function(int) nodeCenter; final Offset? dragFrom; final Offset? dragTo; final Set<int> eligibleTargets; _PipeGridPainter({required this.nodes, required this.pipes, required this.travelers, required this.nodeCenter, this.dragFrom, this.dragTo, this.eligibleTargets = const {}}); @override void paint(Canvas canvas, Size size) { final gp = Paint()..color = Colors.white.withValues(alpha: 0.03)..strokeWidth = 1; for (double x = 0; x < size.width; x += 40) canvas.drawLine(Offset(x, 0), Offset(x, size.height), gp); for (double y = 0; y < size.height; y += 40) canvas.drawLine(Offset(0, y), Offset(size.width, y), gp); for (final pipe in pipes) { final f = nodeCenter(pipe.fromIdx), t2 = nodeCenter(pipe.toIdx); bool act = false; for (final tr in travelers) { if ((tr.fromNodeIdx == pipe.fromIdx && tr.toNodeIdx == pipe.toIdx) || (tr.fromNodeIdx == pipe.toIdx && tr.toNodeIdx == pipe.fromIdx)) { act = true; break; } } canvas.drawLine(f, t2, Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.08))..strokeWidth = 12..strokeCap = StrokeCap.round); canvas.drawLine(f, t2, Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.15))..strokeWidth = 8..strokeCap = StrokeCap.round); final mid = Offset.lerp(f, t2, 0.5)!; final dir = t2 - f; final len = dir.distance; if (len > 0) { final nm = Offset(dir.dx / len, dir.dy / len); canvas.drawPath(Path()..moveTo((mid + nm * 8).dx, (mid + nm * 8).dy)..lineTo((mid + Offset(-nm.dy, nm.dx) * 4).dx, (mid + Offset(-nm.dy, nm.dx) * 4).dy)..lineTo((mid + Offset(nm.dy, -nm.dx) * 4).dx, (mid + Offset(nm.dy, -nm.dx) * 4).dy)..close(), Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.2))..style = PaintingStyle.fill); } } /* Eligible target highlights while dragging */ for (final idx in eligibleTargets) { final c = nodeCenter(idx); canvas.drawCircle(c, 30, Paint()..color = const Color(0xFF4CAF50).withValues(alpha: 0.12)); canvas.drawCircle(c, 30, Paint()..color = const Color(0xFF4CAF50).withValues(alpha: 0.25)..style = PaintingStyle.stroke..strokeWidth = 1.5); } if (dragFrom != null && dragTo != null) canvas.drawLine(dragFrom!, dragTo!, Paint()..color = Colors.white.withValues(alpha: 0.3)..strokeWidth = 4..strokeCap = StrokeCap.round); for (final trav in travelers) { final f = nodeCenter(trav.fromNodeIdx), t2 = nodeCenter(trav.toNodeIdx); final pos = Offset.lerp(f, t2, trav.progress.clamp(0.0, 1.0))!; final col = _scProductColor(trav.product); switch (trav.product) { case _PotatoProduct.raw: canvas.drawCircle(pos, 7, Paint()..color = col); canvas.drawCircle(pos + const Offset(2, -2), 3, Paint()..color = col.withValues(alpha: 0.6)); break; case _PotatoProduct.clean: canvas.drawCircle(pos, 7, Paint()..color = col); break; case _PotatoProduct.peeled: canvas.drawCircle(pos, 7, Paint()..color = col); canvas.drawCircle(pos, 7, Paint()..color = Colors.white.withValues(alpha: 0.3)..style = PaintingStyle.stroke..strokeWidth = 1); break; case _PotatoProduct.fries: for (int i = -1; i <= 1; i++) canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromCenter(center: pos + Offset(i * 4.0, 0), width: 3, height: 12), const Radius.circular(1)), Paint()..color = col); break; case _PotatoProduct.baked: canvas.drawOval(Rect.fromCenter(center: pos, width: 14, height: 10), Paint()..color = col); for (int i = -1; i <= 1; i++) canvas.drawPath(Path()..moveTo(pos.dx + i * 4, pos.dy - 6)..quadraticBezierTo(pos.dx + i * 4 + 2, pos.dy - 10, pos.dx + i * 4, pos.dy - 14), Paint()..color = Colors.white.withValues(alpha: 0.4)..strokeWidth = 1..style = PaintingStyle.stroke); break; case _PotatoProduct.chips: for (int i = 0; i < 3; i++) canvas.drawCircle(pos + Offset((i - 1) * 5.0, (i % 2 == 0 ? -2 : 2).toDouble()), 3.5, Paint()..color = col); break; } } } @override bool shouldRepaint(covariant _PipeGridPainter old) => true; }
