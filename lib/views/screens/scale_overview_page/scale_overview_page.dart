@@ -10,7 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'widgets/atom_orbital_animation.dart';
-import 'widgets/cluster_animation.dart';
+import 'widgets/organ_system_animation.dart';
 import 'widgets/dragon_curve_animation.dart';
 import 'widgets/farm_cycle_animation.dart';
 import 'widgets/financial_animation.dart';
@@ -46,8 +46,8 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
 
   static const _scaleInfo = <_ScaleDisplayInfo>[
     // Left side — from nothingness toward the cell
-    _ScaleDisplayInfo(BioScale.nothings, 'Nothings', 'The void & the zero', Icons.circle_outlined, Color(0xFF424242)),
-    _ScaleDisplayInfo(BioScale.somethings, 'Somethings', 'The first distinctions', Icons.auto_awesome, Color(0xFF7E57C2)),
+    _ScaleDisplayInfo(BioScale.nothings, 'Nothing', '', Icons.circle_outlined, Color(0xFF424242)),
+    _ScaleDisplayInfo(BioScale.somethings, 'Something', 'The first distinctions', Icons.auto_awesome, Color(0xFF7E57C2)),
     _ScaleDisplayInfo(BioScale.particles, 'Particles', 'Quarks, electrons & photons', Icons.grain, Color(0xFFAB47BC)),
     _ScaleDisplayInfo(BioScale.atoms, 'Atoms', 'The elements of everything', Icons.blur_on, Color(0xFF5C6BC0)),
     _ScaleDisplayInfo(BioScale.molecular, 'Molecules', 'The chemistry of life', Icons.science, Color(0xFF00BCD4)),
@@ -57,21 +57,19 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
     // Right side — from the cell toward infinity
     _ScaleDisplayInfo(BioScale.tissue, 'Tissues', 'Organized cell groups', Icons.layers, Color(0xFF4CAF50)),
     _ScaleDisplayInfo(BioScale.organ, 'Organs', 'Roots, stems, leaves & flowers', Icons.eco, Color(0xFFCDDC39)),
+    _ScaleDisplayInfo(BioScale.organSystem, 'Organ Systems', 'Integrated functional units', Icons.account_tree, Color(0xFF8BC34A)),
     _ScaleDisplayInfo(BioScale.organism, 'Organisms', 'Whole plants & life strategies', Icons.local_florist, Color(0xFFFFC107)),
     _ScaleDisplayInfo(BioScale.ecosystem, 'Ecosystems', 'Living systems & nutrient cycles', Icons.forest, Color(0xFFFF9800)),
     _ScaleDisplayInfo(BioScale.farmSystem, 'Farm Systems', 'Field-scale management', Icons.agriculture, Color(0xFF8D6E63)),
     _ScaleDisplayInfo(BioScale.supplyChain, 'Supply Chains', 'Harvest to table', Icons.local_shipping, Color(0xFF78909C)),
     _ScaleDisplayInfo(BioScale.financial, 'Financials', 'Markets & economics', Icons.trending_up, Color(0xFFE19816)),
-    _ScaleDisplayInfo(BioScale.global, 'Global', 'The planetary view', Icons.public, Color(0xFFE16416)),
     _ScaleDisplayInfo(BioScale.planets, 'Planets', 'Worlds & their systems', Icons.language, Color(0xFF1E88E5)),
     _ScaleDisplayInfo(BioScale.solarSystems, 'Solar Systems', 'Stars & their orbits', Icons.wb_sunny, Color(0xFFFDD835)),
     _ScaleDisplayInfo(BioScale.galactic, 'Galactic', 'Billions of stars', Icons.auto_awesome, Color(0xFFCE93D8)),
-    _ScaleDisplayInfo(BioScale.clusters, 'Clusters', 'Local groups & superclusters', Icons.scatter_plot, Color(0xFF90CAF9)),
     _ScaleDisplayInfo(BioScale.cosmicStructures, 'Cosmic Structures', 'The cosmic web', Icons.hub, Color(0xFF80DEEA)),
     _ScaleDisplayInfo(BioScale.multiverseAll, 'Multiverse', 'The mesh of all realities', Icons.device_hub, Color(0xFFB0BEC5)),
     _ScaleDisplayInfo(BioScale.universeAll, 'Universe', 'The totality of existence', Icons.all_inclusive, Color(0xFFEEEEEE)),
-    _ScaleDisplayInfo(BioScale.allThings, 'All Things', 'The sum of everything', Icons.all_inclusive, Color(0xFFB0BEC5)),
-    _ScaleDisplayInfo(BioScale.infinities, 'Infinities', 'Beyond all bounds', Icons.all_inclusive, Color(0xFFFFFFFF)),
+    _ScaleDisplayInfo(BioScale.infinities, 'Infinity', 'Beyond all bounds', Icons.all_inclusive, Color(0xFFFFFFFF)),
   ];
 
   @override
@@ -152,9 +150,9 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
     switch (scale) {
       // Left side — nothingness to molecules
       case BioScale.nothings:
-        return BinaryNothingAnimation(color: color);
-      case BioScale.somethings:
         return QuestionMarksAnimation(color: color);
+      case BioScale.somethings:
+        return BinaryNothingAnimation(color: color);
       case BioScale.particles:
         return ParticlesAnimation(color: color);
       case BioScale.atoms:
@@ -171,6 +169,8 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
         return TissueAnimation(color: color);
       case BioScale.organ:
         return OrganAnimation(color: color);
+      case BioScale.organSystem:
+        return OrganSystemAnimation(color: color);
       case BioScale.organism:
         return OrganismAnimation(color: color);
       case BioScale.ecosystem:
@@ -181,8 +181,6 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
         return SupplyChainAnimation(color: color);
       case BioScale.financial:
         return FinancialAnimation(color: color);
-      case BioScale.global:
-        return GlobeAnimation(color: color);
       // Cosmic scales
       case BioScale.planets:
         return PlanetsAnimation(color: color);
@@ -190,12 +188,8 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
         return SolarSystemAnimation(color: color);
       case BioScale.galactic:
         return GalaxyAnimation(color: color);
-      case BioScale.clusters:
-        return ClusterAnimation(color: color);
       case BioScale.cosmicStructures:
         return DragonCurveAnimation(color: color);
-      case BioScale.allThings:
-        return CosmicWebAnimation(color: color);
       case BioScale.multiverseAll:
         return MultiverseMeshAnimation(color: color);
       case BioScale.universeAll:

@@ -23,12 +23,10 @@ class ScaleIndicator extends StatelessWidget {
     BioScale.farmSystem: Color(0xFF8D6E63),
     BioScale.supplyChain: Color(0xFF78909C),
     BioScale.financial: Color(0xFFE19816),
-    BioScale.global: Color(0xFFE16416),
-    BioScale.allThings: Color(0xFFB0BEC5),
   };
 
   static const _scaleLabels = <BioScale, String>{
-    BioScale.somethings: 'Somethings',
+    BioScale.somethings: 'Something',
     BioScale.molecular: 'Molecular',
     BioScale.organelle: 'Organelle',
     BioScale.cell: 'Cell',
@@ -39,8 +37,6 @@ class ScaleIndicator extends StatelessWidget {
     BioScale.farmSystem: 'Farm System',
     BioScale.supplyChain: 'Supply Chain',
     BioScale.financial: 'Financial',
-    BioScale.global: 'Global',
-    BioScale.allThings: 'All Things',
   };
 
   static const _scaleIcons = <BioScale, IconData>{
@@ -55,8 +51,6 @@ class ScaleIndicator extends StatelessWidget {
     BioScale.farmSystem: Icons.agriculture,
     BioScale.supplyChain: Icons.local_shipping,
     BioScale.financial: Icons.trending_up,
-    BioScale.global: Icons.public,
-    BioScale.allThings: Icons.all_inclusive,
   };
 
   @override

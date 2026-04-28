@@ -79,20 +79,18 @@ class MiniGamePage extends StatelessWidget {
       case BioScale.cell: return 'Mitosis Rush';
       case BioScale.tissue: return 'Layer Builder';
       case BioScale.organ: return 'Grow the Plant';
+      case BioScale.organSystem: return 'System Link';
       case BioScale.organism: return 'Harvest';
       case BioScale.ecosystem: return 'Potato Rush';
       case BioScale.farmSystem: return 'Farm Panic';
       case BioScale.supplyChain: return 'Delivery';
       case BioScale.financial: return 'Market Trader';
-      case BioScale.global: return 'Feed the World';
       case BioScale.planets: return 'Orbit Catch';
       case BioScale.solarSystems: return 'Orbital Mechanic';
       case BioScale.galactic: return 'Star Collector';
-      case BioScale.clusters: return 'Gravity Sling';
       case BioScale.cosmicStructures: return 'Neuron Connect';
       case BioScale.multiverseAll: return 'Reality Merge';
       case BioScale.universeAll: return 'Everything Everywhere';
-      case BioScale.allThings: return 'All Things';
       case BioScale.infinities: return 'Count Forever';
     }
   }
@@ -107,20 +105,18 @@ class MiniGamePage extends StatelessWidget {
       case BioScale.cell: return const MitosisRushGame();
       case BioScale.tissue: return const TissueLayerGame();
       case BioScale.organ: return const OrganGrowGame();
+      case BioScale.organSystem: return const OrganGrowGame(); // TODO: dedicated game
       case BioScale.organism: return const OrganismHarvestGame();
       case BioScale.ecosystem: return const PotatoRushGame();
       case BioScale.farmSystem: return const FarmPanicGame();
       case BioScale.supplyChain: return const SupplyChainGame();
       case BioScale.financial: return const FinancialTradingGame();
-      case BioScale.global: return const GlobalFeedGame();
       case BioScale.planets: return const PlanetCatchGame();
       case BioScale.solarSystems: return const SolarSortGame();
       case BioScale.galactic: return const GalaxyCollectorGame();
-      case BioScale.clusters: return const ClusterGravityGame();
       case BioScale.cosmicStructures: return const NeuronConnectGame();
       case BioScale.multiverseAll: return const RealityMergeGame();
       case BioScale.universeAll: return const EverythingGame();
-      case BioScale.allThings: return const EverythingGame();
       case BioScale.infinities: return const InfinityCounterGame();
       default: return BigBangGame();
     }

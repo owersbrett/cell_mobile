@@ -9,7 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/atom_orbital_animation.dart';
-import 'package:cell_mobile/views/screens/scale_overview_page/widgets/cluster_animation.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/organ_system_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/dragon_curve_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/farm_cycle_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/particles_animation.dart';
@@ -141,8 +141,6 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     BioScale.farmSystem: Color(0xFF8D6E63),
     BioScale.supplyChain: Color(0xFF78909C),
     BioScale.financial: Color(0xFFE19816),
-    BioScale.global: Color(0xFFE16416),
-    BioScale.allThings: Color(0xFFB0BEC5),
   };
 
   static const _scaleIcons = <BioScale, IconData>{
@@ -157,8 +155,6 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     BioScale.farmSystem: Icons.agriculture,
     BioScale.supplyChain: Icons.local_shipping,
     BioScale.financial: Icons.trending_up,
-    BioScale.global: Icons.public,
-    BioScale.allThings: Icons.all_inclusive,
   };
 
   @override
@@ -468,11 +464,6 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
       return FinancialAnimation(color: color);
     }
 
-    // Global scale — 3D globe, rotated to focus on each entity's geography
-    if (entity.scale == BioScale.global) {
-      return GlobeAnimation(color: color, focusIndex: entity.position);
-    }
-
     // Other scales — use the scale-level animations
     switch (entity.scale) {
       case BioScale.nothings:
@@ -491,6 +482,8 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
         return TissueAnimation(color: color);
       case BioScale.organ:
         return OrganAnimation(color: color);
+      case BioScale.organSystem:
+        return OrganSystemAnimation(color: color);
       case BioScale.organism:
         return OrganismAnimation(color: color);
       case BioScale.ecosystem:
@@ -503,12 +496,8 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
         return SolarSystemAnimation(color: color);
       case BioScale.galactic:
         return GalaxyAnimation(color: color);
-      case BioScale.clusters:
-        return ClusterAnimation(color: color);
       case BioScale.cosmicStructures:
         return DragonCurveAnimation(color: color);
-      case BioScale.allThings:
-        return CosmicWebAnimation(color: color);
       case BioScale.multiverseAll:
         return MultiverseMeshAnimation(color: color);
       case BioScale.universeAll:
