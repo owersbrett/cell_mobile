@@ -13,6 +13,7 @@ import 'games/mitosis_rush_game.dart';
 import 'games/potato_rush_game.dart';
 import 'games/farm_panic_game.dart';
 import 'games/tissue_layer_game.dart';
+import 'games/organ_system_game.dart';
 import 'mini_games_batch2.dart';
 import 'mini_games_batch3.dart';
 
@@ -105,7 +106,7 @@ class MiniGamePage extends StatelessWidget {
       case BioScale.cell: return const MitosisRushGame();
       case BioScale.tissue: return const TissueLayerGame();
       case BioScale.organ: return const OrganGrowGame();
-      case BioScale.organSystem: return const OrganGrowGame(); // TODO: dedicated game
+      case BioScale.organSystem: return const OrganSystemGame();
       case BioScale.organism: return const OrganismHarvestGame();
       case BioScale.ecosystem: return const PotatoRushGame();
       case BioScale.farmSystem: return const FarmPanicGame();
