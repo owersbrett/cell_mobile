@@ -1,0 +1,966 @@
+import 'dart:math' as math;
+
+import 'package:cell_mobile/games/mini_game.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+
+const _kFont = 'Avenir';
+const _kAccent = Color(0xFF00BCD4);
+
+/// Vertical space reserved at the top of the play field for the target panel.
+const double _kPanelReserve = 112;
+
+/// Visual radius of a floating atom.
+const double _kAtomR = 21;
+
+/// Effective tap radius (generous, one-thumb friendly).
+const double _kHitR = 34;
+
+// ---------------------------------------------------------------------------
+// Element + molecule data
+// ---------------------------------------------------------------------------
+
+class _ElementDef {
+  final String symbol;
+  final Color color;
+  final Color textColor;
+  final bool outlined;
+  const _ElementDef(this.symbol, this.color, this.textColor,
+      {this.outlined = false});
+}
+
+const List<_ElementDef> _elements = [
+  _ElementDef('H', Color(0xFFF5F5F5), Color(0xFF111111)), // 0
+  _ElementDef('O', Color(0xFFEF5350), Colors.white), // 1
+  _ElementDef('C', Color(0xFF37474F), Colors.white, outlined: true), // 2
+  _ElementDef('N', Color(0xFF42A5F5), Colors.white), // 3
+  _ElementDef('Cl', Color(0xFF66BB6A), Colors.white), // 4
+];
+
+const int _eH = 0, _eO = 1, _eC = 2, _eN = 3, _eCl = 4;
+
+class _SlotDef {
+  final int element;
+  final Offset offset; // in molecule units, scaled at paint time
+  const _SlotDef(this.element, this.offset);
+}
+
+class _MoleculeDef {
+  final String formula;
+  final String name;
+  final List<_SlotDef> slots;
+  final List<List<int>> bonds; // index pairs into slots
+  final bool advanced; // 4-5 atom molecules, favored late game
+  const _MoleculeDef(this.formula, this.name, this.slots, this.bonds,
+      {this.advanced = false});
+}
+
+const List<_MoleculeDef> _molecules = [
+  _MoleculeDef('H₂O', 'Water', [
+    _SlotDef(_eO, Offset(0, -0.18)),
+    _SlotDef(_eH, Offset(-0.92, 0.52)),
+    _SlotDef(_eH, Offset(0.92, 0.52)),
+  ], [
+    [0, 1],
+    [0, 2],
+  ]),
+  _MoleculeDef('O₂', 'Oxygen', [
+    _SlotDef(_eO, Offset(-0.62, 0)),
+    _SlotDef(_eO, Offset(0.62, 0)),
+  ], [
+    [0, 1],
+  ]),
+  _MoleculeDef('CO₂', 'Carbon dioxide', [
+    _SlotDef(_eC, Offset(0, 0)),
+    _SlotDef(_eO, Offset(-1.18, 0)),
+    _SlotDef(_eO, Offset(1.18, 0)),
+  ], [
+    [0, 1],
+    [0, 2],
+  ]),
+  _MoleculeDef(
+      'CH₄',
+      'Methane',
+      [
+        _SlotDef(_eC, Offset(0, 0)),
+        _SlotDef(_eH, Offset(0, -1.05)),
+        _SlotDef(_eH, Offset(1.05, 0)),
+        _SlotDef(_eH, Offset(0, 1.05)),
+        _SlotDef(_eH, Offset(-1.05, 0)),
+      ],
+      [
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+      ],
+      advanced: true),
+  _MoleculeDef(
+      'NH₃',
+      'Ammonia',
+      [
+        _SlotDef(_eN, Offset(0, -0.22)),
+        _SlotDef(_eH, Offset(-0.95, 0.52)),
+        _SlotDef(_eH, Offset(0.95, 0.52)),
+        _SlotDef(_eH, Offset(0, -1.22)),
+      ],
+      [
+        [0, 1],
+        [0, 2],
+        [0, 3],
+      ],
+      advanced: true),
+  _MoleculeDef('N₂', 'Nitrogen', [
+    _SlotDef(_eN, Offset(-0.62, 0)),
+    _SlotDef(_eN, Offset(0.62, 0)),
+  ], [
+    [0, 1],
+  ]),
+  _MoleculeDef(
+      'H₂O₂',
+      'Hydrogen peroxide',
+      [
+        _SlotDef(_eO, Offset(-0.52, 0)),
+        _SlotDef(_eO, Offset(0.52, 0)),
+        _SlotDef(_eH, Offset(-1.22, -0.62)),
+        _SlotDef(_eH, Offset(1.22, 0.62)),
+      ],
+      [
+        [0, 1],
+        [0, 2],
+        [1, 3],
+      ],
+      advanced: true),
+  _MoleculeDef('HCl', 'Hydrochloric acid', [
+    _SlotDef(_eH, Offset(-0.68, 0)),
+    _SlotDef(_eCl, Offset(0.68, 0)),
+  ], [
+    [0, 1],
+  ]),
+];
+
+// ---------------------------------------------------------------------------
+// Runtime entities
+// ---------------------------------------------------------------------------
+
+class _Slot {
+  final _SlotDef def;
+  int state = 0; // 0 empty, 1 incoming (atom flying in), 2 filled
+  double fillTime = -1; // _clock when filled, drives bond draw-in
+  _Slot(this.def);
+}
+
+class _FieldAtom {
+  Offset pos;
+  Offset vel;
+  final int element;
+  double wobble; // phase for soft bobbing
+  double shake = 0; // wrong-tap red shake, decays to 0
+  _FieldAtom(this.pos, this.vel, this.element, this.wobble);
+}
+
+class _FlyingAtom {
+  final int element;
+  final Offset from;
+  final int slotIndex;
+  double t = 0; // 0..1
+  _FlyingAtom(this.element, this.from, this.slotIndex);
+}
+
+class _Particle {
+  Offset pos;
+  Offset vel;
+  double t = 0; // 0..1 life
+  final Color color;
+  final double size;
+  _Particle(this.pos, this.vel, this.color, this.size);
+}
+
+class _Popup {
+  final String text;
+  final Offset pos;
+  final Color color;
+  double t = 0; // 0..1 life
+  _Popup(this.text, this.pos, this.color);
+}
+
+// ---------------------------------------------------------------------------
+// Game widget
+// ---------------------------------------------------------------------------
+
+class MoleculeMixerGame extends StatefulWidget {
+  final MiniGameSession session;
+  const MoleculeMixerGame({Key? key, required this.session}) : super(key: key);
+
+  @override
+  State<MoleculeMixerGame> createState() => _MoleculeMixerGameState();
+}
+
+class _MoleculeMixerGameState extends State<MoleculeMixerGame>
+    with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  Duration _lastTick = Duration.zero;
+
+  final math.Random _rng = math.Random();
+
+  double _clock = 0; // always advances (shimmer, bond anims)
+  double _elapsed = 0; // advances only while running (difficulty ramp)
+
+  late _MoleculeDef _target;
+  late List<_Slot> _slots;
+  int _completedCount = 0;
+
+  final List<_FieldAtom> _atoms = [];
+  final List<_FlyingAtom> _flying = [];
+  final List<_Particle> _particles = [];
+  final List<_Popup> _popups = [];
+
+  /// Celebration timeline; -1 = inactive, otherwise seconds since completion.
+  double _celebT = -1;
+
+  Size? _fieldSize;
+  bool _seeded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _target = _molecules[_rng.nextInt(_molecules.length)];
+    _slots = _target.slots.map((d) => _Slot(d)).toList();
+    _ticker = createTicker(_onTick)..start();
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  void _onTick(Duration now) {
+    final dt =
+        ((now - _lastTick).inMicroseconds / 1e6).clamp(0.0, 0.05).toDouble();
+    _lastTick = now;
+    _clock += dt;
+    // Idle under the countdown overlay: render the scene but do not simulate.
+    if (widget.session.isRunning) {
+      _elapsed += dt;
+      _update(dt);
+    }
+    if (mounted) setState(() {});
+  }
+
+  // ------------------------------------------------------------------ sim --
+
+  double get _speedMul {
+    final dur = widget.session.spec.durationSeconds.toDouble();
+    return 1.0 + (_elapsed / dur).clamp(0.0, 1.0) * 0.7;
+  }
+
+  Rect get _bounds {
+    final s = _fieldSize ?? Size.zero;
+    return Rect.fromLTRB(12, _kPanelReserve + 8, s.width - 12, s.height - 12);
+  }
+
+  Offset get _buildCenter {
+    final s = _fieldSize ?? const Size(360, 640);
+    return Offset(
+        s.width * 0.5, _kPanelReserve + (s.height - _kPanelReserve) * 0.52);
+  }
+
+  double get _unit {
+    final s = _fieldSize ?? const Size(360, 640);
+    return (math.min(s.width, s.height - _kPanelReserve) * 0.115)
+        .clamp(26.0, 42.0);
+  }
+
+  Offset _slotWorld(_Slot slot) =>
+      _buildCenter + slot.def.offset * _unit * 1.6;
+
+  void _update(double dt) {
+    final b = _bounds;
+    if (b.isEmpty) return;
+
+    // Keep the gas alive: ~10-14 atoms at once.
+    while (_atoms.length < 12) {
+      _spawnAtom(fromEdge: true);
+    }
+
+    // Drift + soft bounce.
+    for (final a in _atoms) {
+      a.wobble += dt * 2.2;
+      final wob = Offset(
+          math.sin(a.wobble * 1.3 + a.vel.dx) * 6,
+          math.cos(a.wobble + a.vel.dy) * 6);
+      a.pos += (a.vel + wob) * dt * _speedMul;
+      if (a.pos.dx < b.left + _kAtomR && a.vel.dx < 0) {
+        a.vel = Offset(-a.vel.dx, a.vel.dy);
+      }
+      if (a.pos.dx > b.right - _kAtomR && a.vel.dx > 0) {
+        a.vel = Offset(-a.vel.dx, a.vel.dy);
+      }
+      if (a.pos.dy < b.top + _kAtomR && a.vel.dy < 0) {
+        a.vel = Offset(a.vel.dx, -a.vel.dy);
+      }
+      if (a.pos.dy > b.bottom - _kAtomR && a.vel.dy > 0) {
+        a.vel = Offset(a.vel.dx, -a.vel.dy);
+      }
+      if (a.shake > 0) a.shake = math.max(0, a.shake - dt * 2.6);
+    }
+
+    // Atoms flying into the construction zone.
+    for (final f in List<_FlyingAtom>.from(_flying)) {
+      f.t += dt / 0.38;
+      if (f.t >= 1) {
+        _flying.remove(f);
+        _arrive(f);
+      }
+    }
+
+    // Particles + popups.
+    for (final p in List<_Particle>.from(_particles)) {
+      p.t += dt / 0.6;
+      if (p.t >= 1) {
+        _particles.remove(p);
+      } else {
+        p.pos += p.vel * dt;
+        p.vel *= math.pow(0.04, dt).toDouble(); // drag
+      }
+    }
+    for (final p in List<_Popup>.from(_popups)) {
+      p.t += dt / 0.9;
+      if (p.t >= 1) _popups.remove(p);
+    }
+
+    // Celebration timeline.
+    if (_celebT >= 0) {
+      _celebT += dt;
+      if (_celebT >= 1.35) {
+        _celebT = -1;
+        _nextTarget();
+      }
+    }
+  }
+
+  void _arrive(_FlyingAtom f) {
+    final slot = _slots[f.slotIndex];
+    slot.state = 2;
+    slot.fillTime = _clock;
+    final at = _slotWorld(slot);
+    _burst(at, _elements[slot.def.element].color, count: 6, speed: 60);
+    _burst(at, _kAccent, count: 4, speed: 90);
+    if (_celebT < 0 && _slots.every((s) => s.state == 2)) {
+      widget.session.addScore(30);
+      _completedCount++;
+      _popups.add(_Popup('+30', _buildCenter.translate(0, -_unit * 2.2),
+          const Color(0xFFFFD54F)));
+      _burst(_buildCenter, _kAccent, count: 16, speed: 140);
+      _celebT = 0;
+    }
+  }
+
+  void _nextTarget() {
+    var pool = _molecules.where((m) => m != _target).toList();
+    // Difficulty ramp: later targets favor 4-5 atom molecules.
+    final advBias = _elapsed > 18 || _completedCount >= 3;
+    if (advBias && _rng.nextDouble() < 0.65) {
+      final adv = pool.where((m) => m.advanced).toList();
+      if (adv.isNotEmpty) pool = adv;
+    }
+    _target = pool[_rng.nextInt(pool.length)];
+    _slots = _target.slots.map((d) => _Slot(d)).toList();
+  }
+
+  List<int> get _neededElements => _slots
+      .where((s) => s.state == 0)
+      .map((s) => s.def.element)
+      .toSet()
+      .toList();
+
+  void _spawnAtom({bool fromEdge = false, bool anywhere = false}) {
+    final b = _bounds;
+    if (b.isEmpty) return;
+    // Bias ~60% toward atoms the current molecule still needs.
+    final needed = _neededElements;
+    int element;
+    if (needed.isNotEmpty && _rng.nextDouble() < 0.6) {
+      element = needed[_rng.nextInt(needed.length)];
+    } else {
+      element = _rng.nextInt(_elements.length);
+    }
+    Offset pos;
+    if (anywhere || !fromEdge) {
+      pos = Offset(b.left + _rng.nextDouble() * b.width,
+          b.top + _rng.nextDouble() * b.height);
+    } else {
+      // Enter from a random edge, drifting inward.
+      final side = _rng.nextInt(4);
+      switch (side) {
+        case 0:
+          pos = Offset(b.left + _kAtomR, b.top + _rng.nextDouble() * b.height);
+          break;
+        case 1:
+          pos = Offset(b.right - _kAtomR, b.top + _rng.nextDouble() * b.height);
+          break;
+        case 2:
+          pos = Offset(b.left + _rng.nextDouble() * b.width, b.top + _kAtomR);
+          break;
+        default:
+          pos =
+              Offset(b.left + _rng.nextDouble() * b.width, b.bottom - _kAtomR);
+      }
+    }
+    final ang = _rng.nextDouble() * math.pi * 2;
+    final speed = 22 + _rng.nextDouble() * 20;
+    _atoms.add(_FieldAtom(pos, Offset(math.cos(ang), math.sin(ang)) * speed,
+        element, _rng.nextDouble() * math.pi * 2));
+  }
+
+  void _seedField() {
+    if (_seeded || _bounds.isEmpty) return;
+    _seeded = true;
+    for (var i = 0; i < 12; i++) {
+      _spawnAtom(anywhere: true);
+    }
+  }
+
+  void _burst(Offset at, Color color, {int count = 8, double speed = 100}) {
+    for (var i = 0; i < count; i++) {
+      final ang = _rng.nextDouble() * math.pi * 2;
+      final v = Offset(math.cos(ang), math.sin(ang)) *
+          (speed * (0.5 + _rng.nextDouble()));
+      _particles.add(
+          _Particle(at, v, color, 2.0 + _rng.nextDouble() * 3.0));
+    }
+  }
+
+  // ----------------------------------------------------------------- input --
+
+  void _onTapDown(TapDownDetails d) {
+    if (!widget.session.isRunning || _celebT >= 0) return;
+    final p = d.localPosition;
+    _FieldAtom? best;
+    var bestDist = double.infinity;
+    for (final a in _atoms) {
+      final dist = (a.pos - p).distance;
+      if (dist <= _kHitR && dist < bestDist) {
+        best = a;
+        bestDist = dist;
+      }
+    }
+    if (best == null) return;
+
+    final slotIdx = _slots.indexWhere(
+        (s) => s.state == 0 && s.def.element == best!.element);
+    if (slotIdx >= 0) {
+      // Needed atom: claim slot, fly it in.
+      _slots[slotIdx].state = 1;
+      widget.session.addScore(5);
+      _popups.add(_Popup('+5', best.pos.translate(0, -_kAtomR - 6),
+          const Color(0xFF69F0AE)));
+      _burst(best.pos, _elements[best.element].color, count: 8, speed: 110);
+      _flying.add(_FlyingAtom(best.element, best.pos, slotIdx));
+      _atoms.remove(best);
+    } else {
+      // Unneeded atom: penalty + red shake.
+      widget.session.addScore(-10);
+      _popups.add(_Popup('-10', best.pos.translate(0, -_kAtomR - 6),
+          const Color(0xFFFF5252)));
+      best.shake = 1.0;
+    }
+  }
+
+  // ----------------------------------------------------------------- build --
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      _fieldSize = Size(constraints.maxWidth, constraints.maxHeight);
+      _seedField();
+      return ClipRect(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: _onTapDown,
+                child: CustomPaint(
+                  painter: _MixerPainter(this),
+                  size: Size.infinite,
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              left: 12,
+              right: 12,
+              child: IgnorePointer(child: _buildTargetPanel()),
+            ),
+            if (_celebT >= 0 && _celebT < 1.0) _buildBanner(),
+          ],
+        ),
+      );
+    });
+  }
+
+  Widget _buildTargetPanel() {
+    // Distinct elements in order of first appearance.
+    final order = <int>[];
+    for (final s in _target.slots) {
+      if (!order.contains(s.element)) order.add(s.element);
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _kAccent.withValues(alpha: 0.45)),
+        boxShadow: [
+          BoxShadow(
+              color: _kAccent.withValues(alpha: 0.18),
+              blurRadius: 16,
+              spreadRadius: 1),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                _target.formula,
+                style: TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  shadows: [
+                    Shadow(
+                        color: _kAccent.withValues(alpha: 0.9),
+                        blurRadius: 12),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  '— ${_target.name}',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: _kAccent.withValues(alpha: 0.95),
+                  ),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                'TARGET',
+                style: TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                  color: _kAccent.withValues(alpha: 0.7),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Row(
+            children: [
+              for (final e in order) ...[
+                _elementSlots(e),
+                const SizedBox(width: 16),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _elementSlots(int element) {
+    final def = _elements[element];
+    final slots =
+        _slots.where((s) => s.def.element == element).toList();
+    return Row(
+      children: [
+        Text(
+          def.symbol,
+          style: TextStyle(
+            fontFamily: _kFont,
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: def.outlined ? Colors.white : def.color,
+            shadows: [
+              Shadow(color: def.color.withValues(alpha: 0.8), blurRadius: 8),
+            ],
+          ),
+        ),
+        const SizedBox(width: 5),
+        for (final s in slots)
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Container(
+              width: 11,
+              height: 11,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: s.state > 0
+                    ? def.color
+                    : Colors.transparent,
+                border: Border.all(
+                    color: s.state > 0
+                        ? def.color
+                        : Colors.white.withValues(alpha: 0.45),
+                    width: 1.4),
+                boxShadow: s.state > 0
+                    ? [
+                        BoxShadow(
+                            color: def.color.withValues(alpha: 0.7),
+                            blurRadius: 6),
+                      ]
+                    : null,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildBanner() {
+    final t = _celebT;
+    final opacity = t < 0.15
+        ? t / 0.15
+        : t > 0.75
+            ? ((1 - (t - 0.75) / 0.25).clamp(0.0, 1.0))
+            : 1.0;
+    final scale = 0.85 + 0.15 * (t < 0.2 ? t / 0.2 : 1.0);
+    final center = _buildCenter;
+    return Positioned(
+      left: 0,
+      right: 0,
+      top: center.dy - _unit * 3.6 - 30,
+      child: IgnorePointer(
+        child: Opacity(
+          opacity: opacity.toDouble(),
+          child: Transform.scale(
+            scale: scale,
+            child: Center(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                decoration: BoxDecoration(
+                  color: _kAccent.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(14),
+                  border:
+                      Border.all(color: _kAccent.withValues(alpha: 0.8)),
+                  boxShadow: [
+                    BoxShadow(
+                        color: _kAccent.withValues(alpha: 0.4),
+                        blurRadius: 22),
+                  ],
+                ),
+                child: Text(
+                  '${_target.formula}  ${_target.name.toUpperCase()}!',
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.2,
+                    color: Colors.white,
+                    shadows: [
+                      Shadow(color: _kAccent, blurRadius: 14),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Painter
+// ---------------------------------------------------------------------------
+
+class _MixerPainter extends CustomPainter {
+  final _MoleculeMixerGameState g;
+  _MixerPainter(this.g);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    _paintShimmer(canvas, size);
+    _paintConstruction(canvas);
+    _paintFieldAtoms(canvas);
+    _paintFlying(canvas);
+    _paintParticles(canvas);
+    _paintPopups(canvas);
+  }
+
+  // Faint fluid background shimmer: slow drifting glow blobs.
+  void _paintShimmer(Canvas canvas, Size size) {
+    final t = g._clock;
+    for (var i = 0; i < 4; i++) {
+      final phase = i * 1.7;
+      final cx = size.width * (0.5 + 0.38 * math.sin(t * 0.13 + phase * 2.1));
+      final cy = size.height *
+          (0.5 + 0.36 * math.cos(t * 0.1 + phase * 1.3 + i));
+      final r = size.shortestSide * (0.34 + 0.1 * math.sin(t * 0.21 + phase));
+      final paint = Paint()
+        ..shader = RadialGradient(colors: [
+          _kAccent.withValues(alpha: 0.05 + 0.02 * math.sin(t * 0.5 + i)),
+          _kAccent.withValues(alpha: 0.0),
+        ]).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: r));
+      canvas.drawCircle(Offset(cx, cy), r, paint);
+    }
+  }
+
+  void _paintConstruction(Canvas canvas) {
+    final center = g._buildCenter;
+    final unit = g._unit;
+    final celebrating = g._celebT >= 0;
+
+    // Celebration transform: pulse, then float away and fade.
+    var alpha = 1.0;
+    var scale = 1.0;
+    var lift = 0.0;
+    if (celebrating) {
+      final t = g._celebT;
+      if (t <= 0.45) {
+        scale = 1.0 + 0.25 * math.sin(math.pi * t / 0.45);
+      } else {
+        final u = ((t - 0.45) / 0.9).clamp(0.0, 1.0);
+        final ease = Curves.easeIn.transform(u);
+        alpha = 1.0 - ease;
+        lift = -150.0 * ease;
+        scale = 1.0 + 0.08 * u;
+      }
+    }
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy + lift);
+    canvas.scale(scale);
+    canvas.translate(-center.dx, -center.dy);
+
+    // Construction zone halo.
+    final zoneR = unit * 2.6;
+    canvas.drawCircle(
+      center,
+      zoneR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = _kAccent.withValues(alpha: 0.12 * alpha),
+    );
+    canvas.drawCircle(
+      center,
+      zoneR,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          _kAccent.withValues(alpha: 0.0),
+          _kAccent.withValues(alpha: 0.05 * alpha),
+        ]).createShader(Rect.fromCircle(center: center, radius: zoneR)),
+    );
+
+    // Bonds (under atoms) — glow lines drawing in once both ends are filled.
+    for (final bond in g._target.bonds) {
+      final a = g._slots[bond[0]];
+      final b = g._slots[bond[1]];
+      if (a.state != 2 || b.state != 2) continue;
+      final start = g._slotWorld(a);
+      final end = g._slotWorld(b);
+      final since = g._clock - math.max(a.fillTime, b.fillTime);
+      final p = (since / 0.35).clamp(0.0, 1.0);
+      final tip = Offset.lerp(start, end, Curves.easeOut.transform(p))!;
+      // Wide soft glow.
+      canvas.drawLine(
+        start,
+        tip,
+        Paint()
+          ..color = _kAccent.withValues(alpha: 0.4 * alpha)
+          ..strokeWidth = 9
+          ..strokeCap = StrokeCap.round
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+      );
+      // Bright core, pulsing faintly once complete.
+      final pulse = p >= 1 ? 0.75 + 0.25 * math.sin(g._clock * 6) : 1.0;
+      canvas.drawLine(
+        start,
+        tip,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.85 * pulse * alpha)
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    // Slots: ghost outlines for empty/incoming, full atoms for filled.
+    for (final slot in g._slots) {
+      final at = g._slotWorld(slot);
+      final def = _elements[slot.def.element];
+      if (slot.state == 2) {
+        final since = g._clock - slot.fillTime;
+        final pop = since < 0.25
+            ? 1.0 + 0.3 * math.sin(math.pi * since / 0.25)
+            : 1.0;
+        _drawAtom(canvas, at, slot.def.element, _kAtomR * pop,
+            alpha: alpha, glow: 1.0);
+      } else {
+        // Ghost slot: faint dashed-feel ring + dim symbol.
+        canvas.drawCircle(
+          at,
+          _kAtomR * 0.85,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.4
+            ..color = def.color.withValues(alpha: 0.35 * alpha),
+        );
+        canvas.drawCircle(
+          at,
+          _kAtomR * 0.85,
+          Paint()
+            ..color = def.color.withValues(alpha: 0.07 * alpha),
+        );
+        _drawText(canvas, def.symbol, at, 14,
+            Colors.white.withValues(alpha: 0.4 * alpha));
+      }
+    }
+
+    canvas.restore();
+  }
+
+  void _paintFieldAtoms(Canvas canvas) {
+    for (final a in g._atoms) {
+      var at = a.pos;
+      if (a.shake > 0) {
+        at = at.translate(math.sin(a.shake * 32) * 4.5 * a.shake, 0);
+      }
+      _drawAtom(canvas, at, a.element, _kAtomR, glow: 0.6);
+      if (a.shake > 0) {
+        canvas.drawCircle(
+          at,
+          _kAtomR + 5,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 3
+            ..color =
+                const Color(0xFFFF5252).withValues(alpha: 0.8 * a.shake)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+        );
+      }
+    }
+  }
+
+  void _paintFlying(Canvas canvas) {
+    for (final f in g._flying) {
+      final slot = g._slots[f.slotIndex];
+      final to = g._slotWorld(slot);
+      final t = Curves.easeInOut.transform(f.t.clamp(0.0, 1.0));
+      final base = Offset.lerp(f.from, to, t)!;
+      // Slight arc for life.
+      final arc = Offset(0, -28 * math.sin(math.pi * t));
+      final at = base + arc;
+      // Comet trail.
+      canvas.drawCircle(
+        at,
+        _kAtomR + 6,
+        Paint()
+          ..color = _kAccent.withValues(alpha: 0.25 * (1 - t) + 0.1)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      );
+      _drawAtom(canvas, at, f.element, _kAtomR * (1.0 - 0.15 * t), glow: 1.0);
+    }
+  }
+
+  void _paintParticles(Canvas canvas) {
+    for (final p in g._particles) {
+      final a = (1 - p.t).clamp(0.0, 1.0);
+      canvas.drawCircle(
+        p.pos,
+        p.size * (1 - p.t * 0.5),
+        Paint()..color = p.color.withValues(alpha: 0.85 * a),
+      );
+    }
+  }
+
+  void _paintPopups(Canvas canvas) {
+    for (final p in g._popups) {
+      final a = (1 - p.t).clamp(0.0, 1.0);
+      final at = p.pos.translate(0, -42 * Curves.easeOut.transform(p.t));
+      _drawText(canvas, p.text, at, 19, p.color.withValues(alpha: a),
+          shadows: [
+            Shadow(color: p.color.withValues(alpha: 0.8 * a), blurRadius: 10),
+          ]);
+    }
+  }
+
+  void _drawAtom(Canvas canvas, Offset at, int element, double r,
+      {double alpha = 1.0, double glow = 0.8}) {
+    final def = _elements[element];
+    // Glow halo.
+    canvas.drawCircle(
+      at,
+      r + 4,
+      Paint()
+        ..color = def.color.withValues(alpha: 0.35 * glow * alpha)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+    );
+    // Body with subtle 3D shading.
+    canvas.drawCircle(
+      at,
+      r,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-0.35, -0.4),
+          colors: [
+            Color.lerp(def.color, Colors.white, 0.35)!
+                .withValues(alpha: alpha),
+            def.color.withValues(alpha: alpha),
+            Color.lerp(def.color, Colors.black, 0.3)!
+                .withValues(alpha: alpha),
+          ],
+          stops: const [0.0, 0.55, 1.0],
+        ).createShader(Rect.fromCircle(center: at, radius: r)),
+    );
+    if (def.outlined) {
+      canvas.drawCircle(
+        at,
+        r,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.8
+          ..color = Colors.white.withValues(alpha: 0.85 * alpha),
+      );
+    }
+    _drawText(canvas, def.symbol, at, r * 0.78,
+        def.textColor.withValues(alpha: alpha));
+  }
+
+  void _drawText(Canvas canvas, String text, Offset center, double size,
+      Color color,
+      {List<Shadow>? shadows}) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          fontFamily: _kFont,
+          fontSize: size,
+          fontWeight: FontWeight.bold,
+          color: color,
+          shadows: shadows,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+  }
+
+  @override
+  bool shouldRepaint(_MixerPainter oldDelegate) => true;
+}

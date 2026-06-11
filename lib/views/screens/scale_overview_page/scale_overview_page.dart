@@ -235,28 +235,73 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Header
+              // Header: title + party-mode PLAY button
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
                   children: [
-                    Text(
-                      '',
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Text(
+                            'EXPLORE THE CELL',
+                            style: TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 2,
+                              color: Colors.white,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'From nothing to everything',
+                            style: TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 12,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '',
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 14,
-                        color: Colors.white54,
+                    GestureDetector(
+                      onTap: () => context
+                          .read<NavigationBloc>()
+                          .add(NavigateToScreen(AppScreen.party)),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFAADD44),
+                          borderRadius: BorderRadius.circular(14),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFFAADD44)
+                                  .withValues(alpha: 0.45),
+                              blurRadius: 14,
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: const [
+                            Icon(Icons.sports_esports,
+                                color: Colors.black, size: 18),
+                            SizedBox(width: 6),
+                            Text(
+                              'PLAY',
+                              style: TextStyle(
+                                fontFamily: 'Avenir',
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 2,
+                                color: Colors.black,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
@@ -307,13 +352,11 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                               context
                                   .read<ScaleExplorerBloc>()
                                   .add(SelectScale(info.scale));
-                              if (info.scale == BioScale.organelle) {
-                                context.read<NavigationBloc>().add(
-                                    NavigateToScreen(AppScreen.cellGame));
-                              } else {
-                                context.read<NavigationBloc>().add(
-                                    NavigateToScreen(AppScreen.miniGame));
-                              }
+                              // All scales explore through the mini-game
+                              // route; party-ready scales get the new
+                              // hosted games there.
+                              context.read<NavigationBloc>().add(
+                                  NavigateToScreen(AppScreen.miniGame));
                             },
                             onTap: () {
                               if (isSelected) {

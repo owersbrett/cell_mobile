@@ -126,7 +126,8 @@ class ScaleCard extends StatelessWidget {
                               ),
                             ),
                           ),
-                        // Play button (all scales)
+                        // Explore button (all scales) — solo play of this
+                        // scale's game, outside the party board loop
                         if (onPlayTap != null)
                           GestureDetector(
                             onTap: onPlayTap,
@@ -140,9 +141,9 @@ class ScaleCard extends StatelessWidget {
                               child: const Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.play_arrow, color: Color(0xFFAADD44), size: 12),
+                                  Icon(Icons.explore, color: Color(0xFFAADD44), size: 12),
                                   SizedBox(width: 3),
-                                  Text('Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Color(0xFFAADD44), fontWeight: FontWeight.w600)),
+                                  Text('Explore', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Color(0xFFAADD44), fontWeight: FontWeight.w600)),
                                 ],
                               ),
                             ),

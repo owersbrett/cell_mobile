@@ -6,6 +6,7 @@ enum AppScreen {
   cellInteractive,
   cellGame,
   miniGame,
+  party,
 }
 
 abstract class NavigationEvent {}

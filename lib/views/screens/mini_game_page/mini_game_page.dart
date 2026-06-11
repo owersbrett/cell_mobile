@@ -2,6 +2,8 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
+import 'package:cell_mobile/games/mini_game_host.dart';
+import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -24,6 +26,17 @@ class MiniGamePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Party-ready scales play their reworked game through the shared host
+    // (intro + rules + timer + score), same build as in party mode.
+    final spec = MiniGameRegistry.forScale(scale);
+    if (spec != null) {
+      return MiniGameHost(
+        spec: spec,
+        onExit: () => context
+            .read<NavigationBloc>()
+            .add(NavigateToScreen(AppScreen.scaleOverview)),
+      );
+    }
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
