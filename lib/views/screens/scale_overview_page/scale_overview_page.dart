@@ -269,16 +269,16 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                     GestureDetector(
                       onTap: () => context
                           .read<NavigationBloc>()
-                          .add(NavigateToScreen(AppScreen.party)),
+                          .add(NavigateToScreen(AppScreen.splash)),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 10),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFAADD44),
+                          color: const Color(0xFFE1C916),
                           borderRadius: BorderRadius.circular(14),
                           boxShadow: [
                             BoxShadow(
-                              color: const Color(0xFFAADD44)
+                              color: const Color(0xFFE1C916)
                                   .withValues(alpha: 0.45),
                               blurRadius: 14,
                             ),
@@ -287,11 +287,11 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: const [
-                            Icon(Icons.sports_esports,
+                            Icon(Icons.home_rounded,
                                 color: Colors.black, size: 18),
                             SizedBox(width: 6),
                             Text(
-                              'PLAY',
+                              'HOME',
                               style: TextStyle(
                                 fontFamily: 'Avenir',
                                 fontSize: 15,

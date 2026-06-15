@@ -1,11 +1,12 @@
 enum AppScreen {
-  splash,
+  splash, // home: LEARN / PLAY doors live here
   scaleOverview,
   scaleExplorer,
   entityDetail,
   cellInteractive,
   cellGame,
   miniGame,
+  play, // host / join room lobby
   party,
 }
 

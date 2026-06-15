@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import 'arcade/atom_builder.dart';
 import 'arcade/big_bang_arcade.dart';
 import 'arcade/collider.dart';
+import 'arcade/corners.dart';
 import 'arcade/hungry_cell.dart';
 import 'arcade/molecule_mixer.dart';
-import 'arcade/something_or_nothing.dart';
 import 'mini_game.dart';
 
 /// Canonical list of party-ready mini-games.
@@ -39,23 +39,23 @@ class MiniGameRegistry {
       builder: (context, session) => BigBangArcade(session: session),
     ),
     MiniGameSpec(
-      id: 'something_or_nothing',
-      name: 'Something or Nothing',
+      id: 'corners',
+      name: 'Corners',
       scale: BioScale.somethings,
-      tagline: 'Only the real things count',
+      tagline: 'Count the corners, tap them true',
       rules: [
-        'Shapes drift across the void. Solid glowing shapes are SOMETHING — tap them: +10.',
-        'Hollow ghost shapes are NOTHING — tapping one costs −10.',
-        'Everything drifts faster as time runs down.',
+        'Outlined shapes appear — tap each one exactly as many times as it has corners.',
+        'Your first tap claims a shape so it lasts longer; reach its corner count, then STOP.',
+        'Closer counts score more — nail it exactly for a bonus.',
+        'Later, rotating solids drift in: count the vertices as they spin.',
       ],
-      howToWin: 'Highest score when time runs out wins.',
-      durationSeconds: 30,
+      howToWin: 'Most points when time runs out wins.',
+      durationSeconds: 45,
       scoreUnit: 'points',
       enabled: true,
       accent: const Color(0xFF7E57C2),
-      icon: Icons.auto_awesome,
-      builder: (context, session) =>
-          SomethingOrNothingGame(session: session),
+      icon: Icons.category,
+      builder: (context, session) => CornersGame(session: session),
     ),
     MiniGameSpec(
       id: 'collider',

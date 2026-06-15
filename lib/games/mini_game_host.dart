@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../theme/potatuhs.dart';
 import 'mini_game.dart';
 
 /// Runs one mini-game from intro to results.
@@ -194,7 +195,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
   }
 }
 
-const _kFont = 'Avenir';
+const _kFont = Potatuhs.bodyFont; // Outfit
 
 class _IntroView extends StatelessWidget {
   final MiniGameSpec spec;
@@ -283,11 +284,10 @@ class _IntroView extends StatelessWidget {
               spec.name.toUpperCase(),
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontFamily: _kFont,
-                fontSize: 32,
-                fontWeight: FontWeight.bold,
+                fontFamily: Potatuhs.displayFont,
+                fontSize: 30,
                 color: Colors.white,
-                letterSpacing: 2,
+                letterSpacing: 1,
                 shadows: [Shadow(color: accent, blurRadius: 18)],
               ),
             ),

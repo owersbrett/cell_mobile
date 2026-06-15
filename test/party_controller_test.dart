@@ -87,7 +87,14 @@ void playLegalGame(PartyController c, Random choices) {
   while (c.phase != PartyPhase.gameOver && guard++ < 100000) {
     switch (c.phase) {
       case PartyPhase.turnStart:
-        c.roll();
+        // Sometimes spend a held item before rolling — exercises useItem in
+        // the input log so replay has to reproduce it.
+        final cur = c.currentPlayer;
+        if (cur.items.isNotEmpty && choices.nextBool()) {
+          c.useItem(cur.items.first);
+        } else {
+          c.roll();
+        }
         break;
       case PartyPhase.moving:
         c.advanceStep();
@@ -171,15 +178,16 @@ void main() {
   });
 
   group('board', () {
-    test('main loop is 36 spaces in 6 sections, each row has a power-up & event',
+    test('main loop is 52 spaces across 6 sections, each with a power-up & event',
         () {
       final board = buildBoard();
       final main = board.where((s) => !s.isShortcut).toList();
       expect(main.length, kMainLoopLength);
+      expect(kSectionSizes.reduce((a, b) => a + b), kMainLoopLength);
       for (var section = 0; section < 6; section++) {
         final spaces =
             main.where((s) => s.sectionIndex == section).toList();
-        expect(spaces.length, 6);
+        expect(spaces.length, kSectionSizes[section]);
         expect(spaces.where((s) => s.type == SpaceType.powerUp).length, 1);
         expect(spaces.where((s) => s.type == SpaceType.event).length, 1);
       }
@@ -215,7 +223,7 @@ void main() {
     test('departing a fork pauses for a choice, then continues', () {
       final c = makeController(random: _FixedRandom(1)); // rolls 2
       final p = c.currentPlayer;
-      p.position = 4; // a fork space
+      p.position = kBoardBranches.first.forkIndex; // a fork space
       c.roll();
       expect(c.stepsRemaining, 2);
       c.advanceStep(); // leaving the fork
@@ -223,7 +231,10 @@ void main() {
       expect(c.branchOptions.length, 2);
       c.choosePath(c.branchOptions.last); // take the shortcut
       walkOut(c, takeShortcut: true);
-      expect(c.board[p.position].isShortcut || p.position == 15, isTrue);
+      expect(
+          c.board[p.position].isShortcut ||
+              p.position == kBoardBranches.first.mergeIndex,
+          isTrue);
     });
   });
 

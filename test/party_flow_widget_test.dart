@@ -18,7 +18,9 @@ void main() {
     expect(find.text('START GAME'), findsOneWidget);
 
     await tester.tap(find.text('START GAME'));
-    await tester.pumpAndSettle();
+    // Fixed pump (not pumpAndSettle): the board's buttons animate forever by
+    // design (the living-cell interior), so settle would never complete.
+    await tester.pump(const Duration(milliseconds: 400));
 
     // Board screen: round header and the first player's roll panel.
     expect(find.text('ROUND 1 / 5'), findsOneWidget);

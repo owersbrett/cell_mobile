@@ -5,6 +5,7 @@ import 'package:cell_mobile/views/general_view_delegate.dart';
 import 'package:cell_mobile/views/screens/entity_detail_page/entity_detail_page.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/party/screens/party_page.dart';
+import 'package:cell_mobile/party/screens/play_lobby_page.dart';
 import 'package:cell_mobile/views/screens/game_page/game_page.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/mini_game_page.dart';
 import 'package:cell_mobile/views/screens/scale_explorer_page/scale_explorer_page.dart';
@@ -37,11 +38,13 @@ class AppViewDelegate extends StatelessWidget {
           case AppScreen.miniGame:
             final scale = context.read<ScaleExplorerBloc>().state.currentScale;
             return MiniGamePage(scale: scale);
+          case AppScreen.play:
+            return const PlayLobbyPage();
           case AppScreen.party:
             return PartyFlowPage(
               onExit: () => context
                   .read<NavigationBloc>()
-                  .add(NavigateToScreen(AppScreen.scaleOverview)),
+                  .add(NavigateToScreen(AppScreen.splash)),
             );
         }
       },

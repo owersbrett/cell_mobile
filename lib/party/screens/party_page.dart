@@ -1,18 +1,21 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../theme/potatuhs.dart';
 import '../party_controller.dart';
 import '../party_models.dart';
 import '../party_session_store.dart';
 import 'party_setup_page.dart';
 
-const _kFont = 'Avenir';
-const _kAccent = Color(0xFFAADD44);
+const _kFont = Potatuhs.bodyFont; // Outfit — body/UI
+const _kDisplay = Potatuhs.displayFont; // Bowlby One SC — hero titles
+const _kAccent = Potatuhs.gold; // brand gold accent (was off-brand green)
 
 /// Full party flow: setup → board rounds → mini-game rounds → podium.
 /// Owns the controller; [onExit] returns to the home screen.
@@ -33,6 +36,10 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   /// Number of recorded inputs already persisted; lets [_persist] skip the
   /// many non-input notifications fired while a token walks.
   int _savedInputCount = -1;
+
+  /// Backs the temporary "SKIP" button used to race through the games while
+  /// testing the board flow.
+  final Random _debugRng = Random();
 
   @override
   void initState() {
@@ -104,18 +111,32 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
     final quit = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A2E),
-        title: const Text('Quit game?',
-            style: TextStyle(fontFamily: _kFont, color: Colors.white)),
-        content: const Text('Progress will be lost.',
-            style: TextStyle(fontFamily: _kFont, color: Colors.white70)),
+        backgroundColor: Potatuhs.inkPanel,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(
+              color: Potatuhs.gold.withValues(alpha: 0.5), width: 1.5),
+        ),
+        title: Text('QUIT GAME?',
+            style: Potatuhs.display(size: 22)),
+        content: Text('Progress will be lost.',
+            style: Potatuhs.body(size: 15, color: Potatuhs.textSecondary)),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Keep playing')),
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('KEEP PLAYING',
+                style: Potatuhs.body(
+                    size: 14, weight: FontWeight.w700, color: Potatuhs.gold)),
+          ),
           TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Quit')),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('QUIT',
+                style: Potatuhs.body(
+                    size: 14,
+                    weight: FontWeight.w700,
+                    color: Potatuhs.textFaint)),
+          ),
         ],
       ),
     );
@@ -155,7 +176,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
             final teamTag = controller.mode.isTeams
                 ? ' — ${kTeamNames[player.teamIndex]}'
                 : '';
-            return MiniGameHost(
+            final host = MiniGameHost(
               // New host per attempt so state never leaks between players.
               key: ValueKey(
                   'mg_${controller.round}_${player.index}_${spec.id}'),
@@ -163,6 +184,21 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
               playerLabel: '${player.name}$teamTag',
               onComplete: controller.recordMiniScore,
               onExit: () => controller.recordMiniScore(0),
+            );
+            return Stack(
+              children: [
+                host,
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 8, right: 12),
+                      child: _buildSkipButton(controller),
+                    ),
+                  ),
+                ),
+              ],
             );
           case PartyPhase.minigameResults:
             return _MiniRoundResultsScreen(controller: controller);
@@ -174,6 +210,48 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
             );
         }
       },
+    );
+  }
+
+  /// Score that lands the current player strictly below everyone who has
+  /// already played this round (a random value in `[0, lowest)`), so skipping
+  /// every game still yields a clean reverse-order ranking while testing the
+  /// board flow. The first player gets a mid score to leave room beneath.
+  int _skipScore(PartyController controller) {
+    final scores = controller.standings.map((s) => s.score).toList();
+    if (scores.isEmpty) return 60 + _debugRng.nextInt(60);
+    final lowest = scores.reduce(min);
+    return lowest <= 0 ? 0 : _debugRng.nextInt(lowest);
+  }
+
+  /// Temporary "skip this game" affordance — forfeits the round to last place.
+  Widget _buildSkipButton(PartyController controller) {
+    return GestureDetector(
+      onTap: () => controller.recordMiniScore(_skipScore(controller)),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'SKIP',
+              style: TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                  color: Colors.white70),
+            ),
+            SizedBox(width: 6),
+            Icon(Icons.skip_next, color: Colors.white70, size: 18),
+          ],
+        ),
+      ),
     );
   }
 
@@ -390,37 +468,43 @@ class _BoardScreenState extends State<_BoardScreen> {
 
   Widget _scoreboard() {
     final teams = controller.mode.isTeams;
+    final ranked = controller.finalPlayerRanking;
+    final teamRank = controller.finalTeamRanking;
     return SizedBox(
-      height: 40,
+      height: 46,
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 10),
         children: [
           if (teams)
-            for (final t in controller.finalTeamRanking)
+            for (var i = 0; i < teamRank.length; i++)
               _chip(
-                color: kTeamColors[t.teamIndex],
-                name: kTeamNames[t.teamIndex],
-                potatoes: t.potatoes,
-                paydirt: t.paydirt,
+                rank: i,
+                color: kTeamColors[teamRank[i].teamIndex],
+                name: kTeamNames[teamRank[i].teamIndex],
+                potatoes: teamRank[i].potatoes,
+                paydirt: teamRank[i].paydirt,
                 bold: true,
               ),
-          for (final p in controller.players)
+          for (var i = 0; i < ranked.length; i++)
             _chip(
-              color: p.color,
-              name: p.name,
-              potatoes: p.potatoes,
-              paydirt: p.paydirt,
-              highlight: p.index == controller.currentPlayer.index &&
+              rank: i,
+              color: ranked[i].color,
+              name: ranked[i].name,
+              potatoes: ranked[i].potatoes,
+              paydirt: ranked[i].paydirt,
+              highlight: ranked[i].index == controller.currentPlayer.index &&
                   controller.phase != PartyPhase.spaceResolved,
-              icons: p.armedPowerUps.map((pu) => pu.icon).toList(),
+              icons: ranked[i].armedPowerUps.map((pu) => pu.icon).toList(),
             ),
         ],
       ),
     );
   }
 
+  /// One ranked entry on the leaderboard strip. Rank 0 is crowned in gold.
   Widget _chip({
+    required int rank,
     required Color color,
     required String name,
     required int potatoes,
@@ -429,18 +513,42 @@ class _BoardScreenState extends State<_BoardScreen> {
     bool bold = false,
     List<IconData> icons = const [],
   }) {
+    final isLeader = rank == 0;
     return Container(
       margin: const EdgeInsets.only(right: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.fromLTRB(6, 0, 10, 0),
       decoration: BoxDecoration(
         color: color.withValues(alpha: highlight ? 0.30 : 0.12),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-            color: highlight ? color : color.withValues(alpha: 0.4),
-            width: highlight ? 1.5 : 1),
+            color: isLeader
+                ? Potatuhs.gold
+                : (highlight ? color : color.withValues(alpha: 0.4)),
+            width: isLeader || highlight ? 1.5 : 1),
+        boxShadow:
+            isLeader ? Potatuhs.glow(Potatuhs.gold, strength: 0.25, blur: 8) : null,
       ),
       child: Row(
         children: [
+          // Rank badge — crown for the leader, number otherwise.
+          Container(
+            width: 19,
+            height: 19,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isLeader ? Potatuhs.gold : Colors.white12,
+            ),
+            child: isLeader
+                ? const Icon(Icons.emoji_events, size: 11, color: Colors.black)
+                : Text('${rank + 1}',
+                    style: const TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white70)),
+          ),
+          const SizedBox(width: 7),
           Container(
             width: 8,
             height: 8,
@@ -452,7 +560,7 @@ class _BoardScreenState extends State<_BoardScreen> {
             style: TextStyle(
                 fontFamily: _kFont,
                 fontSize: 12,
-                fontWeight: bold || highlight
+                fontWeight: bold || highlight || isLeader
                     ? FontWeight.bold
                     : FontWeight.w600,
                 color: Colors.white),
@@ -490,51 +598,56 @@ class _BoardScreenState extends State<_BoardScreen> {
           Text(
             "${p.name.toUpperCase()}'S TURN",
             style: TextStyle(
-                fontFamily: _kFont,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 2,
+                fontFamily: _kDisplay,
+                fontSize: 18,
+                letterSpacing: 1,
                 color: p.color),
           ),
-          if (p.armedPowerUps.isNotEmpty)
+          if (p.items.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                p.armedPowerUps.map((pu) => pu.label).join(' · '),
-                style: const TextStyle(
-                    fontFamily: _kFont, fontSize: 11, color: Colors.white54),
-              ),
-            ),
-          const SizedBox(height: 10),
-          GestureDetector(
-            onTap: () => controller.roll(),
-            child: Container(
-              height: 54,
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: p.color,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                      color: p.color.withValues(alpha: 0.45), blurRadius: 16)
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.casino, color: Colors.black, size: 24),
-                  SizedBox(width: 8),
-                  Text(
-                    'ROLL',
-                    style: TextStyle(
-                        fontFamily: _kFont,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black,
-                        letterSpacing: 3),
+              padding: const EdgeInsets.only(top: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('TAP AN ITEM TO USE',
+                      style: Potatuhs.label(
+                          size: 9.5, color: Potatuhs.textFaint)),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      for (final item in p.items)
+                        _itemChip(item, () => controller.useItem(item)),
+                    ],
                   ),
                 ],
               ),
+            ),
+          if (p.armedPowerUps.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'ARMED · ${p.armedPowerUps.map((pu) => pu.label).join(' · ')}',
+                style: const TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 10.5,
+                    letterSpacing: 1,
+                    color: Colors.white38),
+              ),
+            ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: PotatuhsButton(
+              label: 'ROLL',
+              display: true,
+              icon: Icons.casino,
+              fill: p.color,
+              glowColor: p.color,
+              textColor: Colors.black,
+              onTap: () => controller.roll(),
             ),
           ),
         ],
@@ -643,6 +756,37 @@ class _BoardScreenState extends State<_BoardScreen> {
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 200),
         child: child,
+      ),
+    );
+  }
+
+  /// A held power-up shown on your turn; tap to spend it.
+  Widget _itemChip(PowerUp item, VoidCallback onUse) {
+    return GestureDetector(
+      onTap: onUse,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: Potatuhs.inkPanel,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+              color: Potatuhs.gold.withValues(alpha: 0.65), width: 1.5),
+          boxShadow: Potatuhs.glow(Potatuhs.gold, strength: 0.16, blur: 9),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(item.icon, size: 15, color: Potatuhs.gold),
+            const SizedBox(width: 5),
+            Text(item.label,
+                style: const TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
+                    color: Colors.white)),
+          ],
+        ),
       ),
     );
   }
@@ -855,8 +999,9 @@ class _BoardScreenState extends State<_BoardScreen> {
 }
 
 // ---------------------------------------------------------------------------
-// Board view: a serpentine path winding from THE VOID (bottom) up to
-// ORGANELLES (top). Spaces are nodes on the curve; tokens slide along it.
+// Board view: a rounded-rectangle racetrack loop. The main spaces sit evenly
+// around the ring (coloured by section); shortcut/filibuster lanes are chords
+// cutting across the open middle. Tokens slide node-to-node around the loop.
 // ---------------------------------------------------------------------------
 
 class _BoardView extends StatelessWidget {
@@ -888,28 +1033,9 @@ class _BoardView extends StatelessWidget {
         return Stack(
           clipBehavior: Clip.none,
           children: [
-            // Territory watermarks, behind everything.
-            for (var s = 0; s < _BoardGeometry.bands; s++)
-              Positioned(
-                left: 0,
-                right: 0,
-                top: geo.bandCenterY(s) - 13,
-                child: IgnorePointer(
-                  child: Text(
-                    kBoardSections[s].name,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontFamily: _kFont,
-                      fontSize: 19,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 7,
-                      color: kBoardSections[s]
-                          .color
-                          .withValues(alpha: 0.13),
-                    ),
-                  ),
-                ),
-              ),
+            // Territory watermarks at each section's arc, nudged inward.
+            for (var s = 0; s < _BoardGeometry.sections; s++)
+              _sectionLabel(geo, s),
             Positioned.fill(
               child: CustomPaint(painter: _BoardPathPainter(geo)),
             ),
@@ -937,6 +1063,28 @@ class _BoardView extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+
+  Widget _sectionLabel(_BoardGeometry geo, int s) {
+    final anchor = Offset.lerp(geo.sectionAnchor(s), geo.center, 0.4)!;
+    return Positioned(
+      left: anchor.dx - 60,
+      top: anchor.dy - 9,
+      width: 120,
+      child: IgnorePointer(
+        child: Text(
+          kBoardSections[s].name,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontFamily: _kFont,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 3,
+            color: kBoardSections[s].color.withValues(alpha: 0.18),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1013,7 +1161,7 @@ class _BoardView extends StatelessWidget {
     for (var j = 0; j < players.length; j++) {
       final p = players[j];
       final isCurrent = p.index == highlightPlayer;
-      final tr = isCurrent ? 8.0 : 6.5;
+      final tr = geo.nodeRadius * (isCurrent ? 0.52 : 0.44);
       // Lone token sits on the node; groups fan out around its rim.
       final fan = players.length > 1 ? geo.nodeRadius * 0.75 : 0.0;
       final angle = 2 * pi * j / players.length - pi / 2;
@@ -1044,58 +1192,97 @@ class _BoardView extends StatelessWidget {
   }
 }
 
-/// Lays the 36 spaces along a serpentine curve: six horizontal bands with a
-/// gentle sine wave, joined by elliptical U-turns at alternating edges.
-/// Band 0 (THE VOID) is at the bottom; the path climbs to ORGANELLES.
+/// Places [kMainLoopLength] spaces evenly around a rounded-rectangle loop using
+/// arc-length sampling, so the board is a genuine closed circuit. Sections take
+/// successive arcs (lengths from [kSectionSizes]); branches are chords across
+/// the open interior.
 class _BoardGeometry {
-  static const int bands = 6;
-  static const int perBand = 6;
+  static const int sections = 6;
 
   final Size size;
-  final double bandH;
-  final double nodeRadius;
-  final double xLeft;
-  final double xRight;
-  final double waveAmp;
-  final double turnRx;
+  final Rect rect;
+  final double corner;
+  late final Path loop;
+  late final ui.PathMetric _metric;
+  late final double _len;
+  late final double nodeRadius;
 
   _BoardGeometry(this.size)
-      : bandH = size.height / bands,
-        nodeRadius = min(18.0, size.height / bands * 0.26),
-        xLeft = 36,
-        xRight = size.width - 36,
-        waveAmp = min(14.0, size.height / bands * 0.17),
-        turnRx = 24;
-
-  double bandCenterY(int s) => size.height - bandH * (s + 0.5);
-
-  bool _leftToRight(int s) => s.isEven;
-
-  Offset pointOnBand(int s, double t) {
-    final ltr = _leftToRight(s);
-    final x = ltr ? xLeft + (xRight - xLeft) * t : xRight - (xRight - xLeft) * t;
-    final y =
-        bandCenterY(s) + waveAmp * sin(t * pi * 2) * (ltr ? 1 : -1);
-    return Offset(x, y);
+      : rect = _boardRect(size),
+        corner = _boardCorner(size) {
+    loop = Path()
+      ..addRRect(RRect.fromRectAndRadius(rect, Radius.circular(corner)));
+    _metric = loop.computeMetrics().first;
+    _len = _metric.length;
+    nodeRadius = min(22.0, _len / kMainLoopLength * 0.42);
   }
+
+  static Rect _boardRect(Size size) {
+    const m = 30.0;
+    return Rect.fromLTRB(m, m, size.width - m, size.height - m);
+  }
+
+  static double _boardCorner(Size size) => min(size.width, size.height) * 0.15;
+
+  Offset get center => rect.center;
+
+  Offset _pointAt(double frac) {
+    var f = frac % 1.0;
+    if (f < 0) f += 1.0;
+    return _metric.getTangentForOffset(f * _len)?.position ?? center;
+  }
+
+  /// Position + travel direction at a loop fraction — for direction arrows.
+  ui.Tangent? tangentAt(double frac) {
+    var f = frac % 1.0;
+    if (f < 0) f += 1.0;
+    return _metric.getTangentForOffset(f * _len);
+  }
+
+  /// Sub-path of the loop between two fractions — used for per-section colour.
+  Path subPath(double f0, double f1) =>
+      _metric.extractPath(f0 * _len, f1 * _len);
 
   Offset nodeCenter(int index) {
-    if (index >= bands * perBand) return branchNodeCenter(index);
-    final s = index ~/ perBand;
-    final i = index % perBand;
-    return pointOnBand(s, (i + 0.5) / perBand);
+    if (index >= kMainLoopLength) return branchNodeCenter(index);
+    return _pointAt(index / kMainLoopLength);
   }
 
-  /// Control point for a branch's curve: bowed toward the open vertical
-  /// corridor down the middle of the board so lanes read as alternate routes.
+  /// First main-loop index of section [s].
+  static int sectionStart(int s) {
+    var start = 0;
+    for (var k = 0; k < s; k++) {
+      start += kSectionSizes[k];
+    }
+    return start;
+  }
+
+  /// Centroid of a section's nodes — anchor for its watermark.
+  Offset sectionAnchor(int s) {
+    final start = sectionStart(s);
+    final size = kSectionSizes[s];
+    var sx = 0.0, sy = 0.0;
+    for (var i = 0; i < size; i++) {
+      final p = nodeCenter(start + i);
+      sx += p.dx;
+      sy += p.dy;
+    }
+    return Offset(sx / size, sy / size);
+  }
+
+  /// Branch control point: bows the lane GENTLY inward (toward centre) by a
+  /// modest amount proportional to its span, so each shortcut is a small local
+  /// bulge hugging just inside the ring — not a long chord across the middle
+  /// that tangles with the others.
   Offset branchControl(BoardBranch branch) {
     final f = nodeCenter(branch.forkIndex);
     final m = nodeCenter(branch.mergeIndex);
     final mid = Offset((f.dx + m.dx) / 2, (f.dy + m.dy) / 2);
-    final targetX = size.width / 2;
-    var bow = targetX - mid.dx;
-    if (bow.abs() < 50) bow = mid.dx <= targetX ? 70 : -70;
-    return Offset(mid.dx + bow, mid.dy);
+    final toCenter = center - mid;
+    final len = toCenter.distance;
+    if (len == 0) return mid;
+    final bow = ((f - m).distance * 0.5).clamp(40.0, 72.0);
+    return mid + (toCenter / len) * bow;
   }
 
   Offset _bezier(Offset a, Offset c, Offset b, double t) {
@@ -1118,87 +1305,58 @@ class _BoardGeometry {
       (i + 1) / (n + 1),
     );
   }
-
-  List<Offset> bandPoints(int s) =>
-      [for (var k = 0; k <= 24; k++) pointOnBand(s, k / 24)];
-
-  /// U-turn connecting the end of band [s] to the start of band s+1.
-  List<Offset> turnPoints(int s) {
-    final ltr = _leftToRight(s);
-    final xEdge = ltr ? xRight : xLeft;
-    final ry = bandH / 2;
-    final cy = bandCenterY(s) - ry;
-    return [
-      for (var k = 0; k <= 16; k++)
-        Offset(
-          xEdge + (ltr ? 1 : -1) * turnRx * cos(pi / 2 - k * pi / 16),
-          cy + ry * sin(pi / 2 - k * pi / 16),
-        ),
-    ];
-  }
 }
 
 class _BoardPathPainter extends CustomPainter {
   final _BoardGeometry geo;
   _BoardPathPainter(this.geo);
 
-  Path _polyline(List<Offset> pts) {
-    final path = Path()..moveTo(pts.first.dx, pts.first.dy);
-    for (final p in pts.skip(1)) {
-      path.lineTo(p.dx, p.dy);
-    }
-    return path;
-  }
-
   @override
   void paint(Canvas canvas, Size size) {
-    // Full route, as one path for the soft under-glow.
-    final allPoints = <Offset>[];
-    for (var s = 0; s < _BoardGeometry.bands; s++) {
-      allPoints.addAll(geo.bandPoints(s));
-      if (s < _BoardGeometry.bands - 1) allPoints.addAll(geo.turnPoints(s));
-    }
-    final full = _polyline(allPoints);
-
-    final glow = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 11
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = Colors.white.withValues(alpha: 0.05)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
-    canvas.drawPath(full, glow);
-
-    final base = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = Colors.white.withValues(alpha: 0.08);
-    canvas.drawPath(full, base);
-
-    // Each band glows in its territory color; turns fade toward the next.
-    for (var s = 0; s < _BoardGeometry.bands; s++) {
-      final paint = Paint()
+    // Soft under-glow + base ring on the whole closed loop.
+    canvas.drawPath(
+      geo.loop,
+      Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..color = kBoardSections[s].color.withValues(alpha: 0.50);
-      canvas.drawPath(_polyline(geo.bandPoints(s)), paint);
-      if (s < _BoardGeometry.bands - 1) {
-        final turnPaint = Paint()
+        ..strokeWidth = 12
+        ..color = Colors.white.withValues(alpha: 0.05)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+    );
+    canvas.drawPath(
+      geo.loop,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..color = Colors.white.withValues(alpha: 0.08),
+    );
+
+    // Each section colours its arc of the ring.
+    for (var s = 0; s < _BoardGeometry.sections; s++) {
+      final start = _BoardGeometry.sectionStart(s);
+      final f0 = start / kMainLoopLength;
+      final f1 = (start + kSectionSizes[s]) / kMainLoopLength;
+      canvas.drawPath(
+        geo.subPath(f0, f1),
+        Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 3
           ..strokeCap = StrokeCap.round
-          ..strokeJoin = StrokeJoin.round
-          ..color = kBoardSections[s + 1].color.withValues(alpha: 0.28);
-        canvas.drawPath(_polyline(geo.turnPoints(s)), turnPaint);
+          ..color = kBoardSections[s].color.withValues(alpha: 0.55),
+      );
+    }
+
+    // Direction-of-travel arrows around the loop.
+    const arrowN = 14;
+    for (var i = 0; i < arrowN; i++) {
+      final tan = geo.tangentAt((i + 0.5) / arrowN);
+      if (tan != null) {
+        _arrow(canvas, tan.position, tan.vector,
+            Colors.white.withValues(alpha: 0.28), 5);
       }
     }
 
-    // Branch lanes: dashed alternate routes. Amber = shortcut, potato-brown
-    // = filibuster loop (merges backward past the market).
+    // Branch lanes: dashed chords across the interior. Amber = shortcut,
+    // potato-brown = filibuster loop (merges backward past the market).
     for (final branch in kBoardBranches) {
       final f = geo.nodeCenter(branch.forkIndex);
       final m = geo.nodeCenter(branch.mergeIndex);
@@ -1215,9 +1373,36 @@ class _BoardPathPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2.5
           ..strokeCap = StrokeCap.round
-          ..color = col.withValues(alpha: 0.55),
+          ..color = col.withValues(alpha: 0.6),
       );
+      // Arrowhead near the merge, pointing the way the lane flows.
+      _arrow(canvas, _quad(f, c, m, 0.80), m - c, col, 6);
     }
+  }
+
+  /// A small chevron at [pos] pointing along [dir].
+  void _arrow(Canvas canvas, Offset pos, Offset dir, Color color, double size) {
+    final len = dir.distance;
+    final d = len == 0 ? const Offset(1, 0) : dir / len;
+    final perp = Offset(-d.dy, d.dx);
+    final tip = pos + d * size;
+    final back = pos - d * size;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = color;
+    canvas.drawLine(back + perp * size, tip, paint);
+    canvas.drawLine(back - perp * size, tip, paint);
+  }
+
+  Offset _quad(Offset a, Offset c, Offset b, double t) {
+    final u = 1 - t;
+    return Offset(
+      u * u * a.dx + 2 * u * t * c.dx + t * t * b.dx,
+      u * u * a.dy + 2 * u * t * c.dy + t * t * b.dy,
+    );
   }
 
   void _dashed(Canvas canvas, Path path, Paint paint,
@@ -1774,11 +1959,10 @@ class _PodiumScreen extends StatelessWidget {
                   winnerName,
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontFamily: _kFont,
+                    fontFamily: _kDisplay,
                     fontSize: 34,
-                    fontWeight: FontWeight.bold,
                     color: Colors.white,
-                    letterSpacing: 2,
+                    letterSpacing: 1,
                     shadows: [Shadow(color: winnerColor, blurRadius: 22)],
                   ),
                 ),

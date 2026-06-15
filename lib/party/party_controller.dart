@@ -9,7 +9,7 @@ import 'party_models.dart';
 /// One recorded player decision. Deterministic transitions (walking a step,
 /// confirming a panel, advancing through the mini-game intro) are NOT logged —
 /// they're replayed automatically — so the log holds only genuine choices.
-enum PartyInputKind { roll, choosePath, buyPotato, skipPotato, miniScore }
+enum PartyInputKind { roll, choosePath, buyPotato, skipPotato, miniScore, useItem }
 
 class PartyInput {
   final PartyInputKind kind;
@@ -330,29 +330,48 @@ class PartyController extends ChangeNotifier {
     }
   }
 
+  /// Power-up spaces now hand you the item to HOLD; you choose when to spend it
+  /// on your turn (see [useItem]). The pack is capped at [kMaxItems].
   void _grantPowerUp(PartyPlayer p, BoardSection section, List<String> log) {
     final pu = section.powerUp;
-    log.add('${section.name} power-up: ${pu.label} — ${pu.description}.');
-    switch (pu) {
-      case PowerUp.voidShield:
-        p.voidShield = true;
-        break;
+    if (p.items.length >= kMaxItems) {
+      log.add('${section.name} power-up: ${pu.label} — but your pack is full!');
+      return;
+    }
+    p.items.add(pu);
+    log.add('${section.name} power-up: picked up ${pu.label} '
+        '— ${pu.description}.');
+  }
+
+  /// Spends a held item on the current player's turn. Pre-roll buffs arm for
+  /// the imminent roll; SPARK pays out now; CATALYST and the shields arm for
+  /// the next relevant event. A logged decision, so replay stays faithful.
+  void useItem(PowerUp item) {
+    assert(phase == PartyPhase.turnStart);
+    final p = currentPlayer;
+    if (!p.items.remove(item)) return; // not in the pack
+    inputLog.add(PartyInput(PartyInputKind.useItem, item.index));
+    switch (item) {
       case PowerUp.spark:
         p.paydirt += 4;
         break;
       case PowerUp.accelerator:
         p.accelerator = true;
         break;
-      case PowerUp.strongBond:
-        p.strongBond = true;
+      case PowerUp.mitochondria:
+        p.mitochondria = true;
         break;
       case PowerUp.catalyst:
         p.catalyst = true;
         break;
-      case PowerUp.mitochondria:
-        p.mitochondria = true;
+      case PowerUp.voidShield:
+        p.voidShield = true;
+        break;
+      case PowerUp.strongBond:
+        p.strongBond = true;
         break;
     }
+    notifyListeners();
   }
 
   void _runEvent(PartyPlayer p, List<String> log) {
@@ -590,6 +609,9 @@ class PartyController extends ChangeNotifier {
         break;
       case PartyInputKind.miniScore:
         recordMiniScore(input.value);
+        break;
+      case PartyInputKind.useItem:
+        useItem(PowerUp.values[input.value]);
         break;
     }
   }

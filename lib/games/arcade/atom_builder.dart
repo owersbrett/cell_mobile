@@ -5,7 +5,9 @@ import 'package:flutter/scheduler.dart';
 
 import '../mini_game.dart';
 
-const _kFont = 'Avenir';
+import '../../theme/potatuhs.dart' show Potatuhs;
+
+const _kFont = Potatuhs.bodyFont; // Outfit
 const Color _kAccent = Color(0xFF5C6BC0);
 const Color _kProtonColor = Color(0xFFFF5252);
 const Color _kNeutronColor = Color(0xFFB0BEC5);
@@ -20,6 +22,15 @@ const Color _kWarn = Color(0xFFFFB300); // instability / "needs a nucleus"
 const int _kStableExcess = 1; // 1 unpaired proton is fine (hydrogen-1)
 const double _kInstabilityGain = 0.34; // per excess-proton, per second
 const double _kInstabilityRecover = 0.7; // per second once balanced
+
+// Field dynamics. Particles now fly in from every edge with velocity and feel
+// forces, so the screen reads as a living swarm instead of a tidy waterfall.
+const double _kElectronPull = 5200.0; // electron→proton attraction strength
+const double _kNucleusPull = 26.0; // built nucleus's tug on free electrons
+const double _kNeutronBreakRadius = 50.0; // free neutrons scatter within this
+const double _kNeutronBreakForce = 520.0; // how hard they shove things away
+const double _kMaxSpeed = 300.0; // velocity clamp so nothing flings off
+const double _kParticleLifetime = 11.0; // seconds before a stray despawns
 
 enum _ParticleKind { proton, neutron, electron }
 
@@ -47,20 +58,25 @@ const List<_Noble> _kNobles = [
 /// noble gases: 2, 10, 18, 36, 54. Drives both the gating and the drawing.
 const List<int> _kShellCaps = [2, 8, 8, 18, 18];
 
-class _FallingParticle {
+/// A free particle drifting across the field. Unlike the old "falls straight
+/// down" model, these stream in from any edge with a velocity vector, then
+/// respond to forces: electrons are pulled toward protons, and free neutrons
+/// shove everything nearby away as they barrel through.
+class _FieldParticle {
   _ParticleKind kind;
   double x;
   double y;
+  double vx;
   double vy;
-  double drift; // gentle horizontal sway
-  double phase; // glow/sway phase seed
+  double phase; // glow pulse phase seed
+  double life = 0; // seconds alive, for off-screen despawn
   bool dead = false;
-  _FallingParticle({
+  _FieldParticle({
     required this.kind,
     required this.x,
     required this.y,
+    required this.vx,
     required this.vy,
-    required this.drift,
     required this.phase,
   });
 }
@@ -108,12 +124,17 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
   double _runTime = 0; // gameplay time, advances only while running
   double _spawnAccum = 0;
 
+  /// Rises each time you collect, decays over time. Drives the spawn rate and
+  /// particle speed, so a hot streak floods the field and lets a sharp player
+  /// climb further up the noble ladder — "fill fast, they come faster."
+  double _tempo = 0;
+
   int _nobleIndex = 0; // next noble-gas checkpoint to reach
   int _gotP = 0;
   int _gotN = 0;
   int _gotE = 0;
 
-  final List<_FallingParticle> _falling = [];
+  final List<_FieldParticle> _particles = [];
   final List<_Flier> _fliers = [];
   final List<_Popup> _popups = [];
   final List<_BurstSpark> _sparks = [];
@@ -163,26 +184,47 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     final size = _fieldSize;
     if (size == Size.zero) return;
 
-    // Difficulty ramp over the 45s run.
+    // Pace is driven by the hottest of: elapsed time, your collection tempo,
+    // and how much you've already built — whichever is pushing hardest. So a
+    // skilled streak escalates the swarm (more particles, faster) instead of
+    // the game only ramping on a fixed clock.
     final total = widget.session.spec.durationSeconds.toDouble();
-    final ramp = (_runTime / total).clamp(0.0, 1.0);
-    final fallSpeed = 105.0 + 80.0 * ramp;
-    final spawnEvery = 0.62 - 0.20 * ramp;
+    final timeRamp = (_runTime / total).clamp(0.0, 1.0);
+    _tempo = math.max(0.0, _tempo - dt * 0.16);
+    final built = ((_gotP + _gotN + _gotE) / 24.0).clamp(0.0, 1.0);
+    final drive = math.max(timeRamp, math.max(_tempo, built));
+    final baseSpeed = 95.0 + 150.0 * drive;
+    final spawnEvery = (0.60 - 0.42 * drive).clamp(0.14, 0.60);
 
-    // Spawn.
+    // Spawn from the edges.
     _spawnAccum += dt;
     while (_spawnAccum >= spawnEvery) {
       _spawnAccum -= spawnEvery;
-      _spawnParticle(size, fallSpeed);
+      _spawnParticle(size, baseSpeed, drive);
     }
 
-    // Fall + sway.
-    for (final p in _falling) {
+    _applyForces(dt, size);
+
+    // Integrate, clamp speed, despawn strays.
+    for (final p in _particles) {
+      final sp = math.sqrt(p.vx * p.vx + p.vy * p.vy);
+      if (sp > _kMaxSpeed) {
+        p.vx *= _kMaxSpeed / sp;
+        p.vy *= _kMaxSpeed / sp;
+      }
+      p.x += p.vx * dt;
       p.y += p.vy * dt;
-      p.x += math.sin(_clock * 1.6 + p.phase) * p.drift * dt;
-      if (p.y > size.height + 40) p.dead = true;
+      p.life += dt;
+      const m = 70.0;
+      if (p.x < -m ||
+          p.x > size.width + m ||
+          p.y < -m ||
+          p.y > size.height + m ||
+          p.life > _kParticleLifetime) {
+        p.dead = true;
+      }
     }
-    _falling.removeWhere((p) => p.dead);
+    _particles.removeWhere((p) => p.dead);
 
     // Fliers toward the atom.
     for (final f in _fliers) {
@@ -245,7 +287,62 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     }
   }
 
-  void _spawnParticle(Size size, double fallSpeed) {
+  /// Electrons are drawn toward the nearest free proton (and toward the charged
+  /// nucleus), so opposite charges visibly clump together — then free neutrons
+  /// barrel through and scatter whatever they pass, breaking those clusters.
+  void _applyForces(double dt, Size size) {
+    final center = _atomCenter(size);
+    for (final p in _particles) {
+      if (p.kind != _ParticleKind.electron) continue;
+
+      // Pull toward the nearest free proton.
+      _FieldParticle? proton;
+      double best = double.infinity;
+      for (final q in _particles) {
+        if (q.kind != _ParticleKind.proton) continue;
+        final dx = q.x - p.x, dy = q.y - p.y;
+        final d2 = dx * dx + dy * dy;
+        if (d2 < best) {
+          best = d2;
+          proton = q;
+        }
+      }
+      if (proton != null) {
+        final dx = proton.x - p.x, dy = proton.y - p.y;
+        final dist = math.sqrt(best).clamp(18.0, 1e9);
+        final a = _kElectronPull / (dist * dist);
+        p.vx += dx / dist * a * dt;
+        p.vy += dy / dist * a * dt;
+      }
+
+      // Gentle tug toward the nucleus, stronger the more protons it holds.
+      if (_gotP > 0) {
+        final dx = center.dx - p.x, dy = center.dy - p.y;
+        final dist = math.sqrt(dx * dx + dy * dy).clamp(40.0, 1e9);
+        final a = _kNucleusPull * _gotP / dist;
+        p.vx += dx / dist * a * dt;
+        p.vy += dy / dist * a * dt;
+      }
+    }
+
+    // Free neutrons shove nearby protons & electrons away — the "breaking".
+    for (final n in _particles) {
+      if (n.kind != _ParticleKind.neutron) continue;
+      for (final o in _particles) {
+        if (identical(o, n) || o.kind == _ParticleKind.neutron) continue;
+        final dx = o.x - n.x, dy = o.y - n.y;
+        final d2 = dx * dx + dy * dy;
+        if (d2 < _kNeutronBreakRadius * _kNeutronBreakRadius && d2 > 1) {
+          final dist = math.sqrt(d2);
+          final push = _kNeutronBreakForce * (1 - dist / _kNeutronBreakRadius);
+          o.vx += dx / dist * push * dt;
+          o.vy += dy / dist * push * dt;
+        }
+      }
+    }
+  }
+
+  void _spawnParticle(Size size, double baseSpeed, double drive) {
     final needed = <_ParticleKind>[
       if (_gotP < _cap) _ParticleKind.proton,
       if (_gotN < _cap) _ParticleKind.neutron,
@@ -256,7 +353,11 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
         .toList(growable: false);
 
     _ParticleKind kind;
-    if (needed.isNotEmpty && (_rng.nextDouble() < 0.65 || notNeeded.isEmpty)) {
+    // At a high tempo, sprinkle extra free neutrons in as disruptors.
+    if (drive > 0.3 && _rng.nextDouble() < 0.20 * drive) {
+      kind = _ParticleKind.neutron;
+    } else if (needed.isNotEmpty &&
+        (_rng.nextDouble() < 0.65 || notNeeded.isEmpty)) {
       kind = needed[_rng.nextInt(needed.length)];
     } else if (notNeeded.isNotEmpty) {
       kind = notNeeded[_rng.nextInt(notNeeded.length)];
@@ -264,15 +365,49 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
       kind = _ParticleKind.values[_rng.nextInt(3)];
     }
 
-    _falling.add(_FallingParticle(
+    // Enter from a random edge.
+    late double x, y;
+    switch (_rng.nextInt(4)) {
+      case 0: // top
+        x = _rand(20, size.width - 20);
+        y = -26;
+        break;
+      case 1: // bottom
+        x = _rand(20, size.width - 20);
+        y = size.height + 26;
+        break;
+      case 2: // left
+        x = -26;
+        y = _rand(20, size.height - 20);
+        break;
+      default: // right
+        x = size.width + 26;
+        y = _rand(20, size.height - 20);
+    }
+
+    // Aim across the field toward the atom, with spread so particles fan
+    // through the play area instead of all converging on one point.
+    final aim = _atomCenter(size) + Offset(_rand(-100, 100), _rand(-90, 90));
+    var dx = aim.dx - x, dy = aim.dy - y;
+    final dist = math.sqrt(dx * dx + dy * dy);
+    if (dist > 0) {
+      dx /= dist;
+      dy /= dist;
+    }
+    var speed = baseSpeed * (0.8 + _rng.nextDouble() * 0.5);
+    if (kind == _ParticleKind.neutron) speed *= 1.4; // neutrons come in hot
+
+    _particles.add(_FieldParticle(
       kind: kind,
-      x: 30 + _rng.nextDouble() * (size.width - 60),
-      y: -28,
-      vy: fallSpeed * (0.85 + _rng.nextDouble() * 0.3),
-      drift: 8 + _rng.nextDouble() * 14,
+      x: x,
+      y: y,
+      vx: dx * speed,
+      vy: dy * speed,
       phase: _rng.nextDouble() * math.pi * 2,
     ));
   }
+
+  double _rand(double a, double b) => a + _rng.nextDouble() * (b - a);
 
   // ---------------------------------------------------------------- input --
 
@@ -280,9 +415,9 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     if (!widget.session.isRunning) return;
     final tap = d.localPosition;
 
-    _FallingParticle? hit;
+    _FieldParticle? hit;
     double bestDist = 48; // generous one-thumb hit radius
-    for (final p in _falling) {
+    for (final p in _particles) {
       final dist = (Offset(p.x, p.y) - tap).distance;
       if (dist < bestDist) {
         bestDist = dist;
@@ -320,6 +455,7 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
 
     if (needsIt) {
       widget.session.addScore(5);
+      _tempo = math.min(1.0, _tempo + 0.14); // a good grab speeds the swarm up
       _popups.add(_Popup('+5', _kGood, Offset(hit.x, hit.y)));
       _fliers.add(_Flier(kind: hit.kind, from: Offset(hit.x, hit.y)));
       switch (hit.kind) {
@@ -385,7 +521,7 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
                   gotP: _gotP,
                   gotN: _gotN,
                   gotE: _gotE,
-                  falling: _falling,
+                  falling: _particles,
                   fliers: _fliers,
                   popups: _popups,
                   sparks: _sparks,
@@ -597,7 +733,7 @@ class _AtomFieldPainter extends CustomPainter {
   final int gotP;
   final int gotN;
   final int gotE;
-  final List<_FallingParticle> falling;
+  final List<_FieldParticle> falling;
   final List<_Flier> fliers;
   final List<_Popup> popups;
   final List<_BurstSpark> sparks;
@@ -797,15 +933,18 @@ class _AtomFieldPainter extends CustomPainter {
 
   // ------------------------------------------------------ falling particles --
 
-  void _paintFalling(Canvas canvas, _FallingParticle p) {
+  void _paintFalling(Canvas canvas, _FieldParticle p) {
     final color = _kindColor(p.kind);
     final pos = Offset(p.x, p.y);
 
-    // Glow trail behind the particle (upward, since it falls down).
+    // Glow trail streaming out behind the particle's direction of travel.
+    final vel = Offset(p.vx, p.vy);
+    final vlen = vel.distance;
+    final dir = vlen > 1 ? vel / vlen : const Offset(0, 1);
     for (int i = 1; i <= 4; i++) {
       final t = i / 4.0;
       canvas.drawCircle(
-        pos - Offset(0, p.vy * 0.10 * t),
+        pos - dir * (vlen * 0.06 * t),
         _particleRadius * (1 - 0.55 * t),
         Paint()
           ..color = color.withValues(alpha: 0.14 * (1 - t))

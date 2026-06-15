@@ -56,6 +56,16 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Potatuhs brand faces: Bowlby One SC for display/titles only, Outfit
+  # (variable — weight set via fontWeight) for all body/UI text.
+  fonts:
+    - family: BowlbyOneSC
+      fonts:
+        - asset: assets/fonts/BowlbyOneSC-Regular.ttf
+    - family: Outfit
+      fonts:
+        - asset: assets/fonts/Outfit-Variable.ttf
+
   # To add assets to your application, add an assets section, like this:
   assets:
     - config/
