@@ -186,21 +186,71 @@ const List<BoardSection> kBoardSections = [
   ),
 ];
 
-enum SpaceType { gain, lose, powerUp, event }
+enum SpaceType { gain, lose, powerUp, event, shop }
+
+/// Where the Potato Market sits on the main loop (Organelles row, inside
+/// the filibuster loop's circuit so stallers can keep passing it).
+const int kShopIndex = 31;
+
+/// Paydirt price of one potato.
+const int kPotatoPrice = 20;
 
 class BoardSpace {
   final int index;
   final int sectionIndex;
   final SpaceType type;
 
-  const BoardSpace(
-      {required this.index, required this.sectionIndex, required this.type});
+  /// Successor spaces. One entry normally; two at a fork, where the player
+  /// chooses which way to go.
+  final List<int> nexts;
+
+  /// True for spaces on a shortcut lane (off the main serpentine loop).
+  final bool isShortcut;
+
+  const BoardSpace({
+    required this.index,
+    required this.sectionIndex,
+    required this.type,
+    required this.nexts,
+    this.isShortcut = false,
+  });
+
+  bool get isFork => nexts.length > 1;
 
   BoardSection get section => kBoardSections[sectionIndex];
 }
 
-/// 36 spaces: 6 rows of 6, one row per section, snaking bottom-to-top from
-/// THE VOID up to ORGANELLES. Layout is deterministic so games feel fair.
+/// Number of spaces on the main loop (shortcut spaces live above this).
+const int kMainLoopLength = 36;
+
+/// A shortcut lane: forks off the main loop, runs through its own risky
+/// spaces, and merges back further along. Faster laps, worse spaces.
+class BoardBranch {
+  final int forkIndex;
+  final int mergeIndex;
+  final List<int> spaceIndices;
+
+  const BoardBranch({
+    required this.forkIndex,
+    required this.mergeIndex,
+    required this.spaceIndices,
+  });
+}
+
+const List<BoardBranch> kBoardBranches = [
+  // Void → Particles: skips most of Something.
+  BoardBranch(forkIndex: 4, mergeIndex: 15, spaceIndices: [36, 37]),
+  // Atoms → Organelles: skips most of Molecules.
+  BoardBranch(forkIndex: 21, mergeIndex: 32, spaceIndices: [38, 39]),
+  // Filibuster loop: merges BACKWARD past the Potato Market, letting a
+  // player orbit the shop and stall for paydirt instead of lapping.
+  BoardBranch(forkIndex: 34, mergeIndex: 28, spaceIndices: [40, 41]),
+];
+
+/// Main loop: 36 spaces, 6 rows of 6, one row per section, snaking
+/// bottom-to-top from THE VOID up to ORGANELLES. Plus two shortcut lanes
+/// (indices 36+) made of lose/event spaces — risk for speed.
+/// Layout is deterministic so games feel fair.
 List<BoardSpace> buildBoard() {
   // Per-row space patterns; every row has exactly one power-up and one event.
   const patterns = <List<SpaceType>>[
@@ -209,15 +259,41 @@ List<BoardSpace> buildBoard() {
     [SpaceType.powerUp, SpaceType.gain, SpaceType.lose, SpaceType.gain, SpaceType.gain, SpaceType.event],
     [SpaceType.gain, SpaceType.gain, SpaceType.event, SpaceType.lose, SpaceType.powerUp, SpaceType.gain],
     [SpaceType.lose, SpaceType.powerUp, SpaceType.gain, SpaceType.event, SpaceType.gain, SpaceType.gain],
-    [SpaceType.event, SpaceType.gain, SpaceType.powerUp, SpaceType.gain, SpaceType.lose, SpaceType.gain],
+    [SpaceType.event, SpaceType.shop, SpaceType.powerUp, SpaceType.gain, SpaceType.lose, SpaceType.gain],
   ];
   final spaces = <BoardSpace>[];
   for (var section = 0; section < 6; section++) {
     for (var i = 0; i < 6; i++) {
+      final index = section * 6 + i;
+      final nexts = <int>[(index + 1) % kMainLoopLength];
+      for (final branch in kBoardBranches) {
+        if (branch.forkIndex == index) nexts.add(branch.spaceIndices.first);
+      }
       spaces.add(BoardSpace(
-        index: section * 6 + i,
+        index: index,
         sectionIndex: section,
         type: patterns[section][i],
+        nexts: nexts,
+      ));
+    }
+  }
+  // Shortcut lanes: alternating lose/event spaces, tinted by the sections
+  // they pass through.
+  const branchSections = <List<int>>[
+    [1, 2],
+    [4, 5],
+    [5, 4],
+  ];
+  for (var b = 0; b < kBoardBranches.length; b++) {
+    final branch = kBoardBranches[b];
+    for (var i = 0; i < branch.spaceIndices.length; i++) {
+      final isLast = i == branch.spaceIndices.length - 1;
+      spaces.add(BoardSpace(
+        index: branch.spaceIndices[i],
+        sectionIndex: branchSections[b][i],
+        type: i.isEven ? SpaceType.lose : SpaceType.event,
+        nexts: [isLast ? branch.mergeIndex : branch.spaceIndices[i + 1]],
+        isShortcut: true,
       ));
     }
   }
@@ -250,7 +326,8 @@ class PartyPlayer {
 
   // Board state
   int position = 0;
-  int atp = 0;
+  int paydirt = 0; // in-game currency, earned in mini-games & on the board
+  int potatoes = 0; // bought at the Potato Market — most potatoes wins
 
   // Armed power-up effects (auto-fire at the next relevant moment).
   bool voidShield = false;

@@ -12,28 +12,40 @@ const Color _kNeutronColor = Color(0xFFB0BEC5);
 const Color _kElectronColor = Color(0xFF40C4FF);
 const Color _kGood = Color(0xFF69F0AE);
 const Color _kBad = Color(0xFFFF5252);
+const Color _kWarn = Color(0xFFFFB300); // instability / "needs a nucleus"
+
+// Nuclear stability: protons repel, neutrons are the strong-force glue.
+// When unpaired protons (gotP - gotN) build up past this, the core starts to
+// destabilise; left unbalanced long enough, a proton decays away.
+const int _kStableExcess = 1; // 1 unpaired proton is fine (hydrogen-1)
+const double _kInstabilityGain = 0.34; // per excess-proton, per second
+const double _kInstabilityRecover = 0.7; // per second once balanced
 
 enum _ParticleKind { proton, neutron, electron }
 
-class _ElementSpec {
+/// A noble-gas checkpoint. In the game's clean model protons = neutrons =
+/// electrons = [count]; reaching it completes a full electron shell.
+class _Noble {
   final String name;
   final String symbol;
-  final int protons;
-  final int neutrons;
-  final int electrons;
-  const _ElementSpec(
-      this.name, this.symbol, this.protons, this.neutrons, this.electrons);
+  final int count; // cumulative p = n = e at this checkpoint
+  const _Noble(this.name, this.symbol, this.count);
 }
 
-const List<_ElementSpec> _kElements = [
-  _ElementSpec('HYDROGEN', 'H', 1, 0, 1),
-  _ElementSpec('HELIUM', 'He', 2, 2, 2),
-  _ElementSpec('LITHIUM', 'Li', 3, 4, 3),
-  _ElementSpec('CARBON', 'C', 6, 6, 6),
-  _ElementSpec('NITROGEN', 'N', 7, 7, 7),
-  _ElementSpec('OXYGEN', 'O', 8, 8, 8),
-  _ElementSpec('SODIUM', 'Na', 11, 12, 11),
+/// The ladder: build ONE continuously-growing atom up through the noble
+/// gases. You can't begin a shell until the one below it is perfectly
+/// balanced (p = n = e at that checkpoint).
+const List<_Noble> _kNobles = [
+  _Noble('HELIUM', 'He', 2),
+  _Noble('NEON', 'Ne', 10),
+  _Noble('ARGON', 'Ar', 18),
+  _Noble('KRYPTON', 'Kr', 36),
+  _Noble('XENON', 'Xe', 54),
 ];
+
+/// Electron capacity per shell (period model). Cumulative sums land on the
+/// noble gases: 2, 10, 18, 36, 54. Drives both the gating and the drawing.
+const List<int> _kShellCaps = [2, 8, 8, 18, 18];
 
 class _FallingParticle {
   _ParticleKind kind;
@@ -96,7 +108,7 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
   double _runTime = 0; // gameplay time, advances only while running
   double _spawnAccum = 0;
 
-  int _elementIndex = 0;
+  int _nobleIndex = 0; // next noble-gas checkpoint to reach
   int _gotP = 0;
   int _gotN = 0;
   int _gotE = 0;
@@ -110,10 +122,15 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
   double _bannerAge = -1; // >=0 while completion banner is showing
   String _bannerText = '';
   double _nucleusKick = 0; // wobble impulse when a particle lands
+  double _instability = 0; // 0..1 — fills when protons outnumber neutrons
 
   Size _fieldSize = Size.zero;
 
-  _ElementSpec get _element => _kElements[_elementIndex];
+  _Noble get _target => _kNobles[_nobleIndex];
+
+  /// Current shell ceiling: you can only collect particles up to the next
+  /// noble checkpoint, so the shell above stays locked until this one is full.
+  int get _cap => _target.count;
 
   @override
   void initState() {
@@ -194,13 +211,45 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
       _bannerAge += dt;
       if (_bannerAge > 1.4) _bannerAge = -1;
     }
+
+    _simulateStability(dt);
+  }
+
+  /// Unpaired protons repel; without neutron glue the core grows unstable and
+  /// eventually a proton decays away. Balanced cores (neutrons ≥ protons) are
+  /// rock-solid, so good play is never punished — only greedy proton-grabbing.
+  void _simulateStability(double dt) {
+    final excess = _gotP - _gotN;
+    if (excess > _kStableExcess) {
+      _instability += dt * (excess - _kStableExcess) * _kInstabilityGain;
+    } else {
+      _instability = math.max(0, _instability - dt * _kInstabilityRecover);
+    }
+
+    if (_instability >= 1.0 && _gotP > 0) {
+      // Beta-ish decay: shed one proton back out of the nucleus.
+      _gotP--;
+      // An electron with no proton left to orbit drifts off too.
+      if (_gotE > _gotP) _gotE = _gotP;
+      _instability = 0.45;
+      _nucleusKick = 1;
+      _flashAlpha = 0.5;
+      _popups.add(_Popup('DECAY −1p', _kWarn,
+          _atomCenter(_fieldSize) - const Offset(0, 54)));
+      final origin = _atomCenter(_fieldSize);
+      for (int i = 0; i < 10; i++) {
+        final a = (i / 10) * math.pi * 2;
+        _sparks.add(_BurstSpark(origin, a, 70 + _rng.nextDouble() * 60,
+            _kProtonColor));
+      }
+    }
   }
 
   void _spawnParticle(Size size, double fallSpeed) {
     final needed = <_ParticleKind>[
-      if (_gotP < _element.protons) _ParticleKind.proton,
-      if (_gotN < _element.neutrons) _ParticleKind.neutron,
-      if (_gotE < _element.electrons) _ParticleKind.electron,
+      if (_gotP < _cap) _ParticleKind.proton,
+      if (_gotN < _cap) _ParticleKind.neutron,
+      if (_gotE < _cap) _ParticleKind.electron,
     ];
     final notNeeded = _ParticleKind.values
         .where((k) => !needed.contains(k))
@@ -243,16 +292,29 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     if (hit == null) return;
 
     hit.dead = true;
+
+    // An electron needs a proton to orbit. You can't collect one onto an
+    // empty core, and electrons can never outnumber protons — so the shell
+    // can only grow once the nucleus has the charge to hold it.
+    if (hit.kind == _ParticleKind.electron &&
+        _gotE < _cap &&
+        _gotE >= _gotP) {
+      widget.session.addScore(-3);
+      _flashAlpha = 0.4;
+      _popups.add(_Popup('NEEDS A PROTON', _kWarn, Offset(hit.x, hit.y)));
+      return;
+    }
+
     bool needsIt;
     switch (hit.kind) {
       case _ParticleKind.proton:
-        needsIt = _gotP < _element.protons;
+        needsIt = _gotP < _cap;
         break;
       case _ParticleKind.neutron:
-        needsIt = _gotN < _element.neutrons;
+        needsIt = _gotN < _cap;
         break;
       case _ParticleKind.electron:
-        needsIt = _gotE < _element.electrons;
+        needsIt = _gotE < _cap;
         break;
     }
 
@@ -280,13 +342,12 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
   }
 
   void _checkComplete() {
-    if (_gotP < _element.protons ||
-        _gotN < _element.neutrons ||
-        _gotE < _element.electrons) {
-      return;
-    }
+    // A noble checkpoint is reached only when the whole shell is perfectly
+    // balanced — equal protons, neutrons and electrons at the cap.
+    if (_gotP < _cap || _gotN < _cap || _gotE < _cap) return;
+
     widget.session.addScore(50);
-    _bannerText = '${_element.name} COMPLETE!';
+    _bannerText = '${_target.name} — STABLE!';
     _bannerAge = 0;
 
     final origin = _atomCenter(_fieldSize);
@@ -299,10 +360,8 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
           origin, a, 120 + _rng.nextDouble() * 140, colors[i % colors.length]));
     }
 
-    if (_elementIndex < _kElements.length - 1) _elementIndex++;
-    _gotP = 0;
-    _gotN = 0;
-    _gotE = 0;
+    // The atom keeps growing — unlock the next shell, don't reset.
+    if (_nobleIndex < _kNobles.length - 1) _nobleIndex++;
   }
 
   Offset _atomCenter(Size size) =>
@@ -323,7 +382,6 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
               child: CustomPaint(
                 painter: _AtomFieldPainter(
                   clock: _clock,
-                  element: _element,
                   gotP: _gotP,
                   gotN: _gotN,
                   gotE: _gotE,
@@ -333,6 +391,7 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
                   sparks: _sparks,
                   flashAlpha: _flashAlpha,
                   nucleusKick: _nucleusKick,
+                  instability: _instability,
                   atomCenter: _atomCenter(_fieldSize),
                 ),
               ),
@@ -342,7 +401,8 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
               left: 12,
               right: 12,
               child: _TargetPanel(
-                element: _element,
+                target: _target,
+                cap: _cap,
                 gotP: _gotP,
                 gotN: _gotN,
                 gotE: _gotE,
@@ -408,12 +468,14 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
 // --------------------------------------------------------------- target UI --
 
 class _TargetPanel extends StatelessWidget {
-  final _ElementSpec element;
+  final _Noble target;
+  final int cap;
   final int gotP;
   final int gotN;
   final int gotE;
   const _TargetPanel({
-    required this.element,
+    required this.target,
+    required this.cap,
     required this.gotP,
     required this.gotN,
     required this.gotE,
@@ -447,7 +509,7 @@ class _TargetPanel extends StatelessWidget {
               ],
             ),
             child: Text(
-              element.symbol,
+              target.symbol,
               style: const TextStyle(
                 fontFamily: _kFont,
                 fontSize: 17,
@@ -462,7 +524,7 @@ class _TargetPanel extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'BUILD ${element.name}',
+                  'REACH ${target.name}',
                   style: const TextStyle(
                     fontFamily: _kFont,
                     fontSize: 14,
@@ -475,22 +537,13 @@ class _TargetPanel extends StatelessWidget {
                 Row(
                   children: [
                     _ProgressChip(
-                        label: 'p',
-                        got: gotP,
-                        need: element.protons,
-                        color: _kProtonColor),
+                        label: 'p', got: gotP, need: cap, color: _kProtonColor),
                     const SizedBox(width: 8),
                     _ProgressChip(
-                        label: 'n',
-                        got: gotN,
-                        need: element.neutrons,
-                        color: _kNeutronColor),
+                        label: 'n', got: gotN, need: cap, color: _kNeutronColor),
                     const SizedBox(width: 8),
                     _ProgressChip(
-                        label: 'e',
-                        got: gotE,
-                        need: element.electrons,
-                        color: _kElectronColor),
+                        label: 'e', got: gotE, need: cap, color: _kElectronColor),
                   ],
                 ),
               ],
@@ -541,7 +594,6 @@ class _ProgressChip extends StatelessWidget {
 
 class _AtomFieldPainter extends CustomPainter {
   final double clock;
-  final _ElementSpec element;
   final int gotP;
   final int gotN;
   final int gotE;
@@ -551,11 +603,11 @@ class _AtomFieldPainter extends CustomPainter {
   final List<_BurstSpark> sparks;
   final double flashAlpha;
   final double nucleusKick;
+  final double instability;
   final Offset atomCenter;
 
   _AtomFieldPainter({
     required this.clock,
-    required this.element,
     required this.gotP,
     required this.gotN,
     required this.gotE,
@@ -565,6 +617,7 @@ class _AtomFieldPainter extends CustomPainter {
     required this.sparks,
     required this.flashAlpha,
     required this.nucleusKick,
+    required this.instability,
     required this.atomCenter,
   });
 
@@ -632,31 +685,46 @@ class _AtomFieldPainter extends CustomPainter {
   // ------------------------------------------------------------- the atom --
 
   void _paintAtom(Canvas canvas, Size size) {
+    // Landing kick + an erratic, fast jitter that grows with instability.
+    final jitter = instability * 6.0;
     final wobble = Offset(
-      math.sin(clock * 7.0) * 3.0 * nucleusKick,
-      math.cos(clock * 8.5) * 3.0 * nucleusKick,
+      math.sin(clock * 7.0) * 3.0 * nucleusKick +
+          math.sin(clock * 31.0) * jitter,
+      math.cos(clock * 8.5) * 3.0 * nucleusKick +
+          math.cos(clock * 27.0) * jitter,
     );
     final c = atomCenter + wobble;
     final nucleons = gotP + gotN;
 
-    // Ambient glow under the atom.
+    // Ambient glow under the atom — flushes warning-amber as it destabilises.
+    final glowColor = Color.lerp(_kAccent, _kWarn, instability)!;
     canvas.drawCircle(
       c,
       62,
       Paint()
-        ..color = _kAccent.withValues(alpha: 0.10)
+        ..color = glowColor.withValues(alpha: 0.10 + 0.18 * instability)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30),
     );
+    if (instability > 0.05) {
+      // Pulsing "danger" ring around an unstable nucleus.
+      canvas.drawCircle(
+        c,
+        30 + 4 * math.sin(clock * 12),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = _kWarn.withValues(alpha: 0.25 + 0.5 * instability),
+      );
+    }
 
-    // Electron shells (2, 8, 18 capacity).
-    const shellCaps = [2, 8, 18];
+    // Electron shells fill in period order (2, 8, 8, 18, 18).
     final shellPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2;
     int remaining = gotE;
-    for (int s = 0; s < shellCaps.length && remaining >= 0; s++) {
-      final radius = 44.0 + s * 26.0;
-      final inShell = math.min(remaining, shellCaps[s]);
+    for (int s = 0; s < _kShellCaps.length && remaining >= 0; s++) {
+      final radius = 40.0 + s * 21.0;
+      final inShell = math.min(remaining, _kShellCaps[s]);
       remaining -= inShell;
       final active = inShell > 0;
       shellPaint.color =

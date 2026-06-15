@@ -132,12 +132,24 @@ class _BigBangArcadeState extends State<BigBangArcade>
       _runTime += dt;
       _spawnClock += dt;
 
-      // Spawn rate ramps from ~700ms down to ~350ms across the run.
+      // Spawn rate ramps from ~700ms down to ~350ms across the run, and
+      // matter arrives in waves late-game: 2× after half time, 4× in the
+      // last quarter, 8× in the final eighth. Perfection is impossible by
+      // design — the late-game ceiling is pure skill.
       final p = _progress;
       final interval = _lerp(0.70, 0.35, p);
+      final burst = p >= 0.875
+          ? 8
+          : p >= 0.75
+              ? 4
+              : p >= 0.5
+                  ? 2
+                  : 1;
       while (_spawnClock >= interval) {
         _spawnClock -= interval;
-        _spawnSpark();
+        for (var i = 0; i < burst; i++) {
+          _spawnSpark();
+        }
       }
 
       // Age sparks, catch expirations.
@@ -145,7 +157,9 @@ class _BigBangArcadeState extends State<BigBangArcade>
         s.age += dt;
         if (!s.caught && s.age >= s.lifespan && !s.antimatter) {
           // A spark of matter slipped back into the void: combo fizzles.
-          if (_streak > 0) {
+          // Only during the solo-spawn phase — once waves begin, missing
+          // sparks is inevitable, so expiry stops punishing the streak.
+          if (burst == 1 && _streak > 0) {
             _streak = 0;
             _popups.add(_Popup(
               pos: s.pos,

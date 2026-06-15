@@ -28,6 +28,7 @@ class MiniGameRegistry {
         'Sparks of matter flash into the void — tap them before they fade: +10.',
         'Catch sparks back-to-back to build a combo, up to 5× points.',
         'Red antimatter detonates on touch: −15 and your combo resets.',
+        'Halfway in, matter arrives in waves — 2×, then 4×, then 8× at the end. Catch what you can.',
       ],
       howToWin: 'Most matter when time runs out wins.',
       durationSeconds: 30,

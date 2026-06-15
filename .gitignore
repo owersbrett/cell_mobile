@@ -38,3 +38,6 @@ app.*.symbols
 
 # Obfuscation related
 app.*.map.json
+
+# Local dev-loop session saves (Piece 2)
+.dev/

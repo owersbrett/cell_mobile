@@ -6,27 +6,53 @@ import 'package:flutter/foundation.dart';
 
 import 'party_models.dart';
 
+/// One recorded player decision. Deterministic transitions (walking a step,
+/// confirming a panel, advancing through the mini-game intro) are NOT logged —
+/// they're replayed automatically — so the log holds only genuine choices.
+enum PartyInputKind { roll, choosePath, buyPotato, skipPotato, miniScore }
+
+class PartyInput {
+  final PartyInputKind kind;
+
+  /// Payload: the chosen successor index for [choosePath], the score for
+  /// [miniScore]; unused (0) otherwise.
+  final int value;
+
+  const PartyInput(this.kind, [this.value = 0]);
+
+  Map<String, dynamic> toJson() => {'k': kind.index, 'v': value};
+
+  factory PartyInput.fromJson(Map<String, dynamic> json) => PartyInput(
+      PartyInputKind.values[json['k'] as int], (json['v'] as int?) ?? 0);
+
+  @override
+  String toString() {
+    final label = kind.toString().split('.').last;
+    return value == 0 ? label : '$label:$value';
+  }
+}
+
 enum PartyPhase {
   turnStart, // current player's banner + ROLL button
-  moving, // page animates the token using the latest TurnResult
+  moving, // token steps along the path, one space per UI tick
+  chooseBranch, // standing at a fork: the player picks a direction
+  shopOffer, // passing the Potato Market with enough paydirt: buy or pass
   spaceResolved, // effect shown, waiting for CONTINUE
   minigameIntro, // round's game revealed
   passPhone, // hand the phone to the next contestant
   minigamePlaying, // MiniGameHost active
-  minigameResults, // ranking + ATP awards
+  minigameResults, // ranking + paydirt awards
   gameOver,
 }
 
-/// Everything that happened in one roll, so the UI can animate it.
+/// The dice half of a roll; movement itself happens step-by-step through
+/// [PartyController.advanceStep] so forks and the shop can pause for input.
 class TurnResult {
   final int playerIndex;
   final List<int> dice;
   final int rollBonus; // mitochondria
   final int steps;
   final int fromPosition;
-  final int toPosition;
-  final bool lapCompleted;
-  final List<String> log; // human-readable effect lines
 
   const TurnResult({
     required this.playerIndex,
@@ -34,9 +60,6 @@ class TurnResult {
     required this.rollBonus,
     required this.steps,
     required this.fromPosition,
-    required this.toPosition,
-    required this.lapCompleted,
-    required this.log,
   });
 }
 
@@ -48,16 +71,28 @@ class MiniGameStanding {
   MiniGameStanding(this.player, this.score);
 }
 
-/// Pass-and-play board game loop: each round every player rolls and resolves
-/// a space, then everyone plays the same mini-game and ATP is awarded by
-/// rank. Most ATP after the final round wins (team total in team modes).
+class TeamStanding {
+  final int teamIndex;
+  final int potatoes;
+  final int paydirt;
+  const TeamStanding(this.teamIndex, this.potatoes, this.paydirt);
+}
+
+/// Pass-and-play board game loop. Each round every player rolls and walks
+/// the path (choosing directions at forks, buying potatoes at the market),
+/// then everyone plays the same randomly chosen mini-game and paydirt is
+/// awarded by rank. Most potatoes after the final round wins (paydirt
+/// breaks ties); team modes count the team's combined haul.
 class PartyController extends ChangeNotifier {
   PartyController({
     required this.mode,
     required this.totalRounds,
     required List<String> playerNames,
+    int? seed,
     Random? random,
-  }) : _rng = random ?? Random() {
+  })  : seed = seed ?? _newSeed(),
+        _initialNames = List<String>.unmodifiable(playerNames) {
+    _rng = random ?? Random(this.seed);
     for (var i = 0; i < mode.playerCount; i++) {
       players.add(PartyPlayer(
         index: i,
@@ -68,9 +103,46 @@ class PartyController extends ChangeNotifier {
     }
   }
 
+  /// Rebuilds a game by replaying a recorded input log against fresh code.
+  /// This — not a state snapshot — is the canonical save format: it survives
+  /// refactors because state is reconstructed by re-running the same decisions
+  /// through whatever the controller does today.
+  factory PartyController.replay({
+    required PartyMode mode,
+    required int totalRounds,
+    required List<String> playerNames,
+    required int seed,
+    required List<PartyInput> inputs,
+  }) {
+    final c = PartyController(
+      mode: mode,
+      totalRounds: totalRounds,
+      playerNames: playerNames,
+      seed: seed,
+    );
+    for (final input in inputs) {
+      c._pumpToDecision();
+      if (c.phase == PartyPhase.gameOver) break;
+      c._apply(input);
+    }
+    c._pumpToDecision();
+    return c;
+  }
+
+  static int _newSeed() => Random().nextInt(0x7fffffff);
+
   final PartyMode mode;
   final int totalRounds;
-  final Random _rng;
+
+  /// Seed the whole game derives from. Recorded inputs + this seed fully
+  /// determine every roll, event, and mini-game pick.
+  final int seed;
+  final List<String> _initialNames;
+  late final Random _rng;
+
+  /// Ordered log of player decisions — the replayable record of the match.
+  final List<PartyInput> inputLog = [];
+
   final List<PartyPlayer> players = [];
   final List<BoardSpace> board = buildBoard();
 
@@ -78,6 +150,16 @@ class PartyController extends ChangeNotifier {
   int round = 1;
   int currentPlayerIndex = 0;
   TurnResult? lastTurn;
+
+  /// Steps still to walk this turn; the UI calls [advanceStep] per tick.
+  int stepsRemaining = 0;
+
+  /// Human-readable effect lines for the current turn (laps, purchases,
+  /// space effects).
+  final List<String> turnLog = [];
+
+  /// Debug-only: forces every mini-game pick to this spec id.
+  String? debugForcedSpecId;
 
   // Mini-game round state
   MiniGameSpec? currentSpec;
@@ -91,57 +173,118 @@ class PartyController extends ChangeNotifier {
 
   // ---------------------------------------------------------------- rolling
 
-  /// Rolls for the current player, resolves the landing space, and moves to
-  /// [PartyPhase.moving]. The UI animates from the returned TurnResult, then
-  /// calls [confirmSpace].
+  /// Rolls for the current player and enters [PartyPhase.moving]. The UI
+  /// then calls [advanceStep] once per animation tick; the controller pauses
+  /// in [PartyPhase.chooseBranch] / [PartyPhase.shopOffer] when the player
+  /// has a decision to make.
   TurnResult roll() {
     assert(phase == PartyPhase.turnStart);
+    inputLog.add(const PartyInput(PartyInputKind.roll));
     final p = currentPlayer;
-    final log = <String>[];
+    turnLog.clear();
 
     final dice = [_rng.nextInt(6) + 1, if (p.accelerator) _rng.nextInt(6) + 1];
     if (p.accelerator) {
-      log.add('${p.name} fired the ACCELERATOR — two dice!');
+      turnLog.add('${p.name} fired the ACCELERATOR — two dice!');
       p.accelerator = false;
     }
     var bonus = 0;
     if (p.mitochondria) {
       bonus = 3;
-      log.add('MITOCHONDRIA kicks in: +3 movement.');
+      turnLog.add('MITOCHONDRIA kicks in: +3 movement.');
       p.mitochondria = false;
     }
 
-    final int steps = dice.reduce((a, b) => a + b) + bonus;
-    final from = p.position;
-    final int to = (from + steps) % board.length;
-    final lap = from + steps >= board.length;
-    p.position = to;
-
-    if (lap) {
-      p.atp += 5;
-      log.add('${p.name} completed a lap of existence: +5 ATP.');
-    }
-    _resolveSpace(p, board[to], log);
-
+    stepsRemaining = dice.reduce((a, b) => a + b) + bonus;
     lastTurn = TurnResult(
       playerIndex: p.index,
       dice: dice,
       rollBonus: bonus,
-      steps: steps,
-      fromPosition: from,
-      toPosition: to,
-      lapCompleted: lap,
-      log: log,
+      steps: stepsRemaining,
+      fromPosition: p.position,
     );
     phase = PartyPhase.moving;
     notifyListeners();
     return lastTurn!;
   }
 
-  /// UI finished the token animation; show the resolution panel.
-  void markMoved() {
-    if (phase != PartyPhase.moving) return;
-    phase = PartyPhase.spaceResolved;
+  /// The choices at the current fork (only valid in [PartyPhase.chooseBranch]).
+  List<int> get branchOptions => board[currentPlayer.position].nexts;
+
+  /// Walks one space. Pauses for a branch choice when departing a fork.
+  void advanceStep() {
+    if (phase != PartyPhase.moving || stepsRemaining <= 0) return;
+    final from = board[currentPlayer.position];
+    if (from.isFork) {
+      phase = PartyPhase.chooseBranch;
+      notifyListeners();
+      return;
+    }
+    _stepTo(from.nexts.first);
+  }
+
+  /// Resolves a fork: the player picked which successor to walk to.
+  void choosePath(int nextIndex) {
+    assert(phase == PartyPhase.chooseBranch);
+    assert(board[currentPlayer.position].nexts.contains(nextIndex));
+    inputLog.add(PartyInput(PartyInputKind.choosePath, nextIndex));
+    final p = currentPlayer;
+    if (board[nextIndex].isShortcut) {
+      final branch = kBoardBranches
+          .firstWhere((b) => b.spaceIndices.contains(nextIndex));
+      turnLog.add(branch.mergeIndex < branch.forkIndex
+          ? '${p.name} ducks into the filibuster loop.'
+          : '${p.name} takes the shortcut lane.');
+    }
+    phase = PartyPhase.moving;
+    _stepTo(nextIndex);
+  }
+
+  void _stepTo(int next) {
+    final p = currentPlayer;
+    p.position = next;
+    stepsRemaining--;
+    if (next == 0) {
+      p.paydirt += 5;
+      turnLog.add('${p.name} completed a lap of existence: +5 paydirt.');
+    }
+    // Passing (or landing on) the Potato Market with enough paydirt pauses
+    // the walk for a purchase decision.
+    if (next == kShopIndex && p.paydirt >= kPotatoPrice) {
+      phase = PartyPhase.shopOffer;
+      notifyListeners();
+      return;
+    }
+    _finishStep();
+  }
+
+  /// Buys one potato at the market, then the walk continues.
+  void buyPotato() {
+    assert(phase == PartyPhase.shopOffer);
+    inputLog.add(const PartyInput(PartyInputKind.buyPotato));
+    final p = currentPlayer;
+    p.paydirt -= kPotatoPrice;
+    p.potatoes++;
+    turnLog.add(
+        '${p.name} bought a POTATO for $kPotatoPrice paydirt! (${p.potatoes} total)');
+    phase = PartyPhase.moving;
+    _finishStep();
+  }
+
+  /// Declines the market offer; the walk continues.
+  void skipPotato() {
+    assert(phase == PartyPhase.shopOffer);
+    inputLog.add(const PartyInput(PartyInputKind.skipPotato));
+    phase = PartyPhase.moving;
+    _finishStep();
+  }
+
+  void _finishStep() {
+    final p = currentPlayer;
+    if (stepsRemaining <= 0) {
+      _resolveSpace(p, board[p.position], turnLog);
+      phase = PartyPhase.spaceResolved;
+    }
     notifyListeners();
   }
 
@@ -160,16 +303,16 @@ class PartyController extends ChangeNotifier {
   void _resolveSpace(PartyPlayer p, BoardSpace space, List<String> log) {
     switch (space.type) {
       case SpaceType.gain:
-        p.atp += 5;
-        log.add('${p.name} landed on an energy space: +5 ATP.');
+        p.paydirt += 5;
+        log.add('${p.name} landed on a paydirt space: +5 paydirt.');
         break;
       case SpaceType.lose:
         if (p.voidShield) {
           p.voidShield = false;
           log.add("${p.name}'s VOID SHIELD absorbed the loss!");
         } else {
-          p.atp = max(0, p.atp - 5);
-          log.add('${p.name} hit an entropy space: −5 ATP.');
+          p.paydirt = max(0, p.paydirt - 5);
+          log.add('${p.name} hit an entropy space: −5 paydirt.');
         }
         break;
       case SpaceType.powerUp:
@@ -177,6 +320,12 @@ class PartyController extends ChangeNotifier {
         break;
       case SpaceType.event:
         _runEvent(p, log);
+        break;
+      case SpaceType.shop:
+        // The purchase offer already fired while stepping in; landing here
+        // just means the walk ended at the market.
+        log.add('${p.name} is at the Potato Market '
+            '(potatoes cost $kPotatoPrice paydirt).');
         break;
     }
   }
@@ -189,7 +338,7 @@ class PartyController extends ChangeNotifier {
         p.voidShield = true;
         break;
       case PowerUp.spark:
-        p.atp += 4;
+        p.paydirt += 4;
         break;
       case PowerUp.accelerator:
         p.accelerator = true;
@@ -228,31 +377,46 @@ class PartyController extends ChangeNotifier {
           if (o.voidShield) {
             o.voidShield = false;
           } else {
-            o.atp = max(0, o.atp - loss);
+            o.paydirt = max(0, o.paydirt - loss);
           }
         }
-        log.add('ENTROPY SURGE! Everyone loses 3 ATP, the leader loses 6.');
+        log.add(
+            'ENTROPY SURGE! Everyone loses 3 paydirt, the leader loses 6.');
         break;
       case 2: // Photosynthesis
         for (final o in players) {
-          o.atp += 3;
+          o.paydirt += 3;
         }
-        log.add('PHOTOSYNTHESIS! Everyone gains +3 ATP.');
+        log.add('PHOTOSYNTHESIS! Everyone gains +3 paydirt.');
         break;
-      case 3: // Wormhole
-        p.position = (p.position + 5) % board.length;
+      case 3: // Wormhole — 5 hops forward (main option at any fork)
+        for (var i = 0; i < 5; i++) {
+          p.position = board[p.position].nexts.first;
+        }
         log.add('WORMHOLE! ${p.name} jumps forward 5 spaces.');
         break;
-      default: // Quantum Tunnel
-        p.position = (p.position - 4 + board.length) % board.length;
-        log.add('QUANTUM TUNNEL! ${p.name} slips back 4 spaces.');
+      default: // Quantum Tunnel — back 4 along the main loop
+        if (!board[p.position].isShortcut) {
+          p.position =
+              (p.position - 4 + kMainLoopLength) % kMainLoopLength;
+          log.add('QUANTUM TUNNEL! ${p.name} slips back 4 spaces.');
+        } else {
+          log.add(
+              'QUANTUM TUNNEL fizzled — ${p.name} is off the main loop.');
+        }
         break;
     }
   }
 
+  /// Leader = most potatoes, paydirt breaks ties.
   bool _isLeader(PartyPlayer p) {
-    final maxAtp = players.map((o) => o.atp).reduce(max);
-    return p.atp == maxAtp;
+    for (final o in players) {
+      if (o.potatoes > p.potatoes ||
+          (o.potatoes == p.potatoes && o.paydirt > p.paydirt)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // ------------------------------------------------------------- mini-games
@@ -265,28 +429,32 @@ class PartyController extends ChangeNotifier {
     phase = PartyPhase.minigameIntro;
   }
 
-  /// The round plays the game of the territory the board leader stands in.
+  /// Random pick from the enabled pool, never the same game twice in a row.
+  /// A debug override (set from the intro screen in debug builds) wins.
   MiniGameSpec _pickSpec() {
-    var leader = players.first;
-    for (final p in players) {
-      if (p.atp > leader.atp ||
-          (p.atp == leader.atp && p.position > leader.position)) {
-        leader = p;
-      }
+    if (debugForcedSpecId != null) {
+      final forced = MiniGameRegistry.byId(debugForcedSpecId!);
+      if (forced != null) return forced;
     }
-    final section = board[leader.position].section;
-    var spec = MiniGameRegistry.forScale(section.scale) ??
-        MiniGameRegistry.enabledSpecs.first;
-    if (spec.id == _lastSpecId && MiniGameRegistry.enabledSpecs.length > 1) {
-      final list = MiniGameRegistry.enabledSpecs;
-      spec = list[(list.indexOf(spec) + 1) % list.length];
-    }
-    return spec;
+    final list = MiniGameRegistry.enabledSpecs;
+    if (list.length == 1) return list.first;
+    final pool = list.where((s) => s.id != _lastSpecId).toList();
+    return pool[_rng.nextInt(pool.length)];
   }
 
-  /// Section whose game is being played this round (for the intro screen).
-  BoardSection get currentSection => kBoardSections
-      .firstWhere((s) => s.scale == currentSpec!.scale, orElse: () => kBoardSections.last);
+  /// Debug builds only: swap the revealed game on the intro screen.
+  void debugSetSpec(MiniGameSpec spec) {
+    assert(phase == PartyPhase.minigameIntro);
+    currentSpec = spec;
+    _lastSpecId = spec.id;
+    debugForcedSpecId = spec.id;
+    notifyListeners();
+  }
+
+  /// Section badge for the intro screen (the game's home territory).
+  BoardSection get currentSection => kBoardSections.firstWhere(
+      (s) => s.scale == currentSpec!.scale,
+      orElse: () => kBoardSections.last);
 
   void beginMiniGameRound() {
     assert(phase == PartyPhase.minigameIntro);
@@ -302,6 +470,7 @@ class PartyController extends ChangeNotifier {
 
   void recordMiniScore(int score) {
     assert(phase == PartyPhase.minigamePlaying);
+    inputLog.add(PartyInput(PartyInputKind.miniScore, score));
     standings.add(MiniGameStanding(miniPlayer, score));
     if (isLastMiniPlayer) {
       _scoreMiniGameRound();
@@ -354,7 +523,7 @@ class PartyController extends ChangeNotifier {
         s.player.catalyst = false;
         s.award *= 2;
       }
-      s.player.atp += s.award;
+      s.player.paydirt += s.award;
     }
   }
 
@@ -373,23 +542,126 @@ class PartyController extends ChangeNotifier {
 
   // ---------------------------------------------------------------- results
 
-  /// Final placements, best first. FFA: players ranked by ATP then position.
+  /// Final placements, best first: potatoes, then paydirt, then position.
   List<PartyPlayer> get finalPlayerRanking {
     final sorted = [...players]..sort((a, b) {
-        if (b.atp != a.atp) return b.atp.compareTo(a.atp);
+        if (b.potatoes != a.potatoes) return b.potatoes.compareTo(a.potatoes);
+        if (b.paydirt != a.paydirt) return b.paydirt.compareTo(a.paydirt);
         return b.position.compareTo(a.position);
       });
     return sorted;
   }
 
-  /// Team totals, best first, as (teamIndex, totalAtp).
-  List<MapEntry<int, int>> get finalTeamRanking {
-    final totals = <int, int>{};
+  /// Team totals, best first.
+  List<TeamStanding> get finalTeamRanking {
+    final potatoes = <int, int>{};
+    final paydirt = <int, int>{};
     for (final p in players) {
-      totals[p.teamIndex] = (totals[p.teamIndex] ?? 0) + p.atp;
+      potatoes[p.teamIndex] = (potatoes[p.teamIndex] ?? 0) + p.potatoes;
+      paydirt[p.teamIndex] = (paydirt[p.teamIndex] ?? 0) + p.paydirt;
     }
-    final entries = totals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    return entries;
+    final standings = [
+      for (final team in potatoes.keys)
+        TeamStanding(team, potatoes[team]!, paydirt[team]!),
+    ]..sort((a, b) {
+        if (b.potatoes != a.potatoes) return b.potatoes.compareTo(a.potatoes);
+        return b.paydirt.compareTo(a.paydirt);
+      });
+    return standings;
   }
+
+  // ------------------------------------------------------------- replay core
+
+  /// Applies one recorded decision. The controller must already be sitting in
+  /// the phase that decision belongs to (see [_pumpToDecision]).
+  void _apply(PartyInput input) {
+    switch (input.kind) {
+      case PartyInputKind.roll:
+        roll();
+        break;
+      case PartyInputKind.choosePath:
+        choosePath(input.value);
+        break;
+      case PartyInputKind.buyPotato:
+        buyPotato();
+        break;
+      case PartyInputKind.skipPotato:
+        skipPotato();
+        break;
+      case PartyInputKind.miniScore:
+        recordMiniScore(input.value);
+        break;
+    }
+  }
+
+  /// Fast-forwards through every deterministic transition until the game is
+  /// waiting on a real decision (or is over). The guard doubles as a soft-lock
+  /// detector: if the machine can't reach a decision we surface it loudly
+  /// instead of spinning forever.
+  void _pumpToDecision() {
+    var guard = 0;
+    while (guard++ < 100000) {
+      switch (phase) {
+        case PartyPhase.moving:
+          advanceStep();
+          break;
+        case PartyPhase.spaceResolved:
+          confirmSpace();
+          break;
+        case PartyPhase.minigameIntro:
+          beginMiniGameRound();
+          break;
+        case PartyPhase.passPhone:
+          startMiniGameAttempt();
+          break;
+        case PartyPhase.minigameResults:
+          confirmMiniGameResults();
+          break;
+        case PartyPhase.turnStart:
+        case PartyPhase.chooseBranch:
+        case PartyPhase.shopOffer:
+        case PartyPhase.minigamePlaying:
+        case PartyPhase.gameOver:
+          return;
+      }
+    }
+    throw StateError('soft-lock: no decision reachable from $phase');
+  }
+
+  /// Throws on any broken-game invariant. Cheap enough to call after every
+  /// input; this is the contract the Peeler soak will hold the game to.
+  void checkInvariants() {
+    for (final p in players) {
+      if (p.position < 0 || p.position >= board.length) {
+        throw StateError('${p.name} position out of range: ${p.position}');
+      }
+      if (p.paydirt < 0) throw StateError('${p.name} has negative paydirt');
+      if (p.potatoes < 0) throw StateError('${p.name} has negative potatoes');
+    }
+    if (round < 1 || round > totalRounds) {
+      throw StateError('round out of range: $round');
+    }
+  }
+
+  /// The whole match as a tiny, refactor-proof save: seed + setup + decisions.
+  Map<String, dynamic> toSaveJson() => {
+        'seed': seed,
+        'mode': mode.index,
+        'rounds': totalRounds,
+        'names': _initialNames,
+        'inputs': [for (final i in inputLog) i.toJson()],
+      };
+
+  /// Reconstructs a controller from [toSaveJson] output by replaying it.
+  static PartyController fromSaveJson(Map<String, dynamic> json) =>
+      PartyController.replay(
+        mode: PartyMode.values[json['mode'] as int],
+        totalRounds: json['rounds'] as int,
+        playerNames: List<String>.from(json['names'] as List),
+        seed: json['seed'] as int,
+        inputs: [
+          for (final e in (json['inputs'] as List))
+            PartyInput.fromJson(Map<String, dynamic>.from(e as Map))
+        ],
+      );
 }
