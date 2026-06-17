@@ -21,6 +21,10 @@ const double _kClaimLife = 1.5; // seconds granted when you first tap a shape
 const double _kTapGrant = 0.45; // each further tap tops the timer back up
 const double _kMaxLife = 2.2; // ceiling so you can't stall forever
 
+// Resolve-name label style knobs.
+const double _kResolveNameFontSize = 24; // headline callout; was 11
+const double _kResolveNameDropOffset = 58; // pixels below shape center; was ~30 (matched score-rise)
+
 const double _phi = 1.6180339887498949;
 
 // ---------------------------------------------------------------- geometry --
@@ -533,10 +537,11 @@ class _CornersPainter extends CustomPainter {
       _drawText(
         canvas,
         _shapeName(s),
-        s.pos + Offset(0, rise),
-        fontSize: 11,
+        s.pos + Offset(0, _kResolveNameDropOffset),
+        fontSize: _kResolveNameFontSize,
         color: _kBrandGold.withValues(alpha: opacity),
         bold: true,
+        glow: _kBrandOrange.withValues(alpha: opacity * 0.6),
       );
     }
   }

@@ -171,6 +171,30 @@ class _MiniGameHostState extends State<MiniGameHost> {
                     if (_session.phase == MiniGamePhase.countdown)
                       _CountdownOverlay(
                           value: _countdown, accent: spec.accent),
+                    // Always-available quit. In a party round the board overlays
+                    // its own SKIP/forfeit, so the in-game quit is for solo
+                    // Explore play (leave back to the scale).
+                    if (!widget.isParty)
+                      Positioned(
+                        top: 6,
+                        left: 10,
+                        child: SafeArea(
+                          child: GestureDetector(
+                            onTap: widget.onExit,
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                borderRadius: BorderRadius.circular(10),
+                                border:
+                                    Border.all(color: Colors.white24),
+                              ),
+                              child: const Icon(Icons.close,
+                                  color: Colors.white70, size: 20),
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 );
               case MiniGamePhase.finished:
