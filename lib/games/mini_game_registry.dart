@@ -6,6 +6,7 @@ import 'arcade/atom_builder.dart';
 import 'arcade/big_bang_arcade.dart';
 import 'arcade/collider.dart';
 import 'arcade/corners.dart';
+import 'arcade/grow_the_plant.dart';
 import 'arcade/hungry_cell.dart';
 import 'arcade/molecule_mixer.dart';
 import 'mini_game.dart';
@@ -148,6 +149,25 @@ class MiniGameRegistry {
       accent: const Color(0xFF9C27B0),
       icon: Icons.blur_circular,
       builder: (context, session) => HungryCellGame(session: session),
+    ),
+    MiniGameSpec(
+      id: 'grow_the_plant',
+      name: 'Grow The Plant',
+      scale: BioScale.organ,
+      tagline: 'Master all four elements to grow the perfect crop',
+      rules: [
+        'Five elemental phases cycle every ~10s — a banner tells you what\'s coming.',
+        'AIR: drag the gust over bugs (+10) or flick tornados away (+15) before they reach the plant.',
+        'FIRE: swipe toward the plant from the drifting sun (+5 per swipe); WATER: tap spread-out spots (+8) — same spot too many times = −12.',
+        'EARTH: drag to plow every grid cell (+6 each, +40 bonus for a full clear). Escalation is relentless.',
+      ],
+      howToWin: 'Most growth points when time runs out wins.',
+      durationSeconds: 60,
+      scoreUnit: 'growth',
+      enabled: true,
+      accent: const Color(0xFF8BC34A),
+      icon: Icons.eco,
+      builder: (context, session) => GrowThePlantGame(session: session),
     ),
   ];
 
