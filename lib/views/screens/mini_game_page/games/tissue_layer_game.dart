@@ -186,7 +186,10 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   double _roundTimeLeft = 25.0;
   double _studyDuration = 3.5;
 
-  late _OrganConfig _organ;
+  // Default-initialised (not `late`) so the painter can safely read it on the
+  // first frame, before _initGame()/_startRound() runs. _startRound() reassigns
+  // it for real each round.
+  _OrganConfig _organ = _kOrgans.first;
   final Set<_Tissue> _filled = {};       // correctly placed zones
   final Map<_Tissue, bool> _dropped = {}; // zone → correct?
   final List<_ZoneFill> _fillAnims = [];

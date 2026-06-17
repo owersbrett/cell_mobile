@@ -140,6 +140,37 @@ const List<_MoleculeDef> _molecules = [
 ];
 
 // ---------------------------------------------------------------------------
+// Backbone helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the slot index of the backbone atom for [mol], or null if the
+/// molecule is ungated (diatomic or no single clear hub).
+///
+/// The backbone is defined as the slot with the highest bond-degree.
+/// Ungated conditions:
+///   • max degree == 1  (diatomic — every slot touches exactly one bond)
+///   • tie: two or more slots share the maximum degree
+int? _backboneSlot(_MoleculeDef mol) {
+  if (mol.bonds.isEmpty) return null;
+
+  // Compute degree for each slot index.
+  final degree = List<int>.filled(mol.slots.length, 0);
+  for (final b in mol.bonds) {
+    degree[b[0]]++;
+    degree[b[1]]++;
+  }
+
+  final maxDeg = degree.reduce(math.max);
+
+  // Ungated: diatomic (maxDeg == 1) or tie.
+  if (maxDeg <= 1) return null;
+  final hubs = [for (var i = 0; i < degree.length; i++) if (degree[i] == maxDeg) i];
+  if (hubs.length != 1) return null;
+
+  return hubs.first;
+}
+
+// ---------------------------------------------------------------------------
 // Runtime entities
 // ---------------------------------------------------------------------------
 
@@ -208,6 +239,8 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
 
   late _MoleculeDef _target;
   late List<_Slot> _slots;
+  /// Slot index of the backbone atom, or null if this molecule is ungated.
+  int? _backbone;
   int _completedCount = 0;
 
   final List<_FieldAtom> _atoms = [];
@@ -218,6 +251,10 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
   /// Celebration timeline; -1 = inactive, otherwise seconds since completion.
   double _celebT = -1;
 
+  /// Backbone pulse intensity (1 → 0). Set to 1 when the player taps a
+  /// peripheral before the backbone; decays to 0 over ~0.7 s.
+  double _backbonePulse = 0;
+
   Size? _fieldSize;
   bool _seeded = false;
 
@@ -226,6 +263,7 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     super.initState();
     _target = _molecules[_rng.nextInt(_molecules.length)];
     _slots = _target.slots.map((d) => _Slot(d)).toList();
+    _backbone = _backboneSlot(_target);
     _ticker = createTicker(_onTick)..start();
   }
 
@@ -338,6 +376,11 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
         _nextTarget();
       }
     }
+
+    // Backbone pulse decay.
+    if (_backbonePulse > 0) {
+      _backbonePulse = math.max(0, _backbonePulse - dt / 0.7);
+    }
   }
 
   void _arrive(_FlyingAtom f) {
@@ -367,6 +410,7 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     }
     _target = pool[_rng.nextInt(pool.length)];
     _slots = _target.slots.map((d) => _Slot(d)).toList();
+    _backbone = _backboneSlot(_target);
     _ensureSupply(); // flood in the parts for the new compound
   }
 
@@ -490,6 +534,19 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     final slotIdx = _slots.indexWhere(
         (s) => s.state == 0 && s.def.element == best!.element);
     if (slotIdx >= 0) {
+      // Backbone gate: the backbone slot must be filled before any peripheral.
+      final bb = _backbone;
+      if (bb != null && slotIdx != bb && _slots[bb].state == 0) {
+        // Sequencing violation — no penalty, just guidance.
+        _popups.add(_Popup(
+          'BACKBONE FIRST',
+          best.pos.translate(0, -_kAtomR - 6),
+          const Color(0xFFFFB300),
+        ));
+        // Pulse the backbone slot world position so the painter can highlight it.
+        _backbonePulse = 1.0;
+        return;
+      }
       // Needed atom: claim slot, fly it in.
       _slots[slotIdx].state = 1;
       widget.session.addScore(5);
@@ -546,6 +603,10 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     for (final s in _target.slots) {
       if (!order.contains(s.element)) order.add(s.element);
     }
+    // The backbone element (if gated), used to mark it in the panel.
+    final bb = _backbone;
+    final backboneElement = bb != null ? _target.slots[bb].element : null;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: BoxDecoration(
@@ -610,7 +671,7 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
           Row(
             children: [
               for (final e in order) ...[
-                _elementSlots(e),
+                _elementSlots(e, isBackbone: e == backboneElement),
                 const SizedBox(width: 16),
               ],
             ],
@@ -620,11 +681,14 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     );
   }
 
-  Widget _elementSlots(int element) {
+  Widget _elementSlots(int element, {bool isBackbone = false}) {
     final def = _elements[element];
     final slots =
         _slots.where((s) => s.def.element == element).toList();
+    // Determine whether the backbone slot for this element is still unfilled.
+    final backboneFilled = _backbone != null && _slots[_backbone!].state > 0;
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Text(
           def.symbol,
@@ -638,6 +702,31 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
             ],
           ),
         ),
+        // Backbone marker: a small amber "CORE" pill shown while the backbone
+        // is still empty so the player knows what to place first.
+        if (isBackbone && !backboneFilled) ...[
+          const SizedBox(width: 3),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFB300).withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(
+                  color: const Color(0xFFFFB300).withValues(alpha: 0.7),
+                  width: 0.8),
+            ),
+            child: const Text(
+              'CORE',
+              style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: 7,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+                color: Color(0xFFFFB300),
+              ),
+            ),
+          ),
+        ],
         const SizedBox(width: 5),
         for (final s in slots)
           Padding(
@@ -840,9 +929,11 @@ class _MixerPainter extends CustomPainter {
     }
 
     // Slots: ghost outlines for empty/incoming, full atoms for filled.
-    for (final slot in g._slots) {
+    for (var i = 0; i < g._slots.length; i++) {
+      final slot = g._slots[i];
       final at = g._slotWorld(slot);
       final def = _elements[slot.def.element];
+      final isBackbone = g._backbone == i;
       if (slot.state == 2) {
         final since = g._clock - slot.fillTime;
         final pop = since < 0.25
@@ -851,14 +942,32 @@ class _MixerPainter extends CustomPainter {
         _drawAtom(canvas, at, slot.def.element, _kAtomR * pop,
             alpha: alpha, glow: 1.0);
       } else {
+        // Backbone pulse: bright amber ring animates when the player taps a
+        // peripheral before placing the backbone.
+        if (isBackbone && g._backbonePulse > 0) {
+          final pulse = g._backbonePulse;
+          final ring = _kAtomR * 0.85 + 7 * (1 - pulse);
+          canvas.drawCircle(
+            at,
+            ring,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.5
+              ..color = const Color(0xFFFFB300).withValues(alpha: 0.9 * pulse * alpha)
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+          );
+        }
+
         // Ghost slot: faint dashed-feel ring + dim symbol.
         canvas.drawCircle(
           at,
           _kAtomR * 0.85,
           Paint()
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.4
-            ..color = def.color.withValues(alpha: 0.35 * alpha),
+            ..strokeWidth = isBackbone && slot.state == 0 ? 2.2 : 1.4
+            ..color = isBackbone && slot.state == 0
+                ? def.color.withValues(alpha: 0.6 * alpha)
+                : def.color.withValues(alpha: 0.35 * alpha),
         );
         canvas.drawCircle(
           at,

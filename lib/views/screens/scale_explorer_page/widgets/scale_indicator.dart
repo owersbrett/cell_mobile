@@ -26,7 +26,7 @@ class ScaleIndicator extends StatelessWidget {
   };
 
   static const _scaleLabels = <BioScale, String>{
-    BioScale.somethings: 'Something',
+    BioScale.somethings: 'Geometry',
     BioScale.molecular: 'Molecular',
     BioScale.organelle: 'Organelle',
     BioScale.cell: 'Cell',

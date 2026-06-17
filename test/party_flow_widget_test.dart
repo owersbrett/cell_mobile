@@ -31,7 +31,7 @@ void main() {
 
   testWidgets('every enabled mini-game spec renders its intro screen',
       (tester) async {
-    expect(MiniGameRegistry.enabledSpecs.length, 6);
+    expect(MiniGameRegistry.enabledSpecs.length, 7);
     for (final spec in MiniGameRegistry.enabledSpecs) {
       await tester.pumpWidget(
         MaterialApp(

@@ -16,6 +16,24 @@ const Color _kGood = Color(0xFF69F0AE);
 const Color _kBad = Color(0xFFFF5252);
 const Color _kWarn = Color(0xFFFFB300); // instability / "needs a nucleus"
 
+// ── Fertilizer banking ────────────────────────────────────────────────────────
+// The four potato macronutrients are auto-banked when the proton count passes
+// their atomic number. Each adds _kFertilizerBonus to the final score.
+// Tune _kFertilizerBonus freely — all four banked = 4× the bonus.
+const int _kFertilizerBonus = 25; // points per banked nutrient (all 4 → +100)
+
+// Atomic numbers at which each nutrient is banked (crossed on proton increment).
+const Map<String, int> _kNutrientAtomicNumbers = {
+  'N': 7,  // Nitrogen
+  'P': 15, // Phosphorus
+  'S': 16, // Sulfur
+  'K': 19, // Potassium
+};
+
+// Display order for the FERTILIZER indicator row.
+const List<String> _kNutrientOrder = ['N', 'P', 'S', 'K'];
+// ──────────────────────────────────────────────────────────────────────────────
+
 // Nuclear stability: protons repel, neutrons are the strong-force glue.
 // When unpaired protons (gotP - gotN) build up past this, the core starts to
 // destabilise; left unbalanced long enough, a proton decays away.
@@ -144,6 +162,12 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
   String _bannerText = '';
   double _nucleusKick = 0; // wobble impulse when a particle lands
   double _instability = 0; // 0..1 — fills when protons outnumber neutrons
+
+  // ── Fertilizer state ────────────────────────────────────────────────────────
+  /// Which nutrient symbols have already been banked this game.
+  /// Checked in the UI to light up the N P S K indicator row.
+  final Set<String> _bankedNutrients = {};
+  // ──────────────────────────────────────────────────────────────────────────
 
   Size _fieldSize = Size.zero;
 
@@ -461,6 +485,7 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
       switch (hit.kind) {
         case _ParticleKind.proton:
           _gotP++;
+          _checkFertilizerCrossing(_gotP, Offset(hit.x, hit.y));
           break;
         case _ParticleKind.neutron:
           _gotN++;
@@ -475,6 +500,39 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
       _flashAlpha = 0.55;
       _popups.add(_Popup('-10', _kBad, Offset(hit.x, hit.y)));
     }
+  }
+
+  /// Called each time a proton is successfully collected.
+  /// Auto-banks any nutrient whose atomic number the new [protonCount] just
+  /// crossed, emitting a celebratory popup and crediting the score bonus.
+  void _checkFertilizerCrossing(int protonCount, Offset hitPos) {
+    _kNutrientAtomicNumbers.forEach((symbol, atomicNum) {
+      if (protonCount == atomicNum && !_bankedNutrients.contains(symbol)) {
+        _bankedNutrients.add(symbol);
+        widget.session.addScore(_kFertilizerBonus);
+
+        // Celebratory popup — positioned above the tap, like existing popups.
+        final names = {
+          'N': 'NITROGEN',
+          'P': 'PHOSPHORUS',
+          'S': 'SULFUR',
+          'K': 'POTASSIUM',
+        };
+        _popups.add(_Popup(
+          '${names[symbol]} BANKED 🥔',
+          _kGood,
+          hitPos - const Offset(0, 30),
+          scale: 1.1,
+        ));
+
+        // Flash the field green for a beat (reuse _flashAlpha channel via a
+        // brief _bannerAge overlay isn't right — use a dedicated green flash).
+        // We repurpose _bannerText + _bannerAge for this celebratory banner,
+        // same as the noble-gas completion banner.
+        _bannerText = '+$_kFertilizerBonus · ${names[symbol]} FERTILIZER 🥔';
+        _bannerAge = 0;
+      }
+    });
   }
 
   void _checkComplete() {
@@ -545,6 +603,12 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
               ),
             ),
             if (_bannerAge >= 0) _buildBanner(),
+            // Fertilizer indicator — bottom-left, unobtrusive.
+            Positioned(
+              bottom: 12,
+              left: 12,
+              child: _FertilizerIndicator(banked: _bankedNutrients),
+            ),
           ],
         ),
       );
@@ -595,6 +659,82 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// --------------------------------------------------------- fertilizer UI --
+
+/// A compact "N P S K" row that lights up as each nutrient is banked.
+/// Lives in the bottom-left corner so it doesn't compete with the target panel.
+class _FertilizerIndicator extends StatelessWidget {
+  final Set<String> banked;
+  const _FertilizerIndicator({required this.banked});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.50),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _kGood.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'FERTILIZER',
+            style: TextStyle(
+              fontFamily: _kFont,
+              fontSize: 9,
+              fontWeight: FontWeight.bold,
+              color: _kGood.withValues(alpha: 0.55),
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(width: 6),
+          for (final sym in _kNutrientOrder) ...[
+            _NutrientPip(symbol: sym, lit: banked.contains(sym)),
+            const SizedBox(width: 4),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _NutrientPip extends StatelessWidget {
+  final String symbol;
+  final bool lit;
+  const _NutrientPip({required this.symbol, required this.lit});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 22,
+      height: 22,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: lit ? _kGood.withValues(alpha: 0.25) : Colors.transparent,
+        border: Border.all(
+          color: lit ? _kGood : _kGood.withValues(alpha: 0.25),
+          width: 1.2,
+        ),
+        boxShadow: lit
+            ? [BoxShadow(color: _kGood.withValues(alpha: 0.45), blurRadius: 8)]
+            : null,
+      ),
+      child: Text(
+        symbol,
+        style: TextStyle(
+          fontFamily: _kFont,
+          fontSize: 10,
+          fontWeight: FontWeight.bold,
+          color: lit ? Colors.white : _kGood.withValues(alpha: 0.35),
         ),
       ),
     );

@@ -1,6 +1,7 @@
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:flutter/material.dart';
 
+import 'arcade/accelerator.dart';
 import 'arcade/atom_builder.dart';
 import 'arcade/big_bang_arcade.dart';
 import 'arcade/collider.dart';
@@ -74,6 +75,25 @@ class MiniGameRegistry {
       accent: const Color(0xFFAB47BC),
       icon: Icons.grain,
       builder: (context, session) => ColliderGame(session: session),
+    ),
+    MiniGameSpec(
+      id: 'accelerator',
+      name: 'Accelerator',
+      scale: BioScale.particles,
+      tagline: 'Pump the beam — hold the band — survive',
+      rules: [
+        'Tap anywhere to pump energy into the accelerator bar.',
+        'Energy drains constantly — keep the needle inside the green band.',
+        'Hold the band for 2.5 s to trigger a collision and score: +30 base plus a level bonus.',
+        'Each level the band narrows and drain speeds up — find your rhythm.',
+      ],
+      howToWin: 'Most points when time runs out wins.',
+      durationSeconds: 45,
+      scoreUnit: 'points',
+      enabled: true,
+      accent: const Color(0xFFCE93D8),
+      icon: Icons.bolt,
+      builder: (context, session) => AcceleratorGame(session: session),
     ),
     MiniGameSpec(
       id: 'atom_builder',

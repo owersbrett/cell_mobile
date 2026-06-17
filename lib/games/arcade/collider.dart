@@ -11,15 +11,54 @@ const _kMagenta = Color(0xFFFF4FD8);
 const _kCyan = Color(0xFF00E5FF);
 const _kRed = Color(0xFFFF5252);
 
+// ---------------------------------------------------------------------------
+// Feel constants — tune these for play-balance.
+// ---------------------------------------------------------------------------
+
+/// Number of concentric rings. Ring 0 = innermost / slowest / lowest score.
+const int _kRingCount = 5;
+
+/// Smallest ring radius as a fraction of min(width, height).
+const double _kInnerRadiusFraction = 0.18;
+
+/// Outermost ring radius as a fraction of min(width, height).
+const double _kOuterRadiusFraction = 0.42;
+
+/// Base orbit speed (rad/s) on the innermost ring. Each ring above multiplies
+/// this by _kSpeedPerLevel^level, so outer rings are noticeably faster.
+const double _kBaseSpeed1 = 1.4; // rad/s, particle 1 clockwise
+const double _kBaseSpeed2 = 1.75; // rad/s, particle 2 counter-clockwise
+
+/// Multiplier applied per ring level to orbit speed (level 0 = ×1.0).
+/// At ring 4 this gives speed × 1.38 — fast enough that outer rings require
+/// genuine precision to maintain.
+const double _kSpeedPerLevel = 1.08;
+
+/// Angular separation thresholds for PERFECT / CLOSE.
 const double _kPerfectSep = 10 * math.pi / 180; // < 10 degrees
 const double _kCloseSep = 25 * math.pi / 180; // < 25 degrees
-const double _kBaseSpeed1 = 1.9; // rad/s, clockwise
-const double _kBaseSpeed2 = 2.35; // rad/s, counter-clockwise
-const double _kSpeedCap = 2.5;
+
+/// Base PERFECT score at ring 0. Each ring up adds _kScorePerLevel points.
+const int _kBasePerfectScore = 15;
+
+/// Extra points per ring level for a PERFECT hit.
+const int _kScorePerLevel = 8;
+
+/// Base CLOSE score at ring 0. Each ring up adds half _kScorePerLevel.
+const int _kBaseCloseScore = 6;
+
+/// Miss penalty (applied on every miss regardless of level).
+const int _kMissPenalty = 5;
+
+/// Slow-drift factor while the countdown overlay is covering the game.
 const double _kIdleFactor = 0.22;
 
-/// "Collider" — two counter-orbiting particles on an accelerator ring.
-/// Tap the instant they cross: tighter timing, bigger score.
+// ---------------------------------------------------------------------------
+
+/// "Collider" — two counter-orbiting particles on a concentric ring ladder.
+/// Start on ring 0 (innermost / slowest). Land a collision → promote to next
+/// ring (faster, higher score). Miss once → drop one ring. Miss twice in a row
+/// → back to ring 0.
 class ColliderGame extends StatefulWidget {
   final MiniGameSession session;
   const ColliderGame({Key? key, required this.session}) : super(key: key);
@@ -34,17 +73,20 @@ class _ColliderGameState extends State<ColliderGame>
   Duration _lastElapsed = Duration.zero;
   final math.Random _rng = math.Random();
 
-  // Particle state: angles in radians, particle 1 runs +, particle 2 runs -.
+  // Particle state.
   double _angle1 = 0.0;
   double _angle2 = math.pi;
-  double _speedMult = 1.0;
+
+  // Ring / level state.
+  int _level = 0; // 0 = innermost ring
+  int _consecutiveMisses = 0;
 
   // Juice state.
-  double _flash = 0.0; // white collision bloom, 1 -> 0
-  double _missFlash = 0.0; // red ring flash, 1 -> 0
-  double _shake = 0.0; // screen shake intensity, 1 -> 0
-  double _flashAngle = 0.0; // where on the ring the last collision bloomed
-  double _idlePhase = 0.0; // slow drift for the detector background
+  double _flash = 0.0;
+  double _missFlash = 0.0;
+  double _shake = 0.0;
+  double _flashAngle = 0.0;
+  double _idlePhase = 0.0;
   final List<_Spark> _sparks = [];
   final List<_Popup> _popups = [];
 
@@ -62,15 +104,19 @@ class _ColliderGameState extends State<ColliderGame>
     super.dispose();
   }
 
+  // Current orbit speed multiplier derived from ring level.
+  double get _speedFactor {
+    return math.pow(_kSpeedPerLevel, _level).toDouble();
+  }
+
   void _onTick(Duration elapsed) {
     final dt =
         ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.05);
     _lastElapsed = elapsed;
     if (dt <= 0) return;
 
-    // While the countdown overlay covers us, particles idle-orbit slowly.
     final running = widget.session.isRunning;
-    final factor = running ? _speedMult : _kIdleFactor;
+    final factor = running ? _speedFactor : _kIdleFactor;
 
     _angle1 = _wrap(_angle1 + _kBaseSpeed1 * factor * dt);
     _angle2 = _wrap(_angle2 - _kBaseSpeed2 * factor * dt);
@@ -84,7 +130,7 @@ class _ColliderGameState extends State<ColliderGame>
     for (final s in _sparks) {
       s.age += dt;
       s.pos += s.vel * dt;
-      s.vel *= math.pow(0.04, dt).toDouble(); // drag
+      s.vel *= math.pow(0.04, dt).toDouble();
     }
     _sparks.removeWhere((s) => s.age >= s.life);
 
@@ -102,13 +148,11 @@ class _ColliderGameState extends State<ColliderGame>
     return a < 0 ? a + tau : a;
   }
 
-  /// Smallest angular distance between the two particles, in [0, pi].
   double get _separation {
     final d = (_angle1 - _angle2).abs() % (2 * math.pi);
     return d > math.pi ? 2 * math.pi - d : d;
   }
 
-  /// Midpoint angle along the shortest arc between the particles.
   double get _crossingAngle {
     final d = _wrap(_angle2 - _angle1);
     final half = d <= math.pi ? d / 2 : (d - 2 * math.pi) / 2;
@@ -120,44 +164,71 @@ class _ColliderGameState extends State<ColliderGame>
 
     final sep = _separation;
     final geom = _RingGeometry.of(size);
+    final ringRadius = geom.radiusForLevel(_level);
     final hitAngle = _crossingAngle;
-    final hitPos = geom.pointAt(hitAngle);
+    final hitPos = geom.pointAtRadius(hitAngle, ringRadius);
 
     if (sep < _kPerfectSep) {
-      widget.session.addScore(25);
+      final score = _kBasePerfectScore + _level * _kScorePerLevel;
+      widget.session.addScore(score);
       _flash = 1.0;
       _shake = 1.0;
       _flashAngle = hitAngle;
       _spawnSparks(hitPos, 34, big: true);
-      _popups.add(_Popup('PERFECT +25', hitPos, Colors.white, big: true));
-      _respawn();
+      _popups.add(_Popup('PERFECT +$score', hitPos, Colors.white, big: true));
+      _promote();
     } else if (sep < _kCloseSep) {
-      widget.session.addScore(10);
+      final score = _kBaseCloseScore + _level * (_kScorePerLevel ~/ 2);
+      widget.session.addScore(score);
       _flash = 0.55;
       _shake = 0.4;
       _flashAngle = hitAngle;
       _spawnSparks(hitPos, 16, big: false);
-      _popups.add(_Popup('CLOSE +10', hitPos, _kCyan, big: false));
-      _respawn();
+      _popups.add(_Popup('CLOSE +$score', hitPos, _kCyan, big: false));
+      _promote();
     } else {
-      widget.session.addScore(-5);
+      widget.session.addScore(-_kMissPenalty);
       _missFlash = 1.0;
-      _popups.add(_Popup('−5', geom.center, _kRed, big: false));
+      _popups.add(_Popup('−$_kMissPenalty', geom.center, _kRed, big: false));
+      _applyMiss(size);
+      return; // _applyMiss calls _respawn internally; skip the shared respawn.
     }
+
+    _respawn();
+  }
+
+  /// Successful hit: go up one ring, reset miss counter.
+  void _promote() {
+    _consecutiveMisses = 0;
+    if (_level < _kRingCount - 1) {
+      _level++;
+    }
+    // If already at the cap, stay and keep scoring (no demotion).
+  }
+
+  /// Miss logic: first miss → drop one ring; second consecutive miss → ring 0.
+  void _applyMiss(Size size) {
+    _consecutiveMisses++;
+    if (_consecutiveMisses >= 2) {
+      _level = 0;
+      _consecutiveMisses = 0;
+    } else {
+      if (_level > 0) _level--;
+    }
+    _respawn();
   }
 
   void _respawn() {
     _angle1 = _rng.nextDouble() * 2 * math.pi;
-    // Keep them at least ~70 degrees apart so the next run-up reads clearly.
     final gap = 1.2 + _rng.nextDouble() * (math.pi - 1.2);
     _angle2 = _wrap(_angle1 + (_rng.nextBool() ? gap : -gap));
-    _speedMult = math.min(_kSpeedCap, _speedMult * 1.08);
   }
 
   void _spawnSparks(Offset origin, int count, {required bool big}) {
     for (var i = 0; i < count; i++) {
       final a = _rng.nextDouble() * 2 * math.pi;
-      final speed = (big ? 140.0 : 90.0) + _rng.nextDouble() * (big ? 240 : 140);
+      final speed =
+          (big ? 140.0 : 90.0) + _rng.nextDouble() * (big ? 240 : 140);
       final palette = [
         Colors.white,
         _kMagenta,
@@ -196,6 +267,7 @@ class _ColliderGameState extends State<ColliderGame>
                       painter: _ColliderPainter(
                         angle1: _angle1,
                         angle2: _angle2,
+                        level: _level,
                         separation: _separation,
                         crossingAngle: _crossingAngle,
                         flash: _flash,
@@ -208,7 +280,7 @@ class _ColliderGameState extends State<ColliderGame>
                     ),
                   ),
                 ),
-                // Live beam-speed readout.
+                // Ring / level readout.
                 Positioned(
                   top: 10,
                   right: 12,
@@ -222,7 +294,7 @@ class _ColliderGameState extends State<ColliderGame>
                           color: _kAccent.withValues(alpha: 0.45)),
                     ),
                     child: Text(
-                      'BEAM ×${_speedMult.toStringAsFixed(2)}',
+                      'RING ${_level + 1} / $_kRingCount',
                       style: TextStyle(
                         fontFamily: _kFont,
                         fontSize: 11,
@@ -242,20 +314,39 @@ class _ColliderGameState extends State<ColliderGame>
   }
 }
 
+// ---------------------------------------------------------------------------
+// Ring geometry — concentric ladder.
+// ---------------------------------------------------------------------------
+
 class _RingGeometry {
   final Offset center;
-  final double radius;
-  const _RingGeometry(this.center, this.radius);
+  final double minDim;
+
+  const _RingGeometry(this.center, this.minDim);
 
   factory _RingGeometry.of(Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final radius = math.min(size.width, size.height) * 0.36;
-    return _RingGeometry(center, radius);
+    final minDim = math.min(size.width, size.height);
+    return _RingGeometry(center, minDim);
   }
 
-  Offset pointAt(double angle) =>
+  /// Radius for a given ring level (0 = innermost).
+  double radiusForLevel(int level) {
+    if (_kRingCount <= 1) return minDim * _kOuterRadiusFraction;
+    final t = level / (_kRingCount - 1);
+    return minDim * (_kInnerRadiusFraction + t * (_kOuterRadiusFraction - _kInnerRadiusFraction));
+  }
+
+  Offset pointAtRadius(double angle, double radius) =>
       center + Offset(math.cos(angle), math.sin(angle)) * radius;
+
+  // Legacy single-ring compat (used by the painter for the flash/bloom).
+  double get radius => radiusForLevel(0);
 }
+
+// ---------------------------------------------------------------------------
+// Data classes.
+// ---------------------------------------------------------------------------
 
 class _Spark {
   Offset pos;
@@ -284,9 +375,14 @@ class _Popup {
       : life = big ? 1.1 : 0.85;
 }
 
+// ---------------------------------------------------------------------------
+// Painter.
+// ---------------------------------------------------------------------------
+
 class _ColliderPainter extends CustomPainter {
   final double angle1;
   final double angle2;
+  final int level;
   final double separation;
   final double crossingAngle;
   final double flash;
@@ -299,6 +395,7 @@ class _ColliderPainter extends CustomPainter {
   _ColliderPainter({
     required this.angle1,
     required this.angle2,
+    required this.level,
     required this.separation,
     required this.crossingAngle,
     required this.flash,
@@ -315,7 +412,7 @@ class _ColliderPainter extends CustomPainter {
 
     _paintBackground(canvas, size, geom);
     _paintDetector(canvas, geom);
-    _paintRing(canvas, geom);
+    _paintAllRings(canvas, geom);
     _paintConvergenceGlow(canvas, geom);
     _paintParticle(canvas, geom, angle1, 1.0, _kMagenta);
     _paintParticle(canvas, geom, angle2, -1.0, _kCyan);
@@ -327,7 +424,6 @@ class _ColliderPainter extends CustomPainter {
   void _paintBackground(Canvas canvas, Size size, _RingGeometry geom) {
     canvas.drawRect(Offset.zero & size, Paint()..color = Colors.black);
 
-    // Faint detector grid.
     final grid = Paint()
       ..color = _kAccent.withValues(alpha: 0.05)
       ..strokeWidth = 1;
@@ -339,10 +435,11 @@ class _ColliderPainter extends CustomPainter {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
     }
 
-    // Soft purple vignette glow behind the ring.
+    // Soft purple vignette glow.
+    final outerR = geom.radiusForLevel(_kRingCount - 1);
     canvas.drawCircle(
       geom.center,
-      geom.radius * 1.7,
+      outerR * 1.5,
       Paint()
         ..shader = RadialGradient(
           colors: [
@@ -350,21 +447,20 @@ class _ColliderPainter extends CustomPainter {
             _kAccent.withValues(alpha: 0.0),
           ],
         ).createShader(
-            Rect.fromCircle(center: geom.center, radius: geom.radius * 1.7)),
+            Rect.fromCircle(center: geom.center, radius: outerR * 1.5)),
     );
   }
 
   void _paintDetector(Canvas canvas, _RingGeometry geom) {
-    // Concentric detector shells.
+    final outerR = geom.radiusForLevel(_kRingCount - 1);
+
+    // Outer detector shell and tick marks.
     final shell = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-    for (final f in [0.45, 0.68, 1.28]) {
-      shell.color = Colors.white.withValues(alpha: 0.05);
-      canvas.drawCircle(geom.center, geom.radius * f, shell);
-    }
+      ..strokeWidth = 1
+      ..color = Colors.white.withValues(alpha: 0.05);
+    canvas.drawCircle(geom.center, outerR * 1.22, shell);
 
-    // Slowly rotating tick marks around the outer shell.
     final tick = Paint()
       ..color = _kAccent.withValues(alpha: 0.22)
       ..strokeWidth = 1.5;
@@ -373,62 +469,68 @@ class _ColliderPainter extends CustomPainter {
       final a = spin + i * math.pi / 18;
       final dir = Offset(math.cos(a), math.sin(a));
       canvas.drawLine(
-        geom.center + dir * (geom.radius * 1.28),
-        geom.center + dir * (geom.radius * 1.28 + (i % 6 == 0 ? 9.0 : 4.0)),
+        geom.center + dir * (outerR * 1.22),
+        geom.center + dir * (outerR * 1.22 + (i % 6 == 0 ? 9.0 : 4.0)),
         tick,
       );
     }
   }
 
-  void _paintRing(Canvas canvas, _RingGeometry geom) {
-    final rect = Rect.fromCircle(center: geom.center, radius: geom.radius);
+  /// Draw all rings faintly; the current ring is drawn brightly.
+  void _paintAllRings(Canvas canvas, _RingGeometry geom) {
+    for (var i = 0; i < _kRingCount; i++) {
+      final r = geom.radiusForLevel(i);
+      final isCurrent = i == level;
 
-    // Outer bloom of the accelerator ring.
-    canvas.drawCircle(
-      geom.center,
-      geom.radius,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 14
-        ..color = _kAccent.withValues(alpha: 0.10)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
-    );
+      // Bloom glow (only for current ring).
+      if (isCurrent) {
+        canvas.drawCircle(
+          geom.center,
+          r,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 14
+            ..color = _kAccent.withValues(alpha: 0.12)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+        );
+      }
 
-    // Beam pipe.
-    canvas.drawCircle(
-      geom.center,
-      geom.radius,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
-        ..color = _kAccent.withValues(alpha: 0.55),
-    );
-
-    // Miss feedback: brief dull red flash of the whole ring.
-    if (missFlash > 0) {
-      canvas.drawArc(
-        rect,
-        0,
-        2 * math.pi,
-        false,
+      // Beam pipe.
+      canvas.drawCircle(
+        geom.center,
+        r,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 6
-          ..color = _kRed.withValues(alpha: 0.5 * missFlash)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+          ..strokeWidth = isCurrent ? 3.0 : 1.0
+          ..color = isCurrent
+              ? _kAccent.withValues(alpha: 0.75)
+              : _kAccent.withValues(alpha: 0.18),
       );
+
+      // Miss feedback on current ring.
+      if (isCurrent && missFlash > 0) {
+        canvas.drawCircle(
+          geom.center,
+          r,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 6
+            ..color = _kRed.withValues(alpha: 0.5 * missFlash)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+        );
+      }
     }
   }
 
   /// The ring segment between the particles brightens as they converge.
   void _paintConvergenceGlow(Canvas canvas, _RingGeometry geom) {
     if (separation >= math.pi * 0.999) return;
-    // 0 when far apart, 1 when overlapping.
     final closeness = (1 - separation / math.pi).clamp(0.0, 1.0);
     final intensity = math.pow(closeness, 3).toDouble();
     if (intensity <= 0.02) return;
 
-    final rect = Rect.fromCircle(center: geom.center, radius: geom.radius);
+    final r = geom.radiusForLevel(level);
+    final rect = Rect.fromCircle(center: geom.center, radius: r);
     final start = crossingAngle - separation / 2;
 
     canvas.drawArc(
@@ -447,12 +549,14 @@ class _ColliderPainter extends CustomPainter {
 
   void _paintParticle(Canvas canvas, _RingGeometry geom, double angle,
       double direction, Color color) {
-    // Comet tail: fading orbs trailing behind along the ring.
+    final r = geom.radiusForLevel(level);
+
+    // Comet tail.
     const tailCount = 16;
     for (var i = tailCount; i >= 1; i--) {
       final t = i / tailCount;
       final trailAngle = angle - direction * t * 0.55;
-      final p = geom.pointAt(trailAngle);
+      final p = geom.pointAtRadius(trailAngle, r);
       canvas.drawCircle(
         p,
         5.5 * (1 - t) + 0.8,
@@ -460,7 +564,7 @@ class _ColliderPainter extends CustomPainter {
       );
     }
 
-    final pos = geom.pointAt(angle);
+    final pos = geom.pointAtRadius(angle, r);
 
     // Bloom.
     canvas.drawCircle(
@@ -481,7 +585,6 @@ class _ColliderPainter extends CustomPainter {
     for (final s in sparks) {
       final t = (1 - s.age / s.life).clamp(0.0, 1.0);
       final paint = Paint()..color = s.color.withValues(alpha: t);
-      // Quark-like streak: a short line along the velocity, plus a dot.
       final dir = s.vel.distance > 1
           ? s.vel / s.vel.distance
           : const Offset(1, 0);
@@ -492,9 +595,9 @@ class _ColliderPainter extends CustomPainter {
 
   void _paintFlash(Canvas canvas, _RingGeometry geom) {
     if (flash <= 0) return;
-    final pos = geom.pointAt(flashAngle);
+    final r = geom.radiusForLevel(level);
+    final pos = geom.pointAtRadius(flashAngle, r);
 
-    // Big white bloom at the crossing point.
     canvas.drawCircle(
       pos,
       26 + 70 * (1 - flash),
@@ -505,7 +608,6 @@ class _ColliderPainter extends CustomPainter {
     canvas.drawCircle(
         pos, 12 * flash, Paint()..color = Colors.white.withValues(alpha: flash));
 
-    // Expanding shockwave ring.
     canvas.drawCircle(
       pos,
       18 + 90 * (1 - flash),

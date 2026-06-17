@@ -520,16 +520,39 @@ class _CornersPainter extends CustomPainter {
             fontSize: 26, color: Colors.white, bold: true, glow: _kBrandGold);
       }
     } else if (s.taps > 0) {
+      final rise = 30 * (s.resolveAge / 0.7).clamp(0.0, 1.0);
       _drawText(
         canvas,
         s.exact ? 'EXACT +${s.awarded}' : '+${s.awarded}',
-        s.pos - Offset(0, 30 * (s.resolveAge / 0.7).clamp(0.0, 1.0)),
+        s.pos - Offset(0, rise),
         fontSize: s.exact ? 22 : 18,
         color: (s.exact ? _kBrandGold : _kGood).withValues(alpha: opacity),
         bold: true,
         glow: (s.exact ? _kBrandOrange : _kGood).withValues(alpha: opacity),
       );
+      _drawText(
+        canvas,
+        _shapeName(s),
+        s.pos + Offset(0, rise),
+        fontSize: 11,
+        color: _kBrandGold.withValues(alpha: opacity),
+        bold: true,
+      );
     }
+  }
+
+  /// Display name for a shape, shown once it is claimed.
+  String _shapeName(_Shape s) {
+    if (s.isSolid) return s.solid!.name; // already uppercase e.g. 'TETRAHEDRON'
+    const names = {
+      3: 'TRIANGLE',
+      4: 'SQUARE',
+      5: 'PENTAGON',
+      6: 'HEXAGON',
+      7: 'HEPTAGON',
+      8: 'OCTAGON',
+    };
+    return names[s.sides] ?? '${s.sides}-GON';
   }
 
   /// Thin ring around a shape that empties as its timer drains — the urgency
