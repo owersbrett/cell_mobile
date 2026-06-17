@@ -29,29 +29,35 @@ const double kDifficultyCapRound = 12.0; // harder earlier
 // HARVEST sub-game
 const int kHarvestCountBase = 4; // was 3
 const int kHarvestCountPerDiff = 4; // was 2 (adds up to 8 at max diff)
-const double kHarvestSwipeThreshold = 6.0; // was 4.0 — must swipe faster
-const double kHarvestHitZoneY = 26.0; // was 35 — tighter vertical hit zone
+// Swipe threshold is compared against the raw per-frame pixel delta on each
+// onPointerMove event. At 60 fps a brisk swipe produces ~3-6 px/frame, so
+// this must stay well below that range. Values ≥ 4 silently drop most frames.
+const double kHarvestSwipeThreshold = 1.5; // per-frame px; was 6.0 (broke controls)
+const double kHarvestHitZoneY = 35.0; // ±px vertical window; was 26.0 (too tight)
 
 // WATER sub-game
-const int kWaterTapsBase = 14; // was 8
-const int kWaterTapsPerDiff = 18; // was 10 (up to 32 at max diff)
+// kWaterTapsBase + kWaterTapsPerDiff * 1.0 = max taps needed.
+// Must be achievable in kRoundTimeMin seconds (~1.6 s) at ~10 taps/s max.
+const int kWaterTapsBase = 8; // was 14 (unreachable early)
+const int kWaterTapsPerDiff = 8; // was 18 (32 taps in 1.6 s = impossible)
 
 // PLANT sub-game
 const int kPlantCountBase = 4; // was 3
 const int kPlantCountPerDiff = 5; // was 3 (up to 9 at max diff)
-const double kPlantHitRadius = 22.0; // was 30 — tighter tap zone
+const double kPlantHitRadius = 30.0; // tap radius in px; was 22.0 (too tight)
 
 // SPRAY sub-game
 const int kSprayBugBase = 6; // was 4
 const int kSprayBugPerDiff = 7; // was 4 (up to 13 at max diff)
 const double kSprayBugSpeedBase = 40.0; // was 10 — bugs move meaningfully
 const double kSprayBugSpeedVar = 60.0; // was 20
-const double kSprayHitRadius = 22.0; // was 28 — smaller spray zone
+const double kSprayHitRadius = 28.0; // spray radius in px; was 22.0 (too tight)
 
 // CHASE sub-game
-const int kChaseSwipesBase = 8; // was 4
-const int kChaseSwipesPerDiff = 10; // was 6 (up to 18 at max diff)
-const double kChaseSwipeThreshold = 5.0; // was 3.0
+const int kChaseSwipesBase = 6; // was 8 (scaled back; direction-flip counts corrected)
+const int kChaseSwipesPerDiff = 8; // was 10 (up to 14 at max diff)
+// Same per-frame delta caveat as HARVEST. Must be < typical frame delta.
+const double kChaseSwipeThreshold = 1.5; // per-frame px; was 5.0 (broke controls)
 
 // CATCH sub-game
 const int kCatchNeededBase = 6; // was 4
@@ -60,12 +66,13 @@ const double kCatchSpeedBase = 160.0; // was 100
 const double kCatchSpeedVar = 140.0; // was 80
 const double kCatchSpawnIntervalBase = 0.22; // was 0.35 — faster spawns
 const double kCatchSpawnIntervalVar = 0.12; // was 0.20
-const double kCatchHitRadius = 22.0; // was 28 — tighter tap zone
+const double kCatchHitRadius = 28.0; // tap radius in px; was 22.0 (too tight)
 
 // MIX (Shake) sub-game
-const int kMixShakesBase = 8; // was 5
-const int kMixShakesPerDiff = 10; // was 6 (up to 18 at max diff)
-const double kMixSwipeThreshold = 5.0; // was 3.0
+const int kMixShakesBase = 6; // was 8 (direction-flip counts corrected)
+const int kMixShakesPerDiff = 8; // was 10 (up to 14 at max diff)
+// Same per-frame delta caveat. Must be < typical frame delta for a swipe.
+const double kMixSwipeThreshold = 1.5; // per-frame px; was 5.0 (broke controls)
 
 // UI — speed-up flash duration
 const double kSpeedUpDuration = 0.65; // was 0.8
@@ -642,7 +649,10 @@ class _ChaseGame extends _MicroGame {
   void onMove(Offset pos, Offset delta) {
     if (delta.dx.abs() < kChaseSwipeThreshold) return;
     final dir = delta.dx > 0 ? 1.0 : -1.0;
-    if (dir != _lastDir && _lastDir != 0) {
+    // Count every direction change, including the very first swipe (removed
+    // the `&& _lastDir != 0` guard that was silently discarding the first
+    // directional input and requiring one extra reversal throughout).
+    if (dir != _lastDir) {
       _swipes++;
       _scareMeter = (_scareMeter + 1.0 / _needed).clamp(0.0, 1.0);
     }
@@ -895,7 +905,9 @@ class _ShakeGame extends _MicroGame {
     if (delta.dx.abs() < kMixSwipeThreshold) return;
     final dir = delta.dx > 0 ? 1.0 : -1.0;
     _wobble = delta.dx.clamp(-15.0, 15.0);
-    if (dir != _lastDir && _lastDir != 0) {
+    // Count every direction change, including the first swipe (removed the
+    // `&& _lastDir != 0` guard — same fix as _ChaseGame).
+    if (dir != _lastDir) {
       _shakes++;
       _mixLevel = (_shakes / _needed).clamp(0.0, 1.0);
     }

@@ -32,6 +32,51 @@ const Color _kBugWarn    = Color(0xFFFF8F00); // bug warning orange
 const Color _kGood       = Color(0xFFAED581);
 const Color _kBad        = Color(0xFFEF5350);
 
+// -- Visual Polish: new atmospheric & plant constants ----------------------
+/// Sky color for AIR phases — pale grey-blue.
+const Color _kAirSky     = Color(0xFF1C2E3A);
+/// Sky color for FIRE phases — deep amber at horizon.
+const Color _kFireSky    = Color(0xFF2E1A00);
+/// Sky color for WATER phases — slate rainstorm.
+const Color _kWaterSky   = Color(0xFF101828);
+/// Sky color for EARTH phases — dawn terracotta.
+const Color _kEarthSky   = Color(0xFF2A1508);
+/// Glow spread for the warm FIRE light wash on plant.
+const double _kFireGlowRadius = 90.0;
+/// Rain-drop body alpha multiplier.
+const double _kRainAlpha = 0.82;
+/// Raindrop falling-streak length in pixels.
+const double _kRainStreakLen = 22.0;
+/// Number of wind-streak lines in AIR atmosphere.
+const int _kWindStreakCount = 14;
+/// Plow furrow stripe count drawn across each tilled cell.
+const int _kFurrowStripes = 3;
+/// Plant bud radius at full growth.
+const double _kBudBaseRadius = 12.0;
+/// Stem stroke width at full growth.
+const double _kStemWidth = 9.0;
+/// Soil line Y fraction — where the ground surface sits.
+const double _kSoilLineFrac = 0.72;
+/// Tuber (potato) semi-axis sizes at full health.
+const double _kTuberRX = 18.0;
+const double _kTuberRY = 12.0;
+/// Phase banner icon size.
+const double _kBannerIconSize = 38.0;
+/// Extra outer-glow layers on the sun.
+const int _kSunGlowLayers = 3;
+/// Puddle radius drawn under overwatered zones.
+const double _kPuddleR = 34.0;
+/// Soggy warning ring pulse speed (radians/sec).
+const double _kSoggyPulse = 4.0;
+/// Dust particle count per plow stroke.
+const int _kDustCount = 10;
+/// Leaf count per side on a healthy plant.
+const int _kLeafPairs = 3;
+/// Background star count.
+const int _kStarCount = 36;
+/// HUD bar height.
+const double _kHudBarH = 38.0;
+
 // -- Phase duration (seconds) -----------------------------------------------
 /// Minimum seconds per phase; scales down slightly at high ramp.
 const double _kPhaseMinSecs = 8.0;
@@ -118,12 +163,14 @@ class _Tornado {
 class _WaterDrop {
   Offset pos;
   double age = 0;
-  _WaterDrop(this.pos);
+  bool isFalling; // true = streak-drop falling from sky, false = ripple on tap
+  _WaterDrop(this.pos, {this.isFalling = false});
 }
 
 class _WaterZone {
   final Offset center;
   int taps = 1;
+  bool overflowed = false;
   _WaterZone(this.center);
 }
 
@@ -180,6 +227,9 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
   // Plant health (visual; 0–1).
   double _plantHealth = 1.0;
 
+  // Plant growth (0–1): grows as score accumulates and health stays up.
+  double _plantGrowth = 0.15;
+
   // ── AIR 1 state ────────────────────────────────────────────────────────────
   final List<_Bug> _bugs = [];
   Offset? _gustPos; // current drag position
@@ -212,6 +262,10 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
   // Shared juice.
   final List<_Particle> _particles = [];
   final List<_Popup> _popups = [];
+
+  // Atmospheric ambient drops for WATER background.
+  final List<_WaterDrop> _ambientDrops = [];
+  double _ambientDropTimer = 0;
 
   Size _fieldSize = Size.zero;
 
@@ -271,6 +325,29 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
     _phaseT += dt;
     if (_phaseT >= _phaseDur) {
       _advancePhase();
+    }
+
+    // Plant growth: slowly grows based on score progress, health acts as a cap.
+    final targetGrowth = (_ramp * 0.85 + 0.15) * _plantHealth;
+    _plantGrowth += (targetGrowth - _plantGrowth) * dt * 0.4;
+    _plantGrowth = _plantGrowth.clamp(0.05, 1.0);
+
+    // Ambient rain drops for WATER phase.
+    if (_currentPhase == _Phase.waterRain) {
+      _ambientDropTimer -= dt;
+      if (_ambientDropTimer <= 0) {
+        _ambientDropTimer = 0.06 + _rng.nextDouble() * 0.08;
+        final x = _rng.nextDouble() * _fieldSize.width;
+        _ambientDrops.add(_WaterDrop(Offset(x, -10), isFalling: true));
+      }
+      _ambientDrops.removeWhere((d) {
+        d.age += dt;
+        d.pos = d.pos.translate(0, dt * 320);
+        return d.pos.dy > _fieldSize.height + 20 || d.age > 2.0;
+      });
+    } else {
+      _ambientDrops.clear();
+      _ambientDropTimer = 0;
     }
 
     // Simulate the current phase.
@@ -608,6 +685,7 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
     } else {
       zone.taps++;
       if (zone.taps >= _kWaterOverflowAt) {
+        zone.overflowed = true;
         widget.session.addScore(-_kWaterPenalty);
         _popups.add(_Popup('OVERWATERED −$_kWaterPenalty', pos, _kBad, big: true));
         _burst(pos, _kWaterBlue, count: 14, speed: 90);
@@ -654,6 +732,8 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
         rect.left + (col + 0.5) * cellW,
         rect.top  + (row + 0.5) * cellH,
       );
+      // Dust burst on plow stroke.
+      _burstDust(cellCenter);
       _burst(cellCenter, _kEarthOre, count: 6, speed: 50);
     }
 
@@ -664,6 +744,20 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
       _popups.add(
           _Popup('FIELD DONE! +$_kPlowBonusPts', _plantCenter, _kGood, big: true));
       _burst(_plantCenter, _kStemGreen, count: 24, speed: 140);
+    }
+  }
+
+  void _burstDust(Offset at) {
+    for (var i = 0; i < _kDustCount; i++) {
+      final angle = -math.pi / 2 + (_rng.nextDouble() - 0.5) * math.pi;
+      final spd = 30 + _rng.nextDouble() * 60;
+      _particles.add(_Particle(
+        at,
+        Offset(math.cos(angle), math.sin(angle)) * spd,
+        0.5 + _rng.nextDouble() * 0.3,
+        2.5 + _rng.nextDouble() * 3.0,
+        _kDirtBrown.withValues(alpha: 0.7),
+      ));
     }
   }
 
@@ -802,6 +896,13 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
                   size: Size.infinite,
                 ),
               ),
+              // HUD: score + timer + phase icon.
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                child: _buildHUD(),
+              ),
               // Instruction banner.
               if (_bannerT > 0) _buildBanner(),
             ],
@@ -809,6 +910,78 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
         ),
       );
     });
+  }
+
+  Widget _buildHUD() {
+    final phase = _currentPhase;
+    final phaseColor = _phaseColor(phase);
+    final icon = _phaseIcon(phase);
+    final score = widget.session.score;
+    final remaining = widget.session.remaining;
+    final secs = remaining.inSeconds;
+    final tenths = (remaining.inMilliseconds / 100).floor() % 10;
+
+    return Container(
+      height: _kHudBarH,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.black.withValues(alpha: 0.72),
+            Colors.black.withValues(alpha: 0.0),
+          ],
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Phase icon badge.
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: phaseColor.withValues(alpha: 0.18),
+              border: Border.all(color: phaseColor.withValues(alpha: 0.8), width: 1.5),
+              borderRadius: BorderRadius.circular(7),
+            ),
+            child: Center(
+              child: Icon(icon, size: 16, color: phaseColor),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Score.
+          Expanded(
+            child: Text(
+              '$score',
+              style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                color: Colors.white.withValues(alpha: 0.92),
+                shadows: [Shadow(color: phaseColor, blurRadius: 8)],
+              ),
+            ),
+          ),
+          // Timer.
+          Text(
+            '$secs.$tenths',
+            style: TextStyle(
+              fontFamily: _kFont,
+              fontSize: 17,
+              fontWeight: FontWeight.w700,
+              color: secs < 5
+                  ? _kBad
+                  : Colors.white.withValues(alpha: 0.82),
+              shadows: secs < 5
+                  ? [const Shadow(color: _kBad, blurRadius: 10)]
+                  : null,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildBanner() {
@@ -822,6 +995,7 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
     final label  = _phaseLabel(_currentPhase);
     final detail = _phaseDetail(_currentPhase);
     final color  = _phaseColor(_currentPhase);
+    final icon   = _phaseIcon(_currentPhase);
 
     return Positioned(
       left: 0,
@@ -834,25 +1008,34 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
             scale: scale,
             child: Center(
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
                 decoration: BoxDecoration(
                   color: color.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: color.withValues(alpha: 0.85), width: 2),
                   boxShadow: [
                     BoxShadow(
-                        color: color.withValues(alpha: 0.4),
-                        blurRadius: 28),
+                        color: color.withValues(alpha: 0.45),
+                        blurRadius: 32,
+                        spreadRadius: 2),
+                    BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        blurRadius: 12),
                   ],
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // Element icon.
+                    Icon(icon, size: _kBannerIconSize, color: color,
+                        shadows: [Shadow(color: color, blurRadius: 18)]),
+                    const SizedBox(height: 6),
                     Text(
                       label,
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         fontFamily: _kFont,
-                        fontSize: 26,
+                        fontSize: 24,
                         fontWeight: FontWeight.w900,
                         letterSpacing: 2.2,
                         color: Colors.white,
@@ -909,6 +1092,16 @@ class _GrowThePlantGameState extends State<GrowThePlantGame>
       case _Phase.earthPlow:   return _kEarthOre;
     }
   }
+
+  IconData _phaseIcon(_Phase p) {
+    switch (p) {
+      case _Phase.airBugs:     return Icons.air;
+      case _Phase.airTwisters: return Icons.tornado;
+      case _Phase.fireSun:     return Icons.wb_sunny;
+      case _Phase.waterRain:   return Icons.water_drop;
+      case _Phase.earthPlow:   return Icons.agriculture;
+    }
+  }
 }
 
 // ============================================================================
@@ -940,8 +1133,29 @@ class _PlantPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     _paintBackground(canvas, size);
+
+    // Phase-specific atmosphere drawn UNDER the plant.
+    switch (state._currentPhase) {
+      case _Phase.airBugs:
+        _paintWindStreaks(canvas, size);
+        break;
+      case _Phase.airTwisters:
+        _paintWindStreaks(canvas, size);
+        break;
+      case _Phase.fireSun:
+        _paintSunGlowWash(canvas, size);
+        break;
+      case _Phase.waterRain:
+        _paintAmbientRain(canvas, size);
+        break;
+      case _Phase.earthPlow:
+        _paintPlowGrid(canvas); // grid behind plant on earth
+        break;
+    }
+
     _paintPlant(canvas, size);
 
+    // Phase-specific foreground elements drawn OVER the plant.
     switch (state._currentPhase) {
       case _Phase.airBugs:
         _paintBugs(canvas);
@@ -959,7 +1173,8 @@ class _PlantPainter extends CustomPainter {
         _paintWaterZones(canvas);
         break;
       case _Phase.earthPlow:
-        _paintPlowGrid(canvas);
+        // grid already painted; just draw the finger.
+        _paintPlowFinger(canvas);
         break;
     }
 
@@ -970,37 +1185,157 @@ class _PlantPainter extends CustomPainter {
   // -- Background -------------------------------------------------------------
 
   void _paintBackground(Canvas canvas, Size size) {
-    // Sky gradient (top) → soil (bottom).
+    // Sky gradient shifts per phase.
+    final Color topColor;
+    final Color midColor;
+    switch (state._currentPhase) {
+      case _Phase.airBugs:
+      case _Phase.airTwisters:
+        topColor = _kAirSky;
+        midColor = const Color(0xFF1A3040);
+        break;
+      case _Phase.fireSun:
+        topColor = _kFireSky;
+        midColor = const Color(0xFF3D2510);
+        break;
+      case _Phase.waterRain:
+        topColor = _kWaterSky;
+        midColor = const Color(0xFF151F2D);
+        break;
+      case _Phase.earthPlow:
+        topColor = _kEarthSky;
+        midColor = const Color(0xFF3A2012);
+        break;
+    }
+
     final skyPaint = Paint()
-      ..shader = const LinearGradient(
+      ..shader = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
-        colors: [Color(0xFF0D1B2A), Color(0xFF1A3E2A), _kSoil],
-        stops: [0.0, 0.55, 1.0],
+        colors: [topColor, midColor, _kSoil],
+        stops: const [0.0, 0.55, 1.0],
       ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
     canvas.drawRect(Offset.zero & size, skyPaint);
 
-    // Soil band at the bottom.
-    final soilTop = size.height * 0.70;
+    // Soil band at the bottom with a visible surface line.
+    final soilTop = size.height * _kSoilLineFrac;
     final soilPaint = Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
         colors: [
           _kDirtBrown.withValues(alpha: 0.0),
-          _kDirtBrown.withValues(alpha: 0.55),
+          _kDirtBrown.withValues(alpha: 0.65),
           const Color(0xFF2E1A0A),
         ],
       ).createShader(Rect.fromLTRB(0, soilTop, size.width, size.height));
     canvas.drawRect(Rect.fromLTRB(0, soilTop, size.width, size.height), soilPaint);
 
-    // Faint stars in the sky.
-    final starPaint = Paint()..color = Colors.white.withValues(alpha: 0.18);
-    for (var i = 0; i < 28; i++) {
-      final fx = (i * 73 % 97) / 97.0;
-      final fy = (i * 41 % 53) / 53.0 * 0.5;
-      canvas.drawCircle(Offset(fx * size.width, fy * size.height),
-          0.8 + (i % 3) * 0.5, starPaint);
+    // Soil surface line — a slightly lighter edge.
+    canvas.drawLine(
+      Offset(0, soilTop),
+      Offset(size.width, soilTop),
+      Paint()
+        ..color = _kEarthOre.withValues(alpha: 0.30)
+        ..strokeWidth = 1.5,
+    );
+
+    // Faint stars in the sky (only on dark phases).
+    if (state._currentPhase != _Phase.fireSun) {
+      final starPaint = Paint()..color = Colors.white.withValues(alpha: 0.16);
+      for (var i = 0; i < _kStarCount; i++) {
+        final fx = (i * 73 % 97) / 97.0;
+        final fy = (i * 41 % 53) / 53.0 * 0.5;
+        canvas.drawCircle(Offset(fx * size.width, fy * size.height),
+            0.7 + (i % 3) * 0.5, starPaint);
+      }
+    }
+  }
+
+  // -- Atmospheric effects ----------------------------------------------------
+
+  /// Soft drifting wind streaks — drawn behind everything for AIR phases.
+  void _paintWindStreaks(Canvas canvas, Size size) {
+    final t = state._clock;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < _kWindStreakCount; i++) {
+      final baseX = (i * 67 % 97) / 97.0 * size.width;
+      final baseY = (i * 43 % 71) / 71.0 * size.height * 0.8 + size.height * 0.05;
+      final speed = 0.04 + (i % 5) * 0.018;
+      final x = (baseX + t * speed * size.width) % size.width;
+      final len = 20.0 + (i % 4) * 18.0;
+      final alpha = 0.07 + (i % 3) * 0.04;
+      paint
+        ..color = _kAirTeal.withValues(alpha: alpha)
+        ..strokeWidth = 1.0 + (i % 3) * 0.6;
+      canvas.drawLine(Offset(x, baseY), Offset(x - len, baseY), paint);
+    }
+
+    // Tumbling leaf particles — simple rotated quads.
+    for (var i = 0; i < 5; i++) {
+      final baseX = (i * 89 % 97) / 97.0 * size.width;
+      final baseY = (i * 53 % 71) / 71.0 * size.height * 0.75 + size.height * 0.1;
+      final drift = (t * (0.06 + i * 0.012)) % 1.0;
+      final lx = (baseX + drift * size.width * 0.6) % size.width;
+      final ly = baseY + math.sin(t * 1.5 + i) * 15;
+      final leafAngle = t * 1.8 + i * 1.2;
+      canvas.save();
+      canvas.translate(lx, ly);
+      canvas.rotate(leafAngle);
+      final leafP = Paint()..color = _kStemGreen.withValues(alpha: 0.22);
+      final leafPath = Path()
+        ..moveTo(0, -7)
+        ..quadraticBezierTo(6, 0, 0, 7)
+        ..quadraticBezierTo(-6, 0, 0, -7);
+      canvas.drawPath(leafPath, leafP);
+      canvas.restore();
+    }
+  }
+
+  /// Golden warm wash from sun onto scene for FIRE phase.
+  void _paintSunGlowWash(Canvas canvas, Size size) {
+    final sunPos = state._sunPosition();
+    final pulse = 0.5 + 0.5 * math.sin(state._clock * 1.8);
+    // Wide radial glow wash.
+    canvas.drawCircle(
+      sunPos,
+      _kFireGlowRadius * (1.0 + 0.12 * pulse),
+      Paint()
+        ..color = _kSunYellow.withValues(alpha: 0.07 + 0.03 * pulse)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 48),
+    );
+    // Subtle warm tint on the lower half of screen.
+    final warmPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          _kFireOrange.withValues(alpha: 0.0),
+          _kFireOrange.withValues(alpha: 0.06 + 0.03 * pulse),
+        ],
+      ).createShader(Rect.fromLTWH(0, size.height * 0.3, size.width, size.height * 0.7));
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height * 0.3, size.width, size.height * 0.7),
+      warmPaint,
+    );
+  }
+
+  /// Background ambient rain streaks for WATER phase.
+  void _paintAmbientRain(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = 1.4;
+    for (final drop in state._ambientDrops) {
+      final alpha = (1.0 - (drop.pos.dy / size.height).clamp(0.0, 1.0)) * 0.55 + 0.1;
+      paint.color = _kWaterLight.withValues(alpha: alpha * _kRainAlpha);
+      canvas.drawLine(
+        drop.pos,
+        drop.pos.translate(-4, -_kRainStreakLen),
+        paint,
+      );
     }
   }
 
@@ -1009,55 +1344,202 @@ class _PlantPainter extends CustomPainter {
   void _paintPlant(Canvas canvas, Size size) {
     final plant = state._plantCenter;
     final health = state._plantHealth;
+    final growth = state._plantGrowth;
+    final t = state._clock;
 
-    // Stem.
-    final stemPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = 7
-      ..color = _kStemGreen.withValues(alpha: 0.85 * health);
-    canvas.drawLine(
-      Offset(plant.dx, size.height * 0.88),
-      plant.translate(0, -30),
-      stemPaint,
+    // Ground-level stem base x.
+    final stemBaseX = plant.dx;
+    final stemBaseY = size.height * _kSoilLineFrac + 2;
+
+    // How tall the above-ground plant grows.
+    final stemHeight = 60.0 + growth * 110.0;
+    final stemTop = Offset(stemBaseX, stemBaseY - stemHeight);
+
+    // Very subtle stem sway.
+    final sway = math.sin(t * 0.9) * 4.0 * growth;
+
+    // ── Tuber (potato) underground ─────────────────────────────────────────
+    final tuberCenter = Offset(plant.dx, stemBaseY + _kTuberRY + 4);
+    final tuberRX = _kTuberRX * (0.4 + 0.6 * growth);
+    final tuberRY = _kTuberRY * (0.4 + 0.6 * growth);
+    if (growth > 0.12) {
+      // Soil shadow around tuber.
+      canvas.drawOval(
+        Rect.fromCenter(center: tuberCenter, width: tuberRX * 2.8, height: tuberRY * 1.6),
+        Paint()
+          ..color = Colors.black.withValues(alpha: 0.22)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      );
+      // Tuber body — warm golden brown.
+      final tuberGrad = RadialGradient(
+        center: const Alignment(-0.3, -0.4),
+        colors: [
+          const Color(0xFFD4A843),
+          const Color(0xFF8B5E1A),
+          const Color(0xFF5C3A0E),
+        ],
+      ).createShader(Rect.fromCenter(
+          center: tuberCenter, width: tuberRX * 2, height: tuberRY * 2));
+      canvas.drawOval(
+        Rect.fromCenter(center: tuberCenter, width: tuberRX * 2, height: tuberRY * 2),
+        Paint()..shader = tuberGrad,
+      );
+      // Tuber eye dots.
+      if (growth > 0.3) {
+        final eyePaint = Paint()..color = const Color(0xFF3E1F00).withValues(alpha: 0.55);
+        for (var e = 0; e < 3; e++) {
+          final ex = tuberCenter.dx + (e - 1) * tuberRX * 0.55;
+          final ey = tuberCenter.dy + (e % 2 == 0 ? -tuberRY * 0.25 : tuberRY * 0.15);
+          canvas.drawCircle(Offset(ex, ey), 2.0, eyePaint);
+        }
+      }
+    }
+
+    // ── Roots ─────────────────────────────────────────────────────────────
+    if (growth > 0.08) {
+      final rootPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..strokeCap = StrokeCap.round
+        ..color = _kDirtBrown.withValues(alpha: 0.55 * growth);
+      final rootCount = 4;
+      for (var r = 0; r < rootCount; r++) {
+        final angle = math.pi * 0.3 + r * (math.pi * 0.4 / (rootCount - 1));
+        final len = 18.0 + growth * 22.0;
+        final end = tuberCenter +
+            Offset(math.cos(angle) * len * (r % 2 == 0 ? 1 : -1),
+                math.sin(angle) * len);
+        final cp = tuberCenter +
+            Offset(
+                math.cos(angle + 0.5) * len * 0.5 * (r % 2 == 0 ? 1 : -1),
+                math.sin(angle) * len * 0.5);
+        final rootPath = Path()
+          ..moveTo(tuberCenter.dx, tuberCenter.dy)
+          ..quadraticBezierTo(cp.dx, cp.dy, end.dx, end.dy);
+        canvas.drawPath(rootPath, rootPaint);
+      }
+    }
+
+    // ── Stem ──────────────────────────────────────────────────────────────
+    final stemCtrl = Offset(stemBaseX + sway * 0.6, (stemBaseY + stemTop.dy) * 0.5);
+    final swayedTop = stemTop.translate(sway, 0);
+    final stemPath = Path()
+      ..moveTo(stemBaseX, stemBaseY)
+      ..quadraticBezierTo(stemCtrl.dx, stemCtrl.dy, swayedTop.dx, swayedTop.dy);
+    // Stem glow.
+    canvas.drawPath(
+      stemPath,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _kStemWidth + 6
+        ..strokeCap = StrokeCap.round
+        ..color = _kStemGreen.withValues(alpha: 0.18 * health)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+    // Stem main.
+    canvas.drawPath(
+      stemPath,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _kStemWidth * (0.5 + 0.5 * growth)
+        ..strokeCap = StrokeCap.round
+        ..color = _kStemGreen.withValues(alpha: 0.88 * health),
     );
 
-    // Leaves (two, mirrored).
-    final leafPaint = Paint()
-      ..color = _kGrass.withValues(alpha: 0.90 * health);
-    final leafPath1 = Path()
-      ..moveTo(plant.dx, plant.dy + 10)
-      ..quadraticBezierTo(plant.dx - 40, plant.dy - 20, plant.dx - 18, plant.dy - 38)
-      ..quadraticBezierTo(plant.dx - 12, plant.dy - 14, plant.dx, plant.dy + 10);
-    canvas.drawPath(leafPath1, leafPaint);
-    final leafPath2 = Path()
-      ..moveTo(plant.dx, plant.dy + 10)
-      ..quadraticBezierTo(plant.dx + 40, plant.dy - 20, plant.dx + 18, plant.dy - 38)
-      ..quadraticBezierTo(plant.dx + 12, plant.dy - 14, plant.dx, plant.dy + 10);
-    canvas.drawPath(leafPath2, leafPaint);
+    // ── Leaves ────────────────────────────────────────────────────────────
+    final leafPairs = ((_kLeafPairs * growth) + 1).floor().clamp(1, _kLeafPairs);
+    for (var pair = 0; pair < leafPairs; pair++) {
+      final frac = (pair + 1) / (_kLeafPairs + 1);
+      final leafY = stemBaseY - stemHeight * frac;
+      final leafX = stemBaseX + sway * frac;
+      final leafSize = (25.0 + 18.0 * growth) * (0.5 + 0.5 * frac);
+      final leafAge = (growth - pair * 0.25).clamp(0.0, 1.0);
+      if (leafAge <= 0) continue;
 
-    // Flower/bud at top.
-    final petals = 6;
-    final petalR = 8.0 + 12.0 * health;
-    final budCenter = plant.translate(0, -52);
-    final petalPaint = Paint()
-      ..color = _kSunYellow.withValues(alpha: 0.85 * health);
-    for (var i = 0; i < petals; i++) {
-      final a = i / petals * math.pi * 2;
-      canvas.drawCircle(
-        budCenter + Offset(math.cos(a), math.sin(a)) * petalR,
-        6.0 * health,
-        petalPaint,
+      final leafAlpha = health * leafAge;
+      final leafColor = Color.lerp(
+        _kStemGreen,
+        _kGrass,
+        frac,
+      )!.withValues(alpha: 0.90 * leafAlpha);
+
+      // Left leaf.
+      final leafPath1 = Path()
+        ..moveTo(leafX, leafY)
+        ..quadraticBezierTo(
+            leafX - leafSize * 1.1, leafY - leafSize * 0.6,
+            leafX - leafSize * 0.55, leafY - leafSize * 1.1)
+        ..quadraticBezierTo(
+            leafX - leafSize * 0.35, leafY - leafSize * 0.5, leafX, leafY);
+      canvas.drawPath(leafPath1, Paint()..color = leafColor);
+      // Leaf vein.
+      canvas.drawLine(
+        Offset(leafX, leafY),
+        Offset(leafX - leafSize * 0.5, leafY - leafSize * 0.85),
+        Paint()
+          ..color = _kStemGreen.withValues(alpha: 0.35 * leafAlpha)
+          ..strokeWidth = 0.8
+          ..style = PaintingStyle.stroke,
+      );
+
+      // Right leaf.
+      final leafPath2 = Path()
+        ..moveTo(leafX, leafY)
+        ..quadraticBezierTo(
+            leafX + leafSize * 1.1, leafY - leafSize * 0.6,
+            leafX + leafSize * 0.55, leafY - leafSize * 1.1)
+        ..quadraticBezierTo(
+            leafX + leafSize * 0.35, leafY - leafSize * 0.5, leafX, leafY);
+      canvas.drawPath(leafPath2, Paint()..color = leafColor);
+      canvas.drawLine(
+        Offset(leafX, leafY),
+        Offset(leafX + leafSize * 0.5, leafY - leafSize * 0.85),
+        Paint()
+          ..color = _kStemGreen.withValues(alpha: 0.35 * leafAlpha)
+          ..strokeWidth = 0.8
+          ..style = PaintingStyle.stroke,
       );
     }
-    // Centre of flower.
-    canvas.drawCircle(budCenter, 8 * health,
-        Paint()..color = _kFireOrange.withValues(alpha: 0.95 * health));
 
-    // Health ring at the base.
+    // ── Flower / bud ─────────────────────────────────────────────────────
+    const petals = 6;
+    final petalR = (_kBudBaseRadius - 2.0) + (_kBudBaseRadius + 4.0) * growth;
+    final budCenter = swayedTop;
+    final budAlpha = health * growth;
+
+    if (growth > 0.15) {
+      // Bud glow.
+      canvas.drawCircle(
+        budCenter,
+        petalR + 12,
+        Paint()
+          ..color = _kSunYellow.withValues(alpha: 0.18 * budAlpha)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+      );
+
+      final petalPaint = Paint()
+          ..color = _kSunYellow.withValues(alpha: 0.88 * budAlpha);
+      for (var i = 0; i < petals; i++) {
+        final a = i / petals * math.pi * 2 + t * 0.18;
+        final petalCenter = budCenter + Offset(math.cos(a), math.sin(a)) * petalR;
+        canvas.drawCircle(petalCenter, 6.5 * growth, petalPaint);
+      }
+      // Centre.
+      canvas.drawCircle(budCenter, 9 * growth,
+          Paint()..color = _kFireOrange.withValues(alpha: 0.95 * budAlpha));
+      // Small white hot-spot.
+      canvas.drawCircle(budCenter.translate(-2 * growth, -2 * growth), 3 * growth,
+          Paint()..color = Colors.white.withValues(alpha: 0.55 * budAlpha));
+    } else {
+      // Early bud — a small lime orb.
+      canvas.drawCircle(budCenter, 5 + 4 * growth,
+          Paint()..color = _kGrass.withValues(alpha: 0.85 * health));
+    }
+
+    // ── Health ring at the base ────────────────────────────────────────────
     if (health < 0.9) {
       canvas.drawArc(
-        Rect.fromCircle(center: plant, radius: 34),
+        Rect.fromCircle(center: Offset(stemBaseX, stemBaseY), radius: 22),
         -math.pi / 2,
         math.pi * 2 * health,
         false,
@@ -1065,7 +1547,7 @@ class _PlantPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 3
           ..strokeCap = StrokeCap.round
-          ..color = Color.lerp(_kBad, _kGood, health)!.withValues(alpha: 0.8),
+          ..color = Color.lerp(_kBad, _kGood, health)!.withValues(alpha: 0.9),
       );
     }
   }
@@ -1095,14 +1577,40 @@ class _PlantPainter extends CustomPainter {
     canvas.translate(pos.dx, pos.dy);
     canvas.scale(scale);
 
-    final body = Paint()..color = _kBug.withValues(alpha: 0.92 * alpha);
+    // Shadow.
     canvas.drawOval(
-        const Rect.fromLTWH(-9, -5, 18, 10), body);
+      const Rect.fromLTWH(-10, 3, 20, 7),
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.20 * alpha)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+
+    final body = Paint()..color = _kBug.withValues(alpha: 0.92 * alpha);
+    canvas.drawOval(const Rect.fromLTWH(-9, -5, 18, 10), body);
+
+    // Shell highlight.
+    canvas.drawOval(
+      const Rect.fromLTWH(-6, -5, 9, 5),
+      Paint()..color = Colors.white.withValues(alpha: 0.15 * alpha),
+    );
+
+    // Spots.
+    final spotPaint = Paint()
+        ..color = Colors.black.withValues(alpha: 0.35 * alpha);
+    canvas.drawCircle(const Offset(-3, 0), 2.0, spotPaint);
+    canvas.drawCircle(const Offset(3, 0), 2.0, spotPaint);
+
     // Eyes.
     canvas.drawCircle(const Offset(-5, -3), 2.5,
         Paint()..color = _kBugWarn.withValues(alpha: alpha));
     canvas.drawCircle(const Offset(5, -3), 2.5,
         Paint()..color = _kBugWarn.withValues(alpha: alpha));
+    // Pupil glint.
+    canvas.drawCircle(const Offset(-4.2, -3.5), 0.8,
+        Paint()..color = Colors.white.withValues(alpha: 0.7 * alpha));
+    canvas.drawCircle(const Offset(5.8, -3.5), 0.8,
+        Paint()..color = Colors.white.withValues(alpha: 0.7 * alpha));
+
     // Legs.
     final legPaint = Paint()
       ..color = _kBug.withValues(alpha: 0.6 * alpha)
@@ -1112,6 +1620,15 @@ class _PlantPainter extends CustomPainter {
       canvas.drawLine(Offset(-3.0 + i * 3, 4), Offset(-8.0 + i * 4, 11), legPaint);
       canvas.drawLine(Offset(-3.0 + i * 3, 4), Offset(8.0 - i * 4, 11), legPaint);
     }
+
+    // Antennae.
+    final antPaint = Paint()
+      ..color = _kBug.withValues(alpha: 0.55 * alpha)
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(const Offset(-5, -5), const Offset(-9, -12), antPaint);
+    canvas.drawLine(const Offset(5, -5), const Offset(9, -12), antPaint);
+
     canvas.restore();
   }
 
@@ -1120,36 +1637,47 @@ class _PlantPainter extends CustomPainter {
     if (gust == null) return;
     final t = (state._clock * 3) % 1.0;
     final r = _kGustRadius;
-    // Expanding ring.
+
+    // Outer expanding ring.
     canvas.drawCircle(
       gust,
-      r + t * 12,
+      r + t * 18,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3 * (1 - t)
+        ..strokeWidth = 3.5 * (1 - t)
         ..color = _kAirTeal.withValues(alpha: 0.65 * (1 - t)),
     );
-    // Solid inner.
+    // Second ring phase-shifted.
+    final t2 = ((state._clock * 3) + 0.5) % 1.0;
+    canvas.drawCircle(
+      gust,
+      r + t2 * 18,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0 * (1 - t2)
+        ..color = _kAirTeal.withValues(alpha: 0.35 * (1 - t2)),
+    );
+    // Soft inner fill.
     canvas.drawCircle(
       gust,
       r,
       Paint()
-        ..color = _kAirTeal.withValues(alpha: 0.12)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+        ..color = _kAirTeal.withValues(alpha: 0.10)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
     );
-    // Swirl lines.
-    const count = 8;
+    // Animated swirl lines.
+    const count = 10;
     final swirlPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.8
+      ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round
-      ..color = _kAirTeal.withValues(alpha: 0.55);
+      ..color = _kAirTeal.withValues(alpha: 0.60);
     for (var i = 0; i < count; i++) {
-      final a = i / count * math.pi * 2 + state._clock * 4;
+      final a = i / count * math.pi * 2 + state._clock * 5;
       canvas.drawArc(
-        Rect.fromCircle(center: gust, radius: r * 0.55),
+        Rect.fromCircle(center: gust, radius: r * 0.52),
         a,
-        math.pi / count * 1.1,
+        math.pi / count * 1.2,
         false,
         swirlPaint,
       );
@@ -1162,8 +1690,8 @@ class _PlantPainter extends CustomPainter {
     for (final t in state._tornados) {
       if (t.flicked) {
         final ft = t.flickT.clamp(0.0, 1.0);
-        _drawTornadoAt(canvas, t.pos + Offset(0, -60 * ft),
-            scale: 1.0 + ft * 0.6, alpha: (1 - ft).clamp(0.0, 1.0));
+        _drawTornadoAt(canvas, t.pos + Offset(0, -70 * ft),
+            scale: 1.0 + ft * 0.7, alpha: (1 - ft).clamp(0.0, 1.0));
         continue;
       }
       _drawTornadoAt(canvas, t.pos);
@@ -1175,31 +1703,56 @@ class _PlantPainter extends CustomPainter {
     canvas.save();
     canvas.translate(pos.dx, pos.dy);
     canvas.scale(scale);
-    canvas.rotate(state._clock * 3.0);
+    canvas.rotate(state._clock * 3.2);
+
+    // Shadow beneath funnel.
+    canvas.drawOval(
+      const Rect.fromLTWH(-16, 2, 32, 10),
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.20 * alpha)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
 
     // Funnel shape: stacked ovals shrinking to a point.
-    const layers = 6;
+    const layers = 8;
     for (var i = 0; i < layers; i++) {
       final f = i / (layers - 1);
-      final w = 30 - f * 24;
-      final h = 9 - f * 7;
-      final y = -(i * 11.0);
+      final w = 36 - f * 30;
+      final h = 10 - f * 8;
+      final y = -(i * 11.5);
       canvas.drawOval(
         Rect.fromCenter(center: Offset(0, y), width: w, height: h),
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.0 - f * 1.0
-          ..color = _kAirBlue.withValues(alpha: (0.6 - f * 0.3) * alpha),
+          ..strokeWidth = 2.2 - f * 1.2
+          ..color = Color.lerp(_kAirBlue, Colors.white.withValues(alpha: 0.5), f * 0.4)!
+              .withValues(alpha: (0.75 - f * 0.35) * alpha),
       );
+      // Fill inner for the lowest layer.
+      if (i == 0) {
+        canvas.drawOval(
+          Rect.fromCenter(center: Offset(0, y), width: w - 4, height: h - 2),
+          Paint()..color = _kAirBlue.withValues(alpha: 0.15 * alpha),
+        );
+      }
     }
     // Inner glow.
     canvas.drawCircle(
       Offset.zero,
-      8,
+      10,
       Paint()
-        ..color = _kAirBlue.withValues(alpha: 0.25 * alpha)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+        ..color = _kAirBlue.withValues(alpha: 0.30 * alpha)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
     );
+    // Debris dots swirling at base.
+    final debrisPaint = Paint()..color = _kDirtBrown.withValues(alpha: 0.55 * alpha);
+    for (var d = 0; d < 5; d++) {
+      final da = d / 5.0 * math.pi * 2 + state._clock * 6.0;
+      final dr = 14.0 + (d % 2) * 5.0;
+      canvas.drawCircle(
+          Offset(math.cos(da) * dr, math.sin(da) * dr * 0.3), 2.5, debrisPaint);
+    }
+
     canvas.restore();
   }
 
@@ -1210,48 +1763,59 @@ class _PlantPainter extends CustomPainter {
     final t = state._clock;
     final pulse = 0.5 + 0.5 * math.sin(t * 2.4);
 
-    // Halo.
-    canvas.drawCircle(
-      pos,
-      28 + 6 * pulse,
-      Paint()
-        ..color = _kSunYellow.withValues(alpha: 0.18 + 0.10 * pulse)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
-    );
-    // Body.
-    canvas.drawCircle(
-      pos,
-      20,
-      Paint()
-        ..shader = RadialGradient(colors: [
-          Colors.white.withValues(alpha: 0.95),
-          _kSunYellow,
-          _kFireOrange,
-        ]).createShader(Rect.fromCircle(center: pos, radius: 20)),
-    );
-    // Rays.
-    const rays = 10;
-    final rayPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = 2.5
-      ..color = _kSunYellow.withValues(alpha: 0.75);
+    // Multi-layer outer glow.
+    for (var g = 0; g < _kSunGlowLayers; g++) {
+      final gf = g / (_kSunGlowLayers - 1);
+      canvas.drawCircle(
+        pos,
+        50 + gf * 38 + 8 * pulse,
+        Paint()
+          ..color = _kSunYellow.withValues(alpha: (0.14 - gf * 0.04) * (0.8 + 0.2 * pulse))
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 16 + gf * 14),
+      );
+    }
+
+    // Rays — long feathered.
+    const rays = 12;
     for (var i = 0; i < rays; i++) {
       final a = i / rays * math.pi * 2 + t * 0.5;
-      final inner = 23.0;
-      final outer = 32.0 + 5 * pulse;
+      final inner = 24.0;
+      final outer = 38.0 + 10 * pulse + (i % 2) * 8.0;
       canvas.drawLine(
         pos + Offset(math.cos(a), math.sin(a)) * inner,
         pos + Offset(math.cos(a), math.sin(a)) * outer,
-        rayPaint,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = 2.5 - (i % 2) * 0.8
+          ..color = _kSunYellow.withValues(alpha: (0.7 - (i % 2) * 0.2)),
       );
     }
+
+    // Sun body — white-hot core to orange rim.
+    canvas.drawCircle(
+      pos,
+      22 + 2 * pulse,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          Colors.white.withValues(alpha: 0.98),
+          _kSunYellow,
+          _kFireOrange,
+        ], stops: const [0.0, 0.55, 1.0])
+            .createShader(Rect.fromCircle(center: pos, radius: 22 + 2 * pulse)),
+    );
+    // Specular flare.
+    canvas.drawCircle(
+      pos.translate(-5, -5),
+      5 + 2 * pulse,
+      Paint()..color = Colors.white.withValues(alpha: 0.45 * (0.7 + 0.3 * pulse)),
+    );
 
     // "Aim arrow" from sun toward plant — faint, guides the player.
     final plant = state._plantCenter;
     final dir = (plant - pos).normalize();
-    final arrowStart = pos + dir * 26;
-    final arrowEnd   = pos + dir * 52;
+    final arrowStart = pos + dir * 28;
+    final arrowEnd   = pos + dir * 56;
     canvas.drawLine(
       arrowStart,
       arrowEnd,
@@ -1259,7 +1823,7 @@ class _PlantPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.5
         ..strokeCap = StrokeCap.round
-        ..color = _kSunYellow.withValues(alpha: 0.35 + 0.20 * pulse),
+        ..color = _kSunYellow.withValues(alpha: 0.40 + 0.20 * pulse),
     );
     // Arrow head.
     final perp = Offset(-dir.dy, dir.dx) * 6;
@@ -1272,7 +1836,7 @@ class _PlantPainter extends CustomPainter {
       ..lineTo(tail2.dx, tail2.dy)
       ..close();
     canvas.drawPath(arrowPath,
-        Paint()..color = _kSunYellow.withValues(alpha: 0.35 + 0.20 * pulse));
+        Paint()..color = _kSunYellow.withValues(alpha: 0.40 + 0.20 * pulse));
   }
 
   void _paintSunSwipeTrail(Canvas canvas) {
@@ -1282,14 +1846,26 @@ class _PlantPainter extends CustomPainter {
     final flash = state._sunSwipeFlashT.clamp(0.0, 1.0);
     if (flash <= 0) return;
     final color = state._lastSunSwipeCorrect ? _kSunYellow : _kBad;
+    // Trail body.
     canvas.drawLine(
       s,
       e,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.5
+        ..strokeWidth = 4.0
         ..strokeCap = StrokeCap.round
-        ..color = color.withValues(alpha: 0.7 * flash),
+        ..color = color.withValues(alpha: 0.75 * flash),
+    );
+    // Glow on trail.
+    canvas.drawLine(
+      s,
+      e,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 12.0
+        ..strokeCap = StrokeCap.round
+        ..color = color.withValues(alpha: 0.15 * flash)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
     );
   }
 
@@ -1299,30 +1875,28 @@ class _PlantPainter extends CustomPainter {
     for (final drop in state._rainDrops) {
       final t = (drop.age / 0.7).clamp(0.0, 1.0);
       final alpha = (1 - t).clamp(0.0, 1.0);
-      final r = 4 + t * 18;
+      // Expanding ripple ring.
+      final r = 4 + t * 22;
       canvas.drawCircle(
         drop.pos,
         r,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.0 * (1 - t)
-          ..color = _kWaterLight.withValues(alpha: alpha * 0.7),
+          ..strokeWidth = 2.5 * (1 - t)
+          ..color = _kWaterLight.withValues(alpha: alpha * 0.75),
       );
-    }
-
-    // Ambient rain lines in background.
-    final rainPaint = Paint()
-      ..color = _kWaterLight.withValues(alpha: 0.12)
-      ..strokeWidth = 1.2
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    const lines = 18;
-    for (var i = 0; i < lines; i++) {
-      final fx = (i * 61 % 97) / 97.0;
-      final fy = ((i * 37 % 71) / 71.0 + state._clock * 0.35 * (1 + i % 3 * 0.2)) % 1.0;
-      final x = fx * size.width;
-      final y = fy * size.height;
-      canvas.drawLine(Offset(x, y), Offset(x - 5, y + 16), rainPaint);
+      // Second ripple smaller and faster.
+      if (t < 0.6) {
+        final r2 = 2 + t * 10;
+        canvas.drawCircle(
+          drop.pos,
+          r2,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5 * (1 - t / 0.6)
+            ..color = Colors.white.withValues(alpha: alpha * 0.35),
+        );
+      }
     }
   }
 
@@ -1330,19 +1904,58 @@ class _PlantPainter extends CustomPainter {
     for (final zone in state._waterZones) {
       final overFrac = (zone.taps / _kWaterOverflowAt).clamp(0.0, 1.0);
       final color = Color.lerp(_kWaterLight, _kBad, overFrac)!;
-      canvas.drawCircle(
-        zone.center,
-        _kWaterZoneR,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5
-          ..color = color.withValues(alpha: 0.35),
-      );
-      canvas.drawCircle(
-        zone.center,
-        _kWaterZoneR,
-        Paint()..color = color.withValues(alpha: 0.04),
-      );
+
+      if (zone.overflowed) {
+        // Puddle fill for overwatered zones.
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: zone.center,
+              width: _kPuddleR * 2,
+              height: _kPuddleR * 1.2),
+          Paint()..color = _kWaterBlue.withValues(alpha: 0.22),
+        );
+        // Soggy pulsing warning ring.
+        final pulse = 0.5 + 0.5 * math.sin(state._clock * _kSoggyPulse);
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: zone.center,
+              width: _kPuddleR * 2 * (1.0 + pulse * 0.15),
+              height: _kPuddleR * 1.2 * (1.0 + pulse * 0.15)),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.5
+            ..color = _kBad.withValues(alpha: 0.60 * pulse),
+        );
+      } else {
+        // Normal zone ring.
+        canvas.drawCircle(
+          zone.center,
+          _kWaterZoneR,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.8
+            ..color = color.withValues(alpha: 0.40),
+        );
+        canvas.drawCircle(
+          zone.center,
+          _kWaterZoneR,
+          Paint()..color = color.withValues(alpha: 0.06),
+        );
+        // Water level arc fill.
+        if (zone.taps > 1) {
+          canvas.drawArc(
+            Rect.fromCircle(center: zone.center, radius: _kWaterZoneR * 0.85),
+            -math.pi / 2,
+            math.pi * 2 * overFrac,
+            false,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 3.0
+              ..strokeCap = StrokeCap.round
+              ..color = color.withValues(alpha: 0.65),
+          );
+        }
+      }
     }
   }
 
@@ -1364,51 +1977,81 @@ class _PlantPainter extends CustomPainter {
           cellH,
         );
         final tilled = state._plowGrid[r][c];
-        // Fill.
-        canvas.drawRect(
-          cellRect.deflate(1),
-          Paint()
-            ..color = tilled
-                ? _kEarthOre.withValues(alpha: 0.45)
-                : _kDirtBrown.withValues(alpha: 0.20),
-        );
-        // Border.
+
+        if (tilled) {
+          // Tilled soil — darker, richer with texture.
+          canvas.drawRect(
+            cellRect.deflate(1),
+            Paint()
+              ..shader = LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  _kEarthOre.withValues(alpha: 0.60),
+                  _kDirtBrown.withValues(alpha: 0.75),
+                ],
+              ).createShader(cellRect),
+          );
+          // Furrow stripes.
+          final furrowPaint = Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.4
+            ..strokeCap = StrokeCap.round
+            ..color = const Color(0xFF3E1F00).withValues(alpha: 0.35);
+          for (var f = 0; f < _kFurrowStripes; f++) {
+            final fy = cellRect.top + cellRect.height * (f + 1) / (_kFurrowStripes + 1);
+            canvas.drawLine(
+              Offset(cellRect.left + 3, fy),
+              Offset(cellRect.right - 3, fy),
+              furrowPaint,
+            );
+          }
+          // Tiny soil clod dots.
+          final clodPaint = Paint()..color = _kDirtBrown.withValues(alpha: 0.40);
+          for (var d = 0; d < 4; d++) {
+            final dx = cellRect.left + cellRect.width * ((d * 37 % 53) / 53.0);
+            final dy = cellRect.top + cellRect.height * ((d * 29 % 47) / 47.0);
+            canvas.drawCircle(Offset(dx, dy), 1.5 + (d % 2), clodPaint);
+          }
+        } else {
+          // Unplowed soil.
+          canvas.drawRect(
+            cellRect.deflate(1),
+            Paint()..color = _kDirtBrown.withValues(alpha: 0.20),
+          );
+        }
+
+        // Cell border.
         canvas.drawRect(
           cellRect,
           Paint()
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.2
-            ..color = (tilled ? _kEarthOre : _kDirtBrown)
-                .withValues(alpha: 0.50),
+            ..color = (tilled ? _kEarthOre : _kDirtBrown).withValues(alpha: 0.45),
         );
-        // Tilled row-mark.
-        if (tilled) {
-          final cx = cellRect.center.dx;
-          final rowPaint = Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.8
-            ..strokeCap = StrokeCap.round
-            ..color = _kGrass.withValues(alpha: 0.55);
-          canvas.drawLine(
-            Offset(cellRect.left + 4, cx),
-            Offset(cellRect.right - 4, cx),
-            rowPaint,
-          );
-        }
       }
     }
+  }
 
-    // Finger indicator.
+  void _paintPlowFinger(Canvas canvas) {
     final finger = state._plowFinger;
-    if (finger != null && rect.contains(finger)) {
-      canvas.drawCircle(
-        finger,
-        18,
-        Paint()
-          ..color = _kEarthOre.withValues(alpha: 0.30)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
-      );
-    }
+    final rect = state._plowFieldRect;
+    if (finger == null || !rect.contains(finger)) return;
+    // Glow.
+    canvas.drawCircle(
+      finger,
+      22,
+      Paint()
+        ..color = _kEarthOre.withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+    );
+    // Crosshair lines.
+    final paint = Paint()
+      ..color = _kEarthOre.withValues(alpha: 0.55)
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(finger.translate(-14, 0), finger.translate(14, 0), paint);
+    canvas.drawLine(finger.translate(0, -14), finger.translate(0, 14), paint);
   }
 
   // -- Shared -----------------------------------------------------------------
@@ -1416,10 +2059,18 @@ class _PlantPainter extends CustomPainter {
   void _paintParticles(Canvas canvas) {
     for (final p in state._particles) {
       final f = (p.life / p.maxLife).clamp(0.0, 1.0);
+      // Slight glow on particles.
+      canvas.drawCircle(
+        p.pos,
+        p.size * f * 2.2,
+        Paint()
+          ..color = p.color.withValues(alpha: 0.18 * f)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+      );
       canvas.drawCircle(
         p.pos,
         p.size * f,
-        Paint()..color = p.color.withValues(alpha: 0.85 * f),
+        Paint()..color = p.color.withValues(alpha: 0.88 * f),
       );
     }
   }
@@ -1428,20 +2079,25 @@ class _PlantPainter extends CustomPainter {
     for (final p in state._popups) {
       final f = (p.age / 1.1).clamp(0.0, 1.0);
       final alpha = f < 0.65 ? 1.0 : (1 - (f - 0.65) / 0.35).clamp(0.0, 1.0);
-      final rise = 44 * Curves.easeOut.transform(f);
+      final rise = 52 * Curves.easeOut.transform(f);
+      // Scale punch-in.
+      final scale = f < 0.10 ? (0.5 + f / 0.10 * 0.5) : 1.0;
       final tp = TextPainter(
         text: TextSpan(
           text: p.text,
           style: TextStyle(
             fontFamily: _kFont,
-            fontSize: p.big ? 19 : 15,
+            fontSize: (p.big ? 20.0 : 15.0) * scale,
             fontWeight: FontWeight.bold,
             letterSpacing: 1.1,
             color: p.color.withValues(alpha: alpha),
             shadows: [
               Shadow(
-                  color: p.color.withValues(alpha: 0.75 * alpha),
-                  blurRadius: 10),
+                  color: p.color.withValues(alpha: 0.80 * alpha),
+                  blurRadius: 12),
+              Shadow(
+                  color: Colors.black.withValues(alpha: 0.55 * alpha),
+                  blurRadius: 4),
             ],
           ),
         ),

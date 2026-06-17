@@ -20,70 +20,78 @@ const Color _kSugarYellow = Color(0xFFFDD835);
 const Color _kNutrientPurple = Color(0xFFCE93D8);
 const Color _kPestRed = Color(0xFFFF5722);
 
-// ---- INTENSITY / PACE knobs (play-tune here) --------------------------------
+// ---- INTENSITY / PACE knobs (tune here) ------------------------------------
 
-/// Hard cap on game length. After this the player has survived perfectly;
-/// no run should casually beat this (was: uncapped).
+/// Hard cap on game length. Surviving this long triggers a "SURVIVED" screen.
 const double _kGameDurationCap = 60.0; // seconds
 
 /// How fast difficulty climbs. difficulty = 1 + elapsed / _kDiffRampPeriod.
-/// Lower = faster ramp. Was: 30.0 (very gentle).
-const double _kDiffRampPeriod = 18.0;
+/// Higher = gentler ramp; difficulty reaches ~4 at 60s.
+const double _kDiffRampPeriod = 22.0;
 
 /// Seconds a node waits at max urgency before health starts draining.
-/// Lower = less reaction time. The urgency window was: 8.0s.
-const double _kNeedUrgencyWindow = 4.5; // seconds
+/// Gives the player time to notice and respond. Kept generous to stay fun.
+const double _kNeedUrgencyWindow = 7.0; // seconds
 
 /// Health drained per second when a node is at max urgency (need unmet).
-/// Formula: base + difficulty * scale. Was: 6 + diff*2.
-const double _kHealthDrainBase = 10.0;
-const double _kHealthDrainScale = 4.0;
+/// Formula: base + difficulty * scale.
+const double _kHealthDrainBase = 5.0;
+const double _kHealthDrainScale = 2.0;
 
 /// Damage dealt to a node when a pest reaches it.
-/// Was: 8 + diff*3.
-const double _kPestDamageBase = 14.0;
-const double _kPestDamageScale = 5.0;
+const double _kPestDamageBase = 10.0;
+const double _kPestDamageScale = 3.0;
 
-/// Pest movement speed at difficulty=1. Scales with difficulty.
-/// Was: 28 + diff*8 + rng*12.
-const double _kPestSpeedBase = 40.0;
-const double _kPestSpeedDiffScale = 14.0;
-const double _kPestSpeedRandom = 14.0;
+/// Pest movement speed (pixels/second) at difficulty=1. Scales with difficulty.
+const double _kPestSpeedBase = 30.0;
+const double _kPestSpeedDiffScale = 8.0;
+const double _kPestSpeedRandom = 10.0;
 
 /// Pest spawn interval in seconds: max(_kPestSpawnMin, base - diff*scale).
-/// Was: max(0.8, 3.5 - diff*0.25).
-const double _kPestSpawnBase = 2.8;
-const double _kPestSpawnDiffScale = 0.40;
-const double _kPestSpawnMin = 0.4; // floor — guaranteed breathing room
+const double _kPestSpawnBase = 3.5;
+const double _kPestSpawnDiffScale = 0.30;
+const double _kPestSpawnMin = 0.8; // floor — guaranteed breathing room
 
-/// Grace period before the first pest appears (was: 2.5s).
-const double _kPestGracePeriod = 1.2; // seconds
+/// Grace period before the first pest appears. Long enough for player to learn.
+const double _kPestGracePeriod = 3.0; // seconds
 
 /// Resource spawn interval: max(min, base - diff*scale).
-/// Was: max(1.2, 3.0 - diff*0.2).
-const double _kResourceSpawnBase = 2.2;
-const double _kResourceSpawnDiffScale = 0.22;
+const double _kResourceSpawnBase = 1.8;
+const double _kResourceSpawnDiffScale = 0.15;
 const double _kResourceSpawnMin = 0.7;
 
-/// Max simultaneous resources on screen (was: 6).
-/// Kept at 6 — more wouldn't help; the chaos comes from faster need cycling.
-const int _kResourceCap = 6;
+/// Max simultaneous resources on screen.
+const int _kResourceCap = 7;
 
-/// How long a resource stays on screen before vanishing (was: 12s).
-const double _kResourceLifetime = 7.0; // seconds
+/// How long a resource stays on screen before vanishing.
+const double _kResourceLifetime = 10.0; // seconds
+
+/// Age at which the fade-warning ring appears on a resource (must be < _kResourceLifetime).
+const double _kResourceFadeWarningAge = 7.0; // seconds
 
 /// Need cycle interval: max(min, base - diff*scale).
-/// Was: max(3.0, 6.0 - diff*0.5).
-const double _kNeedCycleBase = 3.5;
-const double _kNeedCycleDiffScale = 0.45;
-const double _kNeedCycleMin = 1.2; // at peak all nodes cycle very fast
+const double _kNeedCycleBase = 5.0;
+const double _kNeedCycleDiffScale = 0.35;
+const double _kNeedCycleMin = 2.0; // at peak, needs cycle every 2s — still reactive
 
-/// Probability that a node gets assigned a new need each cycle (was: 0.6).
-/// Higher = more nodes are always needy simultaneously.
-const double _kNeedAssignProb = 0.82;
+/// Probability that a node gets assigned a new need each cycle.
+const double _kNeedAssignProb = 0.65;
 
-/// Combo decay: seconds without a pest kill before combo resets (was: 3.0s).
-const double _kComboDecay = 1.8; // seconds
+/// Seconds of grace at start before any needs are assigned.
+/// Gives the player time to read the HUD and get oriented.
+const double _kNeedGracePeriod = 3.0; // seconds
+
+/// Combo decay: seconds without a pest kill before combo resets.
+const double _kComboDecay = 3.0; // seconds
+
+/// Hit radius for squishing pests (in addition to pest's own size).
+const double _kPestHitBonus = 18.0;
+
+/// Drop radius to deliver a resource to a node.
+const double _kNodeDropRadius = 52.0;
+
+/// Grab radius for picking up a resource.
+const double _kResourceGrabRadius = 48.0;
 
 // ---- enums -----------------------------------------------------------------
 
@@ -103,9 +111,9 @@ class _OrganNode {
   double x, y;
   double health;
   double maxHealth;
-  _ResourceType? needs; // current resource need (null = satisfied for now)
-  double needTimer; // time until need becomes urgent
-  double needUrgency; // 0..1 how urgent the need is
+  _ResourceType? needs; // current resource need (null = satisfied)
+  double needTimer; // time since need was assigned
+  double needUrgency; // 0..1 — how urgent the need is
   double damageFlash; // flash timer when damaged
   double healFlash; // flash timer when healed
   double pulsePhase;
@@ -131,8 +139,10 @@ class _OrganNode {
 class _Resource {
   _ResourceType type;
   double x, y;
+  // Origin position so we can snap back on a missed drop
+  double originX, originY;
   double age;
-  bool grabbed; // being dragged by player
+  bool grabbed;
   double bobPhase;
 
   _Resource({
@@ -142,7 +152,7 @@ class _Resource {
     this.age = 0,
     this.grabbed = false,
     this.bobPhase = 0,
-  });
+  }) : originX = x, originY = y;
 
   Color get color {
     switch (type) {
@@ -269,11 +279,10 @@ class _Connection {
   const _Connection(this.a, this.b);
 }
 
-// Diamond: root(0)-vascular(2), root(0)-reproductive(3),
-//          shoot(1)-vascular(2), shoot(1)-reproductive(3),
-//          vascular(2)-root(0), vascular(2)-shoot(1)
-// Basically a fully connected diamond but we show the 4 edges of the diamond
-// plus the 2 diagonals = vascular connections.
+// Diamond topology:
+// root(0)-vascular(2), root(0)-reproductive(3),
+// shoot(1)-vascular(2), shoot(1)-reproductive(3),
+// vascular(2)-reproductive(3) (cross), root(0)-shoot(1) (vertical)
 const _kConnections = <_Connection>[
   _Connection(0, 2), // root  ↔ vascular
   _Connection(0, 3), // root  ↔ reproductive
@@ -336,10 +345,10 @@ class _OrganSystemGameState extends State<OrganSystemGame>
 
   // drag state
   int? _dragResourceIndex;
-  // drag state (continued)
 
   // need generation
   double _needCycleTimer = 0;
+  double _needGraceTimer = 0; // counts up; needs don't assign until >= _kNeedGracePeriod
 
   Size _sz = Size.zero;
 
@@ -383,9 +392,10 @@ class _OrganSystemGameState extends State<OrganSystemGame>
     _fx.clear();
     _pops.clear();
     _dragResourceIndex = null;
-    _resourceSpawnTimer = 0;
-    _pestSpawnTimer = _kPestGracePeriod; // grace period before first pest
+    _resourceSpawnTimer = 1.0; // small delay before first resource
+    _pestSpawnTimer = _kPestGracePeriod;
     _needCycleTimer = 0;
+    _needGraceTimer = 0; // needs don't assign until _kNeedGracePeriod elapsed
 
     _buildNodes();
   }
@@ -436,9 +446,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
         pulsePhase: 3.6,
       ),
     ]);
-
-    // Start with initial needs
-    _assignNewNeeds();
+    // Start with no needs — wait for _kNeedGracePeriod to elapse in _tick
   }
 
   // ---- needs assignment ----------------------------------------------------
@@ -447,8 +455,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
     final types = _ResourceType.values;
     for (final node in _nodes) {
       if (node.needs == null) {
-        // Roots produce water, shoots produce sugar — they don't need what
-        // they produce. Other nodes can need anything.
+        // Roots produce water, shoots produce sugar — they don't need what they produce.
         final available = <_ResourceType>[];
         for (final t in types) {
           if (node.type == _OrganType.root && t == _ResourceType.water) continue;
@@ -467,34 +474,36 @@ class _OrganSystemGameState extends State<OrganSystemGame>
   // ---- resource spawning ---------------------------------------------------
 
   void _spawnResource() {
-    if (_resources.length >= _kResourceCap) return; // cap on-screen resources
+    if (_nodes.isEmpty) return; // guard: nodes must be initialised
+    if (_resources.length >= _kResourceCap) return;
 
-    // Water spawns near roots, sugar near shoots, nutrients at random
+    // Water spawns near roots, sugar near shoots, nutrients at random.
+    // Distribute more evenly so each node type can be served.
     final roll = _rng.nextDouble();
     _ResourceType type;
     double sx, sy;
 
-    if (roll < 0.4) {
+    if (roll < 0.35) {
       type = _ResourceType.water;
       final rootNode = _nodes[0];
       sx = rootNode.x + (_rng.nextDouble() - 0.5) * 80;
       sy = rootNode.y + 30 + _rng.nextDouble() * 40;
-    } else if (roll < 0.75) {
+    } else if (roll < 0.65) {
       type = _ResourceType.sugar;
       final shootNode = _nodes[1];
       sx = shootNode.x + (_rng.nextDouble() - 0.5) * 80;
       sy = shootNode.y - 30 - _rng.nextDouble() * 40;
     } else {
       type = _ResourceType.nutrient;
-      // Nutrients appear near roots or vascular
+      // Nutrients appear near roots or vascular — universally needed
       final srcNode = _nodes[_rng.nextBool() ? 0 : 2];
       sx = srcNode.x + (_rng.nextDouble() - 0.5) * 70;
       sy = srcNode.y + (_rng.nextDouble() - 0.5) * 70;
     }
 
     // Clamp to screen
-    sx = sx.clamp(20, _sz.width - 20);
-    sy = sy.clamp(60, _sz.height - 40);
+    sx = sx.clamp(24, _sz.width - 24);
+    sy = sy.clamp(64, _sz.height - 48);
 
     _resources.add(_Resource(
       type: type,
@@ -507,6 +516,8 @@ class _OrganSystemGameState extends State<OrganSystemGame>
   // ---- pest spawning -------------------------------------------------------
 
   void _spawnPest() {
+    if (_nodes.isEmpty) return; // guard: nodes must be initialised
+
     final kind = _rng.nextBool() ? _PestKind.aphid : _PestKind.beetle;
     final target = _OrganType.values[_rng.nextInt(4)];
     final targetNode = _nodes[target.index];
@@ -536,7 +547,9 @@ class _OrganSystemGameState extends State<OrganSystemGame>
     final dx = targetNode.x - sx;
     final dy = targetNode.y - sy;
     final dist = sqrt(dx * dx + dy * dy);
-    final speed = _kPestSpeedBase + _difficulty * _kPestSpeedDiffScale + _rng.nextDouble() * _kPestSpeedRandom;
+    final speed = _kPestSpeedBase +
+        _difficulty * _kPestSpeedDiffScale +
+        _rng.nextDouble() * _kPestSpeedRandom;
 
     _pests.add(_Pest(
       kind: kind,
@@ -563,7 +576,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       _tutorialAge += dt;
       if (_tutorialAge > 6) _tutorialDismissed = true;
 
-      // Ramp difficulty over time (steeper, capped run at _kGameDurationCap)
+      // Ramp difficulty over time
       _difficulty = 1.0 + _elapsed / _kDiffRampPeriod;
       if (_elapsed >= _kGameDurationCap && !_gameOver) {
         _gameOver = true; // survived the full gauntlet — report final score
@@ -575,6 +588,9 @@ class _OrganSystemGameState extends State<OrganSystemGame>
         _combo = 0;
       }
 
+      // ---- need grace period ----
+      _needGraceTimer += dt;
+
       // ---- update node pulses & urgency ----
       for (final node in _nodes) {
         node.pulsePhase += dt * 2;
@@ -583,10 +599,12 @@ class _OrganSystemGameState extends State<OrganSystemGame>
         if (node.needs != null) {
           node.needTimer += dt;
           // Urgency rises over _kNeedUrgencyWindow seconds
-          node.needUrgency = (node.needTimer / _kNeedUrgencyWindow).clamp(0.0, 1.0);
+          node.needUrgency =
+              (node.needTimer / _kNeedUrgencyWindow).clamp(0.0, 1.0);
           // If urgency hits max, drain health
           if (node.needUrgency >= 1.0) {
-            node.health -= dt * (_kHealthDrainBase + _difficulty * _kHealthDrainScale);
+            node.health -=
+                dt * (_kHealthDrainBase + _difficulty * _kHealthDrainScale);
             node.damageFlash = 0.3;
             if (node.health <= 0) {
               node.health = 0;
@@ -597,18 +615,24 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       }
 
       // ---- need cycle: assign new needs periodically ----
-      _needCycleTimer += dt;
-      final needInterval = max(_kNeedCycleMin, _kNeedCycleBase - _difficulty * _kNeedCycleDiffScale);
-      if (_needCycleTimer >= needInterval) {
-        _needCycleTimer = 0;
-        _assignNewNeeds();
+      if (_needGraceTimer >= _kNeedGracePeriod) {
+        _needCycleTimer += dt;
+        final needInterval = max(
+            _kNeedCycleMin,
+            _kNeedCycleBase - _difficulty * _kNeedCycleDiffScale);
+        if (_needCycleTimer >= needInterval) {
+          _needCycleTimer = 0;
+          _assignNewNeeds();
+        }
       }
 
       // ---- spawn resources ----
       _resourceSpawnTimer -= dt;
       if (_resourceSpawnTimer <= 0) {
         _spawnResource();
-        _resourceSpawnTimer = max(_kResourceSpawnMin, _kResourceSpawnBase - _difficulty * _kResourceSpawnDiffScale);
+        _resourceSpawnTimer = max(
+            _kResourceSpawnMin,
+            _kResourceSpawnBase - _difficulty * _kResourceSpawnDiffScale);
       }
 
       // ---- age resources & remove old ones ----
@@ -622,7 +646,9 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       _pestSpawnTimer -= dt;
       if (_pestSpawnTimer <= 0) {
         _spawnPest();
-        _pestSpawnTimer = max(_kPestSpawnMin, _kPestSpawnBase - _difficulty * _kPestSpawnDiffScale);
+        _pestSpawnTimer = max(
+            _kPestSpawnMin,
+            _kPestSpawnBase - _difficulty * _kPestSpawnDiffScale);
       }
 
       // ---- update pests ----
@@ -640,7 +666,8 @@ class _OrganSystemGameState extends State<OrganSystemGame>
 
         if (dist < 24) {
           // Reached target — deal damage
-          targetNode.health -= (_kPestDamageBase + _difficulty * _kPestDamageScale);
+          targetNode.health -=
+              (_kPestDamageBase + _difficulty * _kPestDamageScale);
           targetNode.damageFlash = 0.5;
           _burst(pest.x, pest.y, _kPestRed.withValues(alpha: 0.6), 6);
           pest.dead = true;
@@ -663,7 +690,6 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       for (final d in _activeDeliveries) {
         d.progress += dt * 2.2;
       }
-      // Complete deliveries
       _activeDeliveries.removeWhere((d) {
         if (d.progress >= 1.0) {
           _burst(d.toX, d.toY, d.color, 10);
@@ -673,7 +699,6 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       });
 
       // ---- flow particles on connections ----
-      // Spawn ambient flow particles
       if (_rng.nextDouble() < dt * 3) {
         final conn = _kConnections[_rng.nextInt(_kConnections.length)];
         final from = _nodes[conn.a];
@@ -726,14 +751,15 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       return;
     }
 
-    // First check: tap on pest to squish it
+    // Check: tap on pest to squish it
     bool hitPest = false;
     for (int i = _pests.length - 1; i >= 0; i--) {
       final pest = _pests[i];
       if (pest.dead) continue;
       final dx = pos.dx - pest.x;
       final dy = pos.dy - pest.y;
-      if (dx * dx + dy * dy < (pest.size + 16) * (pest.size + 16)) {
+      if (dx * dx + dy * dy <
+          (pest.size + _kPestHitBonus) * (pest.size + _kPestHitBonus)) {
         _squishPest(i, pos);
         hitPest = true;
         break;
@@ -742,7 +768,9 @@ class _OrganSystemGameState extends State<OrganSystemGame>
     if (hitPest) return;
 
     // Dismiss tutorial on any tap
-    if (!_tutorialDismissed) _tutorialDismissed = true;
+    if (!_tutorialDismissed) {
+      setState(() => _tutorialDismissed = true);
+    }
   }
 
   void _onPanStart(Offset pos) {
@@ -754,7 +782,8 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       if (pest.dead) continue;
       final dx = pos.dx - pest.x;
       final dy = pos.dy - pest.y;
-      if (dx * dx + dy * dy < (pest.size + 16) * (pest.size + 16)) {
+      if (dx * dx + dy * dy <
+          (pest.size + _kPestHitBonus) * (pest.size + _kPestHitBonus)) {
         _squishPest(i, pos);
         return;
       }
@@ -769,14 +798,16 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       final dx = pos.dx - r.x;
       final dy = pos.dy - r.y;
       final d = sqrt(dx * dx + dy * dy);
-      if (d < 44 && d < bestDist) {
+      if (d < _kResourceGrabRadius && d < bestDist) {
         bestDist = d;
         bestIdx = i;
       }
     }
     if (bestIdx >= 0) {
-      _resources[bestIdx].grabbed = true;
-      _dragResourceIndex = bestIdx;
+      setState(() {
+        _resources[bestIdx].grabbed = true;
+        _dragResourceIndex = bestIdx;
+      });
     }
   }
 
@@ -799,55 +830,51 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       return;
     }
 
-    final res = _resources[_dragResourceIndex!];
-    res.grabbed = false;
+    setState(() {
+      final idx = _dragResourceIndex!;
+      final res = _resources[idx];
+      res.grabbed = false;
 
-    // Check if dropped on a node that needs this resource
-    bool delivered = false;
-    for (final node in _nodes) {
-      final dx = res.x - node.x;
-      final dy = res.y - node.y;
-      if (dx * dx + dy * dy < 48 * 48) {
-        if (node.needs == res.type) {
-          // Successful delivery
-          _deliverResource(res, node);
-          _resources.removeAt(_dragResourceIndex!);
-          delivered = true;
-          break;
-        } else if (node.needs != null) {
-          // Wrong resource — snap back with feedback
-          _pops.add(_Popup(res.x, res.y - 20, 'Wrong!', const Color(0xFFFF8A65)));
+      // Check if dropped on a node that needs this resource
+      bool delivered = false;
+      for (final node in _nodes) {
+        final dx = res.x - node.x;
+        final dy = res.y - node.y;
+        if (dx * dx + dy * dy < _kNodeDropRadius * _kNodeDropRadius) {
+          if (node.needs == res.type) {
+            // Successful delivery — update node, award score, remove resource
+            node.needs = null;
+            node.needTimer = 0;
+            node.needUrgency = 0;
+            node.healFlash = 0.5;
+            node.health = min(node.maxHealth, node.health + 12);
+
+            final pts = 10 + (_combo > 0 ? _combo * 2 : 0);
+            _score += pts;
+            _deliveries++;
+
+            _pops.add(_Popup(node.x, node.y - 36, '+$pts', res.color));
+            _burst(node.x, node.y, res.color, 14);
+            _spawnDeliveryParticles(node, res.color);
+
+            _resources.removeAt(idx);
+            delivered = true;
+            break;
+          } else if (node.needs != null) {
+            // Wrong resource — show feedback but keep resource, snap it back
+            _pops.add(_Popup(
+                res.x, res.y - 20, 'Wrong!', const Color(0xFFFF8A65)));
+          }
         }
       }
-    }
 
-    if (!delivered) {
-      // Snap resource to original-ish position (don't remove)
-    }
+      if (!delivered) {
+        // Snap resource back to its spawn origin
+        res.x = res.originX;
+        res.y = res.originY;
+      }
 
-    _dragResourceIndex = null;
-  }
-
-  void _deliverResource(_Resource res, _OrganNode node) {
-    setState(() {
-      node.needs = null;
-      node.needTimer = 0;
-      node.needUrgency = 0;
-      node.healFlash = 0.5;
-
-      // Heal the node
-      node.health = min(node.maxHealth, node.health + 12);
-
-      // Score
-      final pts = 10 + (_combo > 0 ? _combo * 2 : 0);
-      _score += pts;
-      _deliveries++;
-
-      _pops.add(_Popup(node.x, node.y - 36, '+$pts', res.color));
-      _burst(node.x, node.y, res.color, 14);
-
-      // Spawn delivery particles along connections
-      _spawnDeliveryParticles(node, res.color);
+      _dragResourceIndex = null;
     });
   }
 
@@ -876,12 +903,10 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       pest.dead = true;
       pest.deathAge = 0;
 
-      // Combo
       _combo++;
       _comboTimer = 0;
       if (_combo > _maxCombo) _maxCombo = _combo;
 
-      // Score with multiplier
       final mult = min(_combo, 8);
       final pts = 5 * mult;
       _score += pts;
@@ -890,8 +915,6 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       _burst(pest.x, pest.y, _kPestRed, 12);
       final comboText = _combo > 1 ? '  x$_combo' : '';
       _pops.add(_Popup(pest.x, pest.y - 16, '+$pts$comboText', _kPestRed));
-
-      // Screen shake-like flash
     });
   }
 
@@ -920,7 +943,6 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       if (_sz != newSz) {
         _sz = newSz;
         if (_started && _nodes.isNotEmpty) {
-          // Reposition nodes
           _buildNodes();
         }
       }
@@ -950,6 +972,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
               fx: List.of(_fx),
               pops: List.of(_pops),
               dragResourceIndex: _dragResourceIndex,
+              needGraceTimer: _needGraceTimer,
             ),
             size: Size.infinite,
           ),
@@ -982,6 +1005,7 @@ class _GamePainter extends CustomPainter {
   final List<_FxDot> fx;
   final List<_Popup> pops;
   final int? dragResourceIndex;
+  final double needGraceTimer;
 
   _GamePainter({
     required this.started,
@@ -1002,6 +1026,7 @@ class _GamePainter extends CustomPainter {
     required this.fx,
     required this.pops,
     required this.dragResourceIndex,
+    required this.needGraceTimer,
   });
 
   @override
@@ -1162,7 +1187,7 @@ class _GamePainter extends CustomPainter {
 
   void _drawNodes(Canvas canvas, Size size) {
     for (final node in nodes) {
-      final nodeR = 32.0;
+      const nodeR = 32.0;
 
       // Glow behind node based on health
       final healthFrac = node.health / node.maxHealth;
@@ -1303,15 +1328,14 @@ class _GamePainter extends CustomPainter {
     for (int i = 0; i < resources.length; i++) {
       final r = resources[i];
       final isGrabbed = i == dragResourceIndex;
-      final bob = sin(r.bobPhase) * 3;
+      final bob = isGrabbed ? 0.0 : sin(r.bobPhase) * 3;
       final alpha = isGrabbed ? 0.9 : 0.65;
-      final glow = isGrabbed ? 20.0 : 0.0;
 
       if (isGrabbed) {
         // Glow halo when grabbed
         canvas.drawCircle(
           Offset(r.x, r.y + bob),
-          18 + glow,
+          36,
           Paint()..color = r.color.withValues(alpha: 0.15),
         );
       }
@@ -1335,16 +1359,18 @@ class _GamePainter extends CustomPainter {
           Colors.white.withValues(alpha: alpha), FontWeight.bold,
           r.x, r.y + bob, true);
 
-      // Fade indicator for old resources
-      if (r.age > 9 && !r.grabbed) {
-        final fade = ((r.age - 9) / 3).clamp(0.0, 1.0);
+      // Fade warning ring for resources about to expire
+      if (r.age > _kResourceFadeWarningAge && !r.grabbed) {
+        final fade = ((r.age - _kResourceFadeWarningAge) /
+                (_kResourceLifetime - _kResourceFadeWarningAge))
+            .clamp(0.0, 1.0);
         canvas.drawCircle(
           Offset(r.x, r.y + bob),
           13,
           Paint()
-            ..color = Colors.white.withValues(alpha: fade * 0.15)
+            ..color = Colors.white.withValues(alpha: fade * 0.25)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 1,
+            ..strokeWidth = 1.5,
         );
       }
     }
@@ -1393,7 +1419,7 @@ class _GamePainter extends CustomPainter {
               center: Offset(px, py),
               width: pest.size * 1.4,
               height: pest.size * 1.1),
-          Paint()..color = const Color(0xFF8B4513), // dark brown shell
+          Paint()..color = const Color(0xFF8B4513),
         );
         // Shell line
         canvas.drawLine(
@@ -1413,7 +1439,7 @@ class _GamePainter extends CustomPainter {
         canvas.drawCircle(
           Offset(px, py),
           pest.size * 0.7,
-          Paint()..color = const Color(0xFF7CB342), // green aphid
+          Paint()..color = const Color(0xFF7CB342),
         );
         canvas.drawCircle(
           Offset(px, py - 3),
@@ -1437,7 +1463,7 @@ class _GamePainter extends CustomPainter {
         );
       }
 
-      // Danger indicator: line toward target
+      // Danger indicator: short line toward target
       if (nodes.isNotEmpty) {
         final target = nodes[pest.target.index];
         final dx = target.x - px;
@@ -1535,6 +1561,14 @@ class _GamePainter extends CustomPainter {
     _paintText(canvas, '${deliveries}d  ${pestsKilled}k', 10,
         Colors.white.withValues(alpha: 0.15), FontWeight.w300,
         size.width / 2, size.height - 20, true);
+
+    // Need grace period countdown — let player know needs are about to start
+    if (needGraceTimer < _kNeedGracePeriod) {
+      final remaining = (_kNeedGracePeriod - needGraceTimer).ceil();
+      _paintText(canvas, 'Systems stable: $remaining', 11,
+          _kGreen.withValues(alpha: 0.35), FontWeight.w400,
+          size.width / 2, size.height * 0.12, true);
+    }
   }
 
   // ---- tutorial ------------------------------------------------------------

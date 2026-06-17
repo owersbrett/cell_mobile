@@ -307,12 +307,34 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     ]..shuffle(_rng);
 
     final n = all.length;
-    const chipW = 80.0;
     const chipSpacing = 86.0;
-    final startX = _sz.width / 2 - (n - 1) * chipSpacing / 2;
+    const rowH = 44.0; // vertical distance between rows
+
+    // How many chips fit in one row without overflowing (with side padding)
+    final availableW = _sz.width - 16.0; // 8px padding each side
+    final perRow = (availableW / chipSpacing).floor().clamp(1, n);
+
+    // Number of rows needed
+    final rows = (n / perRow).ceil();
+
+    // Bottom row baseline; if two rows, the first row sits higher
+    final baseY = _sz.height * 0.82;
+
     for (int i = 0; i < n; i++) {
-      all[i].x = startX + i * chipSpacing;
-      all[i].y = _sz.height * 0.82;
+      final row = i ~/ perRow;
+      final col = i % perRow;
+
+      // How many chips are in this particular row?
+      final chipsInRow = (row == rows - 1) ? n - row * perRow : perRow;
+
+      // Centre the row horizontally
+      final rowStartX = _sz.width / 2 - (chipsInRow - 1) * chipSpacing / 2;
+
+      // Offset upward for earlier rows so that the last row is at baseY
+      final y = baseY - (rows - 1 - row) * rowH;
+
+      all[i].x = rowStartX + col * chipSpacing;
+      all[i].y = y;
       all[i].homeX = all[i].x;
       all[i].homeY = all[i].y;
     }
@@ -681,11 +703,6 @@ class _TissueLayerGameState extends State<TissueLayerGame>
       );
     });
   }
-}
-
-// suppress unused warning for chipW local variable
-extension on double {
-  // ignore
 }
 
 // ---------------------------------------------------------------------------
