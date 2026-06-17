@@ -25,66 +25,61 @@ class _JuiceParticle {
   }) : maxLife = life;
 }
 
-// ---------------------------------------------------------------------------
-// Floating profit/loss pop label
-// ---------------------------------------------------------------------------
-class _ProfitPop {
-  double x, y, life, maxLife;
-  final String label;
-  final Color color;
-  _ProfitPop({
-    required this.x,
-    required this.y,
-    required this.label,
-    required this.color,
-    double life = 1.2,
-  })  : life = life,
-        maxLife = life;
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// 1. FinancialTradingGame — "Market Trader" (Algo-Trading Manager)
+// 1. FinancialTradingGame — "Market Trader"  (BioScale.financial)
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// FEEL / ECONOMY CONSTANTS (edit here to tune without touching game logic)
+// CORE LOOP: a live price moves rapidly every frame driven by shifting market
+// conditions (trend + volatility + random news spikes).  Player watches the
+// chart, taps BUY to enter a position at the current price, then taps SELL to
+// realise the gain/loss.  Buy low, sell high.  ~60s escalating to frantic.
+//
+// Tuning constants — edit here to adjust feel without touching logic.
 // -------------------------------------------------------------------------
-// TAP ENERGY
-const double _kTapEnergy = 0.08; // energy added per tap (0..1 scale)
-const double _kEnergyDecay = 0.55; // energy lost per second when not tapping
-// (no passive energy regen — tapping is the only source)
-// ALGO TICK RATE (trades per second at each scale level, index = scaleLevel-1)
-const List<double> _kTickRateByScale = [0.8, 1.4, 2.2, 3.2, 4.5, 6.0];
-// ROI per trade at each scale: [baseMin, baseMax] — can go negative (loss)
-// Index = scaleLevel-1.  Variance widens with higher scale.
-const List<List<double>> _kRoiRangeByScale = [
-  [-2.0, 6.0], // scale 1 — gentle
-  [-3.5, 9.0], // scale 2
-  [-6.0, 13.0], // scale 3
-  [-9.0, 18.0], // scale 4
-  [-13.0, 24.0], // scale 5
-  [-18.0, 30.0], // scale 6 — wild
-];
-// CLOUD COMPUTE COST per second at each scale level (index = scaleLevel-1)
-const List<double> _kComputeCostByScale = [
-  0.8, // scale 1
-  2.2, // scale 2
-  4.5, // scale 3
-  8.0, // scale 4
-  13.0, // scale 5
-  20.0, // scale 6
-];
-// AUTOSCALER
-const double _kAutoscalerUnlockTime = 30.0; // seconds until purchasable
-const double _kAutoscalerPrice = 80.0; // one-time cost in dollars
-const double _kAutoscalerCheckInterval = 1.5; // how often it re-evaluates scale
-// SCALE LIMITS
-const int _kMinScale = 1;
-const int _kMaxScale = 6;
-// VOLATILITY ESCALATION — multiplier on ROI variance applied at t=60
-const double _kVolatilityEscalation = 1.8; // ramps linearly from 1.0 → this
-// STARTING CONDITIONS
-const double _kStartingCash = 200.0;
-const double _kGameDuration = 60.0;
+const double _kMtStartingCash   = 200.0;  // opening wallet
+const double _kMtGameDuration   = 60.0;   // seconds
+const double _kMtBaseTickHz     = 12.0;   // price-update steps per second at start
+const double _kMtMaxTickHz      = 30.0;   // price-update rate at t=60 (frantic)
+const double _kMtBaseVolatility = 1.8;    // price step std-dev at t=0 (dollars)
+const double _kMtMaxVolatility  = 9.0;    // price step std-dev at t=60
+const double _kMtTrendDuration  = 4.0;    // seconds per market-trend segment
+const double _kMtNewsDuration   = 1.5;    // how long a news spike lasts
+const double _kMtNewsChance     = 0.08;   // probability per trend-flip of news event
+const double _kMtNewsAmplitude  = 14.0;   // extra price impulse from news
+const double _kMtStartingPrice  = 100.0;  // initial asset price
+
+// --- Market price sample (chart) ---
+class _MtPriceSample {
+  final double price;
+  _MtPriceSample(this.price);
+}
+
+// --- Floating P&L pop ---
+class _MtPop {
+  Offset pos;
+  final String label;
+  final Color color;
+  double life = 1.1;
+  _MtPop(this.pos, this.label, this.color);
+  bool step(double dt) {
+    pos = pos.translate(0, -48 * dt);
+    life -= dt / 1.1;
+    return life > 0;
+  }
+  void paint(Canvas canvas) {
+    final a = life.clamp(0.0, 1.0);
+    GameFx.text(canvas, label, pos, 22, color.withValues(alpha: a),
+        weight: FontWeight.w800, glow: 0.8 * a);
+  }
+}
+
+// --- News event ---
+class _MtNews {
+  final String headline;
+  final double impulse; // signed price impulse per tick while active
+  double ttl;           // seconds remaining
+  _MtNews(this.headline, this.impulse, this.ttl);
+}
 
 class FinancialTradingGame extends StatefulWidget {
   const FinancialTradingGame({Key? key}) : super(key: key);
@@ -92,97 +87,77 @@ class FinancialTradingGame extends StatefulWidget {
   State<FinancialTradingGame> createState() => _FinancialTradingGameState();
 }
 
-// ---------------------------------------------------------------------------
-// Live equity-curve data point
-// ---------------------------------------------------------------------------
-class _EquityPoint {
-  final double t; // seconds elapsed
-  final double value;
-  _EquityPoint(this.t, this.value);
-}
-
-// ---------------------------------------------------------------------------
-// Algo trade record (shows in live ticker feed)
-// ---------------------------------------------------------------------------
-class _TradeRecord {
-  final double roi; // signed dollar change
-  final double timestamp;
-  _TradeRecord(this.roi, this.timestamp);
-}
-
 class _FinancialTradingGameState extends State<FinancialTradingGame>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  // --- Core wallet ---
-  double _cash = _kStartingCash;
-  double _timeLeft = _kGameDuration;
-  bool _gameOver = false;
-  double _elapsed = 0.0;
+  // --- Wallet ---
+  double _cash     = _kMtStartingCash;
+  double _timeLeft = _kMtGameDuration;
+  bool   _gameOver = false;
+  double _elapsed  = 0.0;
 
-  // --- Algo engine ---
-  double _energy = 0.0; // 0..1; must be > 0 for algo to run
-  bool get _algoRunning => _energy > 0.01 && !_gameOver;
-  int _scaleLevel = _kMinScale; // 1.._kMaxScale
-  double _tradeClock = 0.0; // accumulates until >= 1/_tickRate
-  bool _isNetPositiveThisTick = false; // for pulse colour
+  // --- Price / market ---
+  double _price       = _kMtStartingPrice;
+  double _trend       = 0.0;   // persistent drift direction (-1..+1)
+  double _trendTimer  = 0.0;
+  double _priceClock  = 0.0;   // accumulator for sub-frame price steps
+  _MtNews? _news;
+  double _newsTimer   = 0.0;
 
-  // --- Autoscaler ---
-  bool _autoscalerOwned = false;
-  bool get _autoscalerAvailable =>
-      !_autoscalerOwned && _elapsed >= _kAutoscalerUnlockTime;
-  double _autoscalerClock = 0.0;
+  // --- Player position ---
+  bool   _inPosition   = false;
+  double _entryPrice   = 0.0;
+  double _shares       = 0.0;   // how many units bought (cash / entryPrice)
 
-  // --- Equity curve ---
-  final List<_EquityPoint> _equity = [];
-  double _peakNetWorth = _kStartingCash;
+  // --- Chart history ---
+  final List<_MtPriceSample> _chart = [];
+  static const int _kChartMax = 200;
 
-  // --- Trade ticker ---
-  final List<_TradeRecord> _recentTrades = [];
-
-  // --- Profit pops ---
-  final List<_ProfitPop> _pops = [];
-
-  // --- Particles ---
-  final List<_JuiceParticle> _particles = [];
+  // --- FX ---
+  final List<FxParticle> _fxParticles = [];
+  final List<_MtPop>     _pops        = [];
+  final List<_JuiceParticle> _juiceParticles = [];
 
   // --- High scores ---
   List<Map<String, dynamic>> _highScores = [];
-  double _bestScore = 0.0;
-  bool _newHighScore = false;
-  double _newHighScoreTimer = 0.0;
+  double _bestScore    = 0.0;
+  bool   _newHighScore = false;
+  double _newHsTimer   = 0.0;
 
-  // --- Volatility escalation (ramps from 1.0 \u2192 _kVolatilityEscalation) ---
-  double get _volatilityMult =>
-      1.0 + (_kVolatilityEscalation - 1.0) * (1.0 - (_timeLeft / _kGameDuration));
+  // --- Flash tint (green/red on trade close) ---
+  Color  _flashColor = Colors.transparent;
+  double _flashAlpha = 0.0;
 
-  // --- Cost vs earnings tension ---
-  double get _currentComputeCost =>
-      _kComputeCostByScale[_scaleLevel - 1];
-  double get _expectedEarningsPerSec {
-    if (!_algoRunning) return 0.0;
-    final roi = _kRoiRangeByScale[_scaleLevel - 1];
-    final avgRoi = (roi[0] + roi[1]) / 2.0;
-    return avgRoi * _kTickRateByScale[_scaleLevel - 1];
+  // --- Derived ---
+  double get _volatility {
+    final t = 1.0 - (_timeLeft / _kMtGameDuration);
+    return _kMtBaseVolatility + (_kMtMaxVolatility - _kMtBaseVolatility) * t;
   }
-  bool get _isOverscaled =>
-      _algoRunning && _currentComputeCost > _expectedEarningsPerSec;
+  double get _tickHz {
+    final t = 1.0 - (_timeLeft / _kMtGameDuration);
+    return _kMtBaseTickHz + (_kMtMaxTickHz - _kMtBaseTickHz) * t;
+  }
+  double get _unrealizedPnl =>
+      _inPosition ? (_price - _entryPrice) * _shares : 0.0;
+  double get _totalNetWorth =>
+      _cash + (_inPosition ? _price * _shares : 0.0);
 
   @override
   void initState() {
     super.initState();
-    _equity.add(_EquityPoint(0, _kStartingCash));
+    _chart.add(_MtPriceSample(_price));
     _ctrl = AnimationController(
-            vsync: this, duration: const Duration(hours: 1))
-        ..addListener(_tick)
-        ..forward();
+        vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
     _loadHighScores();
   }
 
   Future<void> _loadHighScores() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('market_trader_high_scores');
+    final raw = prefs.getString('market_trader_hs_v2');
     if (raw != null) {
       final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
       if (mounted) {
@@ -203,21 +178,22 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       'score': score,
       'date': DateTime.now().toIso8601String().substring(0, 10),
     });
-    _highScores.sort((a, b) => (b['score'] as num).compareTo(a['score'] as num));
+    _highScores.sort(
+        (a, b) => (b['score'] as num).compareTo(a['score'] as num));
     if (_highScores.length > 5) _highScores = _highScores.sublist(0, 5);
-    await prefs.setString('market_trader_high_scores', jsonEncode(_highScores));
+    await prefs.setString('market_trader_hs_v2', jsonEncode(_highScores));
     if (_highScores.isNotEmpty) {
       _bestScore = (_highScores.first['score'] as num).toDouble();
     }
   }
 
   void _checkAndSaveHighScore() {
-    final nw = _cash;
+    final nw = _totalNetWorth;
     final qualifies = _highScores.length < 5 ||
         nw > (_highScores.last['score'] as num).toDouble();
     if (qualifies) {
       _newHighScore = true;
-      _newHighScoreTimer = 3.0;
+      _newHsTimer   = 3.0;
       _saveHighScore(nw);
     }
   }
@@ -228,821 +204,858 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     super.dispose();
   }
 
-  // ---------------------------------------------------------------------------
-  // Main game loop
-  // ---------------------------------------------------------------------------
+  // --- Main game loop ---
   void _tick() {
     if (_gameOver) return;
     const dt = 1 / 60.0;
     setState(() {
-      _elapsed += dt;
+      _elapsed  += dt;
       _timeLeft -= dt;
       if (_timeLeft <= 0) {
+        if (_inPosition) _sell(silent: true);
         _timeLeft = 0;
         _gameOver = true;
         _checkAndSaveHighScore();
         return;
       }
 
-      // Energy passive decay
-      _energy = (_energy - _kEnergyDecay * dt).clamp(0.0, 1.0);
-
-      // Cloud compute drain
-      if (_algoRunning) {
-        _cash -= _currentComputeCost * dt;
-        if (_cash < 0) {
-          _cash = 0;
-          _gameOver = true;
-          _checkAndSaveHighScore();
-          return;
+      // Trend engine
+      _trendTimer -= dt;
+      if (_trendTimer <= 0) {
+        _trend      = (_rng.nextDouble() * 2 - 1);
+        _trendTimer = _kMtTrendDuration * (0.6 + _rng.nextDouble() * 0.8);
+        if (_news == null && _rng.nextDouble() < _kMtNewsChance) {
+          _spawnNews();
         }
       }
 
-      // Autoscaler
-      if (_autoscalerOwned && _algoRunning) {
-        _autoscalerClock += dt;
-        if (_autoscalerClock >= _kAutoscalerCheckInterval) {
-          _autoscalerClock = 0;
-          int bestScale = _kMinScale;
-          for (int s = _kMaxScale; s >= _kMinScale; s--) {
-            final roi = _kRoiRangeByScale[s - 1];
-            final avg = (roi[0] + roi[1]) / 2.0 * _volatilityMult;
-            final expectedNet =
-                avg * _kTickRateByScale[s - 1] - _kComputeCostByScale[s - 1];
-            if (expectedNet > 0) {
-              bestScale = s;
-              break;
-            }
-          }
-          if (_scaleLevel != bestScale) _scaleLevel = bestScale;
-        }
+      // News countdown
+      if (_news != null) {
+        _newsTimer -= dt;
+        if (_newsTimer <= 0) _news = null;
       }
 
-      // Algo trade ticks
-      if (_algoRunning) {
-        final tickRate = _kTickRateByScale[_scaleLevel - 1];
-        _tradeClock += dt;
-        final tickInterval = 1.0 / tickRate;
-        while (_tradeClock >= tickInterval) {
-          _tradeClock -= tickInterval;
-          _executeTrade();
-        }
+      // Price steps (sub-frame accurate)
+      _priceClock += dt * _tickHz;
+      final steps = _priceClock.floor();
+      _priceClock -= steps;
+      for (int s = 0; s < steps; s++) {
+        _stepPrice();
       }
 
-      // Equity curve sample every 0.5s
-      if (_equity.isEmpty || (_elapsed - _equity.last.t) >= 0.5) {
-        _equity.add(_EquityPoint(_elapsed, _cash));
-        if (_equity.length > 160) _equity.removeAt(0);
-        if (_cash > _peakNetWorth) _peakNetWorth = _cash;
+      // Chart sample
+      if (_chart.isEmpty ||
+          _chart.length < (_elapsed * _kMtBaseTickHz / 3).round() + 1) {
+        _chart.add(_MtPriceSample(_price));
+        if (_chart.length > _kChartMax) _chart.removeAt(0);
       }
 
-      // Cull stale trades
-      _recentTrades.removeWhere((r) => _elapsed - r.timestamp > 2.0);
+      // Flash decay
+      if (_flashAlpha > 0) _flashAlpha = (_flashAlpha - dt * 3).clamp(0, 1);
 
-      // Update pops
-      for (final p in _pops) {
-        p.y -= 40 * dt;
-        p.life -= dt;
-      }
-      _pops.removeWhere((p) => p.life <= 0);
-
-      // Update particles
-      for (final p in _particles) {
+      // FX particles
+      _fxParticles.removeWhere((p) => !p.step(dt));
+      _pops.removeWhere((p) => !p.step(dt));
+      for (final p in _juiceParticles) {
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.life -= dt;
       }
-      _particles.removeWhere((p) => p.life <= 0);
+      _juiceParticles.removeWhere((p) => p.life <= 0);
 
-      // New high score animation timer
-      if (_newHighScoreTimer > 0) _newHighScoreTimer -= dt;
-
+      if (_newHsTimer > 0) _newHsTimer -= dt;
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Execute one algo trade
-  // ---------------------------------------------------------------------------
-  void _executeTrade() {
-    final roiRange = _kRoiRangeByScale[_scaleLevel - 1];
-    final vMult = _volatilityMult;
-    final mid = (roiRange[0] + roiRange[1]) / 2.0;
-    final halfSpread = ((roiRange[1] - roiRange[0]) / 2.0) * vMult;
-    final roi = mid + (_rng.nextDouble() * 2 - 1) * halfSpread;
-    _cash = (_cash + roi).clamp(0.0, 999999.0);
-    _isNetPositiveThisTick = roi >= 0;
-    _recentTrades.insert(0, _TradeRecord(roi, _elapsed));
-    if (_recentTrades.length > 20) _recentTrades.removeLast();
-    final px = 60.0 + _rng.nextDouble() * 200;
-    final py = 280.0 + _rng.nextDouble() * 80;
-    _pops.add(_ProfitPop(
-      x: px, y: py,
-      label: '${roi >= 0 ? "+" : ""}\$${roi.toStringAsFixed(1)}',
-      color: roi >= 0 ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
+  // --- Step the price by one tick ---
+  void _stepPrice() {
+    final vol   = _volatility;
+    final drift = _trend * vol * 0.35;
+    final noise = (_rng.nextDouble() * 2 - 1) * vol;
+    double impulse = 0;
+    if (_news != null) impulse = _news!.impulse * 0.5;
+    _price = (_price + drift + noise + impulse).clamp(10.0, 9999.0);
+  }
+
+  // --- Spawn a news event ---
+  void _spawnNews() {
+    final positive = _rng.nextBool();
+    final headlines = positive
+        ? ['STRONG EARNINGS', 'UPGRADE: BUY', 'SHORT SQUEEZE!', 'BULLISH DATA']
+        : ['EARNINGS MISS', 'FED HIKE FEAR', 'SELL-OFF WAVE', 'MARGIN CALLS'];
+    final impulse = (positive ? 1 : -1) *
+        (_kMtNewsAmplitude * (0.7 + _rng.nextDouble() * 0.6));
+    _news      = _MtNews(
+      headlines[_rng.nextInt(headlines.length)],
+      impulse,
+      _kMtNewsDuration,
+    );
+    _newsTimer  = _kMtNewsDuration;
+    _trend      = positive ? 0.9 : -0.9;
+    _trendTimer = _kMtNewsDuration;
+  }
+
+  // --- Trade actions ---
+  void _buy(Size screenSize) {
+    if (_gameOver || _inPosition) return;
+    final investAmount = _cash * 0.8;
+    if (investAmount < 1) return;
+    setState(() {
+      _entryPrice = _price;
+      _shares     = investAmount / _price;
+      _cash      -= investAmount;
+      _inPosition = true;
+      final center = Offset(screenSize.width / 2, screenSize.height * 0.55);
+      _fxParticles.addAll(
+          FxBurst.spawn(center, Potatuhs.airForce, count: 10, speed: 90));
+    });
+  }
+
+  void _sell({bool silent = false}) {
+    if (!_inPosition) return;
+    final proceeds  = _price * _shares;
+    final pnl       = proceeds - _entryPrice * _shares;
+    final pnlInt    = pnl.round();
+    _cash          += proceeds;
+    _inPosition     = false;
+    _shares         = 0;
+    _entryPrice     = 0;
+    if (silent) return;
+    final profit = pnl >= 0;
+    final col    = profit ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
+    _flashColor  = col;
+    _flashAlpha  = 0.28;
+    _pops.add(_MtPop(
+      const Offset(160, 260),
+      '${profit ? "+" : ""}\$${pnlInt.abs()}',
+      col,
     ));
-  }
-
-  // ---------------------------------------------------------------------------
-  // Player interactions
-  // ---------------------------------------------------------------------------
-  void _onTap(double x, double y) {
-    if (_gameOver) return;
-    setState(() {
-      _energy = (_energy + _kTapEnergy).clamp(0.0, 1.0);
-      _spawnParticles(x, y, const Color(0xFF80CBC4), 4);
-    });
-  }
-
-  void _scaleUp() {
-    if (_scaleLevel < _kMaxScale) setState(() => _scaleLevel++);
-  }
-
-  void _scaleDown() {
-    if (_scaleLevel > _kMinScale) setState(() => _scaleLevel--);
-  }
-
-  void _buyAutoscaler() {
-    if (!_autoscalerAvailable || _cash < _kAutoscalerPrice) return;
-    setState(() {
-      _cash -= _kAutoscalerPrice;
-      _autoscalerOwned = true;
-      _spawnParticles(160, 200, Colors.cyanAccent, 20);
-    });
-  }
-
-  void _spawnParticles(double x, double y, Color color, int count) {
-    for (int i = 0; i < count; i++) {
-      _particles.add(_JuiceParticle(
-        x: x, y: y,
-        vx: (_rng.nextDouble() - 0.5) * 120,
-        vy: (_rng.nextDouble() - 0.5) * 120 - 30,
-        life: 0.7, color: color,
+    if (profit && pnl > 5) {
+      _fxParticles.addAll(FxBurst.spawn(
+        const Offset(180, 270), Potatuhs.gold,
+        count: pnl > 20 ? 22 : 14, speed: pnl > 20 ? 160 : 110,
       ));
     }
   }
 
   void _restart() {
     setState(() {
-      _cash = _kStartingCash;
-      _timeLeft = _kGameDuration;
-      _gameOver = false;
-      _elapsed = 0.0;
-      _energy = 0.0;
-      _scaleLevel = _kMinScale;
-      _tradeClock = 0.0;
-      _autoscalerOwned = false;
-      _autoscalerClock = 0.0;
-      _equity.clear();
-      _equity.add(_EquityPoint(0, _kStartingCash));
-      _peakNetWorth = _kStartingCash;
-      _recentTrades.clear();
+      _cash        = _kMtStartingCash;
+      _timeLeft    = _kMtGameDuration;
+      _gameOver    = false;
+      _elapsed     = 0.0;
+      _price       = _kMtStartingPrice;
+      _trend       = 0.0;
+      _trendTimer  = 0.0;
+      _priceClock  = 0.0;
+      _news        = null;
+      _newsTimer   = 0.0;
+      _inPosition  = false;
+      _entryPrice  = 0.0;
+      _shares      = 0.0;
+      _chart.clear();
+      _chart.add(_MtPriceSample(_price));
+      _fxParticles.clear();
       _pops.clear();
-      _particles.clear();
-      _isNetPositiveThisTick = false;
+      _juiceParticles.clear();
+      _flashAlpha  = 0.0;
       _newHighScore = false;
-      _newHighScoreTimer = 0.0;
+      _newHsTimer  = 0.0;
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Build
-  // ---------------------------------------------------------------------------
+  // --- Build ---
   @override
   Widget build(BuildContext context) {
-    final pnl = _cash - _kStartingCash;
+    final pnl      = _totalNetWorth - _kMtStartingCash;
+    final timerRed = _timeLeft < 10 && !_gameOver;
+
     return LayoutBuilder(builder: (ctx, constraints) {
+      final w = constraints.maxWidth;
       final h = constraints.maxHeight;
-      return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapDown: (d) => _onTap(d.localPosition.dx, d.localPosition.dy),
-        child: Container(
-          color: Colors.black,
-          child: Stack(children: [
-            if (_isOverscaled && _algoRunning)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: Container(
-                    color: Colors.deepOrange.withValues(alpha: 0.08),
-                  ),
-                ),
-              ),
-            Column(children: [
-              // Top bar: timer / best / P&L
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                child: Row(children: [
-                  Text(
-                    '${_timeLeft.toInt()}s',
-                    style: TextStyle(
-                      fontFamily: 'Avenir', fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: _timeLeft < 10 ? Colors.redAccent : Colors.white70,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  if (_bestScore > 0)
-                    Text(
-                      'Best: \$${_bestScore.toStringAsFixed(0)}',
-                      style: const TextStyle(
-                          fontFamily: 'Avenir', fontSize: 10, color: Colors.white30),
-                    ),
-                  const Spacer(),
-                  Text(
-                    'P&L: ${pnl >= 0 ? "+" : ""}\$${pnl.toStringAsFixed(0)}',
-                    style: TextStyle(
-                      fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold,
-                      color: pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
-                    ),
-                  ),
-                ]),
-              ),
+      final chartH = (h * 0.34).clamp(120.0, 220.0);
+      final screenSize = Size(w, h);
 
-              // Equity curve
-              SizedBox(
-                height: h * 0.22,
+      return Stack(children: [
+        // Background
+        Positioned.fill(
+          child: RepaintBoundary(
+            child: CustomPaint(
+              painter: _MtBackgroundPainter(_elapsed, Potatuhs.airForce),
+            ),
+          ),
+        ),
+
+        // Flash tint on trade close
+        if (_flashAlpha > 0)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Container(
+                color: _flashColor.withValues(alpha: _flashAlpha),
+              ),
+            ),
+          ),
+
+        // Main layout
+        SafeArea(
+          child: Column(children: [
+            // HUD top bar
+            _buildHud(w, pnl, timerRed),
+
+            // Instruction banner
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+              child: Text(
+                'Buy low, sell high — beat the market',
+                textAlign: TextAlign.center,
+                style: Potatuhs.label(
+                    size: 11, color: Potatuhs.textSecondary),
+              ),
+            ),
+
+            // Live price + trend chip
+            _buildPriceTicker(),
+
+            // News banner (when active)
+            if (_news != null)
+              _buildNewsBanner(_news!),
+
+            // Chart
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: SizedBox(
+                height: chartH,
                 width: double.infinity,
-                child: CustomPaint(
-                  painter: _EquityCurvePainter(_equity, _kStartingCash),
-                ),
-              ),
-
-              const SizedBox(height: 4),
-
-              // Cash + algo status row
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      '\$${_cash.toStringAsFixed(0)}',
-                      style: const TextStyle(
-                        fontFamily: 'Avenir', fontSize: 26,
-                        fontWeight: FontWeight.bold, color: Color(0xFFE19816),
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: _algoRunning
-                            ? (_isNetPositiveThisTick
-                                ? const Color(0xFF1B5E20)
-                                : const Color(0xFF7F0000))
-                            : Colors.grey.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: _algoRunning
-                              ? (_isNetPositiveThisTick
-                                  ? Colors.greenAccent
-                                  : Colors.redAccent)
-                              : Colors.grey.withValues(alpha: 0.3),
-                        ),
-                      ),
-                      child: Text(
-                        _algoRunning ? 'ALGO LIVE' : 'IDLE',
-                        style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: _algoRunning
-                              ? (_isNetPositiveThisTick
-                                  ? Colors.greenAccent
-                                  : Colors.redAccent)
-                              : Colors.white38,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 6),
-
-              // Energy bar + tap hint
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      const Text(
-                        'ENERGY',
-                        style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 9,
-                          color: Colors.white38, letterSpacing: 1.2,
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        _algoRunning ? 'TAP TO KEEP RUNNING' : 'TAP TO START ALGO',
-                        style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 9,
-                          color: _algoRunning
-                              ? Colors.white38
-                              : Colors.cyanAccent.withValues(alpha: 0.8),
-                          letterSpacing: 1.0,
-                        ),
-                      ),
-                    ]),
-                    const SizedBox(height: 4),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LinearProgressIndicator(
-                        value: _energy,
-                        minHeight: 8,
-                        backgroundColor: Colors.white12,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          _energy > 0.6
-                              ? Colors.cyanAccent
-                              : (_energy > 0.25
-                                  ? Colors.amberAccent
-                                  : Colors.redAccent),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              // Scale controls + cost/earnings tension
-              if (!_gameOver)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  child: Column(children: [
-                    if (_isOverscaled)
-                      Container(
-                        width: double.infinity,
-                        margin: const EdgeInsets.only(bottom: 6),
-                        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.deepOrange.withValues(alpha: 0.25),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                              color: Colors.deepOrange.withValues(alpha: 0.6)),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.warning_amber_rounded,
-                                color: Colors.deepOrangeAccent, size: 14),
-                            const SizedBox(width: 6),
-                            const Text(
-                              'COMPUTE EXCEEDS EARNINGS — SCALE DOWN',
-                              style: TextStyle(
-                                fontFamily: 'Avenir', fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.deepOrangeAccent,
-                                letterSpacing: 0.8,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                    Row(
-                      children: [
-                        _scaleBtn(
-                          Icons.remove, Colors.redAccent,
-                          _scaleLevel > _kMinScale && !_autoscalerOwned
-                              ? _scaleDown : null,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.06),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Column(children: [
-                              Text(
-                                'SCALE  ${_scaleLevel}x',
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  fontFamily: 'Avenir', fontSize: 13,
-                                  fontWeight: FontWeight.bold, color: Colors.white,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                'Cost: \$${_currentComputeCost.toStringAsFixed(1)}/s   '
-                                'EV: ${_expectedEarningsPerSec >= 0 ? "+" : ""}\$${_expectedEarningsPerSec.toStringAsFixed(1)}/s',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontFamily: 'Avenir', fontSize: 9,
-                                  color: _isOverscaled
-                                      ? Colors.deepOrangeAccent
-                                      : Colors.white38,
-                                ),
-                              ),
-                            ]),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        _scaleBtn(
-                          Icons.add, Colors.greenAccent,
-                          _scaleLevel < _kMaxScale && !_autoscalerOwned
-                              ? _scaleUp : null,
-                        ),
-                      ],
-                    ),
-                  ]),
-                ),
-
-              const SizedBox(height: 6),
-
-              // Autoscaler purchase strip
-              if (!_gameOver && !_autoscalerOwned)
-                AnimatedOpacity(
-                  opacity: _autoscalerAvailable ? 1.0 : 0.35,
-                  duration: const Duration(milliseconds: 300),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    child: GestureDetector(
-                      onTap: _autoscalerAvailable && _cash >= _kAutoscalerPrice
-                          ? _buyAutoscaler
-                          : null,
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 10, horizontal: 14),
-                        decoration: BoxDecoration(
-                          color: _autoscalerAvailable && _cash >= _kAutoscalerPrice
-                              ? const Color(0xFF0D2E3A)
-                              : Colors.white.withValues(alpha: 0.04),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: _autoscalerAvailable
-                                ? Colors.cyanAccent.withValues(alpha: 0.6)
-                                : Colors.white12,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(children: [
-                                  Icon(Icons.auto_mode,
-                                      size: 14,
-                                      color: _autoscalerAvailable
-                                          ? Colors.cyanAccent
-                                          : Colors.white24),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    'AUTOSCALER',
-                                    style: TextStyle(
-                                      fontFamily: 'Avenir', fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                      color: _autoscalerAvailable
-                                          ? Colors.cyanAccent
-                                          : Colors.white24,
-                                    ),
-                                  ),
-                                ]),
-                                Text(
-                                  _autoscalerAvailable
-                                      ? 'Auto-manages scale to keep net positive'
-                                      : 'Unlocks at ${_kAutoscalerUnlockTime.toInt()}s',
-                                  style: TextStyle(
-                                    fontFamily: 'Avenir', fontSize: 9,
-                                    color: _autoscalerAvailable
-                                        ? Colors.white38
-                                        : Colors.white.withValues(alpha: 0.18),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            Text(
-                              '\$${_kAutoscalerPrice.toInt()}',
-                              style: TextStyle(
-                                fontFamily: 'Avenir', fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: _autoscalerAvailable && _cash >= _kAutoscalerPrice
-                                    ? Colors.cyanAccent
-                                    : Colors.white24,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-              if (_autoscalerOwned)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.cyan.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                          color: Colors.cyanAccent.withValues(alpha: 0.3)),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.auto_mode,
-                            size: 13, color: Colors.cyanAccent),
-                        const SizedBox(width: 6),
-                        Text(
-                          'AUTOSCALER ACTIVE  —  scale ${_scaleLevel}x',
-                          style: const TextStyle(
-                            fontFamily: 'Avenir', fontSize: 10,
-                            fontWeight: FontWeight.bold, color: Colors.cyanAccent,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-              const Spacer(),
-
-              Text(
-                'Net Worth: \$${_cash.toStringAsFixed(0)}',
-                style: const TextStyle(
-                  fontFamily: 'Avenir', fontSize: 18,
-                  fontWeight: FontWeight.bold, color: Color(0xFFE19816),
-                ),
-              ),
-
-              if (_gameOver) ...[
-                const SizedBox(height: 8),
-                Text(
-                  pnl >= 0 ? 'Strong close!' : 'Compute ate you alive.',
-                  style: TextStyle(
-                    fontFamily: 'Avenir', fontSize: 16,
-                    color: pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
-                  ),
-                ),
-                if (_highScores.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  const Text('TOP SCORES',
-                      style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.amberAccent)),
-                  const SizedBox(height: 2),
-                  ..._highScores.asMap().entries.map((e) {
-                    final i = e.key;
-                    final s = e.value;
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 1),
-                      child: Text(
-                        '${i + 1}. \$${(s['score'] as num).toStringAsFixed(0)}  (${s['date']})',
-                        style: const TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 11,
-                            color: Colors.white54),
-                      ),
-                    );
-                  }),
-                ],
-                const SizedBox(height: 6),
-                GestureDetector(
-                  onTap: _restart,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 24, vertical: 10),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.white24),
-                    ),
-                    child: const Text('Play Again',
-                        style: TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 14,
-                            color: Colors.white70)),
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
-            ]),
-
-            // Particles
-            ..._particles.map((p) => Positioned(
-                  left: p.x - 3,
-                  top: p.y - 3,
-                  child: Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: p.color.withValues(
-                          alpha: (p.life / p.maxLife).clamp(0.0, 1.0) * 0.8),
-                    ),
-                  ),
-                )),
-
-            // Profit pops
-            ..._pops.map((pop) => Positioned(
-                  left: pop.x,
-                  top: pop.y,
-                  child: Opacity(
-                    opacity: (pop.life / pop.maxLife).clamp(0.0, 1.0),
-                    child: Text(
-                      pop.label,
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: pop.color,
-                        shadows: [
-                          Shadow(
-                            color: pop.color.withValues(alpha: 0.7),
-                            blurRadius: 6,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                )),
-
-            // Trade ticker strip (bottom-right)
-            if (!_gameOver && _recentTrades.isNotEmpty)
-              Positioned(
-                right: 8,
-                bottom: 60,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  mainAxisSize: MainAxisSize.min,
-                  children: _recentTrades.take(6).map((t) {
-                    final age = _elapsed - t.timestamp;
-                    final fade = (1.0 - age / 2.0).clamp(0.0, 1.0);
-                    return Opacity(
-                      opacity: fade,
-                      child: Text(
-                        '${t.roi >= 0 ? "+" : ""}\$${t.roi.toStringAsFixed(1)}',
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: t.roi >= 0
-                              ? const Color(0xFF66BB6A)
-                              : const Color(0xFFEF5350),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ),
-
-            // NEW HIGH SCORE overlay
-            if (_newHighScore && _newHighScoreTimer > 0)
-              Positioned(
-                top: h * 0.25,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Transform.scale(
-                    scale: 0.8 +
-                        (1.0 - (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)) * 0.4,
-                    child: Text(
-                      'NEW HIGH SCORE!',
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 28,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.amberAccent.withValues(
-                            alpha: (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)),
-                        shadows: const [
-                          Shadow(color: Colors.orange, blurRadius: 20),
-                          Shadow(color: Colors.amber, blurRadius: 40),
-                        ],
-                      ),
-                    ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: CustomPaint(
+                    painter: _MtChartPainter(
+                        _chart, _kMtStartingPrice, _elapsed),
                   ),
                 ),
               ),
+            ),
+
+            // Position status row
+            _buildPositionRow(),
+
+            const Spacer(),
+
+            // BUY / SELL controls
+            if (!_gameOver)
+              _buildTradeButtons(screenSize),
+
+            const SizedBox(height: 10),
+
+            // Game-over panel
+            if (_gameOver)
+              _buildGameOver(pnl),
           ]),
         ),
-      );
+
+        // FX overlays
+        Positioned.fill(
+          child: IgnorePointer(
+            child: CustomPaint(
+              painter: _MtFxPainter(_fxParticles, _pops, _juiceParticles),
+            ),
+          ),
+        ),
+
+        // NEW HIGH SCORE overlay
+        if (_newHighScore && _newHsTimer > 0)
+          Positioned(
+            top: h * 0.22,
+            left: 0,
+            right: 0,
+            child: IgnorePointer(
+              child: Center(
+                child: Text(
+                  'NEW HIGH SCORE!',
+                  style: Potatuhs.display(size: 26, color: Potatuhs.gold)
+                      .copyWith(
+                    shadows: [
+                      Shadow(
+                          color: Potatuhs.orange.withValues(alpha: 0.9),
+                          blurRadius: 24),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ]);
     });
   }
 
-  // Scale button helper
-  Widget _scaleBtn(IconData icon, Color color, VoidCallback? onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: onTap != null
-              ? color.withValues(alpha: 0.2)
-              : Colors.grey.withValues(alpha: 0.07),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-              color: onTap != null
-                  ? color.withValues(alpha: 0.5)
-                  : Colors.grey.withValues(alpha: 0.15)),
+  // --- Widget helpers ---
+
+  Widget _buildHud(double w, double pnl, bool timerRed) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: Potatuhs.surface(
+        fill: Potatuhs.inkPanel.withValues(alpha: 0.88),
+        borderColor: Potatuhs.airForce.withValues(alpha: 0.35),
+        radius: 14,
+      ),
+      child: Row(children: [
+        Text(
+          '${_timeLeft.ceil()}s',
+          style: Potatuhs.body(
+            size: 18,
+            weight: FontWeight.w800,
+            color: timerRed ? const Color(0xFFEF5350) : Potatuhs.textPrimary,
+          ),
         ),
-        child: Icon(icon,
-            size: 22,
-            color: onTap != null ? color : Colors.grey.withValues(alpha: 0.3)),
+        const SizedBox(width: 10),
+        if (_bestScore > 0)
+          Text(
+            'BEST \$${_bestScore.toStringAsFixed(0)}',
+            style: Potatuhs.label(size: 9, color: Potatuhs.textFaint),
+          ),
+        const Spacer(),
+        Text(
+          '\$${_totalNetWorth.toStringAsFixed(0)}',
+          style: Potatuhs.body(
+              size: 20, weight: FontWeight.w800, color: Potatuhs.sienna),
+        ),
+        const SizedBox(width: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: (pnl >= 0
+                    ? const Color(0xFF1B5E20)
+                    : const Color(0xFF7F0000))
+                .withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: pnl >= 0
+                  ? const Color(0xFF66BB6A).withValues(alpha: 0.6)
+                  : const Color(0xFFEF5350).withValues(alpha: 0.6),
+            ),
+          ),
+          child: Text(
+            '${pnl >= 0 ? "+" : ""}\$${pnl.toStringAsFixed(0)}',
+            style: Potatuhs.label(
+              size: 11,
+              color: pnl >= 0
+                  ? const Color(0xFF66BB6A)
+                  : const Color(0xFFEF5350),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildPriceTicker() {
+    final delta = _chart.length >= 6
+        ? _price - _chart[max(0, _chart.length - 6)].price
+        : 0.0;
+    final up = delta >= 0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text(
+            '\$${_price.toStringAsFixed(2)}',
+            style: Potatuhs.display(
+              size: 36,
+              color: up ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
+            ).copyWith(
+              shadows: [
+                Shadow(
+                  color: (up
+                      ? const Color(0xFF66BB6A)
+                      : const Color(0xFFEF5350))
+                      .withValues(alpha: 0.55),
+                  blurRadius: 14,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: (up
+                  ? const Color(0xFF1B5E20)
+                  : const Color(0xFF7F0000)).withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              '${up ? "▲" : "▼"} ${delta.abs().toStringAsFixed(2)}',
+              style: Potatuhs.label(
+                  size: 11,
+                  color: up
+                      ? const Color(0xFF66BB6A)
+                      : const Color(0xFFEF5350)),
+            ),
+          ),
+          const Spacer(),
+          if (_news != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                color: Potatuhs.orange.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                    color: Potatuhs.orange.withValues(alpha: 0.7)),
+              ),
+              child: Text('NEWS',
+                  style: Potatuhs.label(size: 10, color: Potatuhs.gold)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNewsBanner(_MtNews news) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [
+          Potatuhs.orange.withValues(alpha: 0.3),
+          Potatuhs.sienna.withValues(alpha: 0.15),
+        ]),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Potatuhs.orange.withValues(alpha: 0.6)),
+      ),
+      child: Row(children: [
+        const Text('\u{1F4F0}', style: TextStyle(fontSize: 14)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            news.headline,
+            style: Potatuhs.body(
+                size: 12,
+                weight: FontWeight.w700,
+                color: Potatuhs.gold),
+          ),
+        ),
+        Text(
+          news.impulse > 0 ? '▲ SPIKE' : '▼ CRASH',
+          style: Potatuhs.label(
+              size: 10,
+              color: news.impulse > 0
+                  ? const Color(0xFF66BB6A)
+                  : const Color(0xFFEF5350)),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildPositionRow() {
+    if (!_inPosition) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        child: Text(
+          'No open position  —  tap BUY to enter',
+          style: Potatuhs.label(size: 11, color: Potatuhs.textFaint),
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+    final upnl = _unrealizedPnl;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: Potatuhs.surface(
+        fill: (upnl >= 0
+            ? const Color(0xFF1B5E20)
+            : const Color(0xFF7F0000)).withValues(alpha: 0.35),
+        borderColor: (upnl >= 0
+            ? const Color(0xFF66BB6A)
+            : const Color(0xFFEF5350)).withValues(alpha: 0.5),
+        radius: 10,
+      ),
+      child: Row(children: [
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('OPEN  @  \$${_entryPrice.toStringAsFixed(2)}',
+              style: Potatuhs.label(size: 10, color: Potatuhs.textSecondary)),
+          const SizedBox(height: 2),
+          Text(
+            'Unrealized  ${upnl >= 0 ? "+" : ""}\$${upnl.toStringAsFixed(2)}',
+            style: Potatuhs.body(
+              size: 14,
+              weight: FontWeight.w700,
+              color: upnl >= 0
+                  ? const Color(0xFF66BB6A)
+                  : const Color(0xFFEF5350),
+            ),
+          ),
+        ]),
+        const Spacer(),
+        Text(
+          '\$${(_price * _shares).toStringAsFixed(0)} value',
+          style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildTradeButtons(Size screenSize) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      child: Row(children: [
+        // BUY
+        Expanded(
+          child: GestureDetector(
+            onTap: _inPosition ? null : () => _buy(screenSize),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              height: 62,
+              decoration: BoxDecoration(
+                gradient: _inPosition
+                    ? null
+                    : const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xFF1B5E20), Color(0xFF388E3C)],
+                      ),
+                color: _inPosition
+                    ? Colors.white.withValues(alpha: 0.06)
+                    : null,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _inPosition
+                      ? Colors.white.withValues(alpha: 0.12)
+                      : const Color(0xFF66BB6A).withValues(alpha: 0.8),
+                  width: 1.5,
+                ),
+                boxShadow: _inPosition
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: const Color(0xFF66BB6A).withValues(alpha: 0.35),
+                          blurRadius: 18,
+                        ),
+                      ],
+              ),
+              child: Center(
+                child: Text(
+                  'BUY',
+                  style: Potatuhs.display(
+                    size: 22,
+                    color: _inPosition
+                        ? Potatuhs.textFaint
+                        : const Color(0xFF66BB6A),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 14),
+        // SELL
+        Expanded(
+          child: GestureDetector(
+            onTap: _inPosition ? () => setState(() => _sell()) : null,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              height: 62,
+              decoration: BoxDecoration(
+                gradient: _inPosition
+                    ? const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xFF7F0000), Color(0xFFC62828)],
+                      )
+                    : null,
+                color: _inPosition
+                    ? null
+                    : Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _inPosition
+                      ? const Color(0xFFEF5350).withValues(alpha: 0.8)
+                      : Colors.white.withValues(alpha: 0.12),
+                  width: 1.5,
+                ),
+                boxShadow: _inPosition
+                    ? [
+                        BoxShadow(
+                          color:
+                              const Color(0xFFEF5350).withValues(alpha: 0.35),
+                          blurRadius: 18,
+                        ),
+                      ]
+                    : null,
+              ),
+              child: Center(
+                child: Text(
+                  'SELL',
+                  style: Potatuhs.display(
+                    size: 22,
+                    color: _inPosition
+                        ? const Color(0xFFEF5350)
+                        : Potatuhs.textFaint,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildGameOver(double pnl) {
+    final won = pnl >= 0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(18),
+        decoration: Potatuhs.surface(
+          fill: Potatuhs.inkPanel.withValues(alpha: 0.95),
+          borderColor: won
+              ? const Color(0xFF66BB6A).withValues(alpha: 0.5)
+              : const Color(0xFFEF5350).withValues(alpha: 0.5),
+          radius: 18,
+          glowColor: won ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
+          glowStrength: 0.25,
+        ),
+        child: Column(children: [
+          Text(
+            won ? 'PROFITABLE CLOSE' : 'CLOSED IN THE RED',
+            style: Potatuhs.display(
+              size: 20,
+              color: won ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Final: \$${_totalNetWorth.toStringAsFixed(0)}  (${won ? "+" : ""}\$${pnl.toStringAsFixed(0)})',
+            style: Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
+          ),
+          if (_highScores.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text('TOP SCORES',
+                style: Potatuhs.label(size: 10, color: Potatuhs.gold)),
+            const SizedBox(height: 4),
+            ..._highScores.asMap().entries.map((e) {
+              final i = e.key;
+              final s = e.value;
+              return Text(
+                '${i + 1}.  \$${(s['score'] as num).toStringAsFixed(0)}  ${s['date']}',
+                style: Potatuhs.body(size: 11, color: Potatuhs.textFaint),
+              );
+            }),
+          ],
+          const SizedBox(height: 14),
+          GestureDetector(
+            onTap: _restart,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 32, vertical: 12),
+              decoration: BoxDecoration(
+                gradient: Potatuhs.ctaGradient,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Potatuhs.ink, width: 2),
+                boxShadow:
+                    Potatuhs.glow(Potatuhs.orange, strength: 0.4, blur: 16),
+              ),
+              child: Text('PLAY AGAIN',
+                  style: Potatuhs.display(size: 16, color: Potatuhs.ink)),
+            ),
+          ),
+          const SizedBox(height: 4),
+        ]),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Equity curve painter
-// ---------------------------------------------------------------------------
-class _EquityCurvePainter extends CustomPainter {
-  final List<_EquityPoint> equity;
+// --- Background painter ---
+class _MtBackgroundPainter extends CustomPainter {
+  final double t;
+  final Color accent;
+  _MtBackgroundPainter(this.t, this.accent);
+  @override
+  void paint(Canvas canvas, Size size) {
+    GameFx.atmosphere(canvas, size, accent, t, motes: 28);
+  }
+  @override
+  bool shouldRepaint(covariant _MtBackgroundPainter old) => true;
+}
+
+// --- Premium glowing line-area chart ---
+class _MtChartPainter extends CustomPainter {
+  final List<_MtPriceSample> chart;
   final double baseline;
-  _EquityCurvePainter(this.equity, this.baseline);
+  final double elapsed;
+  _MtChartPainter(this.chart, this.baseline, this.elapsed);
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (equity.length < 2) return;
+    final bgRect = Offset.zero & size;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(bgRect, const Radius.circular(12)),
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Potatuhs.inkPanel.withValues(alpha: 0.95),
+            Potatuhs.inkDeep.withValues(alpha: 0.98),
+          ],
+        ).createShader(bgRect),
+    );
 
-    double minV = equity.map((e) => e.value).reduce(min);
-    double maxV = equity.map((e) => e.value).reduce(max);
-    if (baseline < minV) minV = baseline;
-    if (baseline > maxV) maxV = baseline;
-    minV -= 5;
-    maxV += 5;
-    final range = maxV - minV;
+    if (chart.length < 2) return;
+
+    double minP = chart.map((s) => s.price).reduce(min);
+    double maxP = chart.map((s) => s.price).reduce(max);
+    if (baseline < minP) minP = baseline;
+    if (baseline > maxP) maxP = baseline;
+    final pad = (maxP - minP) * 0.12 + 4;
+    minP -= pad;
+    maxP += pad;
+    final range = maxP - minP;
     if (range <= 0) return;
 
-    // Grid
+    double px(int i) => (i / (chart.length - 1)) * size.width;
+    double py(double price) =>
+        size.height - ((price - minP) / range) * size.height;
+
+    // Subtle grid lines
     final gridPaint = Paint()
-      ..color = const Color(0x11FFFFFF)
+      ..color = Colors.white.withValues(alpha: 0.06)
       ..strokeWidth = 0.5;
-    for (int i = 1; i < 5; i++) {
+    for (int i = 1; i <= 4; i++) {
       final y = size.height * i / 5;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
     }
 
-    // Break-even line
-    final bly = size.height - ((baseline - minV) / range) * size.height;
-    final blPaint = Paint()
-      ..color = const Color(0x33FFFFFF)
-      ..strokeWidth = 1;
-    for (double x = 0; x < size.width; x += 8) {
-      canvas.drawLine(Offset(x, bly), Offset(x + 4, bly), blPaint);
+    // Baseline dashes
+    final baseY = py(baseline);
+    final dashPaint = Paint()
+      ..color = Potatuhs.textFaint.withValues(alpha: 0.4)
+      ..strokeWidth = 1.0;
+    for (double x = 0; x < size.width; x += 10) {
+      canvas.drawLine(Offset(x, baseY), Offset(x + 5, baseY), dashPaint);
     }
 
-    final tStart = equity.first.t;
-    final tEnd = equity.last.t;
-    final tRange = tEnd - tStart;
-    if (tRange <= 0) return;
-
-    final path = Path();
-    for (int i = 0; i < equity.length; i++) {
-      final x = ((equity[i].t - tStart) / tRange) * size.width;
-      final y = size.height - ((equity[i].value - minV) / range) * size.height;
-      if (i == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
-      }
+    // Build line path
+    final linePath = Path();
+    for (int i = 0; i < chart.length; i++) {
+      final x = px(i);
+      final y = py(chart[i].price);
+      i == 0 ? linePath.moveTo(x, y) : linePath.lineTo(x, y);
     }
 
-    // Fill
-    final fillPath = Path.from(path)
+    final lastPrice = chart.last.price;
+    final profiting  = lastPrice >= baseline;
+    final lineColor  = profiting
+        ? const Color(0xFF66BB6A)
+        : const Color(0xFFEF5350);
+    final glowColor  = lineColor;
+
+    // Gradient fill (shaded area under chart)
+    final fillPath = Path.from(linePath)
       ..lineTo(size.width, size.height)
       ..lineTo(0, size.height)
       ..close();
-    final lastVal = equity.last.value;
-    final fillColor =
-        lastVal >= baseline ? const Color(0x2266BB6A) : const Color(0x22EF5350);
-    canvas.drawPath(fillPath, Paint()..color = fillColor);
-
-    // Stroke
-    final lineColor =
-        lastVal >= baseline ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
     canvas.drawPath(
-      path,
+      fillPath,
       Paint()
-        ..color = lineColor
-        ..strokeWidth = 2.0
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round,
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            lineColor.withValues(alpha: 0.28),
+            lineColor.withValues(alpha: 0.04),
+          ],
+        ).createShader(bgRect),
     );
 
-    // Current value dot
-    final lastX = ((equity.last.t - tStart) / tRange) * size.width;
-    final lastY =
-        size.height - ((equity.last.value - minV) / range) * size.height;
+    // Outer glow pass
+    canvas.drawPath(
+      linePath,
+      Paint()
+        ..color = glowColor.withValues(alpha: 0.3)
+        ..strokeWidth = 7
+        ..style = PaintingStyle.stroke
+        ..strokeCap  = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+
+    // Bright core line
+    canvas.drawPath(
+      linePath,
+      Paint()
+        ..color      = lineColor
+        ..strokeWidth = 2.2
+        ..style      = PaintingStyle.stroke
+        ..strokeCap  = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    // Glowing tip dot
+    final tipX = px(chart.length - 1);
+    final tipY = py(lastPrice);
     canvas.drawCircle(
-      Offset(lastX, lastY),
-      4,
+      Offset(tipX, tipY), 7,
+      Paint()
+        ..color = lineColor.withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+    );
+    canvas.drawCircle(
+      Offset(tipX, tipY), 3.5,
       Paint()..color = lineColor,
+    );
+
+    // Price labels on Y axis
+    GameFx.text(
+      canvas,
+      '\$${maxP.toStringAsFixed(0)}',
+      Offset(size.width - 22, 8),
+      9,
+      Potatuhs.textFaint.withValues(alpha: 0.7),
+    );
+    GameFx.text(
+      canvas,
+      '\$${minP.toStringAsFixed(0)}',
+      Offset(size.width - 22, size.height - 8),
+      9,
+      Potatuhs.textFaint.withValues(alpha: 0.7),
     );
   }
 
   @override
-  bool shouldRepaint(covariant _EquityCurvePainter old) => true;
+  bool shouldRepaint(covariant _MtChartPainter old) => true;
 }
+
+// --- FX overlay painter ---
+class _MtFxPainter extends CustomPainter {
+  final List<FxParticle>     particles;
+  final List<_MtPop>         pops;
+  final List<_JuiceParticle> juice;
+  _MtFxPainter(this.particles, this.pops, this.juice);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    FxBurst.paint(canvas, particles);
+    for (final p in pops)  p.paint(canvas);
+    for (final j in juice) {
+      final a = (j.life / j.maxLife).clamp(0.0, 1.0) * 0.85;
+      canvas.drawCircle(
+        Offset(j.x, j.y), j.radius * (0.4 + 0.6 * (j.life / j.maxLife)),
+        Paint()..color = j.color.withValues(alpha: a),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MtFxPainter old) => true;
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. GlobalFeedGame — "Feed the World"
