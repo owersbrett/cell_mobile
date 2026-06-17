@@ -7627,25 +7627,78 @@ class _NCPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// RealityMergeGame — "Reality Merge"
-// Match colored bubble universes by frequency. Merge matching = grow & score.
+// RealityMergeGame — "Multiverse Expansion"
+// Single-player frantic tap game: grow your universe bubbles, shrink AI rivals.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _BubbleUniverse {
-  double x, y, vx, vy, radius;
-  int colorIdx;
-  Color color;
-  int merges; // merge count — at 3, triggers resonance
+// ── Feel constants ────────────────────────────────────────────────────────────
+// Tap your own bubble to grow it by this many radius units.
+const double _kPlayerTapGrowth = 5.0;
+// Tapping empty space creates a new player bubble with this initial radius.
+const double _kNewBubbleRadius = 22.0;
+// Max player bubbles on screen at once (prevents canvas clutter).
+const int _kMaxPlayerBubbles = 6;
+// How fast rival bubbles grow per second (linear) at game start.
+const double _kRivalGrowRateBase = 3.5;
+// Rivals ramp up growth speed every second by this much (added to base).
+const double _kRivalGrowRamp = 0.055;
+// Tapping a rival shrinks its radius by this amount.
+const double _kRivalShrinkPerTap = 12.0;
+// Rivals are killed (popped) when their radius drops below this.
+const double _kRivalMinRadius = 10.0;
+// Rival max radius — if a rival exceeds this it triggers a penalty pop.
+const double _kRivalMaxRadius = 90.0;
+// How often (seconds) a new rival spawns initially; decreases over time.
+const double _kRivalSpawnRateBase = 5.0;
+// Minimum rival spawn interval (gets here by escalation).
+const double _kRivalSpawnRateMin = 1.6;
+// Total game duration in seconds.
+const double _kGameDuration = 60.0;
+// Score is accumulated area: π·r² per player bubble, sampled each second.
+const double _kScoreTickInterval = 1.0;
+// Particle burst count on grow tap (visual feedback).
+const int _kGrowParticleCount = 6;
+// Particle burst count on pop/shrink.
+const int _kPopParticleCount = 12;
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Palette: player = cool indigo/violet tones, rivals = hot warm tones.
+const List<Color> _kPlayerColors = [
+  Color(0xFF7C4DFF), // deep violet
+  Color(0xFF448AFF), // electric blue
+  Color(0xFF00E5FF), // cyan
+  Color(0xFF69F0AE), // mint
+];
+const List<Color> _kRivalColors = [
+  Color(0xFFFF1744), // hot red
+  Color(0xFFFF6D00), // amber
+  Color(0xFFFFD600), // gold
+  Color(0xFFE040FB), // magenta
+];
+
+class _UniverseBubble {
+  double x, y, radius;
   double pulsePhase;
-  double popAnim;
-  _BubbleUniverse({
-    required this.x, required this.y, required this.vx, required this.vy,
-    required this.radius, required this.colorIdx, required this.color,
-  }) : merges = 0, pulsePhase = 0, popAnim = 0;
+  double popAnim; // 0 = alive; >0 = popping; removed when > 1
+  Color color;
+  bool isPlayer;
+  double vx, vy; // gentle drift velocity
+
+  _UniverseBubble({
+    required this.x,
+    required this.y,
+    required this.radius,
+    required this.color,
+    required this.isPlayer,
+    this.vx = 0,
+    this.vy = 0,
+  })  : pulsePhase = 0,
+        popAnim = 0;
 }
 
 class RealityMergeGame extends StatefulWidget {
   const RealityMergeGame({Key? key}) : super(key: key);
+
   @override
   State<RealityMergeGame> createState() => _RealityMergeGameState();
 }
@@ -7655,70 +7708,110 @@ class _RealityMergeGameState extends State<RealityMergeGame>
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  final List<_BubbleUniverse> _bubbles = [];
-  int? _dragIndex;
-  int _score = 0;
-  int _lives = 5;
-  int _combo = 0;
-  double _comboTimer = 0;
-  double _spawnTimer = 0;
-  double _elapsed = 0;
-  double _lastTime = 0;
-  Size _size = Size.zero;
-  bool _gameOver = false;
-  bool _started = false;
-  int _resonanceCount = 0;
-  double _resonanceFlash = 0;
-  static const int _maxBubbles = 18;
-
+  final List<_UniverseBubble> _bubbles = [];
   final List<_JuiceParticle> _particles = [];
 
-  static const _bColors = [
-    Color(0xFFE53935), Color(0xFF1E88E5),
-    Color(0xFF43A047), Color(0xFFFDD835),
-  ];
+  Size _size = Size.zero;
+  bool _started = false;
+  bool _gameOver = false;
+
+  double _elapsed = 0;
+  double _lastTime = 0;
+  int _score = 0;
+  double _scoreTick = 0; // timer for periodic area scoring
+
+  double _rivalSpawnTimer = 0;
+  int _rivalColorIdx = 0;
+
+  // Flash overlay for satisfying pop feedback
+  double _popFlash = 0;
+  Color _popFlashColor = Colors.white;
 
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)..forward();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)
+      ..forward();
     _lastTime = _now();
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
 
   @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
-
-  void _initGame() {
-    _score = 0; _lives = 5; _combo = 0; _comboTimer = 0;
-    _spawnTimer = 0; _elapsed = 0; _resonanceCount = 0;
-    _gameOver = false; _started = true; _dragIndex = null;
-    _bubbles.clear(); _particles.clear(); _resonanceFlash = 0;
-    // Immediate action — start with bubbles
-    for (int i = 0; i < 6; i++) _spawnBubble();
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
   }
 
-  void _spawnBubble() {
+  void _initGame() {
+    _bubbles.clear();
+    _particles.clear();
+    _elapsed = 0;
+    _score = 0;
+    _scoreTick = 0;
+    _rivalSpawnTimer = _kRivalSpawnRateBase;
+    _rivalColorIdx = 0;
+    _gameOver = false;
+    _started = true;
+    _popFlash = 0;
+
+    // Seed with two player bubbles near center to give immediate ownership.
+    if (_size != Size.zero) {
+      final cx = _size.width / 2;
+      final cy = _size.height / 2;
+      _bubbles.add(_UniverseBubble(
+        x: cx - 45,
+        y: cy,
+        radius: _kNewBubbleRadius,
+        color: _kPlayerColors[0],
+        isPlayer: true,
+        vx: (_rng.nextDouble() - 0.5) * 12,
+        vy: (_rng.nextDouble() - 0.5) * 12,
+      )..pulsePhase = _rng.nextDouble() * pi * 2);
+      _bubbles.add(_UniverseBubble(
+        x: cx + 45,
+        y: cy,
+        radius: _kNewBubbleRadius,
+        color: _kPlayerColors[1],
+        isPlayer: true,
+        vx: (_rng.nextDouble() - 0.5) * 12,
+        vy: (_rng.nextDouble() - 0.5) * 12,
+      )..pulsePhase = _rng.nextDouble() * pi * 2);
+
+      // Two rivals immediately to create pressure.
+      _spawnRival();
+      _spawnRival();
+    }
+  }
+
+  void _spawnRival() {
     if (_size == Size.zero) return;
-    final ci = _rng.nextInt(4);
+    final ci = _rivalColorIdx % _kRivalColors.length;
+    _rivalColorIdx++;
+    // Spawn from a random edge, drifting inward.
     final side = _rng.nextInt(4);
     double sx, sy;
     switch (side) {
-      case 0: sx = _rng.nextDouble() * _size.width; sy = -35; break;
-      case 1: sx = _size.width + 35; sy = _rng.nextDouble() * _size.height; break;
-      case 2: sx = _rng.nextDouble() * _size.width; sy = _size.height + 35; break;
-      default: sx = -35; sy = _rng.nextDouble() * _size.height;
+      case 0: sx = _rng.nextDouble() * _size.width; sy = 0; break;
+      case 1: sx = _size.width; sy = _rng.nextDouble() * _size.height; break;
+      case 2: sx = _rng.nextDouble() * _size.width; sy = _size.height; break;
+      default: sx = 0; sy = _rng.nextDouble() * _size.height;
     }
-    final cx = _size.width / 2 + (_rng.nextDouble() - 0.5) * 80;
-    final cy = _size.height / 2 + (_rng.nextDouble() - 0.5) * 80;
-    final dx = cx - sx; final dy = cy - sy;
-    final dist = sqrt(dx * dx + dy * dy).clamp(1.0, 9999.0);
-    final spd = 20 + _rng.nextDouble() * 25;
-    _bubbles.add(_BubbleUniverse(
-      x: sx, y: sy, vx: dx / dist * spd, vy: dy / dist * spd,
-      radius: 22 + _rng.nextDouble() * 8, colorIdx: ci, color: _bColors[ci],
+    final tx = _size.width / 2 + (_rng.nextDouble() - 0.5) * _size.width * 0.5;
+    final ty = _size.height / 2 + (_rng.nextDouble() - 0.5) * _size.height * 0.5;
+    final ddx = tx - sx; final ddy = ty - sy;
+    final dist = sqrt(ddx * ddx + ddy * ddy).clamp(1.0, 9999.0);
+    final spd = 8 + _rng.nextDouble() * 10;
+    _bubbles.add(_UniverseBubble(
+      x: sx,
+      y: sy,
+      radius: _kRivalMinRadius + 6,
+      color: _kRivalColors[ci],
+      isPlayer: false,
+      vx: ddx / dist * spd,
+      vy: ddy / dist * spd,
     )..pulsePhase = _rng.nextDouble() * pi * 2);
   }
 
@@ -7726,164 +7819,196 @@ class _RealityMergeGameState extends State<RealityMergeGame>
     final now = _now();
     final dt = (now - _lastTime).clamp(0.001, 0.05);
     _lastTime = now;
-    if (_gameOver || !_started) return;
+    if (!_started || _gameOver) return;
 
     setState(() {
       _elapsed += dt;
 
-      // Overflow check
-      if (_bubbles.where((b) => b.popAnim == 0).length >= _maxBubbles) {
-        _gameOver = true; return;
+      // ── Timer end ────────────────────────────────────────────────────────
+      if (_elapsed >= _kGameDuration) {
+        _gameOver = true;
+        return;
       }
 
-      // Rapid spawn ramp: 0.55s → 0.2s over time
-      _spawnTimer -= dt;
-      final rate = max(0.2, 0.55 - _elapsed * 0.003);
-      if (_spawnTimer <= 0 && _bubbles.length < _maxBubbles) {
-        _spawnTimer = rate + _rng.nextDouble() * 0.15;
-        _spawnBubble();
-        // Occasionally double-spawn at higher paces
-        if (_elapsed > 30 && _rng.nextDouble() < 0.3) _spawnBubble();
+      // ── Rival spawn with escalating pace ─────────────────────────────────
+      _rivalSpawnTimer -= dt;
+      final spawnInterval = max(
+        _kRivalSpawnRateMin,
+        _kRivalSpawnRateBase - _elapsed * 0.04,
+      );
+      if (_rivalSpawnTimer <= 0) {
+        _rivalSpawnTimer = spawnInterval;
+        _spawnRival();
+        // Double-spawn after halfway point.
+        if (_elapsed > _kGameDuration * 0.5) _spawnRival();
       }
 
-      // Move & pulse bubbles
-      for (int i = 0; i < _bubbles.length; i++) {
-        final b = _bubbles[i];
-        b.pulsePhase += dt * (2.0 + b.merges * 0.5);
-        if (i == _dragIndex) continue;
-        b.x += b.vx * dt; b.y += b.vy * dt;
-        b.vx *= (1 - 0.4 * dt); b.vy *= (1 - 0.4 * dt);
-        // Speed up drift over time
-        final drift = 5.0 + _elapsed * 0.08;
-        b.vx += (_rng.nextDouble() - 0.5) * drift * dt;
-        b.vy += (_rng.nextDouble() - 0.5) * drift * dt;
-        // Bounce
+      // ── Rival growth + max-radius penalty ────────────────────────────────
+      final rivalGrowRate = _kRivalGrowRateBase + _elapsed * _kRivalGrowRamp;
+      for (final b in _bubbles) {
+        if (b.popAnim > 0) continue;
+        if (!b.isPlayer) {
+          b.radius += rivalGrowRate * dt;
+          if (b.radius > _kRivalMaxRadius) {
+            // Rival got too big — pop it with a penalty flash.
+            b.popAnim = 0.001;
+            _emitParticles(b.x, b.y, b.color, _kPopParticleCount, speed: 160);
+            _triggerFlash(b.color);
+          }
+        }
+        // Pulse phase advances for all bubbles.
+        b.pulsePhase += dt * 1.8;
+      }
+
+      // ── Gentle drift + soft bounce ────────────────────────────────────────
+      for (final b in _bubbles) {
+        if (b.popAnim > 0) continue;
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        // Damping — bubbles gradually slow down.
+        b.vx *= (1 - 0.3 * dt);
+        b.vy *= (1 - 0.3 * dt);
+        // Add tiny random cosmic drift.
+        b.vx += (_rng.nextDouble() - 0.5) * 2.0 * dt;
+        b.vy += (_rng.nextDouble() - 0.5) * 2.0 * dt;
+        // Bounce off edges.
+        final top = b.isPlayer ? 50.0 : 0.0;
         if (b.x < b.radius) { b.x = b.radius; b.vx = b.vx.abs(); }
         if (b.x > _size.width - b.radius) { b.x = _size.width - b.radius; b.vx = -b.vx.abs(); }
-        if (b.y < b.radius + 50) { b.y = b.radius + 50; b.vy = b.vy.abs(); }
+        if (b.y < b.radius + top) { b.y = b.radius + top; b.vy = b.vy.abs(); }
         if (b.y > _size.height - b.radius) { b.y = _size.height - b.radius; b.vy = -b.vy.abs(); }
       }
 
-      // Soft repulsion
+      // ── Soft repulsion between all bubbles ───────────────────────────────
       for (int i = 0; i < _bubbles.length; i++) {
+        if (_bubbles[i].popAnim > 0) continue;
         for (int j = i + 1; j < _bubbles.length; j++) {
-          if (i == _dragIndex || j == _dragIndex) continue;
-          final a = _bubbles[i]; final b = _bubbles[j];
-          final dx = b.x - a.x; final dy = b.y - a.y;
-          final dist = sqrt(dx * dx + dy * dy);
-          final minD = a.radius + b.radius;
+          if (_bubbles[j].popAnim > 0) continue;
+          final a = _bubbles[i]; final bub = _bubbles[j];
+          final ddx = bub.x - a.x; final ddy = bub.y - a.y;
+          final dist = sqrt(ddx * ddx + ddy * ddy);
+          final minD = a.radius + bub.radius;
           if (dist < minD && dist > 0.1) {
-            final nx = dx / dist; final ny = dy / dist;
-            final push = (minD - dist) * 1.8;
+            final nx = ddx / dist; final ny = ddy / dist;
+            final push = (minD - dist) * 1.5;
             a.vx -= nx * push; a.vy -= ny * push;
-            b.vx += nx * push; b.vy += ny * push;
+            bub.vx += nx * push; bub.vy += ny * push;
           }
         }
       }
 
-      // Pop animations
-      _bubbles.removeWhere((b) => b.popAnim > 0.4);
-      for (final b in _bubbles) { if (b.popAnim > 0) b.popAnim += dt; }
+      // ── Pop animations ────────────────────────────────────────────────────
+      for (final b in _bubbles) {
+        if (b.popAnim > 0) b.popAnim += dt * 2.5;
+      }
+      _bubbles.removeWhere((b) => b.popAnim > 1.0);
 
-      // Combo decay
-      if (_comboTimer > 0) {
-        _comboTimer -= dt;
-        if (_comboTimer <= 0) _combo = 0;
+      // ── Periodic area-based scoring ───────────────────────────────────────
+      _scoreTick += dt;
+      if (_scoreTick >= _kScoreTickInterval) {
+        _scoreTick -= _kScoreTickInterval;
+        double area = 0;
+        for (final b in _bubbles) {
+          if (b.isPlayer && b.popAnim == 0) area += pi * b.radius * b.radius;
+        }
+        // Score = area / 500 (keeps numbers readable at typical radii).
+        final pts = (area / 500).round();
+        _score += pts;
       }
 
-      // Resonance flash decay
-      if (_resonanceFlash > 0) _resonanceFlash = (_resonanceFlash - dt * 2).clamp(0.0, 1.0);
+      // ── Pop flash decay ───────────────────────────────────────────────────
+      if (_popFlash > 0) _popFlash = (_popFlash - dt * 3).clamp(0.0, 1.0);
 
-      // Particles
-      for (final p in _particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+      // ── Particles ─────────────────────────────────────────────────────────
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
       _particles.removeWhere((p) => p.life <= 0);
     });
   }
 
-  void _tryMerge(int dragIdx) {
-    if (dragIdx >= _bubbles.length) return;
-    final dragged = _bubbles[dragIdx];
-    for (int i = 0; i < _bubbles.length; i++) {
-      if (i == dragIdx) continue;
-      final b = _bubbles[i];
-      if (b.popAnim > 0) continue;
-      final dx = dragged.x - b.x; final dy = dragged.y - b.y;
-      final dist = sqrt(dx * dx + dy * dy);
-      if (dist < dragged.radius + b.radius + 8) {
-        if (dragged.colorIdx == b.colorIdx) {
-          // ---- Match! Merge ----
-          _combo++; _comboTimer = 1.5;
-          final pts = (1 + _combo ~/ 2) * (1 + b.merges);
-          _score += pts;
-          b.merges += dragged.merges + 1;
-          b.radius = (b.radius + 6).clamp(22, 55);
-          // Particles
-          for (int j = 0; j < 10; j++) {
-            final a = _rng.nextDouble() * 2 * pi;
-            _particles.add(_JuiceParticle(
-              x: (dragged.x + b.x) / 2, y: (dragged.y + b.y) / 2,
-              vx: cos(a) * 90, vy: sin(a) * 90,
-              life: 0.5, color: dragged.color,
-            ));
-          }
-          _bubbles.removeAt(dragIdx);
-          // Resonance check — 3+ merges triggers chain clear
-          if (b.merges >= 3) {
-            _triggerResonance(b.colorIdx, b.x, b.y);
-          }
-          return;
-        } else {
-          // ---- Mismatch ----
-          _lives--; _combo = 0; _comboTimer = 0;
-          dragged.radius = (dragged.radius - 5).clamp(14, 55);
-          b.radius = (b.radius - 5).clamp(14, 55);
-          if (dist > 0.1) {
-            dragged.vx = dx / dist * 90; dragged.vy = dy / dist * 90;
-            b.vx = -dx / dist * 90; b.vy = -dy / dist * 90;
-          }
-          for (int j = 0; j < 6; j++) {
-            final a = _rng.nextDouble() * 2 * pi;
-            _particles.add(_JuiceParticle(
-              x: (dragged.x + b.x) / 2, y: (dragged.y + b.y) / 2,
-              vx: cos(a) * 60, vy: sin(a) * 60,
-              life: 0.4, color: Colors.grey,
-            ));
-          }
-          if (_lives <= 0) _gameOver = true;
-          return;
-        }
-      }
+  void _emitParticles(double cx, double cy, Color color, int count,
+      {double speed = 100}) {
+    for (int i = 0; i < count; i++) {
+      final angle = _rng.nextDouble() * 2 * pi;
+      final spd = speed * (0.5 + _rng.nextDouble() * 0.5);
+      _particles.add(_JuiceParticle(
+        x: cx,
+        y: cy,
+        vx: cos(angle) * spd,
+        vy: sin(angle) * spd,
+        life: 0.5 + _rng.nextDouble() * 0.3,
+        color: color,
+        radius: 2.5 + _rng.nextDouble() * 2,
+      ));
     }
   }
 
-  void _triggerResonance(int colorIdx, double cx, double cy) {
-    _resonanceCount++;
-    _resonanceFlash = 1.0;
-    int cleared = 0;
-    // Pop all same-color bubbles
-    for (final b in _bubbles) {
-      if (b.colorIdx == colorIdx && b.popAnim == 0) {
-        b.popAnim = 0.001;
-        cleared++;
-        for (int j = 0; j < 6; j++) {
-          final a = _rng.nextDouble() * 2 * pi;
-          _particles.add(_JuiceParticle(
-            x: b.x, y: b.y, vx: cos(a) * 100, vy: sin(a) * 100,
-            life: 0.6, color: b.color,
-          ));
+  void _triggerFlash(Color c) {
+    _popFlash = 0.7;
+    _popFlashColor = c;
+  }
+
+  void _onTap(Offset pos) {
+    if (!_started || _gameOver) {
+      _initGame();
+      return;
+    }
+
+    // Check if tap lands on an existing bubble.
+    for (int i = _bubbles.length - 1; i >= 0; i--) {
+      final b = _bubbles[i];
+      if (b.popAnim > 0) continue;
+      if ((Offset(b.x, b.y) - pos).distance <= b.radius + 10) {
+        if (b.isPlayer) {
+          // Grow player bubble.
+          setState(() {
+            b.radius += _kPlayerTapGrowth;
+            _emitParticles(b.x, b.y, b.color, _kGrowParticleCount, speed: 70);
+          });
+        } else {
+          // Shrink rival.
+          setState(() {
+            b.radius -= _kRivalShrinkPerTap;
+            if (b.radius <= _kRivalMinRadius) {
+              // Pop the rival.
+              b.popAnim = 0.001;
+              _emitParticles(b.x, b.y, b.color, _kPopParticleCount, speed: 140);
+              _triggerFlash(b.color);
+              _score += 10; // bonus for popping a rival
+            } else {
+              _emitParticles(b.x, b.y, b.color, 4, speed: 60);
+            }
+          });
         }
+        return;
       }
     }
-    final bonus = cleared * 5;
-    _score += bonus;
-    // Shockwave particles from center
-    for (int j = 0; j < 20; j++) {
-      final a = _rng.nextDouble() * 2 * pi;
-      _particles.add(_JuiceParticle(
-        x: cx, y: cy, vx: cos(a) * 200, vy: sin(a) * 200,
-        life: 0.8, color: _bColors[colorIdx], radius: 3,
-      ));
+
+    // Empty space — spawn a new player bubble (up to cap).
+    final playerCount = _bubbles.where((b) => b.isPlayer && b.popAnim == 0).length;
+    if (playerCount < _kMaxPlayerBubbles) {
+      setState(() {
+        final ci = _rng.nextInt(_kPlayerColors.length);
+        _bubbles.add(_UniverseBubble(
+          x: pos.dx,
+          y: pos.dy,
+          radius: _kNewBubbleRadius,
+          color: _kPlayerColors[ci],
+          isPlayer: true,
+          vx: (_rng.nextDouble() - 0.5) * 20,
+          vy: (_rng.nextDouble() - 0.5) * 20,
+        )..pulsePhase = _rng.nextDouble() * pi * 2);
+        _emitParticles(pos.dx, pos.dy, _kPlayerColors[ci], 8, speed: 50);
+      });
     }
+  }
+
+  String get _timeLeft {
+    final secs = (_kGameDuration - _elapsed).ceil().clamp(0, 60);
+    return '$secs';
   }
 
   @override
@@ -7891,82 +8016,144 @@ class _RealityMergeGameState extends State<RealityMergeGame>
     return LayoutBuilder(builder: (context, constraints) {
       _size = Size(constraints.maxWidth, constraints.maxHeight);
       return GestureDetector(
-        onPanStart: (d) {
-          if (_gameOver) { _initGame(); return; }
-          if (!_started) { _initGame(); return; }
-          for (int i = _bubbles.length - 1; i >= 0; i--) {
-            final b = _bubbles[i];
-            if (b.popAnim > 0) continue;
-            if ((Offset(b.x, b.y) - d.localPosition).distance < b.radius + 12) {
-              _dragIndex = i; return;
-            }
-          }
-        },
-        onPanUpdate: (d) {
-          if (_dragIndex != null && _dragIndex! < _bubbles.length) {
-            _bubbles[_dragIndex!].x = d.localPosition.dx;
-            _bubbles[_dragIndex!].y = d.localPosition.dy;
-            _bubbles[_dragIndex!].vx = 0;
-            _bubbles[_dragIndex!].vy = 0;
-          }
-        },
-        onPanEnd: (d) {
-          if (_dragIndex != null && _dragIndex! < _bubbles.length) _tryMerge(_dragIndex!);
-          _dragIndex = null;
-        },
-        onTapDown: (d) {
-          if (_gameOver || !_started) { _initGame(); }
-        },
+        onTapDown: (d) => _onTap(d.localPosition),
         child: Container(
-          color: const Color(0xFF0A0A1A),
+          color: const Color(0xFF050510),
           child: CustomPaint(
             painter: _RealityMergePainter(
-              bubbles: _bubbles, particles: _particles,
-              dragIndex: _dragIndex, combo: _combo, comboTimer: _comboTimer,
-              resonanceFlash: _resonanceFlash,
+              bubbles: _bubbles,
+              particles: _particles,
+              popFlash: _popFlash,
+              popFlashColor: _popFlashColor,
+              elapsed: _elapsed,
             ),
             child: Stack(children: [
+              // ── Start screen ──────────────────────────────────────────────
               if (!_started)
-                Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const Text('Reality Merge', style: TextStyle(fontFamily: 'Avenir', fontSize: 26, fontWeight: FontWeight.w300, color: Colors.white54)),
-                  const SizedBox(height: 10),
-                  Text('Drag matching colors together', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white.withValues(alpha: 0.24))),
-                  Text('Grow a bubble to 3 merges for chain clear', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white.withValues(alpha: 0.24))),
-                  const SizedBox(height: 30),
-                  Text('Tap to start', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white.withValues(alpha: 0.24))),
-                ])),
-              if (_started && !_gameOver) ...[
-                Positioned(top: 8, left: 12, right: 12, child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('$_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-                    Row(mainAxisSize: MainAxisSize.min, children: [
-                      ...List.generate(5, (i) => Padding(
-                        padding: const EdgeInsets.only(left: 3),
-                        child: Icon(Icons.favorite, size: 14, color: i < _lives ? const Color(0xFFFF5252) : Colors.white12),
-                      )),
-                    ]),
-                    Text('${_bubbles.where((b) => b.popAnim == 0).length}/$_maxBubbles', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: _bubbles.length >= _maxBubbles - 3 ? Colors.redAccent : Colors.white38)),
-                  ],
-                )),
-                if (_combo > 1) Positioned(top: 30, left: 0, right: 0, child: Center(
-                  child: Text('x$_combo', style: const TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFB74D))),
-                )),
-              ],
-              if (_gameOver) Positioned.fill(child: Container(
-                color: Colors.black.withValues(alpha: 0.8),
-                child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text(_lives <= 0 ? 'Too Many Mismatches!' : 'Reality Overflow!', style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.redAccent)),
-                  const SizedBox(height: 12),
-                  Text('$_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 42, fontWeight: FontWeight.w300, color: Colors.white70)),
-                  if (_resonanceCount > 0) Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text('$_resonanceCount resonance${_resonanceCount == 1 ? '' : 's'} triggered', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white.withValues(alpha: 0.38))),
+                Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Text(
+                      'Multiverse Expansion',
+                      style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 26,
+                          fontWeight: FontWeight.w300,
+                          color: Colors.white70),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Tap your bubbles to grow them',
+                      style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 13,
+                          color: Colors.white.withValues(alpha: 0.38)),
+                    ),
+                    Text(
+                      'Tap rivals (red/orange) to shrink them',
+                      style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 13,
+                          color: Colors.white.withValues(alpha: 0.38)),
+                    ),
+                    Text(
+                      'Tap empty space to spawn a new universe',
+                      style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 13,
+                          color: Colors.white.withValues(alpha: 0.38)),
+                    ),
+                    const SizedBox(height: 30),
+                    Text(
+                      'Tap to start',
+                      style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                          color: Colors.white.withValues(alpha: 0.5)),
+                    ),
+                  ]),
+                ),
+
+              // ── HUD ───────────────────────────────────────────────────────
+              if (_started && !_gameOver)
+                Positioned(
+                  top: 8,
+                  left: 12,
+                  right: 12,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '$_score',
+                        style: const TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF7C4DFF)),
+                      ),
+                      Text(
+                        ':$_timeLeft',
+                        style: TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 15,
+                            color: double.parse(_timeLeft) <= 10
+                                ? Colors.redAccent
+                                : Colors.white38),
+                      ),
+                      Text(
+                        '${_bubbles.where((b) => !b.isPlayer && b.popAnim == 0).length} rivals',
+                        style: const TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 12,
+                            color: Color(0xFFFF5252)),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 20),
-                  Text('Tap to restart', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white.withValues(alpha: 0.24))),
-                ])),
-              )),
+                ),
+
+              // ── Game-over screen ──────────────────────────────────────────
+              if (_gameOver)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black.withValues(alpha: 0.82),
+                    child: Center(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Text(
+                          'Expansion Complete',
+                          style: TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF7C4DFF)),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          '$_score',
+                          style: const TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 52,
+                              fontWeight: FontWeight.w200,
+                              color: Colors.white),
+                        ),
+                        const Text(
+                          'universe mass',
+                          style: TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 12,
+                              color: Colors.white38),
+                        ),
+                        const SizedBox(height: 20),
+                        Text(
+                          'Tap to restart',
+                          style: TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 13,
+                              color: Colors.white.withValues(alpha: 0.28)),
+                        ),
+                      ]),
+                    ),
+                  ),
+                ),
             ]),
           ),
         ),
@@ -7976,77 +8163,174 @@ class _RealityMergeGameState extends State<RealityMergeGame>
 }
 
 class _RealityMergePainter extends CustomPainter {
-  final List<_BubbleUniverse> bubbles;
+  final List<_UniverseBubble> bubbles;
   final List<_JuiceParticle> particles;
-  final int? dragIndex;
-  final int combo;
-  final double comboTimer;
-  final double resonanceFlash;
+  final double popFlash;
+  final Color popFlashColor;
+  final double elapsed;
 
-  _RealityMergePainter({required this.bubbles, required this.particles, required this.dragIndex, required this.combo, required this.comboTimer, required this.resonanceFlash});
+  _RealityMergePainter({
+    required this.bubbles,
+    required this.particles,
+    required this.popFlash,
+    required this.popFlashColor,
+    required this.elapsed,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Resonance flash
-    if (resonanceFlash > 0) {
-      canvas.drawRect(Offset.zero & size, Paint()..color = Colors.white.withValues(alpha: resonanceFlash * 0.08));
+    // ── Starfield background ─────────────────────────────────────────────────
+    // Static cosmic dust dots; use elapsed for twinkling variation.
+    final dustPaint = Paint()..color = Colors.white.withValues(alpha: 0.04);
+    final rand = Random(42); // fixed seed for stable field
+    for (int i = 0; i < 80; i++) {
+      final sx = rand.nextDouble() * size.width;
+      final sy = rand.nextDouble() * size.height;
+      final sr = 0.5 + rand.nextDouble() * 1.0;
+      final twinkle = (sin(elapsed * 1.2 + i * 0.7) * 0.015 + 0.025).clamp(0.0, 0.06);
+      canvas.drawCircle(Offset(sx, sy), sr, Paint()..color = Colors.white.withValues(alpha: twinkle));
+      canvas.drawCircle(Offset(sx, sy), sr * 0.5, dustPaint);
     }
 
+    // ── Pop flash overlay ────────────────────────────────────────────────────
+    if (popFlash > 0) {
+      canvas.drawRect(
+        Offset.zero & size,
+        Paint()..color = popFlashColor.withValues(alpha: popFlash * 0.12),
+      );
+    }
+
+    // ── Bubbles ──────────────────────────────────────────────────────────────
     for (int i = 0; i < bubbles.length; i++) {
       final b = bubbles[i];
-      if (b.popAnim > 0) {
-        // Popping animation — expanding ring
-        final t = (b.popAnim / 0.4).clamp(0.0, 1.0);
-        canvas.drawCircle(Offset(b.x, b.y), b.radius * (1 + t * 2), Paint()
-          ..color = b.color.withValues(alpha: (1 - t) * 0.3)
-          ..style = PaintingStyle.stroke..strokeWidth = 2);
-        continue;
-      }
       final pos = Offset(b.x, b.y);
-      final isDragged = i == dragIndex;
-      final pulse = sin(b.pulsePhase) * 0.08 + 1.0;
 
-      // Outer glow — bigger for more merges
-      final glowR = b.radius + 6 + b.merges * 4.0;
-      canvas.drawCircle(pos, glowR * pulse, Paint()..color = b.color.withValues(alpha: isDragged ? 0.18 : 0.06 + b.merges * 0.03));
-
-      // Merge rings — show progress toward resonance
-      for (int m = 0; m < b.merges && m < 3; m++) {
-        final ringR = b.radius + 3.0 + m * 5.0;
-        canvas.drawCircle(pos, ringR * pulse, Paint()
-          ..color = b.color.withValues(alpha: 0.25 + m * 0.1)
-          ..style = PaintingStyle.stroke..strokeWidth = 1.5);
-      }
-
-      // Body
-      canvas.drawCircle(pos, b.radius, Paint()..color = b.color.withValues(alpha: isDragged ? 0.55 : 0.30));
-      canvas.drawCircle(pos, b.radius, Paint()
-        ..color = b.color.withValues(alpha: isDragged ? 0.8 : 0.5)
-        ..style = PaintingStyle.stroke..strokeWidth = 2);
-
-      // Highlight
-      canvas.drawCircle(
-        Offset(pos.dx - b.radius * 0.2, pos.dy - b.radius * 0.2),
-        b.radius * 0.25, Paint()..color = Colors.white.withValues(alpha: 0.18));
-
-      // Merge count dots (small dots below bubble)
-      if (b.merges > 0) {
-        for (int m = 0; m < min(b.merges, 3); m++) {
-          final dx2 = (m - (min(b.merges, 3) - 1) / 2.0) * 7.0;
+      if (b.popAnim > 0) {
+        // Expanding ring pop animation.
+        final t = b.popAnim.clamp(0.0, 1.0);
+        canvas.drawCircle(
+          pos,
+          b.radius * (1 + t * 2.5),
+          Paint()
+            ..color = b.color.withValues(alpha: (1 - t) * 0.4)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.5,
+        );
+        // Second ring slightly delayed.
+        if (t > 0.2) {
           canvas.drawCircle(
-            Offset(pos.dx + dx2, pos.dy + b.radius + 8),
-            2.5,
-            Paint()..color = b.color.withValues(alpha: 0.7),
+            pos,
+            b.radius * (1 + (t - 0.2) * 2),
+            Paint()
+              ..color = Colors.white.withValues(alpha: (1 - t) * 0.2)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5,
           );
         }
+        continue;
+      }
+
+      final pulse = sin(b.pulsePhase) * 0.06 + 1.0;
+
+      if (b.isPlayer) {
+        // ── Player bubble: layered translucent glow ─────────────────────────
+        // Outer corona.
+        canvas.drawCircle(
+          pos,
+          (b.radius + 18) * pulse,
+          Paint()..color = b.color.withValues(alpha: 0.05),
+        );
+        // Mid glow.
+        canvas.drawCircle(
+          pos,
+          (b.radius + 8) * pulse,
+          Paint()..color = b.color.withValues(alpha: 0.12),
+        );
+        // Body fill — radial gradient effect via two circles.
+        canvas.drawCircle(
+          pos,
+          b.radius,
+          Paint()..color = b.color.withValues(alpha: 0.22),
+        );
+        // Rim.
+        canvas.drawCircle(
+          pos,
+          b.radius,
+          Paint()
+            ..color = b.color.withValues(alpha: 0.65)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.8,
+        );
+        // Inner highlight.
+        canvas.drawCircle(
+          Offset(pos.dx - b.radius * 0.22, pos.dy - b.radius * 0.22),
+          b.radius * 0.28,
+          Paint()..color = Colors.white.withValues(alpha: 0.16),
+        );
+        // Tiny core dot.
+        canvas.drawCircle(
+          pos,
+          3.5,
+          Paint()..color = b.color.withValues(alpha: 0.6),
+        );
+      } else {
+        // ── Rival bubble: aggressive hot glow ──────────────────────────────
+        // Pulsing outer corona — grows with rival radius.
+        canvas.drawCircle(
+          pos,
+          (b.radius + 14) * pulse,
+          Paint()..color = b.color.withValues(alpha: 0.07),
+        );
+        canvas.drawCircle(
+          pos,
+          (b.radius + 5) * pulse,
+          Paint()..color = b.color.withValues(alpha: 0.14),
+        );
+        // Body.
+        canvas.drawCircle(
+          pos,
+          b.radius,
+          Paint()..color = b.color.withValues(alpha: 0.18),
+        );
+        // Jagged rim via thick dashed stroke approximation (solid stroke).
+        canvas.drawCircle(
+          pos,
+          b.radius,
+          Paint()
+            ..color = b.color.withValues(alpha: 0.7)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.2,
+        );
+        // Danger cross-hatch: two thin lines through center.
+        final linePaint = Paint()
+          ..color = b.color.withValues(alpha: 0.20)
+          ..strokeWidth = 1.2;
+        canvas.drawLine(
+            Offset(pos.dx - b.radius * 0.6, pos.dy),
+            Offset(pos.dx + b.radius * 0.6, pos.dy),
+            linePaint);
+        canvas.drawLine(
+            Offset(pos.dx, pos.dy - b.radius * 0.6),
+            Offset(pos.dx, pos.dy + b.radius * 0.6),
+            linePaint);
+        // Inner highlight.
+        canvas.drawCircle(
+          Offset(pos.dx - b.radius * 0.2, pos.dy - b.radius * 0.2),
+          b.radius * 0.22,
+          Paint()..color = Colors.white.withValues(alpha: 0.10),
+        );
       }
     }
 
-    // Particles
+    // ── Particles ─────────────────────────────────────────────────────────────
     for (final p in particles) {
       if (p.life > 0) {
-        canvas.drawCircle(Offset(p.x, p.y), p.radius,
-          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)));
+        final alpha = (p.life / p.maxLife).clamp(0.0, 1.0);
+        canvas.drawCircle(
+          Offset(p.x, p.y),
+          p.radius,
+          Paint()..color = p.color.withValues(alpha: alpha),
+        );
       }
     }
   }
