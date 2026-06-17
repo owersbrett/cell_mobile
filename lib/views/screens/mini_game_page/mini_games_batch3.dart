@@ -6409,8 +6409,27 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
   // ── Power-up choice overlay ────────────────────────────────────────────────
   Widget _buildChoiceOverlay(BoxConstraints constraints) {
     final numChoices = _choices.length;
-    // How many columns to use
-    final cols = numChoices <= 2 ? numChoices : (numChoices <= 4 ? 2 : (numChoices <= 8 ? 4 : 4));
+
+    // Column count: 1–2 → single row; 3–4 → 2 cols; 5–16 → 4 cols; 17+ → 5 cols.
+    // Fewer cols means larger cards which are easier to tap.
+    final cols = numChoices <= 2
+        ? numChoices
+        : numChoices <= 4
+            ? 2
+            : numChoices <= 16
+                ? 4
+                : 5;
+
+    // Card aspect ratio: tall cards at low counts, more square at high counts so
+    // many cards fit. Min 0.72 keeps the desc text readable.
+    final double aspect = numChoices <= 4
+        ? 1.3
+        : numChoices <= 8
+            ? 1.05
+            : numChoices <= 16
+                ? 0.88
+                : 0.72;
+
     final pickFrac = (_pickTimer / _kICPickTimeout).clamp(0.0, 1.0);
 
     return Positioned.fill(
@@ -6444,22 +6463,33 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
                   minHeight: 3,
                 ),
               ),
-              const SizedBox(height: 8),
-              // Cards grid
+              const SizedBox(height: 4),
+              // Scroll hint — only shown when many cards are present
+              if (numChoices > 8)
+                Text(
+                  'scroll to see all options',
+                  style: TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 10,
+                    color: Colors.white.withValues(alpha: 0.35),
+                  ),
+                ),
+              const SizedBox(height: 4),
+              // Cards grid — ALWAYS scrollable so 16/32/64 options never overflow
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   child: GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
+                    // Scrollable — items at the bottom remain reachable even at 64 cards
+                    physics: const BouncingScrollPhysics(),
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: cols,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                      childAspectRatio: numChoices <= 4 ? 1.3 : 1.0,
+                      crossAxisSpacing: numChoices > 8 ? 6 : 8,
+                      mainAxisSpacing: numChoices > 8 ? 6 : 8,
+                      childAspectRatio: aspect,
                     ),
                     itemCount: numChoices,
-                    itemBuilder: (_, i) => _buildPowerUpCard(_choices[i]),
+                    itemBuilder: (_, i) => _buildPowerUpCard(_choices[i], compact: numChoices > 8),
                   ),
                 ),
               ),
@@ -6471,38 +6501,47 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
     );
   }
 
-  Widget _buildPowerUpCard(_ICPowerUp pu) {
+  Widget _buildPowerUpCard(_ICPowerUp pu, {bool compact = false}) {
+    // Scale down typography and padding when many cards are on screen so
+    // everything stays readable without needing massive screen real estate.
+    final double emojiFontSize = compact ? 16.0 : 22.0;
+    final double labelFontSize = compact ? 9.0 : 11.0;
+    final double descFontSize = compact ? 8.0 : 9.0;
+    final EdgeInsets pad = compact
+        ? const EdgeInsets.symmetric(horizontal: 4, vertical: 6)
+        : const EdgeInsets.symmetric(horizontal: 8, vertical: 10);
+
     return GestureDetector(
       onTapDown: (_) => _onPickPowerUp(pu),
       child: Container(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(compact ? 8 : 10),
           color: Colors.white.withValues(alpha: 0.07),
           border: Border.all(color: Colors.white.withValues(alpha: 0.22), width: 1.2),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        padding: pad,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(pu.emoji, style: const TextStyle(fontSize: 22)),
-            const SizedBox(height: 4),
+            Text(pu.emoji, style: TextStyle(fontSize: emojiFontSize)),
+            SizedBox(height: compact ? 2 : 4),
             Text(
               pu.label,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontFamily: 'Avenir',
-                fontSize: 11,
+                fontSize: labelFontSize,
                 fontWeight: FontWeight.w800,
                 color: Colors.white,
               ),
             ),
-            const SizedBox(height: 2),
+            SizedBox(height: compact ? 1 : 2),
             Text(
               pu.desc,
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontFamily: 'Avenir',
-                fontSize: 9,
+                fontSize: descFontSize,
                 color: Colors.white.withValues(alpha: 0.55),
               ),
             ),
@@ -8258,6 +8297,13 @@ const double _kScoreTickInterval = 1.0;
 const int _kGrowParticleCount = 6;
 // Particle burst count on pop/shrink.
 const int _kPopParticleCount = 12;
+// Squish: overlap fraction of the smaller bubble's radius at which swallow fires.
+// e.g. 0.55 = bigger bubble's center is past 55% into the smaller bubble.
+const double _kSwallowOverlapFraction = 0.55;
+// How much radius the absorbing (bigger) bubble gains when swallowing.
+const double _kSwallowGrowBonus = 6.0;
+// Squish spring: how fast squishAmt decays back to 0 when not pressed.
+const double _kSquishDecay = 8.0;
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Palette: player = cool indigo/violet tones, rivals = hot warm tones.
@@ -8281,6 +8327,12 @@ class _UniverseBubble {
   Color color;
   bool isPlayer;
   double vx, vy; // gentle drift velocity
+
+  // Squish state: how squished this bubble currently is (0 = round, 1 = max squish).
+  // Driven by overlap from a bigger bubble pressing into it.
+  double squishAmt = 0.0;
+  // Direction of the squish force (from the pressing bubble toward this one).
+  double squishAngle = 0.0;
 
   _UniverseBubble({
     required this.x,
@@ -8477,7 +8529,18 @@ class _RealityMergeGameState extends State<RealityMergeGame>
         if (b.y > _size.height - b.radius) { b.y = _size.height - b.radius; b.vy = -b.vy.abs(); }
       }
 
-      // ── Soft repulsion between all bubbles ───────────────────────────────
+      // ── Squish + swallow collisions between all bubbles ─────────────────
+      // Reset squish each frame; we'll re-drive it from current overlaps.
+      for (final b in _bubbles) {
+        if (b.popAnim == 0) {
+          b.squishAmt = (b.squishAmt - _kSquishDecay * dt).clamp(0.0, 1.0);
+        }
+      }
+
+      // Collect indices of bubbles to swallow (done after the loop to avoid
+      // modifying the list while iterating).
+      final List<int> _toSwallow = [];
+
       for (int i = 0; i < _bubbles.length; i++) {
         if (_bubbles[i].popAnim > 0) continue;
         for (int j = i + 1; j < _bubbles.length; j++) {
@@ -8486,13 +8549,86 @@ class _RealityMergeGameState extends State<RealityMergeGame>
           final ddx = bub.x - a.x; final ddy = bub.y - a.y;
           final dist = sqrt(ddx * ddx + ddy * ddy);
           final minD = a.radius + bub.radius;
-          if (dist < minD && dist > 0.1) {
-            final nx = ddx / dist; final ny = ddy / dist;
-            final push = (minD - dist) * 1.5;
-            a.vx -= nx * push; a.vy -= ny * push;
-            bub.vx += nx * push; bub.vy += ny * push;
+
+          if (dist >= minD || dist < 0.1) continue;
+
+          // Identify bigger / smaller.
+          final _UniverseBubble bigger = a.radius >= bub.radius ? a : bub;
+          final _UniverseBubble smaller = a.radius >= bub.radius ? bub : a;
+
+          // How deep the bigger bubble's surface penetrates the smaller one.
+          // penetration = minD - dist  (positive when overlapping)
+          final double penetration = minD - dist;
+
+          // Squish the smaller bubble proportional to penetration relative to its radius.
+          final double squishForce = (penetration / smaller.radius).clamp(0.0, 1.0);
+          if (squishForce > smaller.squishAmt) {
+            smaller.squishAmt = squishForce;
+            // Squish direction: from bigger toward smaller (away from the press).
+            if (dist > 0.1) {
+              // angle from bigger center to smaller center
+              smaller.squishAngle = atan2(smaller.y - bigger.y, smaller.x - bigger.x);
+            }
+          }
+
+          // ── Swallow threshold ────────────────────────────────────────────
+          // Fire when overlap depth exceeds a fraction of the smaller bubble's radius.
+          if (penetration >= smaller.radius * _kSwallowOverlapFraction &&
+              !_toSwallow.contains(_bubbles.indexOf(smaller))) {
+            _toSwallow.add(_bubbles.indexOf(smaller));
+          }
+
+          // ── Standard push-apart to prevent full interpenetration ─────────
+          final nx = ddx / dist; final ny = ddy / dist;
+          // Use a weaker push so the bigger bubble can visibly squish in before
+          // the swallow threshold is reached.
+          final double pushStrength = squishForce < _kSwallowOverlapFraction ? 0.8 : 0.2;
+          final push = (minD - dist) * pushStrength;
+          a.vx -= nx * push; a.vy -= ny * push;
+          bub.vx += nx * push; bub.vy += ny * push;
+        }
+      }
+
+      // ── Execute swallows ─────────────────────────────────────────────────
+      for (final idx in _toSwallow.reversed) {
+        if (idx < 0 || idx >= _bubbles.length) continue;
+        final small = _bubbles[idx];
+        if (small.popAnim > 0) continue;
+
+        // Find the biggest overlapping bubble (the swallower).
+        _UniverseBubble? swallower;
+        double bestR = -1;
+        for (final other in _bubbles) {
+          if (other == small || other.popAnim > 0) continue;
+          final dx = other.x - small.x; final dy = other.y - small.y;
+          final d = sqrt(dx * dx + dy * dy);
+          if (d < other.radius + small.radius && other.radius > bestR) {
+            bestR = other.radius;
+            swallower = other;
           }
         }
+        if (swallower == null) continue;
+
+        // Only swallow if swallower is bigger.
+        if (swallower.radius <= small.radius) continue;
+
+        // Absorb: swallower grows a bit.
+        swallower.radius = (swallower.radius + _kSwallowGrowBonus).clamp(0, _kRivalMaxRadius + _kSwallowGrowBonus);
+
+        // Satisfying pop + FxBurst particles.
+        _emitParticles(small.x, small.y, small.color, _kPopParticleCount + 6, speed: 180);
+        _triggerFlash(small.color);
+
+        // Score: player swallowing a rival = bonus points.
+        if (swallower.isPlayer && !small.isPlayer) {
+          _score += 15;
+        } else if (!swallower.isPlayer && small.isPlayer) {
+          // Rival eats player bubble — minor penalty visual only.
+          _triggerFlash(Colors.redAccent);
+        }
+
+        // Trigger pop animation on the consumed bubble.
+        small.popAnim = 0.001;
       }
 
       // ── Pop animations ────────────────────────────────────────────────────
@@ -8830,6 +8966,22 @@ class _RealityMergePainter extends CustomPainter {
 
       final pulse = sin(b.pulsePhase) * 0.06 + 1.0;
 
+      // ── Squish deformation ────────────────────────────────────────────────
+      // When squishAmt > 0 the bubble is being pressed by a bigger one.
+      // We apply a canvas transform: compress along the press axis, expand
+      // perpendicularly (volume-conserving oval).
+      final bool hasSquish = b.squishAmt > 0.005;
+      if (hasSquish) {
+        canvas.save();
+        canvas.translate(pos.dx, pos.dy);
+        canvas.rotate(b.squishAngle);
+        // Along press axis (x after rotation): compress; perpendicular (y): expand.
+        final double sqX = 1.0 - b.squishAmt * 0.38; // compress up to 38%
+        final double sqY = 1.0 + b.squishAmt * 0.28; // expand up to 28%
+        canvas.scale(sqX, sqY);
+        canvas.translate(-pos.dx, -pos.dy);
+      }
+
       if (b.isPlayer) {
         // ── Player bubble: layered translucent glow ─────────────────────────
         // Outer corona.
@@ -8916,6 +9068,23 @@ class _RealityMergePainter extends CustomPainter {
           Offset(pos.dx - b.radius * 0.2, pos.dy - b.radius * 0.2),
           b.radius * 0.22,
           Paint()..color = Colors.white.withValues(alpha: 0.10),
+        );
+      }
+
+      // Restore squish transform.
+      if (hasSquish) canvas.restore();
+
+      // ── Squish stress ring (visible indicator of squish intensity) ───────
+      if (hasSquish && b.squishAmt > 0.15) {
+        // A bright stress ring around the compressed bubble so the effect reads.
+        canvas.drawCircle(
+          pos,
+          b.radius * 1.05,
+          Paint()
+            ..color = Colors.white.withValues(alpha: b.squishAmt * 0.45)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
         );
       }
     }
