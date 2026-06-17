@@ -5,6 +5,9 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../games/fx.dart';
+import '../../../theme/potatuhs.dart';
+
 // ---------------------------------------------------------------------------
 // Helper: shared particle class for visual juice
 // ---------------------------------------------------------------------------
@@ -6976,10 +6979,9 @@ class _GravitySlingPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// NeuronConnectGame — "Cosmic Web" time-trial
-// Route signals through an escalating sequence of cosmic-web puzzles as fast
-// as you can within the time limit. Each solved puzzle instantly spawns a harder
-// one. Score is puzzles cleared × speed bonus. Impossible to fully master.
+// NeuronConnectGame — "Neural Signal Web" time-trial
+// Tap neurons to rotate their axon gate direction. Fire the signal from source
+// to target. Each cleared puzzle spawns a harder one. 60-second time trial.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ---------------------------------------------------------------------------
@@ -6995,10 +6997,7 @@ const double _ncSignalSpeed = 3.2;
 /// Starfield: number of background stars.
 const int _ncStarCount = 110;
 
-/// Glow bloom radius on nodes (logical pixels added to node radius for blur).
-const double _ncNodeGlowBlur = 14.0;
-
-/// Glow bloom radius on the signal dot.
+/// Glow bloom radius on the signal dot (used by the signal pulse painter).
 const double _ncSignalGlowBlur = 12.0;
 
 /// Particle count burst on puzzle clear.
@@ -7024,6 +7023,14 @@ const double _ncBeamWidth = 3.5;
 
 /// Animated beam shimmer cycle duration (seconds).
 const double _ncBeamShimmerPeriod = 1.4;
+
+// Neuron accent colour (electric violet — the scale accent for BioScale.cosmicStructures).
+const Color _ncAccent = Color(0xFF9C6FFF); // vivid indigo-violet
+const Color _ncSourceColor = Color(0xFF40C4FF); // electric cyan — SOURCE neuron
+const Color _ncTargetColor = Color(0xFFFF6B6B); // warm coral — TARGET neuron
+const Color _ncNormalColor = Color(0xFF7E57C2); // muted violet — relay neuron
+const Color _ncSignalColor = Color(0xFFE0F7FA); // near-white signal pulse
+const Color _ncDeadColor   = Color(0xFFFF5252); // signal-failure red
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -7169,15 +7176,14 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
     with SingleTickerProviderStateMixin {
 
   // ── state machine ─────────────────────────────────────────────────────────
-  // Phase: intro → trial → done
   _NCPhase _phase = _NCPhase.intro;
 
   // ── timer ─────────────────────────────────────────────────────────────────
-  double _elapsed = 0; // seconds elapsed in trial
+  double _elapsed = 0;
   double _lastWallTime = 0;
 
   // ── puzzle state ──────────────────────────────────────────────────────────
-  int _puzzleIndex = 0; // how many puzzles spawned so far
+  int _puzzleIndex = 0;
   int _puzzlesCleared = 0;
   int _score = 0;
   late _SRLevel _level;
@@ -7188,9 +7194,12 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
 
   // ── cosmetics ─────────────────────────────────────────────────────────────
   final List<_JuiceParticle> _particles = [];
+  final List<FxPop> _scorePops = [];
   late List<_NCStar> _stars;
-  double _beamPhase = 0; // drives shimmer on connection trails
-  double _completionFlashAlpha = 0; // white flash on clear
+  double _beamPhase = 0;
+  double _completionFlashAlpha = 0;
+  // Per-node pulse offset so each neuron has a unique idle phase.
+  late List<double> _nodePhaseOffset;
 
   // ── misc ──────────────────────────────────────────────────────────────────
   final Random _rng = Random();
@@ -7206,6 +7215,7 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
       twinklePhase: _rng.nextDouble() * 2 * pi,
       twinkleSpeed: 0.5 + _rng.nextDouble() * 1.5,
     ));
+    _nodePhaseOffset = List.generate(64, (_) => _rng.nextDouble() * 2 * pi);
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick);
   }
@@ -7277,7 +7287,9 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
 
     setState(() {
       _beamPhase += dt;
-      if (_completionFlashAlpha > 0) _completionFlashAlpha = (_completionFlashAlpha - dt * 3).clamp(0.0, 1.0);
+      if (_completionFlashAlpha > 0) {
+        _completionFlashAlpha = (_completionFlashAlpha - dt * 3).clamp(0.0, 1.0);
+      }
 
       // ── advance particles ──────────────────────────────────────────────
       for (final p in _particles) {
@@ -7286,9 +7298,9 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
         p.life -= dt;
       }
       _particles.removeWhere((p) => p.life <= 0);
+      _scorePops.removeWhere((sp) => !sp.step(dt));
 
       if (_phase == _NCPhase.trial) {
-        // ── advance clock ──────────────────────────────────────────────
         _elapsed += dt;
         if (_elapsed >= _ncTrialDuration) {
           _elapsed = _ncTrialDuration;
@@ -7296,7 +7308,6 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
           return;
         }
 
-        // ── advance signal ─────────────────────────────────────────────
         if (!_signalAnimating) return;
         bool anyMoving = false;
         for (final sig in _activeSignals) {
@@ -7319,14 +7330,20 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
             final nc = sig.col + delta[0];
             final nr = sig.row + delta[1];
             if (nc < 0 || nr < 0 || nc >= _level.cols || nr >= _level.rows) {
-              sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows); continue;
+              sig.dead = true;
+              _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows);
+              continue;
             }
             final nni = nr * _level.cols + nc;
             if (_playNodes[nni].type == _SRNodeType.blocker) {
-              sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows); continue;
+              sig.dead = true;
+              _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows);
+              continue;
             }
             if (sig.trail.any((p) => p[0] == nc && p[1] == nr)) {
-              sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows); continue;
+              sig.dead = true;
+              _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows);
+              continue;
             }
             sig.nextCol = nc;
             sig.nextRow = nr;
@@ -7336,11 +7353,18 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
         final allDone = !anyMoving || _activeSignals.every((s) => s.dead || s.arrived);
         if (allDone) {
           if (_activeSignals.isNotEmpty && _activeSignals.every((s) => s.arrived)) {
-            // ── puzzle cleared ─────────────────────────────────────────
             _puzzlesCleared++;
             final timeBonus = ((_ncTrialDuration - _elapsed) / _ncTrialDuration * 50).round();
-            _score += _ncBasePoints * (_puzzleIndex + 1) + timeBonus;
-            _completionFlashAlpha = 0.5;
+            final pts = _ncBasePoints * (_puzzleIndex + 1) + timeBonus;
+            _score += pts;
+            _completionFlashAlpha = 0.6;
+            // Score pop above the target neuron — computed in pixel space later
+            // by the painter; we store a unit-space anchor the painter reads.
+            _scorePops.add(FxPop(
+              Offset(0.5, 0.45), // recomputed in painter via _ncPopOffset
+              '+$pts',
+              _ncAccent,
+            ));
             _puzzleIndex++;
             _spawnNextPuzzle();
           } else if (_activeSignals.any((s) => s.dead)) {
@@ -7358,15 +7382,15 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
     for (int i = 0; i < _ncClearParticles; i++) {
       final a = _rng.nextDouble() * 2 * pi;
       final spd = 0.4 + _rng.nextDouble() * (_ncParticleSpeedMax - 0.4);
-      // store in normalised [0,1] space that the painter converts
       final nx = (gc + 0.5) / cols;
       final ny = (gr + 0.5) / rows;
+      final pick = i % 3;
       _particles.add(_JuiceParticle(
         x: nx, y: ny,
         vx: cos(a) * spd / cols,
         vy: sin(a) * spd / rows,
         life: _ncClearParticleLife,
-        color: i % 3 == 0 ? Colors.cyanAccent : i % 3 == 1 ? Colors.purpleAccent : Colors.white,
+        color: pick == 0 ? _ncAccent : pick == 1 ? _ncSourceColor : Colors.white,
         radius: 2.5 + _rng.nextDouble() * 2.0,
       ));
     }
@@ -7383,7 +7407,7 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
         vx: cos(a) * spd / cols,
         vy: sin(a) * spd / rows,
         life: _ncDeadParticleLife,
-        color: Colors.redAccent,
+        color: _ncDeadColor,
         radius: 2.0 + _rng.nextDouble() * 1.5,
       ));
     }
@@ -7404,39 +7428,73 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
 
   Widget _buildIntro() {
     return Container(
-      color: const Color(0xFF04040F),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Potatuhs.inkDeep,
+            Color.lerp(Potatuhs.inkDeep, _ncAccent, 0.14)!,
+            Potatuhs.inkDeep,
+          ],
+          stops: const [0.0, 0.55, 1.0],
+        ),
+      ),
       child: SafeArea(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          // title
-          const Text('COSMIC WEB', style: TextStyle(fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold, color: Colors.cyanAccent, letterSpacing: 4)),
-          const SizedBox(height: 8),
-          Text('NEURAL SIGNAL TRIAL', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, letterSpacing: 3, color: Colors.white.withValues(alpha: 0.4))),
-          const SizedBox(height: 40),
-          // instructions
+          // ── title ────────────────────────────────────────────────────
+          ShaderMask(
+            shaderCallback: (b) => LinearGradient(
+              colors: [_ncSourceColor, _ncAccent],
+            ).createShader(b),
+            child: Text(
+              'NEURAL WEB',
+              style: Potatuhs.display(size: 34, color: Colors.white, spacing: 4),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'SIGNAL ROUTING TRIAL',
+            style: Potatuhs.label(size: 13, color: Potatuhs.textFaint),
+          ),
+          const SizedBox(height: 44),
+
+          // ── instruction cards ─────────────────────────────────────────
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 36),
+            padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Column(children: [
-              _instrRow(Icons.touch_app, 'Tap nodes to rotate their exit gate'),
-              const SizedBox(height: 12),
-              _instrRow(Icons.send, 'Hit FIRE to send the signal'),
-              const SizedBox(height: 12),
-              _instrRow(Icons.bolt, 'Clear each puzzle — next one spawns instantly'),
-              const SizedBox(height: 12),
-              _instrRow(Icons.timer, 'You have ${_ncTrialDuration.toInt()}s. Go as far as you can.'),
+              _instrRow(Icons.touch_app_outlined, 'Tap neurons to rotate the axon gate'),
+              const SizedBox(height: 14),
+              _instrRow(Icons.bolt_outlined, 'Route CYAN source → CORAL target'),
+              const SizedBox(height: 14),
+              _instrRow(Icons.flash_on_outlined, 'Hit FIRE — signal travels the path'),
+              const SizedBox(height: 14),
+              _instrRow(Icons.timer_outlined,
+                  'Each clear scores +points. ${_ncTrialDuration.toInt()}s — go deep.'),
             ]),
           ),
-          const SizedBox(height: 48),
+          const SizedBox(height: 52),
+
+          // ── CTA ───────────────────────────────────────────────────────
           GestureDetector(
             onTap: _startTrial,
             child: Container(
-              width: 200, height: 52,
+              width: 210, height: 54,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [Color(0xFF00B4D8), Color(0xFF7B2FBE)]),
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [BoxShadow(color: const Color(0xFF00B4D8).withValues(alpha: 0.45), blurRadius: 20, spreadRadius: 2)],
+                gradient: LinearGradient(
+                  colors: [_ncSourceColor, _ncAccent],
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: Potatuhs.glow(_ncAccent, strength: 0.5, blur: 22),
               ),
               alignment: Alignment.center,
-              child: const Text('LAUNCH', style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 3)),
+              child: Text(
+                'LAUNCH TRIAL',
+                style: Potatuhs.body(size: 17, weight: FontWeight.w700,
+                    color: Colors.white, spacing: 2.5),
+              ),
             ),
           ),
         ]),
@@ -7444,11 +7502,14 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
     );
   }
 
-  Widget _instrRow(IconData icon, String text) {
+  Widget _instrRow(IconData icon, String label) {
     return Row(children: [
-      Icon(icon, size: 18, color: Colors.cyanAccent.withValues(alpha: 0.7)),
-      const SizedBox(width: 12),
-      Expanded(child: Text(text, style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white.withValues(alpha: 0.65)))),
+      Icon(icon, size: 20, color: _ncAccent.withValues(alpha: 0.8)),
+      const SizedBox(width: 14),
+      Expanded(
+        child: Text(label,
+          style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary)),
+      ),
     ]);
   }
 
@@ -7457,7 +7518,11 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
   Widget _buildTrial() {
     final timeLeft = (_ncTrialDuration - _elapsed).clamp(0.0, _ncTrialDuration);
     final timeFrac = timeLeft / _ncTrialDuration;
-    final timerColor = timeFrac > 0.4 ? Colors.cyanAccent : timeFrac > 0.15 ? Colors.amber : Colors.redAccent;
+    final timerColor = timeFrac > 0.4
+        ? _ncSourceColor
+        : timeFrac > 0.15
+            ? Potatuhs.gold
+            : _ncDeadColor;
 
     return LayoutBuilder(builder: (ctx, box) {
       final w = box.maxWidth;
@@ -7478,86 +7543,146 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
                 nodes: _playNodes,
                 signals: _activeSignals,
                 particles: _particles,
+                scorePops: _scorePops,
                 stars: _stars,
                 beamPhase: _beamPhase,
                 completionFlash: _completionFlashAlpha,
+                nodePhaseOffset: _nodePhaseOffset,
               ),
             ),
           ),
         ),
 
-        // ── top bar ───────────────────────────────────────────────────
+        // ── top HUD bar ───────────────────────────────────────────────
         Positioned(top: 0, left: 0, right: 0,
           child: Container(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                colors: [const Color(0xCC04040F), Colors.transparent],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Potatuhs.inkDeep.withValues(alpha: 0.92),
+                  Colors.transparent,
+                ],
               ),
             ),
-            child: Row(children: [
-              // timer ring + number
-              SizedBox(width: 42, height: 42,
+            child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+              // timer ring
+              SizedBox(width: 46, height: 46,
                 child: Stack(alignment: Alignment.center, children: [
                   CircularProgressIndicator(
                     value: timeFrac,
-                    strokeWidth: 3,
+                    strokeWidth: 3.5,
                     backgroundColor: Colors.white12,
                     valueColor: AlwaysStoppedAnimation(timerColor),
                   ),
-                  Text(timeLeft.ceil().toString(),
-                    style: TextStyle(fontFamily: 'Avenir', fontSize: 13, fontWeight: FontWeight.bold, color: timerColor)),
+                  Text(
+                    timeLeft.ceil().toString(),
+                    style: Potatuhs.body(size: 13, weight: FontWeight.w800,
+                        color: timerColor),
+                  ),
                 ]),
               ),
-              const SizedBox(width: 12),
-              // puzzle counter
+              const SizedBox(width: 14),
+              // puzzle info
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('WEB #${_puzzleIndex + 1}',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold, color: Colors.cyanAccent, letterSpacing: 1.5)),
-                Text('${_level.cols}×${_level.rows} grid',
-                  style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white.withValues(alpha: 0.4))),
+                Text('CIRCUIT  #${_puzzleIndex + 1}',
+                  style: Potatuhs.label(size: 12, color: _ncAccent)),
+                Text('${_level.cols}×${_level.rows} grid  ·  $_puzzlesCleared cleared',
+                  style: Potatuhs.label(size: 10, color: Potatuhs.textFaint)),
               ]),
               const Spacer(),
               // score
               Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Text('$_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
-                Text('${_puzzlesCleared} cleared',
-                  style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white.withValues(alpha: 0.4))),
+                Text('$_score',
+                  style: Potatuhs.display(size: 22, color: Potatuhs.textPrimary)),
+                Text('pts',
+                  style: Potatuhs.label(size: 10, color: Potatuhs.textFaint)),
               ]),
             ]),
           ),
         ),
 
-        // ── fire button + dead msg ─────────────────────────────────────
-        Positioned(bottom: 14, left: 20, right: 20,
+        // ── instruction banner (first puzzle only) ─────────────────────
+        if (_puzzleIndex == 0 && !_signalAnimating && !_signalDead)
+          Positioned(
+            top: 80, left: 24, right: 24,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
+              decoration: BoxDecoration(
+                color: _ncAccent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _ncAccent.withValues(alpha: 0.3)),
+              ),
+              child: Text(
+                'TAP neurons to spin the axon gate — route CYAN to CORAL, then FIRE',
+                textAlign: TextAlign.center,
+                style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary),
+              ),
+            ),
+          ),
+
+        // ── fire button + dead hint ────────────────────────────────────
+        Positioned(bottom: 18, left: 20, right: 20,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             if (_signalDead && !_signalAnimating)
               Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text('Signal lost — reroute and fire again',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.redAccent.withValues(alpha: 0.85))),
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 14),
+                  decoration: BoxDecoration(
+                    color: _ncDeadColor.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: _ncDeadColor.withValues(alpha: 0.35)),
+                  ),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(Icons.warning_amber_rounded, size: 15,
+                        color: _ncDeadColor.withValues(alpha: 0.85)),
+                    const SizedBox(width: 8),
+                    Text('Signal lost — reroute the axons and fire again',
+                      style: Potatuhs.body(size: 12,
+                          color: _ncDeadColor.withValues(alpha: 0.9))),
+                  ]),
+                ),
               ),
             GestureDetector(
               onTap: _signalAnimating ? null : _sendSignal,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
-                height: 50,
+                height: 54,
                 decoration: BoxDecoration(
                   gradient: _signalAnimating
                     ? null
-                    : const LinearGradient(colors: [Color(0xFF00B4D8), Color(0xFF7B2FBE)]),
+                    : LinearGradient(
+                        colors: [_ncSourceColor, _ncAccent],
+                        begin: Alignment.centerLeft,
+                        end: Alignment.centerRight,
+                      ),
                   color: _signalAnimating ? Colors.white10 : null,
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: _signalAnimating ? [] : [
-                    BoxShadow(color: const Color(0xFF00B4D8).withValues(alpha: 0.5), blurRadius: 16, spreadRadius: 1),
-                  ],
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: _signalAnimating
+                    ? []
+                    : Potatuhs.glow(_ncAccent, strength: 0.55, blur: 20),
                 ),
                 alignment: Alignment.center,
-                child: Text(_signalAnimating ? 'TRANSMITTING...' : 'FIRE SIGNAL',
-                  style: TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold,
-                    color: _signalAnimating ? Colors.white38 : Colors.white, letterSpacing: 2)),
+                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  if (!_signalAnimating) ...[
+                    const Icon(Icons.bolt, color: Colors.white, size: 20),
+                    const SizedBox(width: 6),
+                  ],
+                  Text(
+                    _signalAnimating ? 'TRANSMITTING...' : 'FIRE SIGNAL',
+                    style: Potatuhs.body(
+                      size: 16,
+                      weight: FontWeight.w700,
+                      color: _signalAnimating
+                          ? Colors.white38
+                          : Colors.white,
+                      spacing: 1.5,
+                    ),
+                  ),
+                ]),
               ),
             ),
           ]),
@@ -7570,31 +7695,58 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
 
   Widget _buildDone() {
     return Container(
-      color: const Color(0xFF04040F),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Potatuhs.inkDeep,
+            Color.lerp(Potatuhs.inkDeep, _ncAccent, 0.18)!,
+            Potatuhs.inkDeep,
+          ],
+          stops: const [0.0, 0.5, 1.0],
+        ),
+      ),
       child: SafeArea(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Text('TRIAL COMPLETE', style: TextStyle(fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white.withValues(alpha: 0.9), letterSpacing: 3)),
-          const SizedBox(height: 30),
-          _resultRow('Score', '$_score'),
-          const SizedBox(height: 10),
-          _resultRow('Webs Cleared', '$_puzzlesCleared'),
-          const SizedBox(height: 10),
-          _resultRow('Furthest Web', 'Grid ${_level.cols}×${_level.rows}'),
-          const SizedBox(height: 48),
+          ShaderMask(
+            shaderCallback: (b) =>
+                LinearGradient(colors: [_ncSourceColor, _ncAccent]).createShader(b),
+            child: Text(
+              'TRIAL COMPLETE',
+              style: Potatuhs.display(size: 30, color: Colors.white, spacing: 3),
+            ),
+          ),
+          const SizedBox(height: 36),
+          _resultRow('Score', '$_score', highlight: true),
+          const SizedBox(height: 12),
+          _resultRow('Circuits Cleared', '$_puzzlesCleared'),
+          const SizedBox(height: 12),
+          _resultRow('Furthest Grid', '${_level.cols}×${_level.rows}'),
+          const SizedBox(height: 52),
           GestureDetector(
             onTap: () => setState(() {
               _phase = _NCPhase.intro;
               _particles.clear();
+              _scorePops.clear();
             }),
             child: Container(
-              width: 180, height: 50,
+              width: 190, height: 54,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [Color(0xFF00B4D8), Color(0xFF7B2FBE)]),
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: [BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.35), blurRadius: 18)],
+                gradient: LinearGradient(
+                  colors: [_ncSourceColor, _ncAccent],
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: Potatuhs.glow(_ncAccent, strength: 0.45, blur: 20),
               ),
               alignment: Alignment.center,
-              child: const Text('PLAY AGAIN', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
+              child: Text(
+                'PLAY AGAIN',
+                style: Potatuhs.body(size: 17, weight: FontWeight.w700,
+                    color: Colors.white, spacing: 2.5),
+              ),
             ),
           ),
         ]),
@@ -7602,10 +7754,15 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
     );
   }
 
-  Widget _resultRow(String label, String value) {
+  Widget _resultRow(String label, String value, {bool highlight = false}) {
     return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-      Text('$label  ', style: TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white.withValues(alpha: 0.45))),
-      Text(value, style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+      Text('$label  ',
+        style: Potatuhs.body(size: 14, color: Potatuhs.textFaint)),
+      Text(value,
+        style: highlight
+            ? Potatuhs.display(size: 26, color: _ncAccent)
+            : Potatuhs.body(size: 20, weight: FontWeight.w700,
+                color: Potatuhs.textPrimary)),
     ]);
   }
 
@@ -7618,7 +7775,7 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
     for (int i = 0; i < _playNodes.length; i++) {
       final cx = ox + (i % _level.cols) * cellSize + cellSize / 2;
       final cy = oy + (i ~/ _level.cols) * cellSize + cellSize / 2;
-      if ((pos - Offset(cx, cy)).distance <= cellSize * 0.38 + 6) return i;
+      if ((pos - Offset(cx, cy)).distance <= cellSize * 0.40 + 8) return i;
     }
     return null;
   }
@@ -7636,7 +7793,9 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
 enum _NCPhase { intro, trial, done }
 
 // ---------------------------------------------------------------------------
-// Painter: starfield + cosmic grid + glowing nodes + beam trails + particles
+// Painter — premium neuron visual system
+// Layers per neuron: atmosphere glow → soma orb → dendrite tendrils → axon
+// direction arc → synaptic spark dot (source/target only).
 // ---------------------------------------------------------------------------
 
 class _NCPainter extends CustomPainter {
@@ -7644,61 +7803,91 @@ class _NCPainter extends CustomPainter {
   final List<_SRNode> nodes;
   final List<_SRSignal> signals;
   final List<_JuiceParticle> particles;
+  final List<FxPop> scorePops;
   final List<_NCStar> stars;
   final double beamPhase;
   final double completionFlash;
+  final List<double> nodePhaseOffset;
 
   _NCPainter({
     required this.level,
     required this.nodes,
     required this.signals,
     required this.particles,
+    required this.scorePops,
     required this.stars,
     required this.beamPhase,
     required this.completionFlash,
+    required this.nodePhaseOffset,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // ── deep-space background ──────────────────────────────────────────
-    final bgPaint = Paint()
-      ..shader = ui.Gradient.linear(
-        Offset.zero, Offset(size.width, size.height),
-        [const Color(0xFF04040F), const Color(0xFF080820), const Color(0xFF0D0628)],
-        [0.0, 0.5, 1.0],
-      );
-    canvas.drawRect(Offset.zero & size, bgPaint);
+    // ── 1. Atmospheric background (GameFx handles gradient + glow blooms + motes)
+    GameFx.atmosphere(canvas, size, _ncAccent, beamPhase, motes: 44);
 
-    // ── starfield ─────────────────────────────────────────────────────
-    for (final s in stars) {
-      final twinkle = 0.5 + 0.5 * sin(s.twinklePhase + beamPhase * s.twinkleSpeed);
-      final alpha = (s.brightness * twinkle).clamp(0.0, 1.0);
-      canvas.drawCircle(
-        Offset(s.x * size.width, s.y * size.height),
-        s.radius,
-        Paint()..color = Colors.white.withValues(alpha: alpha),
-      );
-    }
-
-    // ── cosmic web faint connection lines (background) ─────────────────
+    // ── 2. Faint cosmic-web grid filaments ─────────────────────────────
     final cols = level.cols;
     final rows = level.rows;
     final cellSize = _cellSize(size, cols, rows);
     final ox = (size.width - cols * cellSize) / 2;
     final oy = (size.height - rows * cellSize) / 2 + 20;
 
-    final cosmicPaint = Paint()..color = Colors.cyanAccent.withValues(alpha: 0.035)..strokeWidth = 0.8;
+    // Animated filament alpha — slow gentle pulse
+    final filamentAlpha = 0.04 + 0.02 * sin(beamPhase * 0.6);
+    final filP = Paint()
+      ..color = _ncAccent.withValues(alpha: filamentAlpha)
+      ..strokeWidth = 0.9;
     for (int c = 0; c < cols; c++) {
       for (int r = 0; r < rows; r++) {
         final x = ox + c * cellSize + cellSize / 2;
         final y = oy + r * cellSize + cellSize / 2;
-        if (c < cols - 1) canvas.drawLine(Offset(x, y), Offset(x + cellSize, y), cosmicPaint);
-        if (r < rows - 1) canvas.drawLine(Offset(x, y), Offset(x, y + cellSize), cosmicPaint);
+        if (c < cols - 1) {
+          canvas.drawLine(Offset(x, y), Offset(x + cellSize, y), filP);
+        }
+        if (r < rows - 1) {
+          canvas.drawLine(Offset(x, y), Offset(x, y + cellSize), filP);
+        }
       }
     }
 
-    // ── nodes ──────────────────────────────────────────────────────────
-    final nodeRadius = cellSize * 0.32;
+    // ── 3. Synaptic signal trails ──────────────────────────────────────
+    for (final sig in signals) {
+      if (sig.trail.length < 2) continue;
+      Color beamColor;
+      if (sig.arrived) {
+        beamColor = _ncSourceColor;
+      } else if (sig.dead) {
+        beamColor = _ncDeadColor;
+      } else {
+        final shimmer = 0.5 + 0.5 * sin(beamPhase * (2 * pi / _ncBeamShimmerPeriod));
+        beamColor = Color.lerp(_ncSourceColor, _ncAccent, shimmer)!;
+      }
+
+      // Draw trail using glowLine segment-by-segment so the entire path glows.
+      for (int k = 0; k < sig.trail.length - 1; k++) {
+        final ax = ox + sig.trail[k][0] * cellSize + cellSize / 2;
+        final ay = oy + sig.trail[k][1] * cellSize + cellSize / 2;
+        final bx = ox + sig.trail[k + 1][0] * cellSize + cellSize / 2;
+        final by = oy + sig.trail[k + 1][1] * cellSize + cellSize / 2;
+        GameFx.glowLine(canvas, Offset(ax, ay), Offset(bx, by), beamColor,
+            width: _ncBeamWidth);
+      }
+      // Active leading segment (partial).
+      if (!sig.dead && !sig.arrived && sig.t > 0) {
+        final fx = ox + sig.col * cellSize + cellSize / 2;
+        final fy = oy + sig.row * cellSize + cellSize / 2;
+        final tx = ox + sig.nextCol * cellSize + cellSize / 2;
+        final ty = oy + sig.nextRow * cellSize + cellSize / 2;
+        final tipX = fx + (tx - fx) * sig.t;
+        final tipY = fy + (ty - fy) * sig.t;
+        GameFx.glowLine(canvas, Offset(fx, fy), Offset(tipX, tipY), beamColor,
+            width: _ncBeamWidth, progress: 1.0);
+      }
+    }
+
+    // ── 4. Neurons (the core visual) ─────────────────────────────────────
+    final somaRadius = cellSize * 0.30;
     for (int i = 0; i < nodes.length; i++) {
       final c = i % cols;
       final r = i ~/ cols;
@@ -7708,110 +7897,123 @@ class _NCPainter extends CustomPainter {
       final node = nodes[i];
 
       if (node.type == _SRNodeType.blocker) {
-        // dark hexagonal blocker
-        canvas.drawCircle(center, nodeRadius, Paint()..color = const Color(0xFF0E0E20));
-        canvas.drawCircle(center, nodeRadius,
-          Paint()..color = Colors.white.withValues(alpha: 0.08)..style = PaintingStyle.stroke..strokeWidth = 1.5);
-        final xp = Paint()..color = Colors.white.withValues(alpha: 0.18)..strokeWidth = 2..strokeCap = StrokeCap.round;
-        final xr = nodeRadius * 0.38;
-        canvas.drawLine(Offset(cx - xr, cy - xr), Offset(cx + xr, cy + xr), xp);
-        canvas.drawLine(Offset(cx + xr, cy - xr), Offset(cx - xr, cy + xr), xp);
+        _drawBlocker(canvas, center, somaRadius);
         continue;
       }
 
-      Color coreColor;
-      Color glowColor;
-      switch (node.type) {
-        case _SRNodeType.source:
-          coreColor = const Color(0xFF00E5FF); glowColor = Colors.cyanAccent; break;
-        case _SRNodeType.target:
-          coreColor = const Color(0xFFEA00FF); glowColor = Colors.purpleAccent; break;
-        default:
-          coreColor = const Color(0xFF4DFFDB); glowColor = const Color(0xFF4DFFDB);
-      }
+      final phaseOff = nodePhaseOffset.length > i ? nodePhaseOffset[i] : 0.0;
+      final isSource = node.type == _SRNodeType.source;
+      final isTarget = node.type == _SRNodeType.target;
 
-      // outer glow bloom
-      canvas.drawCircle(center, nodeRadius + _ncNodeGlowBlur,
-        Paint()..color = glowColor.withValues(alpha: 0.10)..maskFilter = MaskFilter.blur(BlurStyle.normal, _ncNodeGlowBlur));
-
-      // filled core
-      canvas.drawCircle(center, nodeRadius,
-        Paint()..color = coreColor.withValues(alpha: node.locked ? 0.2 : 0.35));
-
-      // rim
-      canvas.drawCircle(center, nodeRadius,
-        Paint()..color = coreColor.withValues(alpha: node.locked ? 0.5 : 0.85)..style = PaintingStyle.stroke..strokeWidth = 1.8);
-
-      // arrow
-      _drawArrow(canvas, center, node.dir, nodeRadius * 0.52, coreColor.withValues(alpha: node.locked ? 0.35 : 0.9));
-
-      // S / T label
-      if (node.type == _SRNodeType.source || node.type == _SRNodeType.target) {
-        final label = node.type == _SRNodeType.source ? 'S' : 'T';
-        final tp = TextPainter(
-          text: TextSpan(text: label, style: TextStyle(fontFamily: 'Avenir', fontSize: nodeRadius * 0.62, fontWeight: FontWeight.bold, color: Colors.white.withValues(alpha: 0.9))),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
-      }
-
-      // lock icon
-      if (node.locked && node.type == _SRNodeType.normal) {
-        final ls = nodeRadius * 0.28;
-        final lp = Paint()..color = Colors.white38..strokeWidth = 1.1..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
-        canvas.drawRRect(RRect.fromRectAndRadius(
-          Rect.fromCenter(center: Offset(cx, cy + nodeRadius * 0.26), width: ls, height: ls * 0.8), const Radius.circular(1)), lp);
-        canvas.drawArc(Rect.fromCenter(center: Offset(cx, cy + nodeRadius * 0.26 - ls * 0.38), width: ls * 0.68, height: ls * 0.68), pi, pi, false, lp);
-      }
-    }
-
-    // ── signal trails (animated beam) ─────────────────────────────────
-    for (final sig in signals) {
-      if (sig.trail.length < 2) continue;
-      Color beamColor;
-      if (sig.arrived) {
-        beamColor = Colors.cyanAccent;
-      } else if (sig.dead) {
-        beamColor = Colors.redAccent;
+      Color somaColor;
+      if (isSource) {
+        somaColor = _ncSourceColor;
+      } else if (isTarget) {
+        somaColor = _ncTargetColor;
       } else {
-        // shimmer: oscillate between cyan and purple
-        final shimmer = 0.5 + 0.5 * sin(beamPhase * (2 * pi / _ncBeamShimmerPeriod));
-        beamColor = Color.lerp(Colors.cyanAccent, Colors.purpleAccent, shimmer)!;
+        somaColor = _ncNormalColor;
       }
 
-      // glow pass
-      final glowPaint = Paint()
-        ..color = beamColor.withValues(alpha: 0.18)
-        ..strokeWidth = _ncBeamWidth + 6
-        ..strokeCap = StrokeCap.round
-        ..style = PaintingStyle.stroke
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
-      // core pass
-      final corePaint = Paint()
-        ..color = beamColor.withValues(alpha: sig.arrived ? 0.7 : 0.55)
-        ..strokeWidth = _ncBeamWidth
-        ..strokeCap = StrokeCap.round
-        ..style = PaintingStyle.stroke;
+      // 4a. Outer atmosphere halo (wider for source/target)
+      final haloR = somaRadius * (isSource || isTarget ? 2.0 : 1.55);
+      final haloAlpha = isSource || isTarget
+          ? 0.18 + 0.10 * sin(beamPhase * 1.8 + phaseOff)
+          : 0.08 + 0.04 * sin(beamPhase * 1.2 + phaseOff);
+      canvas.drawCircle(
+        center, haloR,
+        Paint()
+          ..color = somaColor.withValues(alpha: haloAlpha)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
+      );
 
-      for (final paint in [glowPaint, corePaint]) {
-        final path = ui.Path();
-        for (int k = 0; k < sig.trail.length; k++) {
-          final tx = ox + sig.trail[k][0] * cellSize + cellSize / 2;
-          final ty = oy + sig.trail[k][1] * cellSize + cellSize / 2;
-          if (k == 0) { path.moveTo(tx, ty); } else { path.lineTo(tx, ty); }
-        }
-        if (!sig.dead && !sig.arrived && sig.t > 0) {
-          final fx = ox + sig.col * cellSize + cellSize / 2;
-          final fy = oy + sig.row * cellSize + cellSize / 2;
-          final tx = ox + sig.nextCol * cellSize + cellSize / 2;
-          final ty = oy + sig.nextRow * cellSize + cellSize / 2;
-          path.lineTo(fx + (tx - fx) * sig.t, fy + (ty - fy) * sig.t);
-        }
-        canvas.drawPath(path, paint);
+      // 4b. Dendrite tendrils — 4-6 short radiating strokes from the soma edge
+      _drawDendrites(canvas, center, somaRadius, node.dir, somaColor, phaseOff);
+
+      // 4c. Soma — layered orb (glow + gradient body + rim + specular)
+      final glowStrength = isSource
+          ? 1.0 + 0.4 * sin(beamPhase * 2.2 + phaseOff)
+          : isTarget
+              ? 0.9 + 0.35 * sin(beamPhase * 1.7 + phaseOff)
+              : node.locked
+                  ? 0.3
+                  : 0.7 + 0.2 * sin(beamPhase * 1.1 + phaseOff);
+      GameFx.orb(canvas, center, somaRadius,
+          node.locked ? somaColor.withValues(alpha: 0.45) : somaColor,
+          glow: glowStrength.clamp(0.0, 1.5),
+          specular: !node.locked);
+
+      // 4d. Axon direction arc — a glowing arc at the soma edge pointing the
+      // gate direction. This replaces the bare flat arrow with something that
+      // reads as an actual axon output.
+      if (!node.locked || isSource) {
+        _drawAxonArc(canvas, center, somaRadius, node.dir,
+            node.locked ? somaColor.withValues(alpha: 0.4) : somaColor);
+      } else {
+        // Locked: draw a faint direction hint + lock marker.
+        _drawAxonArc(canvas, center, somaRadius, node.dir,
+            somaColor.withValues(alpha: 0.22));
+        _drawLockBadge(canvas, center, somaRadius);
       }
+
+      // 4e. Source / target identity: concentric pulse ring and label badge.
+      if (isSource) {
+        // Pulsing outer ring — reads "active emitter".
+        final pulseR = somaRadius * (1.45 + 0.22 * sin(beamPhase * 2.5 + phaseOff));
+        canvas.drawCircle(
+          center, pulseR,
+          Paint()
+            ..color = _ncSourceColor.withValues(
+                alpha: (0.55 * (1 - (pulseR - somaRadius * 1.45) /
+                    (somaRadius * 0.22))).clamp(0.0, 0.55))
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.8,
+        );
+        // Small dot label: "SRC"
+        GameFx.text(canvas, 'SRC',
+            center.translate(0, somaRadius + 11),
+            9, _ncSourceColor.withValues(alpha: 0.8));
+      } else if (isTarget) {
+        // Double halo rings — reads "destination".
+        for (int ring = 0; ring < 2; ring++) {
+          final rr = somaRadius * (1.5 + ring * 0.35)
+              + (ring == 0 ? 0.0 : somaRadius * 0.12 * sin(beamPhase * 1.3));
+          canvas.drawCircle(
+            center, rr,
+            Paint()
+              ..color = _ncTargetColor.withValues(alpha: ring == 0 ? 0.55 : 0.25)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = ring == 0 ? 2.0 : 1.2,
+          );
+        }
+        GameFx.text(canvas, 'TGT',
+            center.translate(0, somaRadius + 11),
+            9, _ncTargetColor.withValues(alpha: 0.8));
+      }
+
+      // 4f. Synaptic spark dot at axon tip — shows gate direction clearly.
+      final axonAngle = _gateAngle(node.dir);
+      final sparkPos = Offset(
+        cx + cos(axonAngle) * (somaRadius + 6),
+        cy + sin(axonAngle) * (somaRadius + 6),
+      );
+      final sparkPulse = 0.5 + 0.5 * sin(beamPhase * 3.0 + phaseOff);
+      final sparkR = (isSource ? 4.2 : 2.8) * (node.locked ? 0.4 : 1.0);
+      canvas.drawCircle(
+        sparkPos, sparkR + 2,
+        Paint()
+          ..color = somaColor.withValues(
+              alpha: (0.4 * sparkPulse * (node.locked ? 0.3 : 1.0))
+                  .clamp(0.0, 0.4))
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+      );
+      canvas.drawCircle(
+        sparkPos, sparkR,
+        Paint()..color = Colors.white.withValues(
+            alpha: (0.9 * (node.locked ? 0.2 : 1.0)).clamp(0.0, 0.9)),
+      );
     }
 
-    // ── signal dots ───────────────────────────────────────────────────
+    // ── 5. Active signal pulse dots ────────────────────────────────────
     for (final sig in signals) {
       if (sig.dead || sig.arrived) continue;
       double sx, sy;
@@ -7820,56 +8022,196 @@ class _NCPainter extends CustomPainter {
         final fy = oy + sig.row * cellSize + cellSize / 2;
         final tx = ox + sig.nextCol * cellSize + cellSize / 2;
         final ty = oy + sig.nextRow * cellSize + cellSize / 2;
-        sx = fx + (tx - fx) * sig.t;
-        sy = fy + (ty - fy) * sig.t;
+        // Ease the pulse along the synapse.
+        final eased = Curves.easeInOut.transform(sig.t.clamp(0.0, 1.0));
+        sx = fx + (tx - fx) * eased;
+        sy = fy + (ty - fy) * eased;
       } else {
         sx = ox + sig.col * cellSize + cellSize / 2;
         sy = oy + sig.row * cellSize + cellSize / 2;
       }
-      // outer glow
+      // Outer halo.
       canvas.drawCircle(Offset(sx, sy), _ncSignalGlowBlur,
-        Paint()..color = Colors.cyanAccent.withValues(alpha: 0.20)..maskFilter = MaskFilter.blur(BlurStyle.normal, _ncSignalGlowBlur));
-      // mid ring
-      canvas.drawCircle(Offset(sx, sy), 7,
-        Paint()..color = Colors.cyanAccent.withValues(alpha: 0.55));
-      // hot core
-      canvas.drawCircle(Offset(sx, sy), 3.5,
-        Paint()..color = Colors.white);
+        Paint()
+          ..color = _ncSignalColor.withValues(alpha: 0.22)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, _ncSignalGlowBlur));
+      // Glowing orb.
+      GameFx.orb(canvas, Offset(sx, sy), 7.5, _ncSourceColor,
+          glow: 1.2, specular: true);
     }
 
-    // ── particles ─────────────────────────────────────────────────────
+    // ── 6. Juice particles ─────────────────────────────────────────────
     for (final p in particles) {
       if (p.life <= 0) continue;
       final alpha = (p.life / p.maxLife).clamp(0.0, 1.0);
       canvas.drawCircle(
         Offset(p.x * size.width, p.y * size.height),
-        p.radius * alpha,
-        Paint()..color = p.color.withValues(alpha: alpha)
+        p.radius * (0.4 + 0.6 * alpha),
+        Paint()
+          ..color = p.color.withValues(alpha: alpha * 0.9)
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
       );
     }
 
-    // ── completion flash ──────────────────────────────────────────────
+    // ── 7. Score pops (FxPop) ─────────────────────────────────────────
+    for (final sp in scorePops) {
+      // Convert the unit-space anchor to actual pixel coords.
+      final pixPos = Offset(sp.pos.dx * size.width, sp.pos.dy * size.height);
+      final mockPop = FxPop(pixPos, sp.text, sp.color);
+      mockPop.life = sp.life;
+      mockPop.paint(canvas);
+    }
+
+    // ── 8. Completion flash ────────────────────────────────────────────
     if (completionFlash > 0) {
-      canvas.drawRect(Offset.zero & size,
-        Paint()..color = Colors.cyanAccent.withValues(alpha: completionFlash * 0.18));
+      canvas.drawRect(
+        Offset.zero & size,
+        Paint()..color = _ncAccent.withValues(alpha: completionFlash * 0.14),
+      );
     }
   }
 
-  void _drawArrow(Canvas canvas, Offset center, _GateDir dir, double length, Color color) {
-    final paint = Paint()..color = color..strokeWidth = 2.2..strokeCap = StrokeCap.round..style = PaintingStyle.stroke;
-    final angle = switch (dir) {
-      _GateDir.up => -pi / 2,
-      _GateDir.right => 0.0,
-      _GateDir.down => pi / 2,
-      _GateDir.left => pi,
-    };
-    final tip = Offset(center.dx + cos(angle) * length, center.dy + sin(angle) * length);
-    final tail = Offset(center.dx - cos(angle) * length * 0.38, center.dy - sin(angle) * length * 0.38);
-    canvas.drawLine(tail, tip, paint);
-    final hl = length * 0.38;
-    canvas.drawLine(tip, Offset(tip.dx + cos(angle + pi * 0.78) * hl, tip.dy + sin(angle + pi * 0.78) * hl), paint);
-    canvas.drawLine(tip, Offset(tip.dx + cos(angle - pi * 0.78) * hl, tip.dy + sin(angle - pi * 0.78) * hl), paint);
+  // ── helpers ───────────────────────────────────────────────────────────────
+
+  /// Blocker cell: dark inscribed X with rim.
+  void _drawBlocker(Canvas canvas, Offset center, double r) {
+    canvas.drawCircle(
+      center, r,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          const Color(0xFF1A1530),
+          const Color(0xFF0D0B1A),
+        ]).createShader(Rect.fromCircle(center: center, radius: r)),
+    );
+    canvas.drawCircle(
+      center, r,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.09)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4,
+    );
+    final xr = r * 0.36;
+    final xp = Paint()
+      ..color = Colors.white.withValues(alpha: 0.2)
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+        center.translate(-xr, -xr), center.translate(xr, xr), xp);
+    canvas.drawLine(
+        center.translate(xr, -xr), center.translate(-xr, xr), xp);
+  }
+
+  /// 4-6 short dendrite tendrils radiating from soma edge.
+  void _drawDendrites(Canvas canvas, Offset center, double somaR,
+      _GateDir axonDir, Color color, double phaseOff) {
+    final axonAngle = _gateAngle(axonDir);
+    // Draw 4 dendritic stubs offset 45°–135° from the axon direction.
+    const dendAngles = [pi * 0.6, pi * 0.85, -pi * 0.6, -pi * 0.85, pi];
+    final dp = Paint()
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4;
+
+    for (int k = 0; k < dendAngles.length; k++) {
+      final ang = axonAngle + dendAngles[k];
+      final wobble = 0.04 * sin(phaseOff + beamPhase * 0.8 + k * 1.1);
+      final a = ang + wobble;
+      final startR = somaR * 0.95;
+      final endR   = somaR * (1.55 + 0.12 * sin(phaseOff + k));
+      final startPt = center.translate(cos(a) * startR, sin(a) * startR);
+      final endPt   = center.translate(cos(a) * endR,   sin(a) * endR);
+      // Taper: outer end thinner.
+      final alpha = 0.22 + 0.12 * sin(phaseOff + beamPhase * 0.5 + k * 0.7);
+      dp.color = color.withValues(alpha: alpha.clamp(0.0, 0.4));
+      canvas.drawLine(startPt, endPt, dp);
+      // Small terminal bulb.
+      canvas.drawCircle(
+        endPt, 1.5,
+        Paint()..color = color.withValues(alpha: (alpha * 0.6).clamp(0.0, 0.3)),
+      );
+    }
+  }
+
+  /// Axon output: a glowing arc at the soma perimeter plus a short shaft line,
+  /// clearly indicating the exit direction.
+  void _drawAxonArc(Canvas canvas, Offset center, double somaR,
+      _GateDir dir, Color color) {
+    final angle = _gateAngle(dir);
+    // Short axon shaft from soma edge outward.
+    final shaftStart = center.translate(cos(angle) * somaR, sin(angle) * somaR);
+    final shaftEnd   = center.translate(cos(angle) * (somaR + 9), sin(angle) * (somaR + 9));
+    canvas.drawLine(
+      shaftStart, shaftEnd,
+      Paint()
+        ..color = color.withValues(alpha: 0.75)
+        ..strokeWidth = 2.4
+        ..strokeCap = StrokeCap.round,
+    );
+    // Glow around shaft.
+    canvas.drawLine(
+      shaftStart, shaftEnd,
+      Paint()
+        ..color = color.withValues(alpha: 0.25)
+        ..strokeWidth = 7
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+    // Arrowhead chevron at tip.
+    const hl = 6.0;
+    final tip = shaftEnd;
+    canvas.drawLine(
+      tip,
+      Offset(tip.dx + cos(angle + pi * 0.75) * hl,
+             tip.dy + sin(angle + pi * 0.75) * hl),
+      Paint()
+        ..color = color.withValues(alpha: 0.85)
+        ..strokeWidth = 2.0
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawLine(
+      tip,
+      Offset(tip.dx + cos(angle - pi * 0.75) * hl,
+             tip.dy + sin(angle - pi * 0.75) * hl),
+      Paint()
+        ..color = color.withValues(alpha: 0.85)
+        ..strokeWidth = 2.0
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+
+  /// Tiny padlock icon for locked relay neurons.
+  void _drawLockBadge(Canvas canvas, Offset center, double somaR) {
+    final lc = center.translate(somaR * 0.55, -somaR * 0.55);
+    final ls = somaR * 0.3;
+    canvas.drawCircle(lc, ls * 0.85,
+      Paint()..color = Potatuhs.inkDeep.withValues(alpha: 0.75));
+    final lp = Paint()
+      ..color = Colors.white38
+      ..strokeWidth = 1.1
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(
+            center: lc.translate(0, ls * 0.1), width: ls, height: ls * 0.7),
+        const Radius.circular(1.5)),
+      lp,
+    );
+    canvas.drawArc(
+      Rect.fromCenter(
+          center: lc.translate(0, -ls * 0.25),
+          width: ls * 0.65, height: ls * 0.65),
+      pi, pi, false, lp,
+    );
+  }
+
+  double _gateAngle(_GateDir dir) {
+    switch (dir) {
+      case _GateDir.up:    return -pi / 2;
+      case _GateDir.right: return 0.0;
+      case _GateDir.down:  return pi / 2;
+      case _GateDir.left:  return pi;
+    }
   }
 
   double _cellSize(Size size, int cols, int rows) {
