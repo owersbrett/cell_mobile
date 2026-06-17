@@ -829,6 +829,31 @@ class PartyController extends ChangeNotifier {
     tape.feed(values);
   }
 
+  /// Fast-forwards deterministic transitions (walking, result panels, the
+  /// mini-game intro/results) until the match is waiting on a genuine decision.
+  /// The host calls this to settle its authoritative controller between
+  /// processed requests, drawing and recording any randomness along the way.
+  void advanceToDecision() {
+    _pumpToDecision();
+    notifyListeners();
+  }
+
+  /// Applies one host-authored decision to a client-mode match, fast-forwarding
+  /// the deterministic transitions around it (mirrors the replay loop body).
+  /// Any random draws this input triggers must already be fed via
+  /// [feedRandoms]. This is how an online client advances in lockstep with the
+  /// host's canonical input log.
+  void applyNetworkInput(PartyInput input) {
+    _pumpToDecision();
+    if (phase == PartyPhase.gameOver) {
+      notifyListeners();
+      return;
+    }
+    _apply(input);
+    _pumpToDecision();
+    notifyListeners();
+  }
+
   /// Throws on any broken-game invariant. Cheap enough to call after every
   /// input; this is the contract the Peeler soak will hold the game to.
   void checkInvariants() {

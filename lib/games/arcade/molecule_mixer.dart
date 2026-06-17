@@ -367,6 +367,7 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     }
     _target = pool[_rng.nextInt(pool.length)];
     _slots = _target.slots.map((d) => _Slot(d)).toList();
+    _ensureSupply(); // flood in the parts for the new compound
   }
 
   List<int> get _neededElements => _slots
@@ -375,16 +376,18 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
       .toSet()
       .toList();
 
-  void _spawnAtom({bool fromEdge = false, bool anywhere = false}) {
+  void _spawnAtom({bool fromEdge = false, bool anywhere = false, int? element}) {
     final b = _bounds;
     if (b.isEmpty) return;
-    // Bias ~60% toward atoms the current molecule still needs.
+    // Forced element wins; otherwise bias ~60% toward what's still needed.
     final needed = _neededElements;
-    int element;
-    if (needed.isNotEmpty && _rng.nextDouble() < 0.6) {
-      element = needed[_rng.nextInt(needed.length)];
+    int el;
+    if (element != null) {
+      el = element;
+    } else if (needed.isNotEmpty && _rng.nextDouble() < 0.6) {
+      el = needed[_rng.nextInt(needed.length)];
     } else {
-      element = _rng.nextInt(_elements.length);
+      el = _rng.nextInt(_elements.length);
     }
     Offset pos;
     if (anywhere || !fromEdge) {
@@ -411,7 +414,42 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     final ang = _rng.nextDouble() * math.pi * 2;
     final speed = 22 + _rng.nextDouble() * 20;
     _atoms.add(_FieldAtom(pos, Offset(math.cos(ang), math.sin(ang)) * speed,
-        element, _rng.nextDouble() * math.pi * 2));
+        el, _rng.nextDouble() * math.pi * 2));
+  }
+
+  /// Guarantees the field holds more than enough of every atom the current
+  /// target needs — called when a new molecule is set (and on first seed), so a
+  /// fresh compound always has the parts to build it. Floods in from the edges:
+  /// each required element topped to (count + buffer), plus a little variety.
+  void _ensureSupply() {
+    if (_bounds.isEmpty) return;
+    final need = <int, int>{};
+    for (final s in _slots) {
+      need[s.def.element] = (need[s.def.element] ?? 0) + 1;
+    }
+    // Cull crowding first: drop atoms the new target doesn't need.
+    if (_atoms.length > 14) {
+      final spare =
+          _atoms.where((a) => !need.containsKey(a.element)).toList();
+      for (final a in spare) {
+        if (_atoms.length <= 12) break;
+        _atoms.remove(a);
+      }
+    }
+    final have = <int, int>{};
+    for (final a in _atoms) {
+      have[a.element] = (have[a.element] ?? 0) + 1;
+    }
+    const buffer = 2; // a couple spare of each, so you never come up short
+    need.forEach((element, count) {
+      for (var i = have[element] ?? 0; i < count + buffer; i++) {
+        _spawnAtom(fromEdge: true, element: element);
+      }
+    });
+    // A pinch of variety (decoys) — not too many.
+    for (var i = 0; i < 2; i++) {
+      _spawnAtom(fromEdge: true);
+    }
   }
 
   void _seedField() {
@@ -420,6 +458,7 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     for (var i = 0; i < 12; i++) {
       _spawnAtom(anywhere: true);
     }
+    _ensureSupply(); // make sure the very first molecule is buildable
   }
 
   void _burst(Offset at, Color color, {int count = 8, double speed = 100}) {
