@@ -4292,45 +4292,47 @@ class _SpiralPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. GalaxyCollectorGame — "Star Deflector"
-//    Draw circles around incoming threats: match the required RADIUS and
-//    DIRECTION (CW / CCW) to deflect them. Wrong answer = penalty.
+// 5. GalaxyCollectorGame — "Star Collector"  (BioScale.galactic)
+//    Stars drift across the galaxy — tap them before they escape!
+//    Every star telegraphs its escape path with a ghost trail.
+//    Tutorial: the first star is slow with a pulsing TAP ME prompt.
+//    Escalation: wave 1 = 1 star, grows to 6+ at wave 4+, timing tightens.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── Feel constants ─────────────────────────────────────────────────────────
-// Required circle radius range (fraction of screen short-side, normalised 0-1)
-const double _kMinReqRadius = 0.08; // smallest ring the player must draw
-const double _kMaxReqRadius = 0.22; // largest ring at game start
+// Game clock
+const double _kGcGameDuration     = 60.0;  // total seconds
 
-// Tolerance: how close the player's radius must be (fraction of req radius).
-// Starts loose, tightens with wave. Clamps to a floor so it stays humanly possible.
-const double _kToleranceBase = 0.45;   // ±45 % at wave 1
-const double _kToleranceFloor = 0.15;  // ±15 % at high waves (tightest)
-const double _kToleranceStep = 0.04;   // tolerance shrinks by this per wave
+// Star sizes (pixel radius)
+const double _kGcStarRadiusMin    = 18.0;
+const double _kGcStarRadiusMax    = 30.0;  // bigger = easier tap target, smaller = harder
 
-// Collision timer: how long (seconds) a threat lives before it "hits"
-const double _kBaseCollisionTime = 4.5; // wave 1
-const double _kMinCollisionTime  = 1.6; // absolute minimum at extreme waves
+// Star lifetime: how many seconds it crosses the screen before escaping
+const double _kGcLifeWave1        = 5.5;   // generous at first
+const double _kGcLifeMin          = 2.0;   // floor — never instant
 
-// Spawn: average gap between new threats (seconds).
-const double _kBaseSpawnInterval = 2.8; // wave 1
-const double _kMinSpawnInterval  = 0.5; // absolute floor at extreme waves
-const double _kSpawnAccelPerWave = 0.25; // seconds removed per wave
+// Spawn interval (seconds between new stars)
+const double _kGcSpawnWave1       = 3.0;
+const double _kGcSpawnMin         = 0.55;
+
+// Max simultaneous stars per wave
+const int    _kGcMaxStarsWave1    = 1;
+const int    _kGcMaxStarsCap      = 7;
+
+// Tutorial: first N stars are in tutorial mode (slow + labelled)
+const int    _kGcTutorialStars    = 1;
+
+// Tap hitbox multiplier (make tap area generously larger than visual radius)
+const double _kGcHitMult          = 1.55;
 
 // Points
-const int _kPointsCorrect    = 10;  // base points for a valid deflection
-const int _kBonusPerWave     = 3;   // extra pts per current wave for correct
-const int _kPenaltyWrongDir  = -5;  // drew correct size but wrong direction
-const int _kPenaltyWrongSize = -3;  // drew correct direction but wrong size
-const int _kPenaltyBothWrong = -2;  // both wrong (gesture counted but useless)
-const int _kPenaltyCollision = -8;  // threat hit impact zone (never deflected)
+const int    _kGcPointsBase       = 10;
+const int    _kGcBonusPerWave     = 4;
+const int    _kGcComboBonus       = 5;   // extra per star when on combo ≥3
+const int    _kGcPenaltyEscape    = -6;  // star escaped the screen
 
-// Gesture: minimum number of sampled points for a gesture to be evaluated
-const int _kMinGesturePoints = 12;
-
-// Minimum arc: gesture must sweep at least this many radians total (unsigned)
-// to be considered a circular gesture vs a straight swipe.
-const double _kMinGestureArc = 3.5; // ~200 degrees
+// Wave: new wave every N seconds
+const double _kGcWaveDuration     = 15.0;
 // ────────────────────────────────────────────────────────────────────────────
 
 class GalaxyCollectorGame extends StatefulWidget {
@@ -4340,57 +4342,39 @@ class GalaxyCollectorGame extends StatefulWidget {
 }
 
 enum _GCPhase { start, playing, gameOver }
-enum _GCDir { cw, ccw }
 
-// A threat on a collision course with the centre
-class _GCThreat {
-  /// Normalised position (0-1 coords)
+// A single drifting star
+class _GCStar {
+  /// Position in normalised [0,1] coords
   double x, y;
-  /// Normalised velocity (per second)
-  double vx, vy;
-  /// Required circle radius (normalised 0-1 of screen short-side)
-  double reqRadius;
-  /// Required draw direction
-  _GCDir reqDir;
-  /// Time remaining before impact
-  double timeLeft;
-  double maxTime;
-  /// Scale-in animation [0,1]
+  /// Velocity in normalised coords/sec
+  final double vx, vy;
+  /// Pixel radius of the orb
+  final double radius;
+  /// Total life when spawned (seconds)
+  final double maxLife;
+  /// Remaining life before escape
+  double life;
+  /// Scale-in animation [0→1]
   double scale;
-  /// Deflection result flash
-  double flashGood, flashBad;
-  bool deflected;
-  Color color;
+  /// Flash on collection
+  double flashGood;
+  /// Whether this star has been collected (pending removal)
+  bool collected;
+  /// Whether this is a tutorial star (labelled)
+  final bool isTutorial;
+  /// Colour of this star
+  final Color color;
+  /// A unique index so the painter can derive a stable bob phase
+  final int idx;
 
-  _GCThreat({
+  _GCStar({
     required this.x, required this.y,
     required this.vx, required this.vy,
-    required this.reqRadius, required this.reqDir,
-    required this.timeLeft, required this.color,
-  }) : maxTime = timeLeft, scale = 0.0,
-       flashGood = 0.0, flashBad = 0.0, deflected = false;
-}
-
-// Stores a completed gesture stroke with its analysis result
-class _GCGesture {
-  final Offset centroid;
-  final double radius;   // normalised
-  final _GCDir dir;
-  double life;           // display lifetime in seconds
-  final bool good;
-
-  _GCGesture({required this.centroid, required this.radius,
-    required this.dir, required this.good}) : life = 0.5;
-}
-
-// ─── Gesture accumulator (raw points in normalised coords) ──────────────────
-class _GCStroke {
-  final List<Offset> pts = [];
-  bool active = false;
-
-  void start(Offset p) { pts.clear(); pts.add(p); active = true; }
-  void add(Offset p)   { if (active) pts.add(p); }
-  void end()           { active = false; }
+    required this.radius, required this.maxLife,
+    required this.color, required this.isTutorial,
+    required this.idx,
+  }) : life = maxLife, scale = 0.0, flashGood = 0.0, collected = false;
 }
 
 class _GalaxyCollectorGameState extends State<GalaxyCollectorGame>
@@ -4402,23 +4386,20 @@ class _GalaxyCollectorGameState extends State<GalaxyCollectorGame>
 
   // Gameplay state
   int _score = 0, _wave = 1, _highScore = 0;
-  int _lives = 3, _streak = 0, _bestStreak = 0;
+  int _combo = 0, _bestCombo = 0;
   double _spawnTimer = 0.0;
-  double _waveTimer  = 0.0;       // time in current wave (seconds)
-  double _flashGood  = 0.0;       // full-screen green flash
-  double _flashBad   = 0.0;       // full-screen red flash
+  double _waveTimer  = 0.0;
+  double _gameTimer  = 0.0;   // total elapsed seconds
+  double _flashGood  = 0.0;
+  double _flashBad   = 0.0;
   String? _toastText;
   double _toastTimer = 0.0;
-  DateTime? _startTime;
+  int    _starsSpawned = 0;   // total ever spawned (used for tutorial gate)
+  double _clock = 0.0;        // seconds clock for painter animations
 
-  final List<_GCThreat>  _threats  = [];
-  final List<_JuiceParticle> _particles = [];
-  final List<_GCGesture> _gestures = [];
-
-  // Active stroke being drawn
-  final _GCStroke _stroke = _GCStroke();
-  // Last resolved stroke shown on-screen until next gesture starts
-  List<Offset> _lastStrokePts = [];
+  final List<_GCStar>        _stars     = [];
+  final List<FxParticle>     _particles = [];
+  final List<FxPop>          _pops      = [];
 
   @override
   void initState() {
@@ -4447,562 +4428,515 @@ class _GalaxyCollectorGameState extends State<GalaxyCollectorGame>
   void _startGame() {
     setState(() {
       _phase = _GCPhase.playing;
-      _score = 0; _wave = 1; _lives = 3; _streak = 0; _bestStreak = 0;
-      _spawnTimer = 0.0; _waveTimer = 0.0;
+      _score = 0; _wave = 1; _combo = 0; _bestCombo = 0;
+      _spawnTimer = 0.0; _waveTimer = 0.0; _gameTimer = 0.0; _clock = 0.0;
       _flashGood = 0.0; _flashBad = 0.0;
       _toastText = null; _toastTimer = 0.0;
-      _threats.clear(); _particles.clear(); _gestures.clear();
-      _lastStrokePts = [];
-      _startTime = DateTime.now();
+      _starsSpawned = 0;
+      _stars.clear(); _particles.clear(); _pops.clear();
     });
   }
 
-  void _endGame() { _saveHighScore(); setState(() { _phase = _GCPhase.gameOver; }); }
+  void _endGame() {
+    _saveHighScore();
+    setState(() { _phase = _GCPhase.gameOver; });
+  }
 
-  // ── Per-wave derived constants ───────────────────────────────────────────
-  double get _spawnInterval => (_kBaseSpawnInterval - (_wave - 1) * _kSpawnAccelPerWave).clamp(_kMinSpawnInterval, _kBaseSpawnInterval);
-  double get _collisionTime => (_kBaseCollisionTime - (_wave - 1) * 0.2).clamp(_kMinCollisionTime, _kBaseCollisionTime);
-  double get _tolerance     => (_kToleranceBase - (_wave - 1) * _kToleranceStep).clamp(_kToleranceFloor, _kToleranceBase);
-  int    get _maxThreats    => 1 + _wave ~/ 2;  // 1 at wave1, grows by 1 every 2 waves
+  // ── Per-wave derived values ──────────────────────────────────────────────
+  double get _starLife     => (_kGcLifeWave1  - (_wave - 1) * 0.45).clamp(_kGcLifeMin, _kGcLifeWave1);
+  double get _spawnInterval => (_kGcSpawnWave1 - (_wave - 1) * 0.38).clamp(_kGcSpawnMin, _kGcSpawnWave1);
+  int    get _maxStars     => (_kGcMaxStarsWave1 + (_wave - 1)).clamp(1, _kGcMaxStarsCap);
 
   // ── Game loop ────────────────────────────────────────────────────────────
   void _tick() {
     if (_phase != _GCPhase.playing) return;
     const dt = 1 / 60.0;
     setState(() {
+      _gameTimer += dt;
+      _clock += dt;
       _waveTimer += dt;
-      // Advance wave every 20 seconds
-      if (_waveTimer >= 20.0) { _waveTimer = 0.0; _wave++; _toast('Wave $_wave!'); }
+      if (_gameTimer >= _kGcGameDuration) { _endGame(); return; }
 
-      // Spawn threats
-      _spawnTimer -= dt;
-      if (_spawnTimer <= 0.0 && _threats.length < _maxThreats) {
-        _spawnTimer = _spawnInterval * (0.7 + _rng.nextDouble() * 0.6);
-        _spawnThreat();
+      // Wave progression every 15s
+      if (_waveTimer >= _kGcWaveDuration) {
+        _waveTimer = 0.0;
+        _wave++;
+        _toast('Wave $_wave!');
       }
 
-      // Update threats
-      for (final t in _threats) {
-        if (t.deflected) { t.flashGood = (t.flashGood - dt * 2).clamp(0.0, 1.0); continue; }
-        t.scale = (t.scale + dt / 0.35).clamp(0.0, 1.0);
-        t.x += t.vx * dt;
-        t.y += t.vy * dt;
-        t.timeLeft -= dt;
-        if (t.flashBad > 0) t.flashBad = (t.flashBad - dt * 3).clamp(0.0, 1.0);
-        if (t.flashGood > 0) t.flashGood = (t.flashGood - dt * 2).clamp(0.0, 1.0);
+      // Spawn stars
+      _spawnTimer -= dt;
+      if (_spawnTimer <= 0.0 && _stars.where((s) => !s.collected).length < _maxStars) {
+        _spawnTimer = _spawnInterval * (0.75 + _rng.nextDouble() * 0.5);
+        _spawnStar();
+      }
 
-        // Check if threat reached the danger zone (within 0.08 of centre)
-        final dx = t.x - 0.5, dy = t.y - 0.5;
-        final dist = sqrt(dx * dx + dy * dy);
-        if (dist < 0.08 || t.timeLeft <= 0.0) {
-          // Collision!
-          _score = max(0, _score + _kPenaltyCollision);
-          _lives--;
-          _flashBad = 0.7;
-          _streak = 0;
-          _spawnBurst(t.x, t.y, Colors.redAccent, 14);
-          t.deflected = true; // reuse flag to mark for removal
-          _toast('Miss!');
-          if (_lives <= 0) { _endGame(); return; }
+      // Update stars
+      for (final s in _stars) {
+        if (s.collected) {
+          s.flashGood = (s.flashGood - dt * 3.0).clamp(0.0, 1.0);
+          continue;
+        }
+        s.scale = (s.scale + dt / 0.30).clamp(0.0, 1.0);
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.life -= dt;
+
+        // Escaped?
+        if (s.life <= 0.0 || s.x < -0.15 || s.x > 1.15 || s.y < -0.15 || s.y > 1.15) {
+          _score = max(0, _score + _kGcPenaltyEscape);
+          _combo = 0;
+          _flashBad = 0.55;
+          s.collected = true; // mark for removal
+          _toast('Escaped!');
         }
       }
-      _threats.removeWhere((t) => t.deflected && t.flashGood <= 0.01);
+      _stars.removeWhere((s) => s.collected && s.flashGood <= 0.01);
 
-      // Particles & gestures
-      for (final p in _particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
-      _particles.removeWhere((p) => p.life <= 0);
-      for (final g in _gestures) { g.life -= dt; }
-      _gestures.removeWhere((g) => g.life <= 0);
+      // Particles & pops
+      _particles.removeWhere((p) => !p.step(dt));
+      _pops.removeWhere((p) => !p.step(dt));
 
-      if (_flashGood > 0) _flashGood = (_flashGood - dt * 2.5).clamp(0.0, 1.0);
-      if (_flashBad  > 0) _flashBad  = (_flashBad  - dt * 2.5).clamp(0.0, 1.0);
+      if (_flashGood > 0) _flashGood = (_flashGood - dt * 2.8).clamp(0.0, 1.0);
+      if (_flashBad  > 0) _flashBad  = (_flashBad  - dt * 2.8).clamp(0.0, 1.0);
       if (_toastTimer > 0) { _toastTimer -= dt; if (_toastTimer <= 0) _toastText = null; }
     });
   }
 
-  void _spawnThreat() {
-    // Pick an edge to spawn from
+  void _spawnStar() {
+    // Pick an edge and aim across
     final edge = _rng.nextInt(4);
-    double sx, sy;
+    double sx, sy, tx, ty;
     switch (edge) {
-      case 0: sx = _rng.nextDouble(); sy = -0.06; break;
-      case 1: sx = 1.06; sy = _rng.nextDouble(); break;
-      case 2: sx = _rng.nextDouble(); sy = 1.06; break;
-      default: sx = -0.06; sy = _rng.nextDouble();
+      case 0: // top
+        sx = 0.1 + _rng.nextDouble() * 0.8; sy = -0.06;
+        tx = 0.1 + _rng.nextDouble() * 0.8; ty = 1.06;
+        break;
+      case 1: // right
+        sx = 1.06; sy = 0.1 + _rng.nextDouble() * 0.8;
+        tx = -0.06; ty = 0.1 + _rng.nextDouble() * 0.8;
+        break;
+      case 2: // bottom
+        sx = 0.1 + _rng.nextDouble() * 0.8; sy = 1.06;
+        tx = 0.1 + _rng.nextDouble() * 0.8; ty = -0.06;
+        break;
+      default: // left
+        sx = -0.06; sy = 0.1 + _rng.nextDouble() * 0.8;
+        tx = 1.06; ty = 0.1 + _rng.nextDouble() * 0.8;
     }
-    // Aim roughly at centre with some scatter
-    final scatter = (_rng.nextDouble() - 0.5) * 0.25;
-    double tx = 0.5 + scatter, ty = 0.5 + scatter;
-    double dx = tx - sx, dy = ty - sy;
-    final dist = sqrt(dx * dx + dy * dy).clamp(0.01, 2.0);
-    final colTime = _collisionTime * (0.85 + _rng.nextDouble() * 0.3);
-    final spd = dist / colTime;
-    final vx = dx / dist * spd, vy = dy / dist * spd;
 
-    // Required radius: widen range a little at higher waves
-    final rLo = _kMinReqRadius;
-    final rHi = _kMaxReqRadius - (_wave - 1) * 0.005; // range narrows very slightly
-    final reqR = rLo + _rng.nextDouble() * (rHi - rLo).clamp(0.0, rHi - rLo);
-    final reqDir = _rng.nextBool() ? _GCDir.cw : _GCDir.ccw;
+    final isTut = _starsSpawned < _kGcTutorialStars;
+    final life = isTut ? _kGcLifeWave1 * 1.8 : _starLife;
 
-    // Colour by direction
-    final col = reqDir == _GCDir.cw
-        ? const Color(0xFF64B5F6)   // blue for CW
-        : const Color(0xFFFFB74D);  // amber for CCW
+    final dx = tx - sx, dy = ty - sy;
+    final dist = sqrt(dx * dx + dy * dy).clamp(0.01, 2.5);
+    // Velocity to cross the screen in `life` seconds
+    final vx = (dx / dist) * (dist / life);
+    final vy = (dy / dist) * (dist / life);
 
-    _threats.add(_GCThreat(
+    // Radius: tutorial stars are larger; later waves spawn smaller ones
+    final radius = isTut
+        ? _kGcStarRadiusMax
+        : _kGcStarRadiusMax - (_wave - 1) * 1.2;
+
+    // Colour: cycle through a small palette of warm/cool star colours
+    final starColors = [
+      Potatuhs.gold,
+      Potatuhs.orange,
+      Potatuhs.airForce,
+      Potatuhs.glaucous,
+      Potatuhs.sienna,
+      const Color(0xFF88CCEE), // pale blue
+      const Color(0xFFFFEE88), // pale yellow
+    ];
+    final col = starColors[_starsSpawned % starColors.length];
+
+    _stars.add(_GCStar(
       x: sx, y: sy, vx: vx, vy: vy,
-      reqRadius: reqR, reqDir: reqDir,
-      timeLeft: colTime, color: col,
+      radius: radius.clamp(_kGcStarRadiusMin, _kGcStarRadiusMax),
+      maxLife: life, color: col,
+      isTutorial: isTut, idx: _starsSpawned,
     ));
+    _starsSpawned++;
   }
 
-  // ── Gesture evaluation ───────────────────────────────────────────────────
+  // ── Tap handling — collect the topmost star under the tap point ──────────
+  void _handleTap(Offset localPos, Size screenSize) {
+    final w = screenSize.width, h = screenSize.height;
+    final tapX = localPos.dx, tapY = localPos.dy;
 
-  /// Analyse the stroke and attempt to deflect a nearby threat.
-  void _evaluateStroke(Size screenSize) {
-    final pts = _stroke.pts;
-    if (pts.length < _kMinGesturePoints) return;
-
-    // Compute centroid in normalised coords
-    double sumX = 0, sumY = 0;
-    for (final p in pts) { sumX += p.dx; sumY += p.dy; }
-    final cx = sumX / pts.length;
-    final cy = sumY / pts.length;
-    final centroidNorm = Offset(cx, cy);
-
-    // Mean radius (normalised by screen short-side so it matches reqRadius units)
-    final shortSide = min(screenSize.width, screenSize.height);
-    double sumR = 0;
-    for (final p in pts) {
-      sumR += sqrt((p.dx - cx) * (p.dx - cx) + (p.dy - cy) * (p.dy - cy));
-    }
-    final meanRadNorm = (sumR / pts.length) / shortSide;
-
-    // Rotation direction via accumulated signed angle (shoelace-style).
-    // For each consecutive triplet of points compute the signed cross product
-    // of (B-A) × (C-B); summing these gives the winding sense.
-    double signedArea = 0.0;
-    for (int i = 0; i < pts.length - 1; i++) {
-      signedArea += (pts[i].dx * pts[i + 1].dy) - (pts[i + 1].dx * pts[i].dy);
-    }
-    final detectedDir = signedArea < 0 ? _GCDir.cw : _GCDir.ccw;
-    // (In Flutter screen coords Y-down: CW rotation gives negative shoelace area)
-
-    // Minimum arc check — ensure the stroke actually sweeps enough angle
-    double totalArc = 0.0;
-    for (int i = 1; i < pts.length - 1; i++) {
-      final ax = pts[i].dx - cx,     ay = pts[i].dy - cy;
-      final bx = pts[i+1].dx - cx, by = pts[i+1].dy - cy;
-      final rA = sqrt(ax*ax + ay*ay).clamp(1e-9, double.infinity);
-      final rB = sqrt(bx*bx + by*by).clamp(1e-9, double.infinity);
-      final cosA = ((ax*bx + ay*by) / (rA * rB)).clamp(-1.0, 1.0);
-      totalArc += acos(cosA);
-    }
-    if (totalArc < _kMinGestureArc) return; // too short — ignore
-
-    // Find the closest undeflected threat within a generous spatial window
-    _GCThreat? best;
+    _GCStar? hit;
     double bestDist = double.infinity;
-    for (final t in _threats) {
-      if (t.deflected) continue;
-      final d = sqrt((t.x - cx) * (t.x - cx) + (t.y - cy) * (t.y - cy));
-      if (d < bestDist) { bestDist = d; best = t; }
-    }
-    if (best == null || bestDist > 0.45) return; // no plausible target
 
-    // Evaluate match
-    final tol = _tolerance;
-    final sizeOk = (meanRadNorm - best.reqRadius).abs() <= best.reqRadius * tol;
-    final dirOk  = detectedDir == best.reqDir;
-    final good   = sizeOk && dirOk;
-
-    if (good) {
-      final pts2 = _kPointsCorrect + _kBonusPerWave * _wave;
-      _score += pts2;
-      _streak++;
-      if (_streak > _bestStreak) _bestStreak = _streak;
-      best.deflected = true;
-      best.flashGood = 1.0;
-      _flashGood = 0.5;
-      _spawnBurst(best.x, best.y, best.color, 12);
-      final extra = _streak >= 3 ? ' ${_streak}x streak!' : '';
-      _toast('+$pts2$extra');
-    } else {
-      int pen;
-      if (sizeOk && !dirOk) { pen = _kPenaltyWrongDir; _toast('Wrong direction!'); }
-      else if (!sizeOk && dirOk) { pen = _kPenaltyWrongSize; _toast('Wrong size!'); }
-      else { pen = _kPenaltyBothWrong; _toast('Miss!'); }
-      _score = max(0, _score + pen);
-      _streak = 0;
-      best.flashBad = 1.0;
-      _flashBad = 0.4;
+    for (final s in _stars) {
+      if (s.collected) continue;
+      // Distance in pixel space
+      final px = s.x * w, py = s.y * h;
+      final d = sqrt((tapX - px) * (tapX - px) + (tapY - py) * (tapY - py));
+      if (d < s.radius * _kGcHitMult && d < bestDist) {
+        bestDist = d;
+        hit = s;
+      }
     }
 
-    _gestures.add(_GCGesture(
-      centroid: centroidNorm,
-      radius: meanRadNorm,
-      dir: detectedDir,
-      good: good,
-    ));
-  }
+    if (hit == null) return;
 
-  void _toast(String t) { _toastText = t; _toastTimer = 1.4; }
-  void _spawnBurst(double x, double y, Color c, int n) {
-    for (int i = 0; i < n; i++) {
-      _particles.add(_JuiceParticle(
-        x: x, y: y,
-        vx: (_rng.nextDouble() - 0.5) * 0.5,
-        vy: (_rng.nextDouble() - 0.5) * 0.5,
-        life: 0.4 + _rng.nextDouble() * 0.35,
-        color: c, radius: 2.5,
+    setState(() {
+      hit!.collected = true;
+      hit.flashGood  = 1.0;
+      _combo++;
+      if (_combo > _bestCombo) _bestCombo = _combo;
+      final base    = _kGcPointsBase + _kGcBonusPerWave * _wave;
+      final comboEx = _combo >= 3 ? _kGcComboBonus * (_combo - 2) : 0;
+      final pts     = base + comboEx;
+      _score += pts;
+      _flashGood = 0.4;
+
+      // Particles
+      _particles.addAll(FxBurst.spawn(
+        Offset(hit.x * w, hit.y * h),
+        hit.color, count: 16, speed: 130, size: 3.5,
       ));
-    }
+      // Score pop
+      _pops.add(FxPop(
+        Offset(hit.x * w, hit.y * h),
+        _combo >= 3 ? '+$pts ×$_combo!' : '+$pts',
+        _combo >= 3 ? Potatuhs.gold : Potatuhs.textPrimary,
+      ));
+
+      final comboMsg = _combo >= 3 ? '×$_combo COMBO!' : null;
+      if (comboMsg != null) _toast(comboMsg);
+    });
   }
+
+  void _toast(String t) { _toastText = t; _toastTimer = 1.3; }
 
   // ── Build ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    if (_phase == _GCPhase.start)   return _buildStart();
+    if (_phase == _GCPhase.start)    return _buildStart();
     if (_phase == _GCPhase.gameOver) return _buildOver();
     return LayoutBuilder(builder: (ctx, constraints) {
       final w = constraints.maxWidth, h = constraints.maxHeight;
-      final shortSide = min(w, h);
       return GestureDetector(
-        onPanStart: (d) {
-          final norm = Offset(d.localPosition.dx / w, d.localPosition.dy / h);
-          setState(() { _stroke.start(norm); _lastStrokePts = []; });
-        },
-        onPanUpdate: (d) {
-          final norm = Offset(d.localPosition.dx / w, d.localPosition.dy / h);
-          setState(() { _stroke.add(norm); });
-        },
-        onPanEnd: (_) {
-          setState(() {
-            _stroke.end();
-            _lastStrokePts = List.unmodifiable(_stroke.pts);
-            _evaluateStroke(Size(w, h));
-          });
-        },
-        child: Container(
-          color: Colors.black,
-          child: CustomPaint(
-            painter: _StarDeflectorPainter(
-              threats: _threats,
-              particles: _particles,
-              gestures: _gestures,
-              strokePts: _stroke.active ? _stroke.pts : _lastStrokePts,
-              shortSide: shortSide,
-              flashGood: _flashGood,
-              flashBad: _flashBad,
-            ),
-            child: Stack(children: [
-              // HUD
-              Positioned(top: 8, left: 12, right: 12, child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-                    Text('Wave $_wave', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white54)),
-                  ]),
-                  const SizedBox(height: 4),
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text(
-                      'Draw circles: match SIZE & DIRECTION',
-                      style: TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white.withValues(alpha: 0.35)),
-                    ),
-                    Row(mainAxisSize: MainAxisSize.min, children: [
-                      ...List.generate(3, (i) => Padding(
-                        padding: const EdgeInsets.only(left: 3),
-                        child: Icon(Icons.favorite, size: 14,
-                          color: i < _lives ? const Color(0xFFFF5252) : Colors.white12),
-                      )),
-                    ]),
-                  ]),
-                  if (_streak >= 3) Padding(
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Text('Streak: $_streak', style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.cyanAccent)),
+        onTapDown: (d) => _handleTap(d.localPosition, Size(w, h)),
+        child: CustomPaint(
+          painter: _StarCollectorPainter(
+            stars:     _stars,
+            particles: _particles,
+            pops:      _pops,
+            flashGood: _flashGood,
+            flashBad:  _flashBad,
+            clock:     _clock,
+          ),
+          child: Stack(children: [
+            // ── HUD strip ────────────────────────────────────────────────
+            Positioned(top: 0, left: 0, right: 0, child: Container(
+              padding: const EdgeInsets.fromLTRB(14, 44, 14, 10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                  colors: [Potatuhs.inkDeep, Potatuhs.inkDeep.withValues(alpha: 0)],
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Score
+                  Text(
+                    '$_score',
+                    style: Potatuhs.display(size: 26, color: Potatuhs.gold),
                   ),
-                ]),
-              )),
-              // Toast
-              if (_toastText != null) Positioned(
-                top: 90, left: 0, right: 0,
-                child: Center(child: Text(
-                  _toastText!,
-                  style: TextStyle(
-                    fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold,
-                    color: (_toastText!.startsWith('+') ? Colors.greenAccent : Colors.redAccent)
-                        .withValues(alpha: (_toastTimer / 1.4).clamp(0.0, 1.0)),
+                  // Time remaining
+                  Builder(builder: (_) {
+                    final rem = (_kGcGameDuration - _gameTimer).clamp(0.0, _kGcGameDuration);
+                    final warn = rem < 6.0;
+                    return Text(
+                      '${rem.ceil()}s',
+                      style: Potatuhs.display(
+                        size: 20,
+                        color: warn ? const Color(0xFFFF5252) : Potatuhs.textSecondary,
+                      ),
+                    );
+                  }),
+                  // Wave
+                  Text('W$_wave', style: Potatuhs.label(size: 14, color: Potatuhs.airForce)),
+                ],
+              ),
+            )),
+            // ── Instruction banner (wave 1 only while tutorial star is live) ──
+            if (_wave == 1 && _starsSpawned <= _kGcTutorialStars)
+              Positioned(
+                bottom: 32, left: 24, right: 24,
+                child: Center(child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Potatuhs.inkPanel.withValues(alpha: 0.88),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Potatuhs.gold.withValues(alpha: 0.35), width: 1),
+                  ),
+                  child: Text(
+                    'TAP THE STARS  •  collect them before they escape!',
+                    textAlign: TextAlign.center,
+                    style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary),
                   ),
                 )),
               ),
-              // Direction legend bottom
-              Positioned(bottom: 12, left: 0, right: 0, child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _DirLegend(color: const Color(0xFF64B5F6), label: 'CW', clockwise: true),
-                  const SizedBox(width: 24),
-                  _DirLegend(color: const Color(0xFFFFB74D), label: 'CCW', clockwise: false),
-                ],
+            // ── Combo banner ─────────────────────────────────────────────
+            if (_combo >= 3) Positioned(
+              top: 100, left: 0, right: 0,
+              child: Center(child: Text(
+                '×$_combo COMBO',
+                style: Potatuhs.display(size: 22, color: Potatuhs.gold),
               )),
-            ]),
-          ),
+            ),
+            // ── Toast ─────────────────────────────────────────────────────
+            if (_toastText != null) Positioned(
+              top: 130, left: 0, right: 0,
+              child: Center(child: Builder(builder: (_) {
+                final isGood = !_toastText!.contains('Escaped');
+                final fade   = (_toastTimer / 1.3).clamp(0.0, 1.0);
+                final col    = (isGood ? Potatuhs.gold : const Color(0xFFFF5252))
+                    .withValues(alpha: fade);
+                return Text(
+                  _toastText!,
+                  style: Potatuhs.display(size: 20, color: col),
+                );
+              })),
+            ),
+          ]),
         ),
       );
     });
   }
 
   Widget _buildStart() {
-    return GestureDetector(onTap: _startGame, child: Container(
-      color: Colors.black,
-      child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Star Deflector', style: TextStyle(fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white)),
-        const SizedBox(height: 12),
-        const Text(
-          'Stars are on a collision course!\nDraw a circle around each one:\nmatch its SIZE and DIRECTION arrow.',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54),
+    return GestureDetector(
+      onTap: _startGame,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter, end: Alignment.bottomCenter,
+            colors: [Potatuhs.inkDeep, Color.lerp(Potatuhs.inkDeep, Potatuhs.glaucous, 0.18)!],
+          ),
         ),
-        const SizedBox(height: 16),
-        Row(mainAxisSize: MainAxisSize.min, children: [
-          _DirLegend(color: const Color(0xFF64B5F6), label: 'BLUE = clockwise', clockwise: true),
-          const SizedBox(width: 20),
-          _DirLegend(color: const Color(0xFFFFB74D), label: 'AMBER = counter-CW', clockwise: false),
-        ]),
-        const SizedBox(height: 20),
-        if (_highScore > 0) Padding(
-          padding: const EdgeInsets.only(bottom: 14),
-          child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent)),
-        ),
-        const Text('Tap to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
-      ])),
-    ));
+        child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('STAR COLLECTOR', style: Potatuhs.display(size: 34, color: Potatuhs.gold)),
+          const SizedBox(height: 14),
+          Text(
+            'Stars drift across the galaxy.\nTap them before they escape!',
+            textAlign: TextAlign.center,
+            style: Potatuhs.body(size: 16, color: Potatuhs.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Chains of 3+ stars = COMBO bonus',
+            textAlign: TextAlign.center,
+            style: Potatuhs.label(size: 13, color: Potatuhs.airForce),
+          ),
+          const SizedBox(height: 28),
+          if (_highScore > 0) Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Text(
+              'Best: $_highScore',
+              style: Potatuhs.display(size: 18, color: Potatuhs.gold),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: Potatuhs.ctaGradient,
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Text('TAP TO PLAY', style: Potatuhs.display(size: 18, color: Potatuhs.textPrimary)),
+          ),
+        ])),
+      ),
+    );
   }
 
   Widget _buildOver() {
-    final elapsed = _startTime != null ? DateTime.now().difference(_startTime!) : Duration.zero;
-    final mins = elapsed.inMinutes, secs = elapsed.inSeconds % 60;
-    return GestureDetector(onTap: _startGame, child: Container(
-      color: Colors.black,
-      child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Collision!', style: TextStyle(fontFamily: 'Avenir', fontSize: 26, fontWeight: FontWeight.bold, color: Colors.redAccent)),
-        const SizedBox(height: 20),
-        Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.amberAccent)),
-        const SizedBox(height: 4),
-        Text('Wave Reached: $_wave', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.cyanAccent)),
-        const SizedBox(height: 4),
-        Text('Best Streak: $_bestStreak', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.orangeAccent)),
-        const SizedBox(height: 4),
-        Text('Time: ${mins}m ${secs}s', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white54)),
-        const SizedBox(height: 12),
-        if (_score >= _highScore && _score > 0)
-          const Padding(padding: EdgeInsets.only(bottom: 8), child: Text('New High Score!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent))),
-        Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white38)),
-        const SizedBox(height: 20),
-        const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
-      ])),
-    ));
-  }
-}
-
-// ── Small legend widget ──────────────────────────────────────────────────────
-class _DirLegend extends StatelessWidget {
-  final Color color;
-  final String label;
-  final bool clockwise;
-  const _DirLegend({required this.color, required this.label, required this.clockwise});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      CustomPaint(size: const Size(20, 20), painter: _ArrowCirclePainter(color: color, clockwise: clockwise)),
-      const SizedBox(width: 6),
-      Text(label, style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: color)),
-    ]);
-  }
-}
-
-class _ArrowCirclePainter extends CustomPainter {
-  final Color color;
-  final bool clockwise;
-  const _ArrowCirclePainter({required this.color, required this.clockwise});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = Offset(size.width / 2, size.height / 2);
-    final r = size.width / 2 - 2;
-    final paint = Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 1.5..strokeCap = StrokeCap.round;
-    canvas.drawArc(Rect.fromCircle(center: c, radius: r), -pi / 2, clockwise ? pi * 1.5 : -pi * 1.5, false, paint);
-    // Arrowhead
-    final endAngle = clockwise ? pi : -pi / 2;
-    final ax = c.dx + cos(endAngle) * r;
-    final ay = c.dy + sin(endAngle) * r;
-    final headAngle = clockwise ? endAngle + pi / 2 : endAngle - pi / 2;
-    canvas.drawLine(
-      Offset(ax, ay),
-      Offset(ax + cos(headAngle - 0.5) * 4, ay + sin(headAngle - 0.5) * 4),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(ax, ay),
-      Offset(ax + cos(headAngle + 0.5) * 4, ay + sin(headAngle + 0.5) * 4),
-      paint,
+    final newHigh = _score >= _highScore && _score > 0;
+    return GestureDetector(
+      onTap: _startGame,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter, end: Alignment.bottomCenter,
+            colors: [Potatuhs.inkDeep, Color.lerp(Potatuhs.inkDeep, Potatuhs.glaucous, 0.18)!],
+          ),
+        ),
+        child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('TIME\'S UP', style: Potatuhs.display(size: 30, color: Potatuhs.orange)),
+          const SizedBox(height: 22),
+          Text('$_score', style: Potatuhs.display(size: 52, color: Potatuhs.gold)),
+          Text('POINTS', style: Potatuhs.label(size: 13, color: Potatuhs.textFaint)),
+          const SizedBox(height: 10),
+          if (newHigh) Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text('NEW HIGH SCORE!', style: Potatuhs.display(size: 20, color: Potatuhs.gold)),
+          ),
+          if (!newHigh) Text(
+            'Best: $_highScore',
+            style: Potatuhs.label(size: 15, color: Potatuhs.textFaint),
+          ),
+          const SizedBox(height: 6),
+          Text('Wave Reached: $_wave', style: Potatuhs.body(size: 15, color: Potatuhs.airForce)),
+          const SizedBox(height: 4),
+          Text('Best Combo: ×$_bestCombo', style: Potatuhs.body(size: 15, color: Potatuhs.sienna)),
+          const SizedBox(height: 28),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+            decoration: BoxDecoration(
+              gradient: Potatuhs.ctaGradient,
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Text('PLAY AGAIN', style: Potatuhs.display(size: 18, color: Potatuhs.textPrimary)),
+          ),
+        ])),
+      ),
     );
   }
-
-  @override
-  bool shouldRepaint(covariant _ArrowCirclePainter old) => old.clockwise != clockwise || old.color != color;
 }
 
-// ── Main canvas painter ──────────────────────────────────────────────────────
-class _StarDeflectorPainter extends CustomPainter {
-  final List<_GCThreat> threats;
-  final List<_JuiceParticle> particles;
-  final List<_GCGesture> gestures;
-  final List<Offset> strokePts;
-  final double shortSide, flashGood, flashBad;
+// ── Canvas painter ────────────────────────────────────────────────────────────
+class _StarCollectorPainter extends CustomPainter {
+  final List<_GCStar>    stars;
+  final List<FxParticle> particles;
+  final List<FxPop>      pops;
+  final double flashGood, flashBad, clock;
 
-  const _StarDeflectorPainter({
-    required this.threats, required this.particles,
-    required this.gestures, required this.strokePts,
-    required this.shortSide, required this.flashGood, required this.flashBad,
+  const _StarCollectorPainter({
+    required this.stars,
+    required this.particles,
+    required this.pops,
+    required this.flashGood,
+    required this.flashBad,
+    required this.clock,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width, h = size.height;
 
-    // Background starfield
-    final rng = Random(99);
-    for (int i = 0; i < 70; i++) {
-      canvas.drawCircle(
-        Offset(rng.nextDouble() * w, rng.nextDouble() * h),
-        0.3 + rng.nextDouble() * 0.7,
-        Paint()..color = Colors.white.withValues(alpha: 0.05 + rng.nextDouble() * 0.05),
-      );
-    }
+    // ── Atmospheric background ──────────────────────────────────────────
+    GameFx.atmosphere(canvas, size, Potatuhs.glaucous, clock, motes: 48);
 
-    // Danger zone at centre
-    final cx = w * 0.5, cy = h * 0.5;
-    canvas.drawCircle(Offset(cx, cy), 22, Paint()..color = Colors.redAccent.withValues(alpha: 0.08));
-    canvas.drawCircle(Offset(cx, cy), 22, Paint()
-      ..color = Colors.redAccent.withValues(alpha: 0.3)
-      ..style = PaintingStyle.stroke..strokeWidth = 1.0);
-    canvas.drawCircle(Offset(cx, cy), 6, Paint()..color = Colors.redAccent.withValues(alpha: 0.5));
+    // ── Stars ──────────────────────────────────────────────────────────
+    for (final s in stars) {
+      if (s.scale <= 0) continue;
+      final a = s.scale.clamp(0.0, 1.0);
+      final px = s.x * w;
+      final py = s.y * h;
 
-    // Threats
-    for (final t in threats) {
-      final tx = t.x * w, ty = t.y * h;
-      final a = t.scale.clamp(0.0, 1.0);
-      final col = t.color;
-
-      // Body
-      if (t.flashGood > 0) {
-        canvas.drawCircle(Offset(tx, ty), 18 * a, Paint()..color = Colors.greenAccent.withValues(alpha: t.flashGood * 0.6));
-      }
-      if (t.flashBad > 0) {
-        canvas.drawCircle(Offset(tx, ty), 18 * a, Paint()..color = Colors.redAccent.withValues(alpha: t.flashBad * 0.5));
-      }
-
-      canvas.drawCircle(Offset(tx, ty), 14 * a, Paint()..color = col.withValues(alpha: a * 0.15));
-      canvas.drawCircle(Offset(tx, ty), 8 * a, Paint()..color = col.withValues(alpha: a * 0.5));
-      canvas.drawCircle(Offset(tx, ty), 4 * a, Paint()..color = Colors.white.withValues(alpha: a * 0.9));
-
-      // Required-radius ring
-      if (!t.deflected && t.scale > 0.5) {
-        final reqPx = t.reqRadius * shortSide;
-        final ringAlpha = a * 0.55;
-        canvas.drawCircle(Offset(tx, ty), reqPx, Paint()
-          ..color = col.withValues(alpha: ringAlpha)
-          ..style = PaintingStyle.stroke..strokeWidth = 1.5);
-        // Dashed tick marks at N/S/E/W for size reference
-        for (int q = 0; q < 4; q++) {
-          final ang = q * pi / 2;
-          final ox = cos(ang), oy = sin(ang);
-          canvas.drawLine(
-            Offset(tx + ox * (reqPx - 4), ty + oy * (reqPx - 4)),
-            Offset(tx + ox * (reqPx + 4), ty + oy * (reqPx + 4)),
-            Paint()..color = col.withValues(alpha: ringAlpha * 0.9)..strokeWidth = 2.0..strokeCap = StrokeCap.round,
+      // Ghost trail: dots showing where the star is heading
+      if (!s.collected) {
+        final lifeRatio = (s.life / s.maxLife).clamp(0.0, 1.0);
+        // Draw 5 ghost dots along the future path
+        for (int gi = 1; gi <= 5; gi++) {
+          final frac = gi / 5.0;
+          final gx = px + s.vx * w * frac * s.life;
+          final gy = py + s.vy * h * frac * s.life;
+          // Only draw if still on screen-ish
+          if (gx < -20 || gx > w + 20 || gy < -20 || gy > h + 20) break;
+          final ga = (0.22 - frac * 0.18) * a * lifeRatio;
+          canvas.drawCircle(
+            Offset(gx, gy),
+            s.radius * (0.20 - frac * 0.03),
+            Paint()..color = s.color.withValues(alpha: ga)
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
           );
         }
 
-        // Direction arrow arcing around the ring
-        final arrowPaint = Paint()..color = col.withValues(alpha: a * 0.9)..style = PaintingStyle.stroke..strokeWidth = 2.0..strokeCap = StrokeCap.round;
-        final isCw = t.reqDir == _GCDir.cw;
-        // Draw a 120-degree arc as direction hint
-        canvas.drawArc(
-          Rect.fromCircle(center: Offset(tx, ty), radius: reqPx),
-          -pi / 2, isCw ? pi * 0.67 : -pi * 0.67, false, arrowPaint,
-        );
-        // Arrowhead
-        final endAng = isCw ? -pi / 2 + pi * 0.67 : -pi / 2 - pi * 0.67;
-        final eax = tx + cos(endAng) * reqPx;
-        final eay = ty + sin(endAng) * reqPx;
-        final headAng = endAng + (isCw ? pi / 2 : -pi / 2);
-        canvas.drawLine(
-          Offset(eax, eay),
-          Offset(eax + cos(headAng - 0.45) * 6, eay + sin(headAng - 0.45) * 6),
-          arrowPaint,
-        );
-        canvas.drawLine(
-          Offset(eax, eay),
-          Offset(eax + cos(headAng + 0.45) * 6, eay + sin(headAng + 0.45) * 6),
-          arrowPaint,
-        );
+        // Urgency pulse ring: appears when < 40 % life left
+        final urgency = 1.0 - lifeRatio;
+        if (urgency > 0.6) {
+          final pulseA = (urgency - 0.6) / 0.4;
+          final pulse = 0.5 + 0.5 * sin(clock * 8.0 + s.idx.toDouble());
+          canvas.drawCircle(
+            Offset(px, py),
+            s.radius * (1.55 + pulse * 0.25) * a,
+            Paint()
+              ..color = const Color(0xFFFF5252).withValues(alpha: pulseA * 0.5 * a)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.5,
+          );
+        }
 
-        // Urgency countdown ring (shrinks towards zero)
-        final urgency = (t.timeLeft / t.maxTime).clamp(0.0, 1.0);
-        if (urgency < 0.6) {
-          canvas.drawCircle(Offset(tx, ty), 20 * a, Paint()
-            ..color = Colors.redAccent.withValues(alpha: (1.0 - urgency) * 0.35 * a)
-            ..style = PaintingStyle.stroke..strokeWidth = 1.0);
+        // Tutorial label: pulsing "TAP!" arrow above the star
+        if (s.isTutorial) {
+          final pulse = 0.65 + 0.35 * sin(clock * 4.0);
+          GameFx.text(
+            canvas,
+            '▼ TAP!',
+            Offset(px, py - s.radius * 1.8 - 14),
+            15,
+            Potatuhs.gold.withValues(alpha: pulse * a),
+            display: true,
+            glow: 0.8 * pulse,
+          );
+        }
+      }
+
+      // ── Star orb ─────────────────────────────────────────────────────
+      // Good-flash: brighten on collection
+      final effectiveGlow = s.collected ? 0.0 : 1.0;
+      if (s.flashGood > 0) {
+        canvas.drawCircle(
+          Offset(px, py),
+          s.radius * 2.2 * a,
+          Paint()
+            ..color = s.color.withValues(alpha: s.flashGood * 0.55)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+        );
+      }
+
+      GameFx.orb(
+        canvas, Offset(px, py), s.radius * a, s.color,
+        glow: effectiveGlow * a,
+      );
+
+      // Draw little ray spikes around the star for readability (it's a STAR)
+      if (!s.collected) {
+        final spikePaint = Paint()
+          ..color = s.color.withValues(alpha: 0.45 * a)
+          ..strokeWidth = 1.2
+          ..strokeCap = StrokeCap.round;
+        final spokeCount = 6;
+        final spikeLen = s.radius * 0.65;
+        final bob = clock * 0.8 + s.idx * 0.4; // slow rotation
+        for (int sp = 0; sp < spokeCount; sp++) {
+          final ang = bob + sp * (2 * pi / spokeCount);
+          final inner = s.radius * 1.08 * a;
+          final outer = (s.radius + spikeLen) * a;
+          canvas.drawLine(
+            Offset(px + cos(ang) * inner, py + sin(ang) * inner),
+            Offset(px + cos(ang) * outer, py + sin(ang) * outer),
+            spikePaint,
+          );
         }
       }
     }
 
-    // Past gestures (resolved strokes drawn as fading rings)
-    for (final g in gestures) {
-      final gc = g.centroid;
-      final gx = gc.dx * w, gy = gc.dy * h;
-      final gpx = g.radius * shortSide;
-      final ga = (g.life / 0.5).clamp(0.0, 1.0);
-      final gcol = g.good ? Colors.greenAccent : Colors.redAccent;
-      canvas.drawCircle(Offset(gx, gy), gpx, Paint()
-        ..color = gcol.withValues(alpha: ga * 0.5)
-        ..style = PaintingStyle.stroke..strokeWidth = 2.0);
-    }
+    // ── FxBurst particles ──────────────────────────────────────────────
+    FxBurst.paint(canvas, particles);
 
-    // Active stroke being drawn
-    if (strokePts.length > 1) {
-      final path = Path();
-      path.moveTo(strokePts.first.dx * w, strokePts.first.dy * h);
-      for (int i = 1; i < strokePts.length; i++) {
-        path.lineTo(strokePts[i].dx * w, strokePts[i].dy * h);
-      }
-      canvas.drawPath(path, Paint()
-        ..color = Colors.white.withValues(alpha: 0.55)
-        ..style = PaintingStyle.stroke..strokeWidth = 2.0..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round);
-    }
+    // ── Score pops ────────────────────────────────────────────────────
+    for (final p in pops) { p.paint(canvas); }
 
-    // Particles
-    for (final p in particles) {
-      if (p.life > 0) {
-        canvas.drawCircle(
-          Offset(p.x * w, p.y * h), p.radius,
-          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
-        );
-      }
-    }
-
-    // Full-screen flashes
-    if (flashGood > 0) canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.greenAccent.withValues(alpha: flashGood * 0.15));
-    if (flashBad  > 0) canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.redAccent.withValues(alpha: flashBad  * 0.25));
+    // ── Screen flashes ────────────────────────────────────────────────
+    if (flashGood > 0) canvas.drawRect(
+      Rect.fromLTWH(0, 0, w, h),
+      Paint()..color = Potatuhs.gold.withValues(alpha: flashGood * 0.12),
+    );
+    if (flashBad > 0) canvas.drawRect(
+      Rect.fromLTWH(0, 0, w, h),
+      Paint()..color = const Color(0xFFFF5252).withValues(alpha: flashBad * 0.22),
+    );
   }
 
   @override
-  bool shouldRepaint(covariant _StarDeflectorPainter old) => true;
+  bool shouldRepaint(covariant _StarCollectorPainter old) => true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
