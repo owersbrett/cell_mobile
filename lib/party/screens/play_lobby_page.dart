@@ -4,10 +4,12 @@ import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../firebase_bootstrap.dart';
 import '../net/firebase_party_transport.dart';
 import '../net/party_net.dart';
 import '../net/party_session.dart';
@@ -28,7 +30,9 @@ class PlayLobbyPage extends StatefulWidget {
 enum _LobbyStage { choose, room }
 
 class _PlayLobbyPageState extends State<PlayLobbyPage> {
-  final PartyTransport _transport = FirebasePartyTransport();
+  // Created lazily only once Firebase is ready — never in a field initializer,
+  // so building the lobby can't crash when Firebase isn't initialized.
+  PartyTransport? _transport;
   final TextEditingController _nameController =
       TextEditingController(text: kCharacters[Random().nextInt(4)].name);
   final TextEditingController _joinController = TextEditingController();
@@ -40,8 +44,24 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
   String? _error;
   bool _busy = false;
 
-  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+  bool get _firebaseReady => Firebase.apps.isNotEmpty;
+  String? get _uid =>
+      _firebaseReady ? FirebaseAuth.instance.currentUser?.uid : null;
   bool get _online => _uid != null;
+
+  @override
+  void initState() {
+    super.initState();
+    // Ensure Firebase + anonymous auth are up (the entry point kicks this off
+    // in the background); refresh the lobby so the online buttons enable once
+    // it's ready. Safe + idempotent + never throws.
+    _prepareOnline();
+  }
+
+  Future<void> _prepareOnline() async {
+    await initFirebaseSafe();
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
@@ -79,8 +99,9 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
       _error = null;
     });
     try {
+      _transport ??= FirebasePartyTransport();
       final net = await PartyNet.host(
-        transport: _transport,
+        transport: _transport!,
         gameId: _generateCode(),
         uid: _uid!,
         name: name,
@@ -112,8 +133,9 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
       _error = null;
     });
     try {
+      _transport ??= FirebasePartyTransport();
       final net = await PartyNet.join(
-        transport: _transport,
+        transport: _transport!,
         gameId: code,
         uid: _uid!,
         name: name,
