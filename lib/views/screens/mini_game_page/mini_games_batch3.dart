@@ -23,30 +23,65 @@ class _JuiceParticle {
 }
 
 // ---------------------------------------------------------------------------
-// Market event for leading-indicator event log
+// Floating profit/loss pop label
 // ---------------------------------------------------------------------------
-class _MarketEvent {
-  final double timestamp;
-  final String leadingText;
-  final String actualText;
-  final double priceImpact;
+class _ProfitPop {
+  double x, y, life, maxLife;
+  final String label;
   final Color color;
-  bool isRevealed = false;
-  final double revealDelay;
-
-  _MarketEvent({
-    required this.timestamp,
-    required this.leadingText,
-    required this.actualText,
-    required this.priceImpact,
+  _ProfitPop({
+    required this.x,
+    required this.y,
+    required this.label,
     required this.color,
-    required this.revealDelay,
-  });
+    double life = 1.2,
+  })  : life = life,
+        maxLife = life;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 1. FinancialTradingGame — "Potato Futures"
+// 1. FinancialTradingGame — "Market Trader" (Algo-Trading Manager)
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// FEEL / ECONOMY CONSTANTS (edit here to tune without touching game logic)
+// -------------------------------------------------------------------------
+// TAP ENERGY
+const double _kTapEnergy = 0.08; // energy added per tap (0..1 scale)
+const double _kEnergyDecay = 0.55; // energy lost per second when not tapping
+// (no passive energy regen — tapping is the only source)
+// ALGO TICK RATE (trades per second at each scale level, index = scaleLevel-1)
+const List<double> _kTickRateByScale = [0.8, 1.4, 2.2, 3.2, 4.5, 6.0];
+// ROI per trade at each scale: [baseMin, baseMax] — can go negative (loss)
+// Index = scaleLevel-1.  Variance widens with higher scale.
+const List<List<double>> _kRoiRangeByScale = [
+  [-2.0, 6.0], // scale 1 — gentle
+  [-3.5, 9.0], // scale 2
+  [-6.0, 13.0], // scale 3
+  [-9.0, 18.0], // scale 4
+  [-13.0, 24.0], // scale 5
+  [-18.0, 30.0], // scale 6 — wild
+];
+// CLOUD COMPUTE COST per second at each scale level (index = scaleLevel-1)
+const List<double> _kComputeCostByScale = [
+  0.8, // scale 1
+  2.2, // scale 2
+  4.5, // scale 3
+  8.0, // scale 4
+  13.0, // scale 5
+  20.0, // scale 6
+];
+// AUTOSCALER
+const double _kAutoscalerUnlockTime = 30.0; // seconds until purchasable
+const double _kAutoscalerPrice = 80.0; // one-time cost in dollars
+const double _kAutoscalerCheckInterval = 1.5; // how often it re-evaluates scale
+// SCALE LIMITS
+const int _kMinScale = 1;
+const int _kMaxScale = 6;
+// VOLATILITY ESCALATION — multiplier on ROI variance applied at t=60
+const double _kVolatilityEscalation = 1.8; // ramps linearly from 1.0 → this
+// STARTING CONDITIONS
+const double _kStartingCash = 200.0;
+const double _kGameDuration = 60.0;
 
 class FinancialTradingGame extends StatefulWidget {
   const FinancialTradingGame({Key? key}) : super(key: key);
@@ -54,12 +89,22 @@ class FinancialTradingGame extends StatefulWidget {
   State<FinancialTradingGame> createState() => _FinancialTradingGameState();
 }
 
-class _LeveragedPosition {
-  final double entryPrice;
-  final int quantity;
-  double get liquidationPrice => entryPrice * 0.80;
-  double get marginCallPrice => entryPrice * 0.85;
-  _LeveragedPosition({required this.entryPrice, required this.quantity});
+// ---------------------------------------------------------------------------
+// Live equity-curve data point
+// ---------------------------------------------------------------------------
+class _EquityPoint {
+  final double t; // seconds elapsed
+  final double value;
+  _EquityPoint(this.t, this.value);
+}
+
+// ---------------------------------------------------------------------------
+// Algo trade record (shows in live ticker feed)
+// ---------------------------------------------------------------------------
+class _TradeRecord {
+  final double roi; // signed dollar change
+  final double timestamp;
+  _TradeRecord(this.roi, this.timestamp);
 }
 
 class _FinancialTradingGameState extends State<FinancialTradingGame>
@@ -67,142 +112,80 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  // Market state
-  double _price = 50;
-  double _momentum = 0;
-  double _cash = 500;
-  int _inventory = 0;
-  double _startNetWorth = 500;
-  final List<double> _priceHistory = [];
-  double _timeLeft = 60;
+  // --- Core wallet ---
+  double _cash = _kStartingCash;
+  double _timeLeft = _kGameDuration;
   bool _gameOver = false;
+  double _elapsed = 0.0;
 
-  // Leverage state
-  bool _leverageMode = false;
-  final List<_LeveragedPosition> _leveragedPositions = [];
-  double _liquidationFlashTimer = 0;
-  double _liquidationTextScale = 0;
-  bool _marginCallWarning = false;
-  bool _rugPullActive = false;
-  double _rugPullTimer = 0;
+  // --- Algo engine ---
+  double _energy = 0.0; // 0..1; must be > 0 for algo to run
+  bool get _algoRunning => _energy > 0.01 && !_gameOver;
+  int _scaleLevel = _kMinScale; // 1.._kMaxScale
+  double _tradeClock = 0.0; // accumulates until >= 1/_tickRate
+  bool _isNetPositiveThisTick = false; // for pulse colour
 
-  // HODL tracking
-  double _hodlTimer = 0;
-  double _hodlStartPrice = 0;
-  bool _isHodling = false;
-  double _diamondHandsTimer = 0;
+  // --- Autoscaler ---
+  bool _autoscalerOwned = false;
+  bool get _autoscalerAvailable =>
+      !_autoscalerOwned && _elapsed >= _kAutoscalerUnlockTime;
+  double _autoscalerClock = 0.0;
 
-  // Limit orders
-  double? _limitBuyPrice;
-  double? _limitSellPrice;
+  // --- Equity curve ---
+  final List<_EquityPoint> _equity = [];
+  double _peakNetWorth = _kStartingCash;
 
-  // News headlines
-  String _headline = '';
-  double _headlineTimer = 0;
-  double _eventImpact = 0;
-  double _newsFlashTimer = 0; // visual flash when news breaks
-  double _nextNewsTimer = 2.0; // first news comes fast
+  // --- Trade ticker ---
+  final List<_TradeRecord> _recentTrades = [];
 
-  // Market manipulation
-  double _manipCooldown = 0;
-  static const double _manipCooldownMax = 12.0;
+  // --- Profit pops ---
+  final List<_ProfitPop> _pops = [];
 
-  // High scores
-  List<Map<String, dynamic>> _highScores = [];
-  double _bestScore = 0;
-  bool _newHighScore = false;
-  double _newHighScoreTimer = 0;
-
-  final List<String> _bullishNews = [
-    'BREAKING: Drought wipes out Idaho harvest!',
-    'ALERT: Potato blight spreads across 5 states!',
-    'SURGE: Japan triples import orders overnight!',
-    'CRISIS: Major supply chain collapse!',
-    'SHORTAGE: French fry chains rationing potatoes!',
-    'SHOCK: Warehouse fire destroys 10M lbs of stock!',
-    'FLASH: EU bans competing imports!',
-    'BOOM: Fast food demand hits all-time high!',
-    'REPORT: Cold snap freezes planting season!',
-    'VIRAL: Celebrity chef sparks potato craze!',
-    'PANIC: Seed potato shortage confirmed!',
-    'DEAL: China signs massive potato trade deal!',
-  ];
-  final List<String> _bearishNews = [
-    'DUMP: Record bumper harvest flooding market!',
-    'CRASH: Lab-grown potatoes hit grocery shelves!',
-    'ALERT: New GMO yields 3x normal crop!',
-    'GLUT: Warehouses at 200% capacity!',
-    'TREND: Sweet potato craze kills demand!',
-    'SHOCK: Major buyer cancels all orders!',
-    'REPORT: Government releases strategic reserves!',
-    'SLUMP: Fast food chains switch to rice!',
-    'BUST: Speculator panic sell-off underway!',
-    'LEAK: New synthetic potato substitute approved!',
-    'DROP: Consumer confidence at all-time low!',
-    'FLOOD: Three countries dump surplus simultaneously!',
-  ];
-
-  // Market event log
-  final List<_MarketEvent> _eventLog = [];
-  double _nextEventTimer = 5.0; // first event comes quickly
-  double _elapsedTime = 0;
-
-  static const List<Map<String, dynamic>> _eventTemplates = [
-    {
-      'leading': '\u{1F4E1} Weather report incoming...',
-      'actual': '\u{1F327}\u{FE0F} Drought in Idaho! Supply down.',
-      'impact': 6.0,
-      'hintBullish': true,
-    },
-    {
-      'leading': '\u{1F4E1} Trade data pending...',
-      'actual': '\u{1F4E6} Record exports to Japan!',
-      'impact': 4.5,
-      'hintBullish': true,
-    },
-    {
-      'leading': '\u{1F4E1} USDA report due...',
-      'actual': '\u{1F4CA} Potato glut \u2014 oversupply!',
-      'impact': -6.0,
-      'hintBullish': false,
-    },
-    {
-      'leading': '\u{1F4E1} Lab results coming...',
-      'actual': '\u{1F9EC} New blight-resistant variety!',
-      'impact': 3.0,
-      'hintBullish': true,
-    },
-    {
-      'leading': '\u{1F4E1} Policy alert...',
-      'actual': '\u{1F3DB}\u{FE0F} Tariff on imports!',
-      'impact': 5.5,
-      'hintBullish': true,
-    },
-  ];
-
-  // Particles for visual juice
+  // --- Particles ---
   final List<_JuiceParticle> _particles = [];
+
+  // --- High scores ---
+  List<Map<String, dynamic>> _highScores = [];
+  double _bestScore = 0.0;
+  bool _newHighScore = false;
+  double _newHighScoreTimer = 0.0;
+
+  // --- Volatility escalation (ramps from 1.0 \u2192 _kVolatilityEscalation) ---
+  double get _volatilityMult =>
+      1.0 + (_kVolatilityEscalation - 1.0) * (1.0 - (_timeLeft / _kGameDuration));
+
+  // --- Cost vs earnings tension ---
+  double get _currentComputeCost =>
+      _kComputeCostByScale[_scaleLevel - 1];
+  double get _expectedEarningsPerSec {
+    if (!_algoRunning) return 0.0;
+    final roi = _kRoiRangeByScale[_scaleLevel - 1];
+    final avgRoi = (roi[0] + roi[1]) / 2.0;
+    return avgRoi * _kTickRateByScale[_scaleLevel - 1];
+  }
+  bool get _isOverscaled =>
+      _algoRunning && _currentComputeCost > _expectedEarningsPerSec;
 
   @override
   void initState() {
     super.initState();
-    _priceHistory.addAll(List.generate(60, (_) => 50.0));
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+    _equity.add(_EquityPoint(0, _kStartingCash));
+    _ctrl = AnimationController(
+            vsync: this, duration: const Duration(hours: 1))
+        ..addListener(_tick)
+        ..forward();
     _loadHighScores();
   }
 
   Future<void> _loadHighScores() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('potato_futures_high_scores');
+    final raw = prefs.getString('market_trader_high_scores');
     if (raw != null) {
       final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
       if (mounted) {
         setState(() {
-          _highScores = decoded
-              .map((e) => Map<String, dynamic>.from(e as Map))
-              .toList();
+          _highScores =
+              decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
           if (_highScores.isNotEmpty) {
             _bestScore = (_highScores.first['score'] as num).toDouble();
           }
@@ -213,25 +196,20 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
   Future<void> _saveHighScore(double score) async {
     final prefs = await SharedPreferences.getInstance();
-    final entry = {
+    _highScores.add({
       'score': score,
       'date': DateTime.now().toIso8601String().substring(0, 10),
-    };
-    _highScores.add(entry);
-    _highScores.sort(
-        (a, b) => (b['score'] as num).compareTo(a['score'] as num));
-    if (_highScores.length > 5) {
-      _highScores = _highScores.sublist(0, 5);
-    }
-    await prefs.setString(
-        'potato_futures_high_scores', jsonEncode(_highScores));
+    });
+    _highScores.sort((a, b) => (b['score'] as num).compareTo(a['score'] as num));
+    if (_highScores.length > 5) _highScores = _highScores.sublist(0, 5);
+    await prefs.setString('market_trader_high_scores', jsonEncode(_highScores));
     if (_highScores.isNotEmpty) {
       _bestScore = (_highScores.first['score'] as num).toDouble();
     }
   }
 
   void _checkAndSaveHighScore() {
-    final nw = _netWorth;
+    final nw = _cash;
     final qualifies = _highScores.length < 5 ||
         nw > (_highScores.last['score'] as num).toDouble();
     if (qualifies) {
@@ -241,32 +219,20 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     }
   }
 
-  int get _leveragedInventory {
-    int total = 0;
-    for (final pos in _leveragedPositions) {
-      total += pos.quantity;
-    }
-    return total;
-  }
-
-  double get _leveragedPnl {
-    double total = 0;
-    for (final pos in _leveragedPositions) {
-      total += pos.quantity * (_price - pos.entryPrice);
-    }
-    return total;
-  }
-
   @override
   void dispose() {
     _ctrl.dispose();
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------------
+  // Main game loop
+  // ---------------------------------------------------------------------------
   void _tick() {
     if (_gameOver) return;
-    final dt = 1 / 60.0;
+    const dt = 1 / 60.0;
     setState(() {
+      _elapsed += dt;
       _timeLeft -= dt;
       if (_timeLeft <= 0) {
         _timeLeft = 0;
@@ -275,152 +241,67 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         return;
       }
 
-      // Liquidation flash animation
-      if (_liquidationFlashTimer > 0) {
-        _liquidationFlashTimer -= dt;
-        _liquidationTextScale =
-            (1.0 - (_liquidationFlashTimer / 2.0)).clamp(0.0, 1.0);
-      }
+      // Energy passive decay
+      _energy = (_energy - _kEnergyDecay * dt).clamp(0.0, 1.0);
 
-      // New high score animation timer
-      if (_newHighScoreTimer > 0) _newHighScoreTimer -= dt;
-
-      // Rug pull animation
-      if (_rugPullActive) {
-        _rugPullTimer -= dt;
-        if (_rugPullTimer <= 0) _rugPullActive = false;
-      }
-
-      // News events — frequent and impactful
-      _headlineTimer -= dt;
-      if (_newsFlashTimer > 0) _newsFlashTimer -= dt;
-      if (_manipCooldown > 0) _manipCooldown -= dt;
-      _nextNewsTimer -= dt;
-      if (_nextNewsTimer <= 0) {
-        _nextNewsTimer = 3 + _rng.nextDouble() * 3; // every 3-6s
-        if (_rng.nextBool()) {
-          _headline = _bullishNews[_rng.nextInt(_bullishNews.length)];
-          _eventImpact = 5 + _rng.nextDouble() * 8;
-        } else {
-          _headline = _bearishNews[_rng.nextInt(_bearishNews.length)];
-          _eventImpact = -(5 + _rng.nextDouble() * 8);
-        }
-        _headlineTimer = 4;
-        _newsFlashTimer = 0.6;
-      }
-
-      // Price physics
-      if (!_rugPullActive) {
-        final noise = (_rng.nextDouble() - 0.5) * 2;
-        final meanReversion = (50 - _price) * 0.005;
-        _momentum = _momentum * 0.95 + noise * 0.3 + _eventImpact * 0.1;
-        _eventImpact *= 0.95;
-        _price += _momentum + meanReversion;
-      } else {
-        _price -= 2.0;
-        _momentum = -3;
-      }
-      _price = _price.clamp(5.0, 200.0);
-      _priceHistory.add(_price);
-      if (_priceHistory.length > 120) _priceHistory.removeAt(0);
-
-      // HODL tracking
-      if (_inventory > 0 || _leveragedInventory > 0) {
-        if (!_isHodling) {
-          _isHodling = true;
-          _hodlTimer = 0;
-          _hodlStartPrice = _price;
-        }
-        _hodlTimer += dt;
-        if (_hodlTimer >= 10 && _price > _hodlStartPrice && _diamondHandsTimer <= 0) {
-          _diamondHandsTimer = 2.5;
-        }
-      } else {
-        _isHodling = false;
-        _hodlTimer = 0;
-      }
-      if (_diamondHandsTimer > 0) _diamondHandsTimer -= dt;
-
-      // Margin call / liquidation check
-      _marginCallWarning = false;
-      bool shouldLiquidate = false;
-      for (final pos in _leveragedPositions) {
-        if (_price <= pos.liquidationPrice) {
-          shouldLiquidate = true;
-          break;
-        }
-        if (_price <= pos.marginCallPrice) {
-          _marginCallWarning = true;
+      // Cloud compute drain
+      if (_algoRunning) {
+        _cash -= _currentComputeCost * dt;
+        if (_cash < 0) {
+          _cash = 0;
+          _gameOver = true;
+          _checkAndSaveHighScore();
+          return;
         }
       }
-      if (shouldLiquidate && _leveragedPositions.isNotEmpty) {
-        _performLiquidation();
-      }
 
-      // Check limit orders
-      if (_limitBuyPrice != null && _price <= _limitBuyPrice!) {
-        if (_leverageMode) {
-          final cost = _price * 0.2;
-          if (_cash >= cost) {
-            _cash -= cost;
-            _leveragedPositions.add(
-                _LeveragedPosition(entryPrice: _price, quantity: 1));
-            _spawnParticles(_rng.nextDouble() * 200, 200, Colors.orangeAccent, 5);
-            _limitBuyPrice = null;
+      // Autoscaler
+      if (_autoscalerOwned && _algoRunning) {
+        _autoscalerClock += dt;
+        if (_autoscalerClock >= _kAutoscalerCheckInterval) {
+          _autoscalerClock = 0;
+          int bestScale = _kMinScale;
+          for (int s = _kMaxScale; s >= _kMinScale; s--) {
+            final roi = _kRoiRangeByScale[s - 1];
+            final avg = (roi[0] + roi[1]) / 2.0 * _volatilityMult;
+            final expectedNet =
+                avg * _kTickRateByScale[s - 1] - _kComputeCostByScale[s - 1];
+            if (expectedNet > 0) {
+              bestScale = s;
+              break;
+            }
           }
-        } else if (_cash >= _price) {
-          _cash -= _price;
-          _inventory++;
-          _spawnParticles(_rng.nextDouble() * 200, 200, Colors.green, 5);
-          _limitBuyPrice = null;
-        }
-      }
-      if (_limitSellPrice != null && _price >= _limitSellPrice!) {
-        if (_leveragedPositions.isNotEmpty) {
-          final pos = _leveragedPositions.removeLast();
-          _cash += _price * pos.quantity;
-          _spawnParticles(_rng.nextDouble() * 200, 200, Colors.red, 5);
-          if (_leveragedPositions.isEmpty) _limitSellPrice = null;
-        } else if (_inventory > 0) {
-          _cash += _price;
-          _inventory--;
-          _spawnParticles(_rng.nextDouble() * 200, 200, Colors.red, 5);
-          _limitSellPrice = null;
+          if (_scaleLevel != bestScale) _scaleLevel = bestScale;
         }
       }
 
-      // --- Market event log system ---
-      _elapsedTime += dt;
-      _nextEventTimer -= dt;
-      if (_nextEventTimer <= 0) {
-        _nextEventTimer = 8 + _rng.nextDouble() * 4; // 8-12s between events
-        final template = _eventTemplates[_rng.nextInt(_eventTemplates.length)];
-        final isFakeout = _rng.nextDouble() < 0.20; // 20% chance of fake-out
-        double impact = (template['impact'] as double);
-        if (isFakeout) impact = -impact;
-        final revealDelay = 3.0 + _rng.nextDouble() * 2.0; // 3-5s
-        final isBullish = impact > 0;
-        _eventLog.insert(
-          0,
-          _MarketEvent(
-            timestamp: _elapsedTime,
-            leadingText: template['leading'] as String,
-            actualText: template['actual'] as String,
-            priceImpact: impact,
-            color: isBullish ? const Color(0xFF4CAF50) : const Color(0xFFEF5350),
-            revealDelay: revealDelay,
-          ),
-        );
-        // Keep max 12 events in memory
-        if (_eventLog.length > 12) _eventLog.removeLast();
-      }
-      // Reveal events whose delay has expired and apply price impact
-      for (final ev in _eventLog) {
-        if (!ev.isRevealed && (_elapsedTime - ev.timestamp) >= ev.revealDelay) {
-          ev.isRevealed = true;
-          _eventImpact += ev.priceImpact;
+      // Algo trade ticks
+      if (_algoRunning) {
+        final tickRate = _kTickRateByScale[_scaleLevel - 1];
+        _tradeClock += dt;
+        final tickInterval = 1.0 / tickRate;
+        while (_tradeClock >= tickInterval) {
+          _tradeClock -= tickInterval;
+          _executeTrade();
         }
       }
+
+      // Equity curve sample every 0.5s
+      if (_equity.isEmpty || (_elapsed - _equity.last.t) >= 0.5) {
+        _equity.add(_EquityPoint(_elapsed, _cash));
+        if (_equity.length > 160) _equity.removeAt(0);
+        if (_cash > _peakNetWorth) _peakNetWorth = _cash;
+      }
+
+      // Cull stale trades
+      _recentTrades.removeWhere((r) => _elapsed - r.timestamp > 2.0);
+
+      // Update pops
+      for (final p in _pops) {
+        p.y -= 40 * dt;
+        p.life -= dt;
+      }
+      _pops.removeWhere((p) => p.life <= 0);
 
       // Update particles
       for (final p in _particles) {
@@ -429,620 +310,605 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         p.life -= dt;
       }
       _particles.removeWhere((p) => p.life <= 0);
+
+      // New high score animation timer
+      if (_newHighScoreTimer > 0) _newHighScoreTimer -= dt;
+
     });
   }
 
-  void _performLiquidation() {
-    double proceeds = 0;
-    double totalCost = 0;
-    for (final pos in _leveragedPositions) {
-      proceeds += pos.quantity * _price;
-      totalCost += pos.quantity * pos.entryPrice;
-    }
-    final loss = totalCost - proceeds;
-    _cash = (_cash - loss).clamp(0.0, 999999.0);
-    _leveragedPositions.clear();
-    _liquidationFlashTimer = 2.0;
-    _liquidationTextScale = 0;
-    _marginCallWarning = false;
-    _rugPullActive = true;
-    _rugPullTimer = 0.5;
-    for (int i = 0; i < 30; i++) {
-      _spawnParticles(_rng.nextDouble() * 300, _rng.nextDouble() * 400, Colors.red, 3);
-    }
-    if (_cash <= 0 && _inventory == 0) {
-      _gameOver = true;
-      _checkAndSaveHighScore();
-    }
+  // ---------------------------------------------------------------------------
+  // Execute one algo trade
+  // ---------------------------------------------------------------------------
+  void _executeTrade() {
+    final roiRange = _kRoiRangeByScale[_scaleLevel - 1];
+    final vMult = _volatilityMult;
+    final mid = (roiRange[0] + roiRange[1]) / 2.0;
+    final halfSpread = ((roiRange[1] - roiRange[0]) / 2.0) * vMult;
+    final roi = mid + (_rng.nextDouble() * 2 - 1) * halfSpread;
+    _cash = (_cash + roi).clamp(0.0, 999999.0);
+    _isNetPositiveThisTick = roi >= 0;
+    _recentTrades.insert(0, _TradeRecord(roi, _elapsed));
+    if (_recentTrades.length > 20) _recentTrades.removeLast();
+    final px = 60.0 + _rng.nextDouble() * 200;
+    final py = 280.0 + _rng.nextDouble() * 80;
+    _pops.add(_ProfitPop(
+      x: px, y: py,
+      label: '${roi >= 0 ? "+" : ""}\$${roi.toStringAsFixed(1)}',
+      color: roi >= 0 ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
+    ));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Player interactions
+  // ---------------------------------------------------------------------------
+  void _onTap(double x, double y) {
+    if (_gameOver) return;
+    setState(() {
+      _energy = (_energy + _kTapEnergy).clamp(0.0, 1.0);
+      _spawnParticles(x, y, const Color(0xFF80CBC4), 4);
+    });
+  }
+
+  void _scaleUp() {
+    if (_scaleLevel < _kMaxScale) setState(() => _scaleLevel++);
+  }
+
+  void _scaleDown() {
+    if (_scaleLevel > _kMinScale) setState(() => _scaleLevel--);
+  }
+
+  void _buyAutoscaler() {
+    if (!_autoscalerAvailable || _cash < _kAutoscalerPrice) return;
+    setState(() {
+      _cash -= _kAutoscalerPrice;
+      _autoscalerOwned = true;
+      _spawnParticles(160, 200, Colors.cyanAccent, 20);
+    });
   }
 
   void _spawnParticles(double x, double y, Color color, int count) {
     for (int i = 0; i < count; i++) {
       _particles.add(_JuiceParticle(
         x: x, y: y,
-        vx: (_rng.nextDouble() - 0.5) * 100,
-        vy: (_rng.nextDouble() - 0.5) * 100 - 40,
-        life: 0.8, color: color,
+        vx: (_rng.nextDouble() - 0.5) * 120,
+        vy: (_rng.nextDouble() - 0.5) * 120 - 30,
+        life: 0.7, color: color,
       ));
     }
   }
 
-  double get _netWorth => _cash + _inventory * _price + _leveragedPnl;
-  double get _pnl => _netWorth - _startNetWorth;
-
-  double? get _lowestLiquidationPrice {
-    if (_leveragedPositions.isEmpty) return null;
-    double lowest = double.infinity;
-    for (final pos in _leveragedPositions) {
-      if (pos.liquidationPrice < lowest) lowest = pos.liquidationPrice;
-    }
-    return lowest;
-  }
-
   void _restart() {
     setState(() {
-      _price = 50;
-      _momentum = 0;
-      _cash = 500;
-      _inventory = 0;
-      _startNetWorth = 500;
-      _priceHistory.clear();
-      _priceHistory.addAll(List.generate(60, (_) => 50.0));
-      _timeLeft = 60;
+      _cash = _kStartingCash;
+      _timeLeft = _kGameDuration;
       _gameOver = false;
-      _limitBuyPrice = null;
-      _limitSellPrice = null;
-      _headline = '';
-      _headlineTimer = 0;
-      _eventImpact = 0;
+      _elapsed = 0.0;
+      _energy = 0.0;
+      _scaleLevel = _kMinScale;
+      _tradeClock = 0.0;
+      _autoscalerOwned = false;
+      _autoscalerClock = 0.0;
+      _equity.clear();
+      _equity.add(_EquityPoint(0, _kStartingCash));
+      _peakNetWorth = _kStartingCash;
+      _recentTrades.clear();
+      _pops.clear();
       _particles.clear();
-      _leverageMode = false;
-      _leveragedPositions.clear();
-      _liquidationFlashTimer = 0;
-      _liquidationTextScale = 0;
-      _marginCallWarning = false;
-      _rugPullActive = false;
-      _rugPullTimer = 0;
-      _hodlTimer = 0;
-      _hodlStartPrice = 0;
-      _isHodling = false;
-      _diamondHandsTimer = 0;
+      _isNetPositiveThisTick = false;
       _newHighScore = false;
-      _newHighScoreTimer = 0;
-      _eventLog.clear();
-      _nextEventTimer = 5.0;
-      _elapsedTime = 0;
-      _newsFlashTimer = 0;
-      _nextNewsTimer = 2.0;
-      _manipCooldown = 0;
+      _newHighScoreTimer = 0.0;
     });
   }
 
-  void _triggerManipulation(String name, double cost, double impact, String headline) {
-    if (_gameOver || _cash < cost || _manipCooldown > 0) return;
-    setState(() {
-      _cash -= cost;
-      _headline = headline;
-      _headlineTimer = 5;
-      _newsFlashTimer = 1.0;
-      _eventImpact += impact;
-      _manipCooldown = _manipCooldownMax;
-      _nextNewsTimer += 3; // delay next random news
-      _spawnParticles(200, 300, impact > 0 ? Colors.greenAccent : Colors.deepOrange, 15);
-    });
-  }
-
-  static const List<Map<String, dynamic>> _manipActions = [
-    {
-      'name': 'Corner Market',
-      'cost': 200.0,
-      'impact': 12.0,
-      'icon': Icons.shopping_cart,
-      'headline': 'YOU: Bought up all available supply!',
-      'color': Color(0xFF4CAF50),
-    },
-    {
-      'name': 'Fund Startup',
-      'cost': 300.0,
-      'impact': 15.0,
-      'icon': Icons.rocket_launch,
-      'headline': 'YOU: Funded potato tech startup — hype surges!',
-      'color': Color(0xFF2196F3),
-    },
-    {
-      'name': 'Lobby Tariffs',
-      'cost': 400.0,
-      'impact': 18.0,
-      'icon': Icons.account_balance,
-      'headline': 'YOU: Lobbied for import tariffs — prices soar!',
-      'color': Color(0xFFFF9800),
-    },
-    {
-      'name': 'Spread FUD',
-      'cost': 150.0,
-      'impact': -12.0,
-      'icon': Icons.campaign,
-      'headline': 'YOU: Planted bearish rumors in the press!',
-      'color': Color(0xFFE91E63),
-    },
-    {
-      'name': 'Dump Supply',
-      'cost': 250.0,
-      'impact': -15.0,
-      'icon': Icons.local_shipping,
-      'headline': 'YOU: Flooded the market with cheap imports!',
-      'color': Color(0xFF9C27B0),
-    },
-    {
-      'name': 'Switch Supplier',
-      'cost': 180.0,
-      'impact': -10.0,
-      'icon': Icons.swap_horiz,
-      'headline': 'YOU: Switched suppliers — old partner dumping stock!',
-      'color': Color(0xFF795548),
-    },
-  ];
-
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final chartHeight = constraints.maxHeight * 0.30;
-      return Container(
-        color: Colors.black,
-        child: Stack(
-          children: [
-            if (_liquidationFlashTimer > 0)
-              Positioned.fill(
-                child: Container(
-                  color: Colors.red.withValues(alpha: (_liquidationFlashTimer / 2.0).clamp(0.0, 0.6)),
-                ),
-              ),
-            // News flash overlay
-            if (_newsFlashTimer > 0)
+    final pnl = _cash - _kStartingCash;
+    return LayoutBuilder(builder: (ctx, constraints) {
+      final h = constraints.maxHeight;
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (d) => _onTap(d.localPosition.dx, d.localPosition.dy),
+        child: Container(
+          color: Colors.black,
+          child: Stack(children: [
+            if (_isOverscaled && _algoRunning)
               Positioned.fill(
                 child: IgnorePointer(
                   child: Container(
-                    color: (_eventImpact > 0 ? Colors.green : Colors.red)
-                        .withValues(alpha: (_newsFlashTimer * 0.15).clamp(0.0, 0.15)),
+                    color: Colors.deepOrange.withValues(alpha: 0.08),
                   ),
                 ),
               ),
-            Column(
-              children: [
-                // Timer + P&L
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  child: Row(
-                    children: [
-                      Text(
-                        '${_timeLeft.toInt()}s',
-                        style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 16,
-                          color: _timeLeft < 10 ? Colors.redAccent : Colors.white70,
-                          fontWeight: FontWeight.bold,
+            Column(children: [
+              // Top bar: timer / best / P&L
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Row(children: [
+                  Text(
+                    '${_timeLeft.toInt()}s',
+                    style: TextStyle(
+                      fontFamily: 'Avenir', fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: _timeLeft < 10 ? Colors.redAccent : Colors.white70,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (_bestScore > 0)
+                    Text(
+                      'Best: \$${_bestScore.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                          fontFamily: 'Avenir', fontSize: 10, color: Colors.white30),
+                    ),
+                  const Spacer(),
+                  Text(
+                    'P&L: ${pnl >= 0 ? "+" : ""}\$${pnl.toStringAsFixed(0)}',
+                    style: TextStyle(
+                      fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold,
+                      color: pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
+                    ),
+                  ),
+                ]),
+              ),
+
+              // Equity curve
+              SizedBox(
+                height: h * 0.22,
+                width: double.infinity,
+                child: CustomPaint(
+                  painter: _EquityCurvePainter(_equity, _kStartingCash),
+                ),
+              ),
+
+              const SizedBox(height: 4),
+
+              // Cash + algo status row
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '\$${_cash.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        fontFamily: 'Avenir', fontSize: 26,
+                        fontWeight: FontWeight.bold, color: Color(0xFFE19816),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _algoRunning
+                            ? (_isNetPositiveThisTick
+                                ? const Color(0xFF1B5E20)
+                                : const Color(0xFF7F0000))
+                            : Colors.grey.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: _algoRunning
+                              ? (_isNetPositiveThisTick
+                                  ? Colors.greenAccent
+                                  : Colors.redAccent)
+                              : Colors.grey.withValues(alpha: 0.3),
                         ),
                       ),
-                      const SizedBox(width: 6),
-                      if (_bestScore > 0)
-                        Text(
-                          'Best: \$${_bestScore.toStringAsFixed(0)}',
-                          style: const TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Colors.white30),
+                      child: Text(
+                        _algoRunning ? 'ALGO LIVE' : 'IDLE',
+                        style: TextStyle(
+                          fontFamily: 'Avenir', fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: _algoRunning
+                              ? (_isNetPositiveThisTick
+                                  ? Colors.greenAccent
+                                  : Colors.redAccent)
+                              : Colors.white38,
                         ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 6),
+
+              // Energy bar + tap hint
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Text(
+                        'ENERGY',
+                        style: TextStyle(
+                          fontFamily: 'Avenir', fontSize: 9,
+                          color: Colors.white38, letterSpacing: 1.2,
+                        ),
+                      ),
                       const Spacer(),
                       Text(
-                        'P&L: ${_pnl >= 0 ? "+" : ""}\$${_pnl.toStringAsFixed(0)}',
+                        _algoRunning ? 'TAP TO KEEP RUNNING' : 'TAP TO START ALGO',
                         style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold,
-                          color: _pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
+                          fontFamily: 'Avenir', fontSize: 9,
+                          color: _algoRunning
+                              ? Colors.white38
+                              : Colors.cyanAccent.withValues(alpha: 0.8),
+                          letterSpacing: 1.0,
                         ),
                       ),
-                    ],
-                  ),
+                    ]),
+                    const SizedBox(height: 4),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: _energy,
+                        minHeight: 8,
+                        backgroundColor: Colors.white12,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          _energy > 0.6
+                              ? Colors.cyanAccent
+                              : (_energy > 0.25
+                                  ? Colors.amberAccent
+                                  : Colors.redAccent),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
+              ),
 
-                // Breaking news banner
-                if (_headlineTimer > 0)
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    color: _newsFlashTimer > 0
-                        ? (_eventImpact > 0 ? const Color(0xFF1B5E20) : const Color(0xFF7F0000))
-                        : (_eventImpact > 0 ? const Color(0xFF0D2E10) : const Color(0xFF3E0000)),
-                    child: Row(
+              const SizedBox(height: 8),
+
+              // Scale controls + cost/earnings tension
+              if (!_gameOver)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Column(children: [
+                    if (_isOverscaled)
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.deepOrange.withValues(alpha: 0.25),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color: Colors.deepOrange.withValues(alpha: 0.6)),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.warning_amber_rounded,
+                                color: Colors.deepOrangeAccent, size: 14),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'COMPUTE EXCEEDS EARNINGS — SCALE DOWN',
+                              style: TextStyle(
+                                fontFamily: 'Avenir', fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.deepOrangeAccent,
+                                letterSpacing: 0.8,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    Row(
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: _eventImpact > 0 ? Colors.green : Colors.red,
-                            borderRadius: BorderRadius.circular(3),
-                          ),
-                          child: Text(
-                            _eventImpact > 0 ? 'BULL' : 'BEAR',
-                            style: const TextStyle(fontFamily: 'Avenir', fontSize: 9, fontWeight: FontWeight.w900, color: Colors.white),
-                          ),
+                        _scaleBtn(
+                          Icons.remove, Colors.redAccent,
+                          _scaleLevel > _kMinScale && !_autoscalerOwned
+                              ? _scaleDown : null,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: Text(
-                            _headline,
-                            style: TextStyle(
-                              fontFamily: 'Avenir', fontSize: 13, fontWeight: FontWeight.bold,
-                              color: _eventImpact > 0 ? Colors.greenAccent : Colors.redAccent,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+                            child: Column(children: [
+                              Text(
+                                'SCALE  ${_scaleLevel}x',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontFamily: 'Avenir', fontSize: 13,
+                                  fontWeight: FontWeight.bold, color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Cost: \$${_currentComputeCost.toStringAsFixed(1)}/s   '
+                                'EV: ${_expectedEarningsPerSec >= 0 ? "+" : ""}\$${_expectedEarningsPerSec.toStringAsFixed(1)}/s',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontFamily: 'Avenir', fontSize: 9,
+                                  color: _isOverscaled
+                                      ? Colors.deepOrangeAccent
+                                      : Colors.white38,
+                                ),
+                              ),
+                            ]),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _scaleBtn(
+                          Icons.add, Colors.greenAccent,
+                          _scaleLevel < _kMaxScale && !_autoscalerOwned
+                              ? _scaleUp : null,
+                        ),
+                      ],
+                    ),
+                  ]),
+                ),
+
+              const SizedBox(height: 6),
+
+              // Autoscaler purchase strip
+              if (!_gameOver && !_autoscalerOwned)
+                AnimatedOpacity(
+                  opacity: _autoscalerAvailable ? 1.0 : 0.35,
+                  duration: const Duration(milliseconds: 300),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    child: GestureDetector(
+                      onTap: _autoscalerAvailable && _cash >= _kAutoscalerPrice
+                          ? _buyAutoscaler
+                          : null,
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 10, horizontal: 14),
+                        decoration: BoxDecoration(
+                          color: _autoscalerAvailable && _cash >= _kAutoscalerPrice
+                              ? const Color(0xFF0D2E3A)
+                              : Colors.white.withValues(alpha: 0.04),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: _autoscalerAvailable
+                                ? Colors.cyanAccent.withValues(alpha: 0.6)
+                                : Colors.white12,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  Icon(Icons.auto_mode,
+                                      size: 14,
+                                      color: _autoscalerAvailable
+                                          ? Colors.cyanAccent
+                                          : Colors.white24),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'AUTOSCALER',
+                                    style: TextStyle(
+                                      fontFamily: 'Avenir', fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: _autoscalerAvailable
+                                          ? Colors.cyanAccent
+                                          : Colors.white24,
+                                    ),
+                                  ),
+                                ]),
+                                Text(
+                                  _autoscalerAvailable
+                                      ? 'Auto-manages scale to keep net positive'
+                                      : 'Unlocks at ${_kAutoscalerUnlockTime.toInt()}s',
+                                  style: TextStyle(
+                                    fontFamily: 'Avenir', fontSize: 9,
+                                    color: _autoscalerAvailable
+                                        ? Colors.white38
+                                        : Colors.white.withValues(alpha: 0.18),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Text(
+                              '\$${_kAutoscalerPrice.toInt()}',
+                              style: TextStyle(
+                                fontFamily: 'Avenir', fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: _autoscalerAvailable && _cash >= _kAutoscalerPrice
+                                    ? Colors.cyanAccent
+                                    : Colors.white24,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+              if (_autoscalerOwned)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.cyan.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                          color: Colors.cyanAccent.withValues(alpha: 0.3)),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.auto_mode,
+                            size: 13, color: Colors.cyanAccent),
+                        const SizedBox(width: 6),
+                        Text(
+                          'AUTOSCALER ACTIVE  —  scale ${_scaleLevel}x',
+                          style: const TextStyle(
+                            fontFamily: 'Avenir', fontSize: 10,
+                            fontWeight: FontWeight.bold, color: Colors.cyanAccent,
                           ),
                         ),
                       ],
                     ),
                   ),
-
-                // Leveraged P&L display
-                if (_leveragedPositions.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
-                      ),
-                      child: Text(
-                        '5x Pos: $_leveragedInventory  '
-                        'P&L: ${_leveragedPnl >= 0 ? "+" : ""}\$${_leveragedPnl.toStringAsFixed(0)}  '
-                        'Liq: \$${_lowestLiquidationPrice?.toStringAsFixed(1) ?? "-"}',
-                        style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 10,
-                          color: _leveragedPnl >= 0 ? Colors.orangeAccent : Colors.redAccent,
-                        ),
-                      ),
-                    ),
-                  ),
-
-                // Margin call warning banner
-                if (_marginCallWarning && !_gameOver)
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    color: Colors.red.withValues(alpha: 0.3),
-                    child: const Text(
-                      'MARGIN CALL WARNING',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontFamily: 'Avenir', fontSize: 13, fontWeight: FontWeight.bold, color: Colors.redAccent),
-                    ),
-                  ),
-
-                // Price chart
-                GestureDetector(
-                  onTapDown: (details) {
-                    if (_gameOver) return;
-                    final fraction = 1 - (details.localPosition.dy / chartHeight);
-                    final allPrices = List<double>.from(_priceHistory);
-                    final liqPrice = _lowestLiquidationPrice;
-                    if (liqPrice != null) allPrices.add(liqPrice);
-                    final minP = allPrices.reduce(min) - 5;
-                    final maxP = allPrices.reduce(max) + 5;
-                    final tappedPrice = minP + fraction * (maxP - minP);
-                    setState(() {
-                      if (tappedPrice < _price) {
-                        _limitBuyPrice = tappedPrice;
-                      } else {
-                        _limitSellPrice = tappedPrice;
-                      }
-                    });
-                  },
-                  child: SizedBox(
-                    height: chartHeight,
-                    width: double.infinity,
-                    child: CustomPaint(
-                      painter: _TradingChartPainter(
-                        _priceHistory, _limitBuyPrice, _limitSellPrice, _price,
-                        liquidationPrices: _leveragedPositions.map((p) => p.liquidationPrice).toList(),
-                      ),
-                    ),
-                  ),
                 ),
 
-                const SizedBox(height: 4),
+              const Spacer(),
 
-                // Current price
-                Text(
-                  '\$${_price.toStringAsFixed(1)} / potato',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold),
+              Text(
+                'Net Worth: \$${_cash.toStringAsFixed(0)}',
+                style: const TextStyle(
+                  fontFamily: 'Avenir', fontSize: 18,
+                  fontWeight: FontWeight.bold, color: Color(0xFFE19816),
                 ),
-                const SizedBox(height: 2),
+              ),
 
-                // Inventory + cash
-                Text(
-                  'Cash: \$${_cash.toStringAsFixed(0)}   Potatoes: $_inventory'
-                  '${_leveragedInventory > 0 ? "   5x: $_leveragedInventory" : ""}',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white54),
-                ),
-
-                // HODL counter
-                if (_isHodling && _hodlTimer > 1)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      'HODL: ${_hodlTimer.toInt()}s',
-                      style: TextStyle(fontFamily: 'Avenir', fontSize: 10,
-                        color: _hodlTimer >= 10 ? Colors.amberAccent : Colors.white30),
-                    ),
-                  ),
-
-                if (_limitBuyPrice != null || _limitSellPrice != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      '${_limitBuyPrice != null ? "Limit BUY @ \$${_limitBuyPrice!.toStringAsFixed(1)}" : ""}'
-                      '${_limitBuyPrice != null && _limitSellPrice != null ? "  |  " : ""}'
-                      '${_limitSellPrice != null ? "Limit SELL @ \$${_limitSellPrice!.toStringAsFixed(1)}" : ""}',
-                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Colors.amberAccent),
-                    ),
-                  ),
+              if (_gameOver) ...[
                 const SizedBox(height: 8),
-
-                // Buy / Leverage toggle / Sell buttons
-                if (!_gameOver)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _tradeButton(
-                        _leverageMode ? 'BUY 5x' : 'BUY',
-                        _leverageMode ? Colors.orange : Colors.green,
-                        _leverageMode
-                            ? (_cash >= _price * 0.2 ? () {
-                                setState(() {
-                                  _cash -= _price * 0.2;
-                                  _leveragedPositions.add(_LeveragedPosition(entryPrice: _price, quantity: 1));
-                                  _spawnParticles(constraints.maxWidth * 0.2, constraints.maxHeight * 0.7, Colors.orange, 8);
-                                });
-                              } : null)
-                            : (_cash >= _price ? () {
-                                setState(() {
-                                  _cash -= _price;
-                                  _inventory++;
-                                  _spawnParticles(constraints.maxWidth * 0.2, constraints.maxHeight * 0.7, Colors.green, 8);
-                                });
-                              } : null),
-                      ),
-                      const SizedBox(width: 10),
-                      GestureDetector(
-                        onTap: () => setState(() => _leverageMode = !_leverageMode),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                          decoration: BoxDecoration(
-                            color: _leverageMode ? Colors.orange.withValues(alpha: 0.4) : Colors.grey.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: _leverageMode ? Colors.orangeAccent : Colors.grey.withValues(alpha: 0.3),
-                              width: _leverageMode ? 2 : 1,
-                            ),
-                          ),
-                          child: Text(
-                            '5x',
-                            style: TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold,
-                              color: _leverageMode ? Colors.orangeAccent : Colors.grey),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      _tradeButton(
-                        'SELL', Colors.red,
-                        (_inventory > 0 || _leveragedPositions.isNotEmpty) ? () {
-                          setState(() {
-                            if (_leveragedPositions.isNotEmpty) {
-                              final pos = _leveragedPositions.removeLast();
-                              _cash += _price * pos.quantity;
-                            } else {
-                              _cash += _price;
-                              _inventory--;
-                            }
-                            _spawnParticles(constraints.maxWidth * 0.8, constraints.maxHeight * 0.7, Colors.red, 8);
-                          });
-                        } : null,
-                      ),
-                    ],
+                Text(
+                  pnl >= 0 ? 'Strong close!' : 'Compute ate you alive.',
+                  style: TextStyle(
+                    fontFamily: 'Avenir', fontSize: 16,
+                    color: pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
                   ),
-
+                ),
+                if (_highScores.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  const Text('TOP SCORES',
+                      style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.amberAccent)),
+                  const SizedBox(height: 2),
+                  ..._highScores.asMap().entries.map((e) {
+                    final i = e.key;
+                    final s = e.value;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 1),
+                      child: Text(
+                        '${i + 1}. \$${(s['score'] as num).toStringAsFixed(0)}  (${s['date']})',
+                        style: const TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 11,
+                            color: Colors.white54),
+                      ),
+                    );
+                  }),
+                ],
                 const SizedBox(height: 6),
+                GestureDetector(
+                  onTap: _restart,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 24, vertical: 10),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Text('Play Again',
+                        style: TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 14,
+                            color: Colors.white70)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ]),
 
-                // Market manipulation actions
-                if (!_gameOver && _netWorth >= 150)
-                  Column(
-                    children: [
-                      Row(
-                        children: [
-                          const SizedBox(width: 12),
-                          Text(
-                            _manipCooldown > 0
-                                ? 'MOVE THE MARKET (${_manipCooldown.toInt()}s)'
-                                : 'MOVE THE MARKET',
-                            style: TextStyle(
-                              fontFamily: 'Avenir', fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                              color: _manipCooldown > 0 ? Colors.white24 : Colors.amberAccent,
-                              letterSpacing: 1.2,
-                            ),
+            // Particles
+            ..._particles.map((p) => Positioned(
+                  left: p.x - 3,
+                  top: p.y - 3,
+                  child: Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: p.color.withValues(
+                          alpha: (p.life / p.maxLife).clamp(0.0, 1.0) * 0.8),
+                    ),
+                  ),
+                )),
+
+            // Profit pops
+            ..._pops.map((pop) => Positioned(
+                  left: pop.x,
+                  top: pop.y,
+                  child: Opacity(
+                    opacity: (pop.life / pop.maxLife).clamp(0.0, 1.0),
+                    child: Text(
+                      pop.label,
+                      style: TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: pop.color,
+                        shadows: [
+                          Shadow(
+                            color: pop.color.withValues(alpha: 0.7),
+                            blurRadius: 6,
                           ),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      SizedBox(
-                        height: 52,
-                        child: ListView(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          children: _manipActions.map((action) {
-                            final cost = action['cost'] as double;
-                            final impact = action['impact'] as double;
-                            final canAfford = _cash >= cost && _manipCooldown <= 0;
-                            final actionColor = action['color'] as Color;
-                            return Padding(
-                              padding: const EdgeInsets.only(right: 6),
-                              child: GestureDetector(
-                                onTap: canAfford
-                                    ? () => _triggerManipulation(
-                                          action['name'] as String,
-                                          cost,
-                                          impact,
-                                          action['headline'] as String,
-                                        )
-                                    : null,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: canAfford
-                                        ? actionColor.withValues(alpha: 0.25)
-                                        : Colors.grey.withValues(alpha: 0.08),
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(
-                                      color: canAfford
-                                          ? actionColor.withValues(alpha: 0.6)
-                                          : Colors.grey.withValues(alpha: 0.15),
-                                    ),
-                                  ),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(action['icon'] as IconData, size: 12,
-                                            color: canAfford ? actionColor : Colors.grey),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            action['name'] as String,
-                                            style: TextStyle(
-                                              fontFamily: 'Avenir', fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                              color: canAfford ? actionColor : Colors.grey,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        '\$${cost.toInt()}  ${impact > 0 ? "+$impact" : "$impact"}',
-                                        style: TextStyle(
-                                          fontFamily: 'Avenir', fontSize: 8,
-                                          color: canAfford ? Colors.white38 : Colors.white12,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          }).toList(),
+                    ),
+                  ),
+                )),
+
+            // Trade ticker strip (bottom-right)
+            if (!_gameOver && _recentTrades.isNotEmpty)
+              Positioned(
+                right: 8,
+                bottom: 60,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: _recentTrades.take(6).map((t) {
+                    final age = _elapsed - t.timestamp;
+                    final fade = (1.0 - age / 2.0).clamp(0.0, 1.0);
+                    return Opacity(
+                      opacity: fade,
+                      child: Text(
+                        '${t.roi >= 0 ? "+" : ""}\$${t.roi.toStringAsFixed(1)}',
+                        style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: t.roi >= 0
+                              ? const Color(0xFF66BB6A)
+                              : const Color(0xFFEF5350),
                         ),
                       ),
-                    ],
-                  ),
-
-                const SizedBox(height: 4),
-
-                // Net worth
-                Text(
-                  'Net Worth: \$${_netWorth.toStringAsFixed(0)}',
-                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFE19816)),
-                ),
-
-                if (_gameOver) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    _pnl >= 0 ? 'Nice trades!' : 'Better luck next time!',
-                    style: TextStyle(fontFamily: 'Avenir', fontSize: 16, color: _pnl >= 0 ? Colors.greenAccent : Colors.redAccent),
-                  ),
-                  if (_highScores.isNotEmpty) ...[
-                    const SizedBox(height: 6),
-                    const Text('TOP SCORES', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-                    const SizedBox(height: 2),
-                    ..._highScores.asMap().entries.map((e) {
-                      final i = e.key;
-                      final s = e.value;
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1),
-                        child: Text(
-                          '${i + 1}. \$${(s['score'] as num).toStringAsFixed(0)}  (${s['date']})',
-                          style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white54),
-                        ),
-                      );
-                    }),
-                  ],
-                  const SizedBox(height: 6),
-                  GestureDetector(
-                    onTap: _restart,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-                      decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
-                      child: const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-
-            // Particles overlay
-            ..._particles.where((p) => p.life > 0).map((p) => Positioned(
-              left: p.x - 3, top: p.y - 3,
-              child: Container(
-                width: 6, height: 6,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0) * 0.8),
-                ),
-              ),
-            )),
-
-            // LIQUIDATED text overlay
-            if (_liquidationFlashTimer > 0)
-              Center(
-                child: Transform.scale(
-                  scale: 0.5 + _liquidationTextScale * 1.5,
-                  child: Text(
-                    'LIQUIDATED',
-                    style: TextStyle(
-                      fontFamily: 'Avenir', fontSize: 40, fontWeight: FontWeight.w900,
-                      color: Colors.red.withValues(alpha: (_liquidationFlashTimer / 2.0).clamp(0.0, 1.0)),
-                      shadows: const [
-                        Shadow(color: Colors.redAccent, blurRadius: 20),
-                        Shadow(color: Colors.red, blurRadius: 40),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-
-            // Diamond Hands text
-            if (_diamondHandsTimer > 0)
-              Positioned(
-                top: constraints.maxHeight * 0.4, left: 0, right: 0,
-                child: Center(
-                  child: Text(
-                    'Diamond Hands \u{1F48E}',
-                    style: TextStyle(
-                      fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold,
-                      color: Colors.cyanAccent.withValues(alpha: (_diamondHandsTimer / 2.5).clamp(0.0, 1.0)),
-                    ),
-                  ),
+                    );
+                  }).toList(),
                 ),
               ),
 
             // NEW HIGH SCORE overlay
             if (_newHighScore && _newHighScoreTimer > 0)
               Positioned(
-                top: constraints.maxHeight * 0.25, left: 0, right: 0,
+                top: h * 0.25,
+                left: 0,
+                right: 0,
                 child: Center(
                   child: Transform.scale(
-                    scale: 0.8 + (1.0 - (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)) * 0.4,
+                    scale: 0.8 +
+                        (1.0 - (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)) * 0.4,
                     child: Text(
                       'NEW HIGH SCORE!',
                       style: TextStyle(
-                        fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.w900,
-                        color: Colors.amberAccent.withValues(alpha: (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)),
+                        fontFamily: 'Avenir',
+                        fontSize: 28,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.amberAccent.withValues(
+                            alpha: (_newHighScoreTimer / 3.0).clamp(0.0, 1.0)),
                         shadows: const [
                           Shadow(color: Colors.orange, blurRadius: 20),
                           Shadow(color: Colors.amber, blurRadius: 40),
@@ -1052,168 +918,85 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                   ),
                 ),
               ),
-
-            // Margin call floating warning
-            if (_marginCallWarning && !_gameOver)
-              Positioned(
-                top: constraints.maxHeight * 0.15, left: 0, right: 0,
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.red.withValues(alpha: 0.3),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.redAccent),
-                    ),
-                    child: const Text(
-                      'MARGIN CALL',
-                      style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.redAccent),
-                    ),
-                  ),
-                ),
-              ),
-
-            // Market event log panel
-            if (!_gameOver && _eventLog.isNotEmpty)
-              Positioned(
-                left: 4,
-                bottom: 50,
-                child: Container(
-                  width: 170,
-                  constraints: const BoxConstraints(maxHeight: 180),
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.75),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'MARKET INTEL',
-                        style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 9,
-                          fontWeight: FontWeight.bold, color: Colors.white38,
-                          letterSpacing: 1.2,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Flexible(
-                        child: SingleChildScrollView(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: _eventLog.take(8).map((ev) {
-                              final age = _elapsedTime - ev.timestamp;
-                              final timeLabel = age < 60
-                                  ? '${age.toInt()}s'
-                                  : '${(age / 60).toInt()}m';
-                              final text = ev.isRevealed
-                                  ? ev.actualText
-                                  : ev.leadingText;
-                              final textColor = ev.isRevealed
-                                  ? ev.color
-                                  : Colors.amberAccent.withValues(alpha: 0.7);
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 3),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      timeLabel,
-                                      style: TextStyle(
-                                        fontFamily: 'Avenir', fontSize: 8,
-                                        color: Colors.white.withValues(alpha: 0.3),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Expanded(
-                                      child: Text(
-                                        text,
-                                        style: TextStyle(
-                                          fontFamily: 'Avenir', fontSize: 9,
-                                          color: textColor,
-                                          height: 1.2,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-          ],
+          ]),
         ),
       );
     });
   }
 
-  Widget _tradeButton(String label, Color color, VoidCallback? onTap) {
+  // Scale button helper
+  Widget _scaleBtn(IconData icon, Color color, VoidCallback? onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+        width: 44,
+        height: 44,
         decoration: BoxDecoration(
-          color: onTap != null ? color.withValues(alpha: 0.3) : Colors.grey.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: onTap != null ? color.withValues(alpha: 0.6) : Colors.grey.withValues(alpha: 0.2)),
+          color: onTap != null
+              ? color.withValues(alpha: 0.2)
+              : Colors.grey.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: onTap != null
+                  ? color.withValues(alpha: 0.5)
+                  : Colors.grey.withValues(alpha: 0.15)),
         ),
-        child: Text(
-          label,
-          style: TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: onTap != null ? color : Colors.grey),
-        ),
+        child: Icon(icon,
+            size: 22,
+            color: onTap != null ? color : Colors.grey.withValues(alpha: 0.3)),
       ),
     );
   }
 }
 
-class _TradingChartPainter extends CustomPainter {
-  final List<double> data;
-  final double? limitBuy;
-  final double? limitSell;
-  final double currentPrice;
-  final List<double> liquidationPrices;
-
-  _TradingChartPainter(
-    this.data, this.limitBuy, this.limitSell, this.currentPrice, {
-    this.liquidationPrices = const [],
-  });
+// ---------------------------------------------------------------------------
+// Equity curve painter
+// ---------------------------------------------------------------------------
+class _EquityCurvePainter extends CustomPainter {
+  final List<_EquityPoint> equity;
+  final double baseline;
+  _EquityCurvePainter(this.equity, this.baseline);
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (data.length < 2) return;
+    if (equity.length < 2) return;
 
-    // Compute range including liquidation prices
-    double minV = data.reduce(min);
-    double maxV = data.reduce(max);
-    for (final lp in liquidationPrices) {
-      if (lp < minV) minV = lp;
-      if (lp > maxV) maxV = lp;
-    }
+    double minV = equity.map((e) => e.value).reduce(min);
+    double maxV = equity.map((e) => e.value).reduce(max);
+    if (baseline < minV) minV = baseline;
+    if (baseline > maxV) maxV = baseline;
     minV -= 5;
     maxV += 5;
     final range = maxV - minV;
     if (range <= 0) return;
 
-    // Grid lines
-    final gridPaint = Paint()..color = const Color(0x11FFFFFF)..strokeWidth = 0.5;
+    // Grid
+    final gridPaint = Paint()
+      ..color = const Color(0x11FFFFFF)
+      ..strokeWidth = 0.5;
     for (int i = 1; i < 5; i++) {
       final y = size.height * i / 5;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
     }
 
-    // Price line
+    // Break-even line
+    final bly = size.height - ((baseline - minV) / range) * size.height;
+    final blPaint = Paint()
+      ..color = const Color(0x33FFFFFF)
+      ..strokeWidth = 1;
+    for (double x = 0; x < size.width; x += 8) {
+      canvas.drawLine(Offset(x, bly), Offset(x + 4, bly), blPaint);
+    }
+
+    final tStart = equity.first.t;
+    final tEnd = equity.last.t;
+    final tRange = tEnd - tStart;
+    if (tRange <= 0) return;
+
     final path = Path();
-    for (int i = 0; i < data.length; i++) {
-      final x = i / (data.length - 1) * size.width;
-      final y = size.height - ((data[i] - minV) / range) * size.height;
+    for (int i = 0; i < equity.length; i++) {
+      final x = ((equity[i].t - tStart) / tRange) * size.width;
+      final y = size.height - ((equity[i].value - minV) / range) * size.height;
       if (i == 0) {
         path.moveTo(x, y);
       } else {
@@ -1221,65 +1004,41 @@ class _TradingChartPainter extends CustomPainter {
       }
     }
 
-    // Gradient fill under chart
+    // Fill
     final fillPath = Path.from(path)
       ..lineTo(size.width, size.height)
       ..lineTo(0, size.height)
       ..close();
-    final gradient = ui.Gradient.linear(
-      Offset(0, 0), Offset(0, size.height),
-      [const Color(0x33E19816), const Color(0x00E19816)],
+    final lastVal = equity.last.value;
+    final fillColor =
+        lastVal >= baseline ? const Color(0x2266BB6A) : const Color(0x22EF5350);
+    canvas.drawPath(fillPath, Paint()..color = fillColor);
+
+    // Stroke
+    final lineColor =
+        lastVal >= baseline ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = lineColor
+        ..strokeWidth = 2.0
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round,
     );
-    canvas.drawPath(fillPath, Paint()..shader = gradient);
 
-    canvas.drawPath(path, Paint()
-      ..color = const Color(0xFFE19816)
-      ..strokeWidth = 2.5
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round);
-
-    // Limit order lines
-    if (limitBuy != null) {
-      final y = size.height - ((limitBuy! - minV) / range) * size.height;
-      if (y > 0 && y < size.height) {
-        final dashedPaint = Paint()..color = Colors.greenAccent..strokeWidth = 1;
-        for (double x = 0; x < size.width; x += 8) {
-          canvas.drawLine(Offset(x, y), Offset(x + 4, y), dashedPaint);
-        }
-      }
-    }
-    if (limitSell != null) {
-      final y = size.height - ((limitSell! - minV) / range) * size.height;
-      if (y > 0 && y < size.height) {
-        final dashedPaint = Paint()..color = Colors.redAccent..strokeWidth = 1;
-        for (double x = 0; x < size.width; x += 8) {
-          canvas.drawLine(Offset(x, y), Offset(x + 4, y), dashedPaint);
-        }
-      }
-    }
-
-    // Liquidation price lines (red dashed)
-    for (final liqPrice in liquidationPrices) {
-      final y = size.height - ((liqPrice - minV) / range) * size.height;
-      if (y > 0 && y < size.height) {
-        final dashedPaint = Paint()..color = const Color(0xCCFF0000)..strokeWidth = 1.5;
-        for (double x = 0; x < size.width; x += 10) {
-          canvas.drawLine(Offset(x, y), Offset(x + 5, y), dashedPaint);
-        }
-        final textPainter = TextPainter(
-          text: TextSpan(
-            text: 'LIQ \$${liqPrice.toStringAsFixed(1)}',
-            style: const TextStyle(color: Color(0xCCFF0000), fontSize: 9, fontFamily: 'Avenir'),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        textPainter.paint(canvas, Offset(size.width - textPainter.width - 4, y - 12));
-      }
-    }
+    // Current value dot
+    final lastX = ((equity.last.t - tStart) / tRange) * size.width;
+    final lastY =
+        size.height - ((equity.last.value - minV) / range) * size.height;
+    canvas.drawCircle(
+      Offset(lastX, lastY),
+      4,
+      Paint()..color = lineColor,
+    );
   }
 
   @override
-  bool shouldRepaint(covariant _TradingChartPainter old) => true;
+  bool shouldRepaint(covariant _EquityCurvePainter old) => true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -7653,7 +7412,7 @@ const double _kRivalSpawnRateBase = 5.0;
 // Minimum rival spawn interval (gets here by escalation).
 const double _kRivalSpawnRateMin = 1.6;
 // Total game duration in seconds.
-const double _kGameDuration = 60.0;
+const double _kClusterGameDuration = 60.0;
 // Score is accumulated area: π·r² per player bubble, sampled each second.
 const double _kScoreTickInterval = 1.0;
 // Particle burst count on grow tap (visual feedback).
@@ -7825,7 +7584,7 @@ class _RealityMergeGameState extends State<RealityMergeGame>
       _elapsed += dt;
 
       // ── Timer end ────────────────────────────────────────────────────────
-      if (_elapsed >= _kGameDuration) {
+      if (_elapsed >= _kClusterGameDuration) {
         _gameOver = true;
         return;
       }
@@ -7840,7 +7599,7 @@ class _RealityMergeGameState extends State<RealityMergeGame>
         _rivalSpawnTimer = spawnInterval;
         _spawnRival();
         // Double-spawn after halfway point.
-        if (_elapsed > _kGameDuration * 0.5) _spawnRival();
+        if (_elapsed > _kClusterGameDuration * 0.5) _spawnRival();
       }
 
       // ── Rival growth + max-radius penalty ────────────────────────────────
@@ -8007,7 +7766,7 @@ class _RealityMergeGameState extends State<RealityMergeGame>
   }
 
   String get _timeLeft {
-    final secs = (_kGameDuration - _elapsed).ceil().clamp(0, 60);
+    final secs = (_kClusterGameDuration - _elapsed).ceil().clamp(0, 60);
     return '$secs';
   }
 
