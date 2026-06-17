@@ -20,6 +20,71 @@ const Color _kSugarYellow = Color(0xFFFDD835);
 const Color _kNutrientPurple = Color(0xFFCE93D8);
 const Color _kPestRed = Color(0xFFFF5722);
 
+// ---- INTENSITY / PACE knobs (play-tune here) --------------------------------
+
+/// Hard cap on game length. After this the player has survived perfectly;
+/// no run should casually beat this (was: uncapped).
+const double _kGameDurationCap = 60.0; // seconds
+
+/// How fast difficulty climbs. difficulty = 1 + elapsed / _kDiffRampPeriod.
+/// Lower = faster ramp. Was: 30.0 (very gentle).
+const double _kDiffRampPeriod = 18.0;
+
+/// Seconds a node waits at max urgency before health starts draining.
+/// Lower = less reaction time. The urgency window was: 8.0s.
+const double _kNeedUrgencyWindow = 4.5; // seconds
+
+/// Health drained per second when a node is at max urgency (need unmet).
+/// Formula: base + difficulty * scale. Was: 6 + diff*2.
+const double _kHealthDrainBase = 10.0;
+const double _kHealthDrainScale = 4.0;
+
+/// Damage dealt to a node when a pest reaches it.
+/// Was: 8 + diff*3.
+const double _kPestDamageBase = 14.0;
+const double _kPestDamageScale = 5.0;
+
+/// Pest movement speed at difficulty=1. Scales with difficulty.
+/// Was: 28 + diff*8 + rng*12.
+const double _kPestSpeedBase = 40.0;
+const double _kPestSpeedDiffScale = 14.0;
+const double _kPestSpeedRandom = 14.0;
+
+/// Pest spawn interval in seconds: max(_kPestSpawnMin, base - diff*scale).
+/// Was: max(0.8, 3.5 - diff*0.25).
+const double _kPestSpawnBase = 2.8;
+const double _kPestSpawnDiffScale = 0.40;
+const double _kPestSpawnMin = 0.4; // floor — guaranteed breathing room
+
+/// Grace period before the first pest appears (was: 2.5s).
+const double _kPestGracePeriod = 1.2; // seconds
+
+/// Resource spawn interval: max(min, base - diff*scale).
+/// Was: max(1.2, 3.0 - diff*0.2).
+const double _kResourceSpawnBase = 2.2;
+const double _kResourceSpawnDiffScale = 0.22;
+const double _kResourceSpawnMin = 0.7;
+
+/// Max simultaneous resources on screen (was: 6).
+/// Kept at 6 — more wouldn't help; the chaos comes from faster need cycling.
+const int _kResourceCap = 6;
+
+/// How long a resource stays on screen before vanishing (was: 12s).
+const double _kResourceLifetime = 7.0; // seconds
+
+/// Need cycle interval: max(min, base - diff*scale).
+/// Was: max(3.0, 6.0 - diff*0.5).
+const double _kNeedCycleBase = 3.5;
+const double _kNeedCycleDiffScale = 0.45;
+const double _kNeedCycleMin = 1.2; // at peak all nodes cycle very fast
+
+/// Probability that a node gets assigned a new need each cycle (was: 0.6).
+/// Higher = more nodes are always needy simultaneously.
+const double _kNeedAssignProb = 0.82;
+
+/// Combo decay: seconds without a pest kill before combo resets (was: 3.0s).
+const double _kComboDecay = 1.8; // seconds
+
 // ---- enums -----------------------------------------------------------------
 
 enum _OrganType { root, shoot, vascular, reproductive }
@@ -319,7 +384,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
     _pops.clear();
     _dragResourceIndex = null;
     _resourceSpawnTimer = 0;
-    _pestSpawnTimer = 2.5; // grace period before first pest
+    _pestSpawnTimer = _kPestGracePeriod; // grace period before first pest
     _needCycleTimer = 0;
 
     _buildNodes();
@@ -390,7 +455,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
           if (node.type == _OrganType.shoot && t == _ResourceType.sugar) continue;
           available.add(t);
         }
-        if (_rng.nextDouble() < 0.6) {
+        if (_rng.nextDouble() < _kNeedAssignProb) {
           node.needs = available[_rng.nextInt(available.length)];
           node.needTimer = 0;
           node.needUrgency = 0;
@@ -402,7 +467,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
   // ---- resource spawning ---------------------------------------------------
 
   void _spawnResource() {
-    if (_resources.length >= 6) return; // cap on-screen resources
+    if (_resources.length >= _kResourceCap) return; // cap on-screen resources
 
     // Water spawns near roots, sugar near shoots, nutrients at random
     final roll = _rng.nextDouble();
@@ -471,7 +536,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
     final dx = targetNode.x - sx;
     final dy = targetNode.y - sy;
     final dist = sqrt(dx * dx + dy * dy);
-    final speed = 28 + _difficulty * 8 + _rng.nextDouble() * 12;
+    final speed = _kPestSpeedBase + _difficulty * _kPestSpeedDiffScale + _rng.nextDouble() * _kPestSpeedRandom;
 
     _pests.add(_Pest(
       kind: kind,
@@ -498,12 +563,15 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       _tutorialAge += dt;
       if (_tutorialAge > 6) _tutorialDismissed = true;
 
-      // Ramp difficulty over time
-      _difficulty = 1.0 + _elapsed / 30.0; // +1 every 30 seconds
+      // Ramp difficulty over time (steeper, capped run at _kGameDurationCap)
+      _difficulty = 1.0 + _elapsed / _kDiffRampPeriod;
+      if (_elapsed >= _kGameDurationCap && !_gameOver) {
+        _gameOver = true; // survived the full gauntlet — report final score
+      }
 
       // ---- combo decay ----
       _comboTimer += dt;
-      if (_comboTimer > 3.0 && _combo > 0) {
+      if (_comboTimer > _kComboDecay && _combo > 0) {
         _combo = 0;
       }
 
@@ -514,11 +582,11 @@ class _OrganSystemGameState extends State<OrganSystemGame>
         if (node.healFlash > 0) node.healFlash -= dt * 3;
         if (node.needs != null) {
           node.needTimer += dt;
-          // Urgency rises over 8 seconds
-          node.needUrgency = (node.needTimer / 8.0).clamp(0.0, 1.0);
+          // Urgency rises over _kNeedUrgencyWindow seconds
+          node.needUrgency = (node.needTimer / _kNeedUrgencyWindow).clamp(0.0, 1.0);
           // If urgency hits max, drain health
           if (node.needUrgency >= 1.0) {
-            node.health -= dt * (6 + _difficulty * 2);
+            node.health -= dt * (_kHealthDrainBase + _difficulty * _kHealthDrainScale);
             node.damageFlash = 0.3;
             if (node.health <= 0) {
               node.health = 0;
@@ -530,7 +598,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
 
       // ---- need cycle: assign new needs periodically ----
       _needCycleTimer += dt;
-      final needInterval = max(3.0, 6.0 - _difficulty * 0.5);
+      final needInterval = max(_kNeedCycleMin, _kNeedCycleBase - _difficulty * _kNeedCycleDiffScale);
       if (_needCycleTimer >= needInterval) {
         _needCycleTimer = 0;
         _assignNewNeeds();
@@ -540,7 +608,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       _resourceSpawnTimer -= dt;
       if (_resourceSpawnTimer <= 0) {
         _spawnResource();
-        _resourceSpawnTimer = max(1.2, 3.0 - _difficulty * 0.2);
+        _resourceSpawnTimer = max(_kResourceSpawnMin, _kResourceSpawnBase - _difficulty * _kResourceSpawnDiffScale);
       }
 
       // ---- age resources & remove old ones ----
@@ -548,13 +616,13 @@ class _OrganSystemGameState extends State<OrganSystemGame>
         r.age += dt;
         r.bobPhase += dt * 3;
       }
-      _resources.removeWhere((r) => r.age > 12 && !r.grabbed);
+      _resources.removeWhere((r) => r.age > _kResourceLifetime && !r.grabbed);
 
       // ---- spawn pests ----
       _pestSpawnTimer -= dt;
       if (_pestSpawnTimer <= 0) {
         _spawnPest();
-        _pestSpawnTimer = max(0.8, 3.5 - _difficulty * 0.25);
+        _pestSpawnTimer = max(_kPestSpawnMin, _kPestSpawnBase - _difficulty * _kPestSpawnDiffScale);
       }
 
       // ---- update pests ----
@@ -572,7 +640,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
 
         if (dist < 24) {
           // Reached target — deal damage
-          targetNode.health -= (8 + _difficulty * 3);
+          targetNode.health -= (_kPestDamageBase + _difficulty * _kPestDamageScale);
           targetNode.damageFlash = 0.5;
           _burst(pest.x, pest.y, _kPestRed.withValues(alpha: 0.6), 6);
           pest.dead = true;
@@ -1509,7 +1577,7 @@ class _GamePainter extends CustomPainter {
       Paint()..color = Colors.black.withValues(alpha: 0.82),
     );
 
-    // Find dead organ
+    // Find dead organ (null means survived the full timer)
     String deadOrgan = '';
     for (final n in nodes) {
       if (n.health <= 0) {
@@ -1517,12 +1585,17 @@ class _GamePainter extends CustomPainter {
         break;
       }
     }
+    final survived = deadOrgan.isEmpty && elapsed >= _kGameDurationCap;
 
-    _paintText(canvas, 'PLANT LOST', 32,
+    _paintText(canvas, survived ? 'SURVIVED' : 'PLANT LOST', 32,
         Colors.white.withValues(alpha: 0.65), FontWeight.w300,
         size.width / 2, size.height / 2 - 80, true);
 
-    if (deadOrgan.isNotEmpty) {
+    if (survived) {
+      _paintText(canvas, 'Flawless run — peak score!', 14,
+          _kGreen.withValues(alpha: 0.6), FontWeight.w400,
+          size.width / 2, size.height / 2 - 42, true);
+    } else if (deadOrgan.isNotEmpty) {
       _paintText(canvas, '$deadOrgan system failed', 14,
           _kPestRed.withValues(alpha: 0.5), FontWeight.w400,
           size.width / 2, size.height / 2 - 42, true);
