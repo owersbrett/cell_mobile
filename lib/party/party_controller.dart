@@ -9,7 +9,25 @@ import 'party_models.dart';
 /// One recorded player decision. Deterministic transitions (walking a step,
 /// confirming a panel, advancing through the mini-game intro) are NOT logged —
 /// they're replayed automatically — so the log holds only genuine choices.
-enum PartyInputKind { roll, choosePath, buyPotato, skipPotato, miniScore, useItem }
+enum PartyInputKind {
+  roll,
+  choosePath,
+  buyPotato,
+  skipPotato,
+  miniScore,
+  useItem,
+  useAtp, // spend ATP to boost the roll (value = +1/+2/+3)
+  beginWalk, // leave the roll-result panel and start walking
+}
+
+/// Where the match's randomness comes from.
+///
+/// [local] and [host] draw straight from a seeded [Random]; the difference is
+/// that [host] also *records* every draw so it can be published. [client]
+/// never touches [Random] — it replays the host's recorded draws verbatim.
+/// This makes online rolls/events/game-picks host-authoritative, so clients
+/// stay in sync without depending on cross-platform `Random(seed)` parity.
+enum PartyRandomMode { local, host, client }
 
 class PartyInput {
   final PartyInputKind kind;
@@ -18,22 +36,34 @@ class PartyInput {
   /// [miniScore]; unused (0) otherwise.
   final int value;
 
-  const PartyInput(this.kind, [this.value = 0]);
+  /// Which player this input belongs to. Only meaningful for [miniScore],
+  /// where simultaneous online play means scores arrive in any order and each
+  /// must be attributed to its author. Defaults to 0 for every other input
+  /// (whose owner is implied by the turn order).
+  final int player;
 
-  Map<String, dynamic> toJson() => {'k': kind.index, 'v': value};
+  const PartyInput(this.kind, [this.value = 0, this.player = 0]);
+
+  Map<String, dynamic> toJson() =>
+      {'k': kind.index, 'v': value, if (player != 0) 'p': player};
 
   factory PartyInput.fromJson(Map<String, dynamic> json) => PartyInput(
-      PartyInputKind.values[json['k'] as int], (json['v'] as int?) ?? 0);
+        PartyInputKind.values[json['k'] as int],
+        (json['v'] as int?) ?? 0,
+        (json['p'] as int?) ?? 0,
+      );
 
   @override
   String toString() {
     final label = kind.toString().split('.').last;
-    return value == 0 ? label : '$label:$value';
+    final suffix = player == 0 ? '' : '@p$player';
+    return value == 0 ? '$label$suffix' : '$label:$value$suffix';
   }
 }
 
 enum PartyPhase {
-  turnStart, // current player's banner + ROLL button
+  turnStart, // current player's banner + ROLL button (+ pre-roll ATP boost)
+  rollResult, // dice shown; optional +1 ATP boost, then MOVE
   moving, // token steps along the path, one space per UI tick
   chooseBranch, // standing at a fork: the player picks a direction
   shopOffer, // passing the Potato Market with enough paydirt: buy or pass
@@ -90,9 +120,13 @@ class PartyController extends ChangeNotifier {
     required List<String> playerNames,
     int? seed,
     Random? random,
+    this.randomMode = PartyRandomMode.local,
   })  : seed = seed ?? _newSeed(),
         _initialNames = List<String>.unmodifiable(playerNames) {
     _rng = random ?? Random(this.seed);
+    _tape = randomMode == PartyRandomMode.client
+        ? _ReplayTape()
+        : _SeededTape(_rng, record: randomMode == PartyRandomMode.host);
     for (var i = 0; i < mode.playerCount; i++) {
       players.add(PartyPlayer(
         index: i,
@@ -101,6 +135,7 @@ class PartyController extends ChangeNotifier {
         teamIndex: mode.teamOf(i),
       ));
     }
+    _beginTurn(); // first player's energy trickle
   }
 
   /// Rebuilds a game by replaying a recorded input log against fresh code.
@@ -129,6 +164,36 @@ class PartyController extends ChangeNotifier {
     return c;
   }
 
+  /// Rebuilds a match from a recorded input log plus the host's recorded
+  /// random draws, WITHOUT recomputing any randomness locally. This is how an
+  /// online client (or a late joiner) reconstructs the authoritative game: it
+  /// replays the host's exact rolls/events/picks. Because draw *order* is fully
+  /// determined by the inputs, feeding the whole [randoms] list up front is
+  /// enough — the client consumes it in lockstep.
+  factory PartyController.replayWithRandoms({
+    required PartyMode mode,
+    required int totalRounds,
+    required List<String> playerNames,
+    required List<PartyInput> inputs,
+    required List<int> randoms,
+  }) {
+    final c = PartyController(
+      mode: mode,
+      totalRounds: totalRounds,
+      playerNames: playerNames,
+      seed: 0, // unused: the client tape never touches Random
+      randomMode: PartyRandomMode.client,
+    );
+    c.feedRandoms(randoms);
+    for (final input in inputs) {
+      c._pumpToDecision();
+      if (c.phase == PartyPhase.gameOver) break;
+      c._apply(input);
+    }
+    c._pumpToDecision();
+    return c;
+  }
+
   static int _newSeed() => Random().nextInt(0x7fffffff);
 
   final PartyMode mode;
@@ -139,6 +204,14 @@ class PartyController extends ChangeNotifier {
   final int seed;
   final List<String> _initialNames;
   late final Random _rng;
+
+  /// How randomness is sourced for this match (see [PartyRandomMode]).
+  final PartyRandomMode randomMode;
+
+  /// Every random int the match consumes flows through here. For [host] it
+  /// records the sequence ([recordedRandoms]); for [client] it replays a fed
+  /// sequence ([feedRandoms]).
+  late final RandomTape _tape;
 
   /// Ordered log of player decisions — the replayable record of the match.
   final List<PartyInput> inputLog = [];
@@ -154,6 +227,9 @@ class PartyController extends ChangeNotifier {
   /// Steps still to walk this turn; the UI calls [advanceStep] per tick.
   int stepsRemaining = 0;
 
+  /// Pre-roll movement bought with ATP this turn (+2/+3); folded into the roll.
+  int atpRollBonus = 0;
+
   /// Human-readable effect lines for the current turn (laps, purchases,
   /// space effects).
   final List<String> turnLog = [];
@@ -163,13 +239,31 @@ class PartyController extends ChangeNotifier {
 
   // Mini-game round state
   MiniGameSpec? currentSpec;
-  int miniPlayerIndex = 0;
   final List<MiniGameStanding> standings = [];
   String? _lastSpecId;
 
   PartyPlayer get currentPlayer => players[currentPlayerIndex];
+
+  /// True once player [i] has banked a score in the current mini-game round.
+  bool hasSubmittedMiniScore(int i) =>
+      standings.any((s) => s.player.index == i);
+
+  /// In local pass-and-play, the next player to hand the phone to — the lowest
+  /// index that hasn't scored yet. Online every player plays at once on their
+  /// own device, but this still resolves to the local player's pending attempt
+  /// and drives the same intro/play screens.
+  int get miniPlayerIndex {
+    for (var i = 0; i < players.length; i++) {
+      if (!hasSubmittedMiniScore(i)) return i;
+    }
+    return players.length - 1;
+  }
+
   PartyPlayer get miniPlayer => players[miniPlayerIndex];
-  bool get isLastMiniPlayer => miniPlayerIndex >= players.length - 1;
+
+  /// True when exactly one player is still to score — used by the pass-phone
+  /// screen to say "last up".
+  bool get isLastMiniPlayer => standings.length == players.length - 1;
 
   // ---------------------------------------------------------------- rolling
 
@@ -183,7 +277,7 @@ class PartyController extends ChangeNotifier {
     final p = currentPlayer;
     turnLog.clear();
 
-    final dice = [_rng.nextInt(6) + 1, if (p.accelerator) _rng.nextInt(6) + 1];
+    final dice = [_tape.next(6) + 1, if (p.accelerator) _tape.next(6) + 1];
     if (p.accelerator) {
       turnLog.add('${p.name} fired the ACCELERATOR — two dice!');
       p.accelerator = false;
@@ -194,6 +288,10 @@ class PartyController extends ChangeNotifier {
       turnLog.add('MITOCHONDRIA kicks in: +3 movement.');
       p.mitochondria = false;
     }
+    if (atpRollBonus > 0) {
+      bonus += atpRollBonus;
+      turnLog.add('${p.name} channelled $atpRollBonus ATP into the roll.');
+    }
 
     stepsRemaining = dice.reduce((a, b) => a + b) + bonus;
     lastTurn = TurnResult(
@@ -203,9 +301,57 @@ class PartyController extends ChangeNotifier {
       steps: stepsRemaining,
       fromPosition: p.position,
     );
-    phase = PartyPhase.moving;
+    // Dice are revealed on the roll-result panel; the player may spend 10 ATP
+    // for +1 (reactive) before tapping MOVE.
+    phase = PartyPhase.rollResult;
     notifyListeners();
     return lastTurn!;
+  }
+
+  /// Start of a player's turn: reset the pre-roll boost and trickle in energy.
+  void _beginTurn() {
+    atpRollBonus = 0;
+    currentPlayer.atp += kAtpPerTurn;
+  }
+
+  /// Spend ATP to boost the roll. Before the roll (turnStart): +2 (15) or +3
+  /// (20), folded into the upcoming roll. After it (rollResult): +1 (10),
+  /// added to the steps you're about to walk. A logged decision.
+  void useAtp(int plus) {
+    final p = currentPlayer;
+    if (phase == PartyPhase.turnStart) {
+      if (plus != 2 && plus != 3) return;
+      final cost = plus == 3 ? kAtpPlus3Cost : kAtpPlus2Cost;
+      if (p.atp < cost) return;
+      p.atp -= cost;
+      atpRollBonus += plus;
+    } else if (phase == PartyPhase.rollResult) {
+      if (plus != 1 || p.atp < kAtpPlus1Cost) return;
+      p.atp -= kAtpPlus1Cost;
+      stepsRemaining += 1;
+      final t = lastTurn;
+      if (t != null) {
+        lastTurn = TurnResult(
+          playerIndex: t.playerIndex,
+          dice: t.dice,
+          rollBonus: t.rollBonus + 1,
+          steps: stepsRemaining,
+          fromPosition: t.fromPosition,
+        );
+      }
+    } else {
+      return;
+    }
+    inputLog.add(PartyInput(PartyInputKind.useAtp, plus));
+    notifyListeners();
+  }
+
+  /// Leave the roll-result panel and start walking.
+  void beginWalk() {
+    assert(phase == PartyPhase.rollResult);
+    inputLog.add(const PartyInput(PartyInputKind.beginWalk));
+    phase = PartyPhase.moving;
+    notifyListeners();
   }
 
   /// The choices at the current fork (only valid in [PartyPhase.chooseBranch]).
@@ -294,6 +440,7 @@ class PartyController extends ChangeNotifier {
     if (currentPlayerIndex < players.length - 1) {
       currentPlayerIndex++;
       phase = PartyPhase.turnStart;
+      _beginTurn();
     } else {
       _startMiniGameRound();
     }
@@ -376,9 +523,9 @@ class PartyController extends ChangeNotifier {
 
   void _runEvent(PartyPlayer p, List<String> log) {
     final others = players.where((o) => o.index != p.index).toList();
-    switch (_rng.nextInt(5)) {
+    switch (_tape.next(5)) {
       case 0: // Cosmic Swap
-        final target = others[_rng.nextInt(others.length)];
+        final target = others[_tape.next(others.length)];
         if (target.strongBond) {
           target.strongBond = false;
           log.add(
@@ -443,7 +590,6 @@ class PartyController extends ChangeNotifier {
   void _startMiniGameRound() {
     currentSpec = _pickSpec();
     _lastSpecId = currentSpec!.id;
-    miniPlayerIndex = 0;
     standings.clear();
     phase = PartyPhase.minigameIntro;
   }
@@ -458,7 +604,7 @@ class PartyController extends ChangeNotifier {
     final list = MiniGameRegistry.enabledSpecs;
     if (list.length == 1) return list.first;
     final pool = list.where((s) => s.id != _lastSpecId).toList();
-    return pool[_rng.nextInt(pool.length)];
+    return pool[_tape.next(pool.length)];
   }
 
   /// Debug builds only: swap the revealed game on the intro screen.
@@ -487,15 +633,22 @@ class PartyController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void recordMiniScore(int score) {
-    assert(phase == PartyPhase.minigamePlaying);
-    inputLog.add(PartyInput(PartyInputKind.miniScore, score));
-    standings.add(MiniGameStanding(miniPlayer, score));
-    if (isLastMiniPlayer) {
+  /// Banks one player's mini-game score. [player] defaults to the local
+  /// pending attempt ([miniPlayerIndex]) for pass-and-play; online it's set
+  /// explicitly so simultaneous submissions land on the right author in any
+  /// arrival order. Each player scores at most once per round; the round
+  /// resolves once everyone has a score.
+  void recordMiniScore(int score, {int? player}) {
+    assert(phase == PartyPhase.minigamePlaying ||
+        phase == PartyPhase.passPhone);
+    final idx = player ?? miniPlayerIndex;
+    if (hasSubmittedMiniScore(idx)) return; // one score per player per round
+    inputLog.add(PartyInput(PartyInputKind.miniScore, score, idx));
+    standings.add(MiniGameStanding(players[idx], score));
+    if (standings.length >= players.length) {
       _scoreMiniGameRound();
       phase = PartyPhase.minigameResults;
     } else {
-      miniPlayerIndex++;
       phase = PartyPhase.passPhone;
     }
     notifyListeners();
@@ -555,6 +708,7 @@ class PartyController extends ChangeNotifier {
       round++;
       currentPlayerIndex = 0;
       phase = PartyPhase.turnStart;
+      _beginTurn();
     }
     notifyListeners();
   }
@@ -608,10 +762,16 @@ class PartyController extends ChangeNotifier {
         skipPotato();
         break;
       case PartyInputKind.miniScore:
-        recordMiniScore(input.value);
+        recordMiniScore(input.value, player: input.player);
         break;
       case PartyInputKind.useItem:
         useItem(PowerUp.values[input.value]);
+        break;
+      case PartyInputKind.useAtp:
+        useAtp(input.value);
+        break;
+      case PartyInputKind.beginWalk:
+        beginWalk();
         break;
     }
   }
@@ -640,6 +800,7 @@ class PartyController extends ChangeNotifier {
           confirmMiniGameResults();
           break;
         case PartyPhase.turnStart:
+        case PartyPhase.rollResult:
         case PartyPhase.chooseBranch:
         case PartyPhase.shopOffer:
         case PartyPhase.minigamePlaying:
@@ -650,6 +811,24 @@ class PartyController extends ChangeNotifier {
     throw StateError('soft-lock: no decision reachable from $phase');
   }
 
+  // ------------------------------------------------------- host/client tape
+
+  /// The host's recorded random draws so far, in consumption order. Published
+  /// to clients alongside the input log. Empty unless [randomMode] is
+  /// [PartyRandomMode.host].
+  List<int> get recordedRandoms => List.unmodifiable(_tape.recorded);
+
+  /// Feeds host-authored random draws into a [PartyRandomMode.client] tape so
+  /// subsequent inputs replay the host's exact outcomes. Append-only; safe to
+  /// call repeatedly as more draws arrive over the wire.
+  void feedRandoms(Iterable<int> values) {
+    final tape = _tape;
+    if (tape is! _ReplayTape) {
+      throw StateError('feedRandoms is only valid for a client-mode match');
+    }
+    tape.feed(values);
+  }
+
   /// Throws on any broken-game invariant. Cheap enough to call after every
   /// input; this is the contract the Peeler soak will hold the game to.
   void checkInvariants() {
@@ -658,6 +837,7 @@ class PartyController extends ChangeNotifier {
         throw StateError('${p.name} position out of range: ${p.position}');
       }
       if (p.paydirt < 0) throw StateError('${p.name} has negative paydirt');
+      if (p.atp < 0) throw StateError('${p.name} has negative ATP');
       if (p.potatoes < 0) throw StateError('${p.name} has negative potatoes');
     }
     if (round < 1 || round > totalRounds) {
@@ -686,4 +866,71 @@ class PartyController extends ChangeNotifier {
             PartyInput.fromJson(Map<String, dynamic>.from(e as Map))
         ],
       );
+}
+
+/// Source of every random int a match consumes (dice, board events, mini-game
+/// picks). Abstracting it is what lets online play be host-authoritative: the
+/// host records its draws and clients replay them, so no one relies on
+/// `Random(seed)` producing identical sequences across web and mobile.
+abstract class RandomTape {
+  /// Next random int in `[0, max)`.
+  int next(int max);
+
+  /// Whether [count] more values can be served without blocking. Always true
+  /// for local/host tapes; a client tape returns false when it has run out of
+  /// fed values (it is waiting on the host).
+  bool hasAtLeast(int count);
+
+  /// Draws recorded so far, in order (host tape only; empty otherwise).
+  List<int> get recorded;
+}
+
+/// Local and host tape: draws from a seeded [Random]. When [record] is set
+/// (host), each draw is also kept so the sequence can be published.
+class _SeededTape implements RandomTape {
+  _SeededTape(this._rng, {this.record = false});
+
+  final Random _rng;
+  final bool record;
+  final List<int> _recorded = [];
+
+  @override
+  int next(int max) {
+    final v = _rng.nextInt(max);
+    if (record) _recorded.add(v);
+    return v;
+  }
+
+  @override
+  bool hasAtLeast(int count) => true;
+
+  @override
+  List<int> get recorded => _recorded;
+}
+
+/// Client tape: replays the host's recorded draws verbatim and never touches
+/// [Random]. The stored values were already reduced by the host's `max`, and
+/// because the client runs the same code over the same inputs it consumes them
+/// in the same order, so [max] here is only a sanity bound.
+class _ReplayTape implements RandomTape {
+  final List<int> _values = [];
+  int _cursor = 0;
+
+  void feed(Iterable<int> values) => _values.addAll(values);
+
+  @override
+  int next(int max) {
+    if (_cursor >= _values.length) {
+      throw StateError(
+          'random tape starved: client outran the host (need draw '
+          '${_cursor + 1}, have ${_values.length})');
+    }
+    return _values[_cursor++];
+  }
+
+  @override
+  bool hasAtLeast(int count) => _values.length - _cursor >= count;
+
+  @override
+  List<int> get recorded => List.unmodifiable(_values);
 }

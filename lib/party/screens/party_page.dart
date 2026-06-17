@@ -160,6 +160,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       builder: (context, _) {
         switch (controller.phase) {
           case PartyPhase.turnStart:
+          case PartyPhase.rollResult:
           case PartyPhase.moving:
           case PartyPhase.chooseBranch:
           case PartyPhase.shopOffer:
@@ -376,7 +377,10 @@ class _BoardScreenState extends State<_BoardScreen> {
     } else {
       _stepTimer?.cancel();
       _stepTimer = null;
-      if (controller.phase != PartyPhase.chooseBranch &&
+      if (controller.phase == PartyPhase.rollResult) {
+        // Dice are revealed (and held) on the roll-result panel.
+        _diceSettled = true;
+      } else if (controller.phase != PartyPhase.chooseBranch &&
           controller.phase != PartyPhase.shopOffer) {
         _diceSettled = false;
       }
@@ -493,6 +497,7 @@ class _BoardScreenState extends State<_BoardScreen> {
               name: ranked[i].name,
               potatoes: ranked[i].potatoes,
               paydirt: ranked[i].paydirt,
+              atp: ranked[i].atp,
               highlight: ranked[i].index == controller.currentPlayer.index &&
                   controller.phase != PartyPhase.spaceResolved,
               icons: ranked[i].armedPowerUps.map((pu) => pu.icon).toList(),
@@ -509,6 +514,7 @@ class _BoardScreenState extends State<_BoardScreen> {
     required String name,
     required int potatoes,
     required int paydirt,
+    int? atp,
     bool highlight = false,
     bool bold = false,
     List<IconData> icons = const [],
@@ -576,6 +582,13 @@ class _BoardScreenState extends State<_BoardScreen> {
                   fontFamily: _kFont,
                   fontSize: 11,
                   color: Colors.white70)),
+          if (atp != null) ...[
+            const SizedBox(width: 4),
+            const Icon(Icons.bolt, size: 11, color: Potatuhs.gold),
+            Text('$atp',
+                style: const TextStyle(
+                    fontFamily: _kFont, fontSize: 11, color: Potatuhs.gold)),
+          ],
           for (final icon in icons) ...[
             const SizedBox(width: 4),
             Icon(icon, size: 12, color: color),
@@ -637,6 +650,35 @@ class _BoardScreenState extends State<_BoardScreen> {
                     color: Colors.white38),
               ),
             ),
+          if (p.atp >= kAtpPlus2Cost || controller.atpRollBonus > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    controller.atpRollBonus > 0
+                        ? 'PRIMED +${controller.atpRollBonus}  ·  ${p.atp} ATP LEFT'
+                        : 'SPEND ATP BEFORE ROLLING  ·  ${p.atp} ATP',
+                    style: Potatuhs.label(size: 9.5, color: Potatuhs.gold),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (p.atp >= kAtpPlus2Cost)
+                        _atpButton('+2', kAtpPlus2Cost,
+                            () => controller.useAtp(2)),
+                      if (p.atp >= kAtpPlus3Cost) ...[
+                        const SizedBox(width: 8),
+                        _atpButton('+3', kAtpPlus3Cost,
+                            () => controller.useAtp(3)),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
@@ -649,6 +691,58 @@ class _BoardScreenState extends State<_BoardScreen> {
               textColor: Colors.black,
               onTap: () => controller.roll(),
             ),
+          ),
+        ],
+      );
+    } else if (phase == PartyPhase.rollResult) {
+      final turn = controller.lastTurn!;
+      child = Column(
+        key: const ValueKey('rollResult'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (final d in turn.dice) _die(d, p.color),
+              if (turn.rollBonus > 0)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text(
+                    '+${turn.rollBonus}',
+                    style: const TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: _kAccent),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Move ${controller.stepsRemaining}',
+            style: const TextStyle(
+                fontFamily: _kFont, fontSize: 13, color: Colors.white54),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              if (p.atp >= kAtpPlus1Cost) ...[
+                _atpButton('+1', kAtpPlus1Cost, () => controller.useAtp(1)),
+                const SizedBox(width: 10),
+              ],
+              Expanded(
+                child: PotatuhsButton(
+                  label: 'MOVE',
+                  display: true,
+                  icon: Icons.directions_walk,
+                  fill: p.color,
+                  glowColor: p.color,
+                  textColor: Colors.black,
+                  onTap: controller.beginWalk,
+                ),
+              ),
+            ],
           ),
         ],
       );
@@ -785,6 +879,41 @@ class _BoardScreenState extends State<_BoardScreen> {
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.5,
                     color: Colors.white)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// A gold ATP-spend pill: a boost label (+1/+2/+3) and its energy cost.
+  Widget _atpButton(String label, int cost, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: Potatuhs.inkPanel,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Potatuhs.gold, width: 1.5),
+          boxShadow: Potatuhs.glow(Potatuhs.gold, strength: 0.2, blur: 8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label,
+                style: const TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white)),
+            const SizedBox(width: 6),
+            const Icon(Icons.bolt, size: 13, color: Potatuhs.gold),
+            Text('$cost',
+                style: const TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Potatuhs.gold)),
           ],
         ),
       ),
@@ -1126,32 +1255,65 @@ class _BoardView extends StatelessWidget {
     return Positioned(
       left: center.dx - r,
       top: center.dy - r,
-      child: Container(
-        width: r * 2,
-        height: r * 2,
+      child: Tooltip(
+        message: _spaceDescription(space),
+        triggerMode: TooltipTriggerMode.tap,
+        preferBelow: false,
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
-          // Solid-ish fill so the path line doesn't show through the node.
-          color: Color.alphaBlend(
-              color.withValues(alpha: isShop ? 0.35 : 0.22),
-              const Color(0xFF0B0B12)),
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: isStart || isShop
-                ? color
-                : color.withValues(alpha: space.isShortcut ? 0.7 : 0.55),
-            width: isStart || isShop ? 1.8 : 1.2,
-          ),
-          boxShadow: [
-            BoxShadow(
-                color: color.withValues(alpha: isShop ? 0.5 : 0.30),
-                blurRadius: isShop ? 14 : 9),
-          ],
+          color: Potatuhs.inkPanel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Potatuhs.gold.withValues(alpha: 0.6)),
+          boxShadow: Potatuhs.glow(Potatuhs.gold, strength: 0.2, blur: 10),
         ),
-        child: Icon(icon,
-            size: r * (isShop ? 1.1 : 0.95),
-            color: iconColor.withValues(alpha: 0.9)),
+        textStyle: const TextStyle(
+            fontFamily: _kFont, fontSize: 12, color: Colors.white, height: 1.35),
+        child: Container(
+          width: r * 2,
+          height: r * 2,
+          decoration: BoxDecoration(
+            // Solid-ish fill so the path line doesn't show through the node.
+            color: Color.alphaBlend(
+                color.withValues(alpha: isShop ? 0.35 : 0.22),
+                const Color(0xFF0B0B12)),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isStart || isShop
+                  ? color
+                  : color.withValues(alpha: space.isShortcut ? 0.7 : 0.55),
+              width: isStart || isShop ? 1.8 : 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                  color: color.withValues(alpha: isShop ? 0.5 : 0.30),
+                  blurRadius: isShop ? 14 : 9),
+            ],
+          ),
+          child: Icon(icon,
+              size: r * (isShop ? 1.1 : 0.95),
+              color: iconColor.withValues(alpha: 0.9)),
+        ),
       ),
     );
+  }
+
+  /// What landing on [space] does — shown as a tap tooltip on the tile.
+  String _spaceDescription(BoardSpace space) {
+    final lane = space.isShortcut ? ' · risky shortcut lane' : '';
+    switch (space.type) {
+      case SpaceType.gain:
+        return 'Paydirt space$lane\nLand here: +5 paydirt.';
+      case SpaceType.lose:
+        return 'Entropy space$lane\nLand here: −5 paydirt (a Void Shield blocks it).';
+      case SpaceType.powerUp:
+        final pu = space.section.powerUp;
+        return '${pu.label}$lane\nPick it up to use on your turn: ${pu.description}.';
+      case SpaceType.event:
+        return 'Event space$lane\nTriggers a random cosmic event.';
+      case SpaceType.shop:
+        return 'Potato Market\nSpend $kPotatoPrice paydirt for a potato.';
+    }
   }
 
   List<Widget> _tokens(

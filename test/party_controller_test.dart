@@ -40,6 +40,9 @@ void walkOut(PartyController c, {bool takeShortcut = false, bool buy = false}) {
   var guard = 0;
   while (c.phase != PartyPhase.spaceResolved && guard++ < 500) {
     switch (c.phase) {
+      case PartyPhase.rollResult:
+        c.beginWalk();
+        break;
       case PartyPhase.moving:
         c.advanceStep();
         break;
@@ -87,14 +90,24 @@ void playLegalGame(PartyController c, Random choices) {
   while (c.phase != PartyPhase.gameOver && guard++ < 100000) {
     switch (c.phase) {
       case PartyPhase.turnStart:
-        // Sometimes spend a held item before rolling — exercises useItem in
-        // the input log so replay has to reproduce it.
+        // Sometimes spend a held item or a pre-roll ATP boost before rolling —
+        // exercises useItem/useAtp in the input log so replay reproduces them.
         final cur = c.currentPlayer;
         if (cur.items.isNotEmpty && choices.nextBool()) {
           c.useItem(cur.items.first);
         } else {
+          if (cur.atp >= kAtpPlus2Cost && choices.nextInt(4) == 0) {
+            c.useAtp(choices.nextBool() ? 2 : 3);
+          }
           c.roll();
         }
+        break;
+      case PartyPhase.rollResult:
+        final cur = c.currentPlayer;
+        if (cur.atp >= kAtpPlus1Cost && choices.nextInt(3) == 0) {
+          c.useAtp(1);
+        }
+        c.beginWalk();
         break;
       case PartyPhase.moving:
         c.advanceStep();
@@ -164,6 +177,54 @@ void main() {
       }
     });
 
+    // Host-authoritative randomness: a client that NEVER recomputes from the
+    // seed must reproduce the host's exact match from the recorded draws alone.
+    // This is the online-sync contract — it cannot lean on cross-platform
+    // Random(seed) parity.
+    test('a client replays the host match from recorded randoms, no seed', () {
+      for (final mode in [PartyMode.ffa4, PartyMode.teams2v2, PartyMode.duel]) {
+        final names =
+            List.generate(mode.playerCount, (i) => kCharacters[i].name);
+        final host = PartyController(
+          mode: mode,
+          totalRounds: 4,
+          playerNames: names,
+          seed: 24680,
+          randomMode: PartyRandomMode.host,
+        );
+        playLegalGame(host, Random(11));
+        expect(host.phase, PartyPhase.gameOver);
+        expect(host.recordedRandoms, isNotEmpty, reason: '$mode');
+
+        // Reconstruct on a client tape fed only the host's draws (force the
+        // inputs + randoms through real JSON to mimic the wire).
+        final inputs = (json.decode(json.encode(
+                [for (final i in host.inputLog) i.toJson()])) as List)
+            .map((e) => PartyInput.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+        final randoms =
+            List<int>.from(json.decode(json.encode(host.recordedRandoms)) as List);
+
+        final client = PartyController.replayWithRandoms(
+          mode: mode,
+          totalRounds: 4,
+          playerNames: names,
+          inputs: inputs,
+          randoms: randoms,
+        );
+
+        expect(client.phase, PartyPhase.gameOver, reason: '$mode');
+        expect(client.round, host.round, reason: '$mode');
+        for (var i = 0; i < host.players.length; i++) {
+          final a = host.players[i], b = client.players[i];
+          expect(b.position, a.position, reason: '$mode player $i position');
+          expect(b.paydirt, a.paydirt, reason: '$mode player $i paydirt');
+          expect(b.potatoes, a.potatoes, reason: '$mode player $i potatoes');
+          expect(b.atp, a.atp, reason: '$mode player $i atp');
+        }
+      }
+    });
+
     test('the same seed with no recorded inputs is itself deterministic', () {
       PartyController fresh() => PartyController(
             mode: PartyMode.ffa4,
@@ -226,6 +287,7 @@ void main() {
       p.position = kBoardBranches.first.forkIndex; // a fork space
       c.roll();
       expect(c.stepsRemaining, 2);
+      c.beginWalk(); // leave the roll-result panel
       c.advanceStep(); // leaving the fork
       expect(c.phase, PartyPhase.chooseBranch);
       expect(c.branchOptions.length, 2);
@@ -283,6 +345,48 @@ void main() {
       final winner = c.standings.firstWhere((s) => s.player.index == 1);
       expect(winner.award, 20);
       expect(c.players[1].catalyst, isFalse);
+    });
+
+    // Simultaneous own-device play: every player plays at once and scores
+    // arrive over the wire in any order, each tagged with its author.
+    test('scores are attributed by player in any arrival order, once each', () {
+      // Construct with `seed:` (not `random:`) so the save's seed actually
+      // drives the match and the JSON round-trip below replays faithfully.
+      final c = PartyController(
+        mode: PartyMode.ffa4,
+        totalRounds: 3,
+        playerNames: List.generate(4, (i) => kCharacters[i].name),
+        seed: 42,
+      );
+      playBoardPhase(c);
+      c.beginMiniGameRound();
+      expect(c.phase, PartyPhase.passPhone);
+      c.startMiniGameAttempt();
+
+      // Out of order: p2, p0, p3, p1.
+      c.recordMiniScore(100, player: 2);
+      c.recordMiniScore(999, player: 2); // duplicate — ignored
+      expect(c.standings.length, 1);
+      c.recordMiniScore(50, player: 0);
+      c.recordMiniScore(75, player: 3);
+      expect(c.phase, isNot(PartyPhase.minigameResults)); // 3 of 4 in
+      c.recordMiniScore(200, player: 1); // completes the round
+      expect(c.phase, PartyPhase.minigameResults);
+
+      int award(int i) =>
+          c.standings.firstWhere((s) => s.player.index == i).award;
+      expect(award(1), 10); // 200, highest
+      expect(award(2), 6); // 100
+      expect(award(3), 4); // 75
+      expect(award(0), 2); // 50, lowest
+
+      // The player-tagged log replays the same regardless of arrival order.
+      final restored = PartyController.fromSaveJson(
+          json.decode(json.encode(c.toSaveJson())) as Map<String, dynamic>);
+      for (var i = 0; i < c.players.length; i++) {
+        expect(restored.players[i].paydirt, c.players[i].paydirt,
+            reason: 'player $i paydirt');
+      }
     });
 
     test('team mode ranks by team total and pays every member', () {

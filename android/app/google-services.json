@@ -1,0 +1,263 @@
+{
+  "project_info": {
+    "project_number": "1083610814923",
+    "firebase_url": "https://hot-potato-games-default-rtdb.firebaseio.com",
+    "project_id": "hot-potato-games",
+    "storage_bucket": "hot-potato-games.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1083610814923:android:a856d2e67a98197115be4e",
+        "android_client_info": {
+          "package_name": "com.bjo.cell_mobile"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn59E9dD_8a2TFiYzrO6MDpFJDFVRDwqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1083610814923-2s7d8ec7d9nqu09tb38302o54c83kp49.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.owers.tenlach"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1083610814923:android:5c39bcd1c22d819115be4e",
+        "android_client_info": {
+          "package_name": "com.example.draw_potato"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn59E9dD_8a2TFiYzrO6MDpFJDFVRDwqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1083610814923-2s7d8ec7d9nqu09tb38302o54c83kp49.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.owers.tenlach"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1083610814923:android:2599fb57a591aedd15be4e",
+        "android_client_info": {
+          "package_name": "com.example.hiit_potato"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn59E9dD_8a2TFiYzrO6MDpFJDFVRDwqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1083610814923-2s7d8ec7d9nqu09tb38302o54c83kp49.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.owers.tenlach"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1083610814923:android:15f1c486e6d2975f15be4e",
+        "android_client_info": {
+          "package_name": "com.example.hot_potato"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn59E9dD_8a2TFiYzrO6MDpFJDFVRDwqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1083610814923-2s7d8ec7d9nqu09tb38302o54c83kp49.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.owers.tenlach"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1083610814923:android:2ba116730be1c31d15be4e",
+        "android_client_info": {
+          "package_name": "com.example.potato_pounder"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn59E9dD_8a2TFiYzrO6MDpFJDFVRDwqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1083610814923-2s7d8ec7d9nqu09tb38302o54c83kp49.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.owers.tenlach"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1083610814923:android:d53cc02e3552267015be4e",
+        "android_client_info": {
+          "package_name": "com.example.tenlach"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn59E9dD_8a2TFiYzrO6MDpFJDFVRDwqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1083610814923-2s7d8ec7d9nqu09tb38302o54c83kp49.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.owers.tenlach"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1083610814923:android:494bf04de0f167ee15be4e",
+        "android_client_info": {
+          "package_name": "com.owers.tenlach"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAn59E9dD_8a2TFiYzrO6MDpFJDFVRDwqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1083610814923-3kesgtgh78qbid1lcs6vu1f62avv82ph.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1083610814923-2s7d8ec7d9nqu09tb38302o54c83kp49.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.owers.tenlach"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

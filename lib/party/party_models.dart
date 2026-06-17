@@ -61,11 +61,11 @@ extension PartyModeInfo on PartyMode {
 /// One armed power-up effect. Power-ups arm automatically when picked up
 /// and fire at the next relevant moment — no inventory management.
 enum PowerUp {
-  voidShield, // Nothing — blocks your next ATP loss
-  spark, // Something — +4 ATP instantly (never held)
+  voidShield, // Nothing — blocks your next paydirt loss
+  spark, // Something — +4 paydirt when used
   accelerator, // Particles — your next roll uses two dice
   strongBond, // Atoms — blocks the next swap/steal event against you
-  catalyst, // Molecules — your next mini-game ATP award is doubled
+  catalyst, // Molecules — your next mini-game paydirt award is doubled
   mitochondria, // Organelles — +3 added to your next roll
 }
 
@@ -90,15 +90,15 @@ extension PowerUpInfo on PowerUp {
   String get description {
     switch (this) {
       case PowerUp.voidShield:
-        return 'Blocks your next ATP loss';
+        return 'Blocks your next paydirt loss';
       case PowerUp.spark:
-        return '+4 ATP instantly';
+        return '+4 paydirt';
       case PowerUp.accelerator:
         return 'Next roll uses two dice';
       case PowerUp.strongBond:
         return 'Blocks the next swap or steal against you';
       case PowerUp.catalyst:
-        return 'Next mini-game ATP award doubled';
+        return 'Next mini-game paydirt award doubled';
       case PowerUp.mitochondria:
         return '+3 on your next roll';
     }
@@ -197,6 +197,12 @@ const int kPotatoPrice = 20;
 
 /// How many power-up items a player can carry at once.
 const int kMaxItems = 3;
+
+/// ATP — the cell's energy currency, a third currency spent to boost a roll.
+const int kAtpPerTurn = 5; // energy trickle at the start of your turn
+const int kAtpPlus1Cost = 10; // +1 chosen AFTER the roll (reactive)
+const int kAtpPlus2Cost = 15; // +2 committed BEFORE the roll
+const int kAtpPlus3Cost = 20; // +3 committed BEFORE the roll
 
 class BoardSpace {
   final int index;
@@ -349,6 +355,7 @@ class PartyPlayer {
   int position = 0;
   int paydirt = 0; // in-game currency, earned in mini-games & on the board
   int potatoes = 0; // bought at the Potato Market — most potatoes wins
+  int atp = 0; // energy currency, trickles in each turn, spent to boost rolls
 
   /// Held power-ups awaiting use — the player's pack. Picked up on power-up
   /// spaces, spent on your turn via [PartyController.useItem]. Capped at

@@ -18,12 +18,18 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.19+5
 
 environment:
-  sdk: ">=2.12.0 <3.0.0"
+  sdk: ">=3.0.0 <4.0.0"
 
 dependencies:
-  flutter_bloc: 
-  shared_preferences: 
-  flutter_launcher_icons: 
+  flutter_bloc:
+  shared_preferences:
+  flutter_launcher_icons:
+
+  # Online party play: realtime input-relay over the hot-potato-games
+  # Firebase project (Realtime Database), anonymous-auth gated.
+  firebase_core:
+  firebase_auth:
+  firebase_database:
 
 
 
