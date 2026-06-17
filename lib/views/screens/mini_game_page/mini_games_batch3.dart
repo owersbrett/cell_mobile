@@ -5790,9 +5790,108 @@ class _BranchTreePainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 8. InfinityCounterGame — "Infinity"
+// 8. InfinityCounterGame — "Count Forever"  (BioScale.infinities)
+//
+// FEEL CONSTANTS — tune here without touching game logic
+// ─────────────────────────────────────────────────────
+// Game duration
+const double _kICGameDuration = 60.0; // seconds total
+// Tap value — how much each tap adds (or subtracts when reversed)
+const double _kICBaseTapValue = 1.0;
+// Milestone interval — event fires every N taps
+const int _kICMilestoneInterval = 10;
+// Choices at each milestone: milestone 1 → 1 choice (auto-granted),
+// milestone 2 → 2, milestone 3 → 4, milestone 4 → 8 … (2^(n-1))
+// Capped at 64 to stay readable.
+const int _kICMaxChoices = 64;
+// Base auto-tapper rate (taps/sec added per AUTO_TAPPER stack)
+const double _kICAutoTapRate = 1.0;
+// Multiplier factor per TAP_MULTIPLIER stack
+const double _kICMultiplierFactor = 1.5;
+// Chaos-reverse: every X seconds a reversed count flips direction again
+const double _kICChaosReverseInterval = 5.0;
+// Number of particles on tap / milestone
+const int _kICTapParticles = 4;
+const int _kICMilestoneParticles = 60;
+// Power-up card display duration (seconds player has to pick; auto-picks #0 on timeout)
+const double _kICPickTimeout = 6.0;
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── Power-up enum ────────────────────────────────────────────────────────────
+enum _ICPowerUpType {
+  autoTapper,      // +1 auto-tap/sec (stacks)
+  tapReverse,      // flip tap direction: taps now subtract
+  multiplier,      // tap value ×1.5 (stacks multiplicatively)
+  doubleDown,      // milestone interval halved — events fire twice as fast
+  chaosReverse,    // direction flips every 5 s automatically
+  giantTap,        // next 5 manual taps worth ×10
+  tapForEnemy,     // taps add to a rival counter instead of yours for 8 s
+  timeSlow,        // game timer ticks at half speed for 10 s
+  countReset,      // YOUR count resets to zero (chaotic!)
+  bonusBurst,      // instantly add +50 to your count
+}
+
+// ─── Power-up definition ──────────────────────────────────────────────────────
+class _ICPowerUp {
+  final _ICPowerUpType type;
+  final String label;
+  final String emoji;
+  final String desc;
+  const _ICPowerUp(this.type, this.label, this.emoji, this.desc);
+}
+
+const List<_ICPowerUp> _kICAllPowerUps = [
+  _ICPowerUp(_ICPowerUpType.autoTapper,   'AUTO-TAPPER',   '🤖', '+${_kICAutoTapRate} tap/s forever'),
+  _ICPowerUp(_ICPowerUpType.tapReverse,   'TAP-REVERSE',   '🔄', 'Taps now go the other way'),
+  _ICPowerUp(_ICPowerUpType.multiplier,   '×MULTIPLIER',   '⚡', 'Tap value ×${_kICMultiplierFactor}'),
+  _ICPowerUp(_ICPowerUpType.doubleDown,   'DOUBLE-DOWN',   '⚡⚡', 'Events fire 2× as often'),
+  _ICPowerUp(_ICPowerUpType.chaosReverse, 'CHAOS-FLIP',    '🌀', 'Direction reverses every 5 s'),
+  _ICPowerUp(_ICPowerUpType.giantTap,     'GIANT TAP',     '💥', 'Next 5 taps worth ×10'),
+  _ICPowerUp(_ICPowerUpType.tapForEnemy,  'WRONG TEAM',    '😈', 'Taps feed rival for 8 s'),
+  _ICPowerUp(_ICPowerUpType.timeSlow,     'TIME SLOW',     '🐢', 'Clock at ½ speed for 10 s'),
+  _ICPowerUp(_ICPowerUpType.countReset,   'RESET!',        '💀', 'Your count → 0'),
+  _ICPowerUp(_ICPowerUpType.bonusBurst,   'BONUS BURST',   '🎁', 'Instant +50'),
+];
+
+// ─── Active modifier state ────────────────────────────────────────────────────
+class _ICModifiers {
+  int autoTappers = 0;        // number of stacked auto-tappers
+  bool tapReversed = false;   // taps subtract
+  double tapMultiplier = 1.0; // multiplicative tap value
+  int milestoneIntervalDiv = 1; // milestone every (base/this) taps
+  bool chaosReverse = false;  // periodic auto-flip active
+  double chaosTimer = 0;
+  int giantTapCharges = 0;    // remaining ×10 taps
+  bool tapForEnemy = false;
+  double tapForEnemyTimer = 0;
+  bool timeSlow = false;
+  double timeSlowTimer = 0;
+
+  // Describe all active mods as short strings for the HUD
+  List<String> activeLabels() {
+    final out = <String>[];
+    if (autoTappers > 0) out.add('AUTO ×$autoTappers');
+    if (tapReversed) out.add('REVERSED');
+    if (tapMultiplier > 1.01) out.add('×${tapMultiplier.toStringAsFixed(1)}');
+    if (milestoneIntervalDiv > 1) out.add('2× EVENTS');
+    if (chaosReverse) out.add('CHAOS');
+    if (giantTapCharges > 0) out.add('GIANT($giantTapCharges)');
+    if (tapForEnemy) out.add('WRONG TEAM');
+    if (timeSlow) out.add('SLOW CLK');
+    return out;
+  }
+}
+
+// ─── Floating pop label ("+7", "REVERSED!", etc.) ────────────────────────────
+class _ICPop {
+  double x, y, life, maxLife;
+  final String text;
+  final Color color;
+  _ICPop({required this.x, required this.y, required this.text, required this.color, double life = 0.9})
+      : life = life, maxLife = life;
+}
+
+// ─── Main widget ──────────────────────────────────────────────────────────────
 class InfinityCounterGame extends StatefulWidget {
   const InfinityCounterGame({Key? key}) : super(key: key);
   @override
@@ -5804,23 +5903,37 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  BigInt _count = BigInt.zero;
-  double _fontSize = 48;
+  // ── Core counters ──
+  double _count = 0;       // player's count (float for smooth multipliers)
+  double _enemyCount = 0;  // rival counter (WRONG TEAM power-up feeds this)
+  int _tapsTotal = 0;      // total taps this game
+
+  // ── Game clock ──
+  double _elapsed = 0;
+  bool _gameOver = false;
+
+  // ── Milestone tracking ──
+  int _milestoneIndex = 0;   // how many milestones have fired
+  int _nextMilestone = _kICMilestoneInterval; // tap count for next event
+
+  // ── Power-up selection ──
+  bool _choosingPowerUp = false;
+  List<_ICPowerUp> _choices = [];
+  double _pickTimer = 0;
+
+  // ── Active modifiers ──
+  final _ICModifiers _mods = _ICModifiers();
+
+  // ── Juice ──
+  double _bgHue = 220;
+  double _digitBounce = 0;
   double _shockwaveRadius = 0;
   double _shockwaveAlpha = 0;
-  double _bgHue = 220;
-  double _digitStretch = 1.0;
-  double _digitBounce = 0;
-  bool _autoClickerUnlocked = false;
-  double _autoClickerTimer = 0;
-  int _tapsInLastSecond = 0;
-  double _tapTrackTimer = 0;
-  final List<int> _recentTapCounts = [];
-
-  // Milestones
-  final Set<int> _milestonesHit = {};
-
   final List<_JuiceParticle> _particles = [];
+  final List<_ICPop> _pops = [];
+
+  // Auto-tap accumulator
+  double _autoTapAccum = 0;
 
   @override
   void initState() {
@@ -5836,235 +5949,619 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
     super.dispose();
   }
 
+  // ── Tick ──────────────────────────────────────────────────────────────────
   void _tick() {
-    final dt = 1 / 60.0;
+    if (_gameOver) return;
+    // nominal dt; kept small by animation controller 60fps
+    const double nomDt = 1 / 60.0;
+    final double dt = _mods.timeSlow ? nomDt * 0.5 : nomDt;
+
     setState(() {
-      // Shockwave decay
+      _elapsed += dt;
+      if (_elapsed >= _kICGameDuration) {
+        _elapsed = _kICGameDuration;
+        _gameOver = true;
+        return;
+      }
+
+      // ── Timers for temporary mods ──
+      if (_mods.timeSlow) {
+        _mods.timeSlowTimer -= nomDt;
+        if (_mods.timeSlowTimer <= 0) _mods.timeSlow = false;
+      }
+      if (_mods.tapForEnemy) {
+        _mods.tapForEnemyTimer -= nomDt;
+        if (_mods.tapForEnemyTimer <= 0) _mods.tapForEnemy = false;
+      }
+
+      // ── Chaos reverse timer ──
+      if (_mods.chaosReverse) {
+        _mods.chaosTimer += dt;
+        if (_mods.chaosTimer >= _kICChaosReverseInterval) {
+          _mods.chaosTimer = 0;
+          _mods.tapReversed = !_mods.tapReversed;
+          _spawnPop('FLIP!', Colors.purpleAccent);
+        }
+      }
+
+      // ── Auto-tappers ──
+      if (_mods.autoTappers > 0) {
+        _autoTapAccum += _mods.autoTappers * _kICAutoTapRate * dt;
+        while (_autoTapAccum >= 1.0) {
+          _autoTapAccum -= 1.0;
+          _applyTap(isAuto: true);
+        }
+      }
+
+      // ── Power-up pick timeout ──
+      if (_choosingPowerUp) {
+        _pickTimer -= nomDt;
+        if (_pickTimer <= 0) {
+          // Auto-pick the first choice (player ran out of time)
+          _applyPowerUp(_choices[0]);
+          _choosingPowerUp = false;
+        }
+      }
+
+      // ── Shockwave ──
       if (_shockwaveAlpha > 0) {
-        _shockwaveRadius += 200 * dt;
-        _shockwaveAlpha -= dt * 2;
+        _shockwaveRadius += 200 * nomDt;
+        _shockwaveAlpha -= nomDt * 2.5;
         if (_shockwaveAlpha < 0) _shockwaveAlpha = 0;
       }
 
-      // Digit bounce/stretch decay
-      _digitBounce *= 0.92;
-      _digitStretch = 1.0 + _digitBounce * 0.3;
+      // ── Digit bounce ──
+      _digitBounce *= 0.88;
 
-      // Background hue shift
-      _bgHue += dt * 2;
+      // ── BG hue ──
+      _bgHue += nomDt * (3 + _milestoneIndex * 0.4);
       if (_bgHue > 360) _bgHue -= 360;
 
-      // Tap speed tracking
-      _tapTrackTimer += dt;
-      if (_tapTrackTimer >= 1.0) {
-        _recentTapCounts.add(_tapsInLastSecond);
-        if (_recentTapCounts.length > 3) _recentTapCounts.removeAt(0);
-        // Unlock auto-clicker if tapping 5+/sec for 3 seconds
-        if (!_autoClickerUnlocked && _recentTapCounts.length >= 3 && _recentTapCounts.every((c) => c >= 5)) {
-          _autoClickerUnlocked = true;
-          _spawnMilestoneExplosion();
-        }
-        _tapsInLastSecond = 0;
-        _tapTrackTimer = 0;
-      }
-
-      // Auto-clicker
-      if (_autoClickerUnlocked) {
-        _autoClickerTimer += dt;
-        if (_autoClickerTimer >= 1.0) {
-          _autoClickerTimer = 0;
-          _incrementCount();
-        }
-      }
-
-      // Particles
+      // ── Particles ──
       for (final p in _particles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.vy += 50 * dt; // gravity
-        p.life -= dt;
+        p.x += p.vx * nomDt;
+        p.y += p.vy * nomDt;
+        p.vy += 60 * nomDt;
+        p.life -= nomDt;
       }
       _particles.removeWhere((p) => p.life <= 0);
+
+      // ── Pops ──
+      for (final p in _pops) {
+        p.y -= 28 * nomDt;
+        p.life -= nomDt;
+      }
+      _pops.removeWhere((p) => p.life <= 0);
     });
   }
 
-  void _incrementCount() {
-    _count += BigInt.one;
-    // Grow font size slowly
-    final countVal = _count.toInt().clamp(0, 999999);
-    if (countVal < 100) {
-      _fontSize = 48 + countVal * 0.5;
-    } else if (countVal < 1000) {
-      _fontSize = 98 + (countVal - 100) * 0.1;
+  // ── Apply a single tap unit ───────────────────────────────────────────────
+  void _applyTap({bool isAuto = false}) {
+    // Giant tap multiplier
+    double extra = 1.0;
+    if (!isAuto && _mods.giantTapCharges > 0) {
+      extra = 10.0;
+      _mods.giantTapCharges--;
+    }
+    final double value = _kICBaseTapValue * _mods.tapMultiplier * extra;
+
+    if (_mods.tapForEnemy) {
+      _enemyCount += value;
+    } else if (_mods.tapReversed) {
+      _count -= value;
     } else {
-      _fontSize = min(188, 188.0 + (countVal - 1000) * 0.01);
+      _count += value;
     }
 
-    // Check milestones
-    final milestones = [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
-    for (final m in milestones) {
-      if (countVal == m && !_milestonesHit.contains(m)) {
-        _milestonesHit.add(m);
-        _spawnMilestoneExplosion();
-      }
+    if (!isAuto) {
+      _tapsTotal++;
+      _shockwaveRadius = 0;
+      _shockwaveAlpha = 0.45;
+      _digitBounce = 1.0;
+      _spawnTapParticles();
+      _checkMilestone();
     }
   }
 
-  void _spawnMilestoneExplosion() {
-    for (int i = 0; i < 40; i++) {
-      final angle = _rng.nextDouble() * 2 * pi;
-      final speed = 80 + _rng.nextDouble() * 150;
+  // ── Check / fire milestone ─────────────────────────────────────────────────
+  void _checkMilestone() {
+    if (_choosingPowerUp) return; // don't stack events
+    if (_tapsTotal >= _nextMilestone) {
+      _fireMilestone();
+    }
+  }
+
+  void _fireMilestone() {
+    _milestoneIndex++;
+    // Next milestone: interval may have been halved by DOUBLE-DOWN
+    final int effectiveInterval =
+        (_kICMilestoneInterval / _mods.milestoneIntervalDiv).round().clamp(1, 9999);
+    _nextMilestone = _tapsTotal + effectiveInterval;
+
+    // Number of choices: 2^(milestoneIndex-1), capped at _kICMaxChoices
+    // Milestone 1 → 1 (auto-granted), 2 → 2, 3 → 4, 4 → 8 …
+    final int numChoices = min(_kICMaxChoices, 1 << (_milestoneIndex - 1)).toInt();
+
+    _spawnMilestoneExplosion();
+
+    if (numChoices == 1) {
+      // Auto-grant a random power-up
+      final pu = _kICAllPowerUps[_rng.nextInt(_kICAllPowerUps.length)];
+      _applyPowerUp(pu);
+      _spawnPop(pu.emoji + ' ' + pu.label, Colors.amberAccent, big: true);
+    } else {
+      // Build unique choices (shuffle pool, take numChoices)
+      final pool = List<_ICPowerUp>.from(_kICAllPowerUps)..shuffle(_rng);
+      _choices = pool.take(numChoices).toList();
+      _pickTimer = _kICPickTimeout;
+      _choosingPowerUp = true;
+    }
+  }
+
+  // ── Apply chosen power-up ─────────────────────────────────────────────────
+  void _applyPowerUp(_ICPowerUp pu) {
+    switch (pu.type) {
+      case _ICPowerUpType.autoTapper:
+        _mods.autoTappers++;
+        break;
+      case _ICPowerUpType.tapReverse:
+        _mods.tapReversed = !_mods.tapReversed;
+        break;
+      case _ICPowerUpType.multiplier:
+        _mods.tapMultiplier *= _kICMultiplierFactor;
+        break;
+      case _ICPowerUpType.doubleDown:
+        _mods.milestoneIntervalDiv = min(_mods.milestoneIntervalDiv * 2, 8);
+        break;
+      case _ICPowerUpType.chaosReverse:
+        _mods.chaosReverse = true;
+        _mods.chaosTimer = 0;
+        break;
+      case _ICPowerUpType.giantTap:
+        _mods.giantTapCharges += 5;
+        break;
+      case _ICPowerUpType.tapForEnemy:
+        _mods.tapForEnemy = true;
+        _mods.tapForEnemyTimer = 8.0;
+        break;
+      case _ICPowerUpType.timeSlow:
+        _mods.timeSlow = true;
+        _mods.timeSlowTimer = 10.0;
+        break;
+      case _ICPowerUpType.countReset:
+        _count = 0;
+        _spawnMilestoneExplosion();
+        break;
+      case _ICPowerUpType.bonusBurst:
+        _count += 50;
+        _spawnPop('+50!', Colors.greenAccent, big: true);
+        break;
+    }
+  }
+
+  // ── Player taps the game screen ───────────────────────────────────────────
+  void _onTap() {
+    if (_gameOver || _choosingPowerUp) return;
+    setState(() => _applyTap());
+  }
+
+  // ── Player picks a power-up card ──────────────────────────────────────────
+  void _onPickPowerUp(_ICPowerUp pu) {
+    setState(() {
+      _applyPowerUp(pu);
+      _choosingPowerUp = false;
+      _spawnPop(pu.emoji + ' ' + pu.label, Colors.cyanAccent, big: true);
+    });
+  }
+
+  // ── Juice helpers ──────────────────────────────────────────────────────────
+  void _spawnTapParticles() {
+    for (int i = 0; i < _kICTapParticles; i++) {
       _particles.add(_JuiceParticle(
-        x: 0, y: 0, // will be offset in paint
-        vx: cos(angle) * speed,
-        vy: sin(angle) * speed - 50,
-        life: 1.2,
-        color: HSVColor.fromAHSV(1, _rng.nextDouble() * 360, 0.8, 1.0).toColor(),
-        radius: 3 + _rng.nextDouble() * 3,
+        x: (_rng.nextDouble() - 0.5) * 80,
+        y: (_rng.nextDouble() - 0.5) * 50,
+        vx: (_rng.nextDouble() - 0.5) * 80,
+        vy: -40 - _rng.nextDouble() * 60,
+        life: 0.55,
+        color: HSVColor.fromAHSV(1, _bgHue + _rng.nextDouble() * 40 - 20, 0.7, 1.0).toColor(),
+        radius: 2.5 + _rng.nextDouble() * 2,
       ));
     }
   }
 
-  void _onTap() {
-    setState(() {
-      _incrementCount();
-      _tapsInLastSecond++;
-      _shockwaveRadius = 0;
-      _shockwaveAlpha = 0.5;
-      _digitBounce = 1.0;
-
-      // Small tap particles
-      for (int i = 0; i < 3; i++) {
-        _particles.add(_JuiceParticle(
-          x: (_rng.nextDouble() - 0.5) * 60,
-          y: (_rng.nextDouble() - 0.5) * 40,
-          vx: (_rng.nextDouble() - 0.5) * 60,
-          vy: -30 - _rng.nextDouble() * 40,
-          life: 0.6,
-          color: HSVColor.fromAHSV(1, _bgHue, 0.6, 1.0).toColor(),
-        ));
-      }
-    });
+  void _spawnMilestoneExplosion() {
+    for (int i = 0; i < _kICMilestoneParticles; i++) {
+      final angle = _rng.nextDouble() * 2 * pi;
+      final speed = 100 + _rng.nextDouble() * 200;
+      _particles.add(_JuiceParticle(
+        x: 0, y: 0,
+        vx: cos(angle) * speed,
+        vy: sin(angle) * speed - 60,
+        life: 1.4,
+        color: HSVColor.fromAHSV(1, _rng.nextDouble() * 360, 0.9, 1.0).toColor(),
+        radius: 3.5 + _rng.nextDouble() * 4,
+      ));
+    }
   }
 
+  void _spawnPop(String text, Color color, {bool big = false}) {
+    _pops.add(_ICPop(
+      x: (_rng.nextDouble() - 0.5) * 80,
+      y: -20 - _rng.nextDouble() * 30,
+      text: text,
+      color: color,
+      life: big ? 1.4 : 0.9,
+    ));
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final bgColor = HSVColor.fromAHSV(1, _bgHue, 0.15, 0.06).toColor();
+    final bgColor = HSVColor.fromAHSV(1, _bgHue, 0.18, 0.05).toColor();
 
     return LayoutBuilder(builder: (context, constraints) {
       final centerX = constraints.maxWidth / 2;
-      final centerY = constraints.maxHeight * 0.4;
+      final centerY = constraints.maxHeight * 0.38;
+      final timeLeft = max(0.0, _kICGameDuration - _elapsed);
+      final timerFraction = 1.0 - (_elapsed / _kICGameDuration).clamp(0.0, 1.0);
 
       return GestureDetector(
-        onTapDown: (_) => _onTap(),
+        onTapDown: (_choosingPowerUp || _gameOver) ? null : (_) => _onTap(),
         child: Container(
           color: bgColor,
           child: Stack(
             children: [
-              // Shockwave
+              // ── Timer bar (top) ──────────────────────────────────────────
+              Positioned(
+                top: 0, left: 0, right: 0,
+                height: 4,
+                child: FractionallySizedBox(
+                  widthFactor: timerFraction,
+                  alignment: Alignment.centerLeft,
+                  child: Container(
+                    color: HSVColor.fromAHSV(1, (1 - timerFraction) * 60, 0.9, 1.0).toColor(),
+                  ),
+                ),
+              ),
+
+              // ── Time remaining label ──────────────────────────────────────
+              Positioned(
+                top: 8, right: 14,
+                child: Text(
+                  '${timeLeft.ceil()}s',
+                  style: TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white.withValues(alpha: 0.55),
+                  ),
+                ),
+              ),
+
+              // ── Milestone counter (top-left) ──────────────────────────────
+              Positioned(
+                top: 8, left: 14,
+                child: Text(
+                  'EVENT $_milestoneIndex  •  next in ${max(0, _nextMilestone - _tapsTotal)}',
+                  style: TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 11,
+                    color: Colors.amberAccent.withValues(alpha: 0.65),
+                  ),
+                ),
+              ),
+
+              // ── Shockwave ring ────────────────────────────────────────────
               if (_shockwaveAlpha > 0)
                 Positioned(
                   left: centerX - _shockwaveRadius,
                   top: centerY - _shockwaveRadius,
-                  child: Container(
-                    width: _shockwaveRadius * 2,
-                    height: _shockwaveRadius * 2,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: HSVColor.fromAHSV(_shockwaveAlpha.clamp(0.0, 1.0), _bgHue, 0.5, 0.8).toColor(),
-                        width: 2,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: _shockwaveRadius * 2,
+                      height: _shockwaveRadius * 2,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: HSVColor.fromAHSV(_shockwaveAlpha.clamp(0.0, 1.0), _bgHue, 0.6, 1.0).toColor(),
+                          width: 2.5,
+                        ),
                       ),
                     ),
                   ),
                 ),
 
-              // Particles (centered on number)
+              // ── Particles ─────────────────────────────────────────────────
               ..._particles.where((p) => p.life > 0).map((p) => Positioned(
                 left: centerX + p.x - p.radius,
                 top: centerY + p.y - p.radius,
-                child: Container(
-                  width: p.radius * 2,
-                  height: p.radius * 2,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+                child: IgnorePointer(
+                  child: Container(
+                    width: p.radius * 2,
+                    height: p.radius * 2,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+                    ),
                   ),
                 ),
               )),
 
-              // The number (with physics)
-              Center(
-                child: Padding(
-                  padding: EdgeInsets.only(bottom: constraints.maxHeight * 0.2),
+              // ── Big count number ──────────────────────────────────────────
+              Positioned(
+                left: 0, right: 0,
+                top: centerY - 80,
+                child: IgnorePointer(
                   child: Transform.scale(
-                    scaleX: 1.0,
-                    scaleY: _digitStretch.clamp(0.7, 1.5),
+                    scaleY: (1.0 + _digitBounce * 0.25).clamp(0.7, 1.5),
                     child: Text(
-                      '$_count',
+                      _count < 0
+                          ? '-${(-_count).round()}'
+                          : '${_count.round()}',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontFamily: 'Avenir',
-                        fontSize: _fontSize.clamp(20, 200),
-                        fontWeight: FontWeight.bold,
-                        color: HSVColor.fromAHSV(0.7, _bgHue, 0.3, 1.0).toColor(),
+                        fontSize: _countFontSize(),
+                        fontWeight: FontWeight.w900,
+                        color: _mods.tapReversed
+                            ? Colors.redAccent.withValues(alpha: 0.9)
+                            : HSVColor.fromAHSV(0.92, _bgHue, 0.25, 1.0).toColor(),
                       ),
                     ),
                   ),
                 ),
               ),
 
-              // Auto-clicker indicator
-              if (_autoClickerUnlocked)
-                Positioned(
-                  top: 8, right: 16,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      color: Colors.greenAccent.withValues(alpha: 0.15),
-                      border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.3)),
-                    ),
-                    child: const Text('AUTO +1/s', style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.greenAccent)),
-                  ),
-                ),
-
-              // Instructions
-              Positioned(
-                bottom: 40, left: 0, right: 0,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (!_autoClickerUnlocked)
-                        Text(
-                          'Tap fast (5/sec for 3s) to unlock auto-clicker',
-                          style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white.withValues(alpha: 0.2)),
-                        ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'It never ends.',
-                        style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white.withValues(alpha: 0.15)),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              // Milestones display
-              if (_milestonesHit.isNotEmpty)
-                Positioned(
-                  top: 8, left: 16,
+              // ── Floating pop labels ───────────────────────────────────────
+              ..._pops.where((p) => p.life > 0).map((p) => Positioned(
+                left: centerX + p.x - 60,
+                top: centerY + p.y,
+                width: 120,
+                child: IgnorePointer(
                   child: Text(
-                    'Milestones: ${_milestonesHit.length}',
-                    style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.amberAccent.withValues(alpha: 0.5)),
+                    p.text,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+                    ),
                   ),
                 ),
+              )),
+
+              // ── Active mods HUD strip ─────────────────────────────────────
+              Positioned(
+                bottom: 120, left: 8, right: 8,
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: _mods.activeLabels().map((label) => Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(6),
+                      color: Colors.white.withValues(alpha: 0.06),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+                    ),
+                    child: Text(
+                      label,
+                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Colors.white70),
+                    ),
+                  )).toList(),
+                ),
+              ),
+
+              // ── Enemy count (visible when WRONG TEAM active) ──────────────
+              if (_mods.tapForEnemy)
+                Positioned(
+                  bottom: 155, left: 0, right: 0,
+                  child: Center(
+                    child: Text(
+                      'RIVAL: ${_enemyCount.round()}',
+                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.redAccent),
+                    ),
+                  ),
+                ),
+
+              // ── Tap prompt ────────────────────────────────────────────────
+              Positioned(
+                bottom: 52, left: 0, right: 0,
+                child: Center(
+                  child: Text(
+                    _mods.tapReversed ? 'TAP  (counts DOWN)' : 'TAP  to count up',
+                    style: TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 13,
+                      color: Colors.white.withValues(alpha: 0.2),
+                    ),
+                  ),
+                ),
+              ),
+
+              // ── Power-up choice overlay ───────────────────────────────────
+              if (_choosingPowerUp)
+                _buildChoiceOverlay(constraints),
+
+              // ── Game over overlay ─────────────────────────────────────────
+              if (_gameOver)
+                _buildGameOverOverlay(),
             ],
           ),
         ),
       );
     });
+  }
+
+  // ── Font size grows with count ─────────────────────────────────────────────
+  double _countFontSize() {
+    final abs = _count.abs();
+    if (abs < 50) return 72;
+    if (abs < 200) return 80;
+    if (abs < 1000) return 92;
+    return 104.0;
+  }
+
+  // ── Power-up choice overlay ────────────────────────────────────────────────
+  Widget _buildChoiceOverlay(BoxConstraints constraints) {
+    final numChoices = _choices.length;
+    // How many columns to use
+    final cols = numChoices <= 2 ? numChoices : (numChoices <= 4 ? 2 : (numChoices <= 8 ? 4 : 4));
+    final pickFrac = (_pickTimer / _kICPickTimeout).clamp(0.0, 1.0);
+
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.80),
+        child: SafeArea(
+          child: Column(
+            children: [
+              const SizedBox(height: 10),
+              // Header
+              Text(
+                'EVENT $_milestoneIndex  —  PICK A POWER-UP',
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.amberAccent,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              const SizedBox(height: 4),
+              // Pick timer bar
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: LinearProgressIndicator(
+                  value: pickFrac,
+                  backgroundColor: Colors.white12,
+                  valueColor: AlwaysStoppedAnimation(
+                    Color.lerp(Colors.redAccent, Colors.greenAccent, pickFrac)!,
+                  ),
+                  minHeight: 3,
+                ),
+              ),
+              const SizedBox(height: 8),
+              // Cards grid
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: cols,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                      childAspectRatio: numChoices <= 4 ? 1.3 : 1.0,
+                    ),
+                    itemCount: numChoices,
+                    itemBuilder: (_, i) => _buildPowerUpCard(_choices[i]),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPowerUpCard(_ICPowerUp pu) {
+    return GestureDetector(
+      onTapDown: (_) => _onPickPowerUp(pu),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: Colors.white.withValues(alpha: 0.07),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.22), width: 1.2),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(pu.emoji, style: const TextStyle(fontSize: 22)),
+            const SizedBox(height: 4),
+            Text(
+              pu.label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              pu.desc,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 9,
+                color: Colors.white.withValues(alpha: 0.55),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Game over screen ───────────────────────────────────────────────────────
+  Widget _buildGameOverOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.88),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'FINAL COUNT',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 14,
+                  letterSpacing: 2.5,
+                  color: Colors.white.withValues(alpha: 0.4),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${_count.round()}',
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 88,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '$_tapsTotal taps  •  event $_milestoneIndex',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 13,
+                  color: Colors.white.withValues(alpha: 0.4),
+                ),
+              ),
+              const SizedBox(height: 6),
+              if (_mods.activeLabels().isNotEmpty)
+                Text(
+                  _mods.activeLabels().join(' · '),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 11,
+                    color: Colors.amberAccent,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
