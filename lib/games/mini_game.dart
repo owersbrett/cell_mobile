@@ -21,15 +21,23 @@ class MiniGameSession extends ChangeNotifier {
   MiniGamePhase _phase = MiniGamePhase.intro;
   int _score = 0;
   Duration _remaining = Duration.zero;
+  Duration _bonusTime = Duration.zero;
 
   MiniGamePhase get phase => _phase;
   int get score => _score;
   Duration get remaining => _remaining;
+  Duration get bonusTime => _bonusTime;
   bool get isRunning => _phase == MiniGamePhase.playing;
 
   void addScore(int delta) {
     if (!isRunning) return;
     _score = (_score + delta).clamp(0, 1 << 31);
+    notifyListeners();
+  }
+
+  void addTime(Duration d) {
+    if (!isRunning) return;
+    _bonusTime += d;
     notifyListeners();
   }
 
@@ -50,6 +58,7 @@ class MiniGameSession extends ChangeNotifier {
   void hostReset() {
     _score = 0;
     _remaining = Duration(seconds: spec.durationSeconds);
+    _bonusTime = Duration.zero;
     _setPhase(MiniGamePhase.intro);
   }
 

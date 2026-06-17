@@ -38,6 +38,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
   Timer? _countdownTimer;
   int _countdown = 3;
   DateTime? _endsAt;
+  Duration _appliedBonus = Duration.zero;
   int? _bestScore;
   bool _newBest = false;
 
@@ -84,8 +85,14 @@ class _MiniGameHostState extends State<MiniGameHost> {
   void _begin() {
     _endsAt = DateTime.now()
         .add(Duration(seconds: widget.spec.durationSeconds));
+    _appliedBonus = Duration.zero;
     _session.hostSetPhase(MiniGamePhase.playing);
     _clock = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      final extra = _session.bonusTime - _appliedBonus;
+      if (extra > Duration.zero) {
+        _endsAt = _endsAt!.add(extra);
+        _appliedBonus = _session.bonusTime;
+      }
       final left = _endsAt!.difference(DateTime.now());
       if (left <= Duration.zero) {
         _finish();

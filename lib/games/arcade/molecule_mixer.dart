@@ -7,6 +7,9 @@ import 'package:flutter/scheduler.dart';
 const _kFont = 'Avenir';
 const _kAccent = Color(0xFF00BCD4);
 
+/// Seconds added to the clock each time a molecule is completed.
+const int _kMoleculeTimeBonus = 4;
+
 /// Vertical space reserved at the top of the play field for the target panel.
 const double _kPanelReserve = 112;
 
@@ -392,9 +395,13 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     _burst(at, _kAccent, count: 4, speed: 90);
     if (_celebT < 0 && _slots.every((s) => s.state == 2)) {
       widget.session.addScore(30);
+      widget.session.addTime(const Duration(seconds: _kMoleculeTimeBonus));
       _completedCount++;
       _popups.add(_Popup('+30', _buildCenter.translate(0, -_unit * 2.2),
           const Color(0xFFFFD54F)));
+      _popups.add(_Popup('+${_kMoleculeTimeBonus}s',
+          _buildCenter.translate(0, -_unit * 3.4),
+          const Color(0xFF69F0AE)));
       _burst(_buildCenter, _kAccent, count: 16, speed: 140);
       _celebT = 0;
     }
@@ -624,8 +631,7 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Text(
                 _target.formula,
@@ -641,19 +647,6 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  '— ${_target.name}',
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: _kFont,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: _kAccent.withValues(alpha: 0.95),
-                  ),
-                ),
-              ),
               const Spacer(),
               Text(
                 'TARGET',
@@ -666,6 +659,16 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _target.name,
+            style: TextStyle(
+              fontFamily: _kFont,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: _kAccent.withValues(alpha: 0.95),
+            ),
           ),
           const SizedBox(height: 7),
           Row(
