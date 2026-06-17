@@ -2886,6 +2886,66 @@ class _RegionalMapPainter extends CustomPainter {
 // 3. PlanetCatchGame — "Gravity Well"
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FEEL CONSTANTS — tweak these without touching game logic
+// ─────────────────────────────────────────────────────────────────────────────
+// Simulation runs at ~60 fps; all units are logical pixels / second unless noted.
+
+// Cannon
+const double _kMaxLaunchSpeed = 900.0; // px/s — maximum projectile speed
+const double _kMinLaunchSpeed = 200.0; // px/s — minimum launch speed (short drag)
+const double _kDragToSpeedScale = 2.2; // drag distance in px → speed multiplier
+const double _kProjectileRadius = 7.0; // visual + hit radius of the projectile
+
+// Gravity
+const double _kGravityConstant = 38000.0; // G — base pull strength (px³/s²)
+// Per-body mass is defined in _CannonLevel; G * mass = actual pull force constant.
+
+// Trajectory preview
+const int _kPreviewSteps = 80; // simulation steps for the dotted preview arc
+const double _kPreviewDt = 0.025; // seconds per preview step (~2s of flight shown)
+
+// Target
+const double _kTargetBaseRadius = 26.0; // hit zone radius on level 1
+const double _kTargetRadiusShrinkPerLevel = 2.0; // target shrinks each level
+
+// Levels & scoring
+const int _kPointsPerHit = 100; // base score per successful hit
+const int _kBonusPerExtraShot = 20; // bonus for spare shots left in ammo (unused)
+const int _kShotsPerLevel = 5; // shots available per level
+const double _kTotalGameSeconds = 60.0; // game ends after this many seconds
+
+// Moving target (unlocks from level 4)
+const double _kTargetMoveSpeed = 60.0; // px/s lateral speed of moving target
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One gravity body in a level layout.
+class _GravBody {
+  final Offset pos; // fraction of canvas [0..1]
+  final double mass; // multiplied by _kGravityConstant
+  final Color color;
+  final double radius; // visual radius in px
+  _GravBody({required this.pos, required this.mass, required this.color, required this.radius});
+}
+
+/// Static description of a single level.
+class _CannonLevel {
+  final List<_GravBody> bodies;
+  final Offset targetPos; // fraction of canvas
+  final bool targetMoves;
+  _CannonLevel({required this.bodies, required this.targetPos, this.targetMoves = false});
+}
+
+/// Live projectile in flight.
+class _Projectile {
+  double x, y; // px
+  double vx, vy; // px/s
+  bool alive;
+  final List<Offset> trail; // for tail rendering (canvas px)
+  _Projectile({required this.x, required this.y, required this.vx, required this.vy})
+      : alive = true, trail = [];
+}
+
 class PlanetCatchGame extends StatefulWidget {
   const PlanetCatchGame({Key? key}) : super(key: key);
   @override
@@ -2897,45 +2957,126 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  double _px = 0.5, _py = 0.5; // player planet position (fraction)
-  double _planetRadius = 16;
-  int _score = 0;
-  int _health = 3;
-  bool _gameOver = false;
+  // ── state ──────────────────────────────────────────────────────────────────
   bool _waitingToStart = true;
+  bool _gameOver = false;
+  int _score = 0;
+  int _level = 0; // index into _levels list (clamped when beyond)
+  int _shotsLeft = _kShotsPerLevel;
+  double _timeLeft = _kTotalGameSeconds;
   int _highScore = 0;
   bool _newBest = false;
 
-  final List<_Asteroid> _asteroids = [];
-  final List<_OrbitObject> _orbiting = [];
+  // ── aiming ─────────────────────────────────────────────────────────────────
+  Offset? _dragStart; // where the drag began (canvas px)
+  Offset? _dragCurrent; // current drag position (canvas px)
+  bool get _isDragging => _dragStart != null && _dragCurrent != null;
+  Size _canvasSize = Size.zero;
+
+  // ── live sim ───────────────────────────────────────────────────────────────
+  _Projectile? _projectile;
   final List<_JuiceParticle> _particles = [];
 
-  Offset? _dragTarget;
+  // moving-target offset (px, signed)
+  double _targetDrift = 0.0;
+  double _targetDriftDir = 1.0;
+
+  // ── level table ────────────────────────────────────────────────────────────
+  late List<_CannonLevel> _levels;
+
+  // cannon origin (bottom-left corner, fraction)
+  static const Offset _cannonFrac = Offset(0.12, 0.82);
 
   @override
   void initState() {
     super.initState();
+    _buildLevels();
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick);
     _loadHighScore();
   }
 
-  Future<void> _loadHighScore() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _highScore = prefs.getInt('gravity_well_high_score') ?? 0;
-    });
+  void _buildLevels() {
+    _levels = [
+      // Level 1 — one medium planet, stationary target
+      _CannonLevel(bodies: [
+        _GravBody(pos: const Offset(0.5, 0.45), mass: 1.0, color: const Color(0xFF42A5F5), radius: 22),
+      ], targetPos: const Offset(0.82, 0.25)),
+
+      // Level 2 — two bodies, target tucked behind them
+      _CannonLevel(bodies: [
+        _GravBody(pos: const Offset(0.4, 0.5), mass: 0.9, color: const Color(0xFF66BB6A), radius: 20),
+        _GravBody(pos: const Offset(0.65, 0.35), mass: 0.7, color: const Color(0xFFAB47BC), radius: 16),
+      ], targetPos: const Offset(0.78, 0.70)),
+
+      // Level 3 — heavy central body (slingshot required)
+      _CannonLevel(bodies: [
+        _GravBody(pos: const Offset(0.52, 0.42), mass: 2.0, color: const Color(0xFFFFA726), radius: 30),
+      ], targetPos: const Offset(0.15, 0.18)),
+
+      // Level 4 — moving target
+      _CannonLevel(bodies: [
+        _GravBody(pos: const Offset(0.45, 0.48), mass: 1.2, color: const Color(0xFF26C6DA), radius: 24),
+        _GravBody(pos: const Offset(0.70, 0.60), mass: 0.6, color: const Color(0xFFEF5350), radius: 14),
+      ], targetPos: const Offset(0.82, 0.22), targetMoves: true),
+
+      // Level 5 — three-body chaos
+      _CannonLevel(bodies: [
+        _GravBody(pos: const Offset(0.35, 0.38), mass: 1.1, color: const Color(0xFF7E57C2), radius: 22),
+        _GravBody(pos: const Offset(0.62, 0.30), mass: 0.8, color: const Color(0xFF26A69A), radius: 18),
+        _GravBody(pos: const Offset(0.55, 0.65), mass: 0.9, color: const Color(0xFFF06292), radius: 18),
+      ], targetPos: const Offset(0.80, 0.75)),
+
+      // Level 6 — very heavy star, target in tight spot, moves
+      _CannonLevel(bodies: [
+        _GravBody(pos: const Offset(0.50, 0.44), mass: 2.8, color: const Color(0xFFFFCA28), radius: 36),
+        _GravBody(pos: const Offset(0.28, 0.32), mass: 0.5, color: const Color(0xFF8D6E63), radius: 12),
+      ], targetPos: const Offset(0.85, 0.50), targetMoves: true),
+
+      // Level 7 — four bodies, moving target, tiny goal
+      _CannonLevel(bodies: [
+        _GravBody(pos: const Offset(0.40, 0.35), mass: 1.0, color: const Color(0xFF42A5F5), radius: 20),
+        _GravBody(pos: const Offset(0.65, 0.40), mass: 1.0, color: const Color(0xFF66BB6A), radius: 20),
+        _GravBody(pos: const Offset(0.52, 0.62), mass: 1.0, color: const Color(0xFFFFA726), radius: 20),
+        _GravBody(pos: const Offset(0.30, 0.58), mass: 0.8, color: const Color(0xFFEF5350), radius: 16),
+      ], targetPos: const Offset(0.82, 0.18), targetMoves: true),
+    ];
   }
 
-  Future<void> _saveHighScore(int score) async {
+  _CannonLevel get _currentLevel => _levels[_level.clamp(0, _levels.length - 1)];
+  double get _targetRadius => (_kTargetBaseRadius - _level * _kTargetRadiusShrinkPerLevel).clamp(10.0, _kTargetBaseRadius);
+
+  // Effective target position in canvas px (accounts for drift on moving levels)
+  Offset _targetPx(Size size) {
+    final base = _currentLevel.targetPos;
+    if (_currentLevel.targetMoves) {
+      return Offset(base.dx * size.width + _targetDrift, base.dy * size.height);
+    }
+    return Offset(base.dx * size.width, base.dy * size.height);
+  }
+
+  Future<void> _loadHighScore() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('gravity_well_high_score', score);
+    setState(() { _highScore = prefs.getInt('orbit_catch_high_score') ?? 0; });
+  }
+
+  Future<void> _saveHighScore(int s) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('orbit_catch_high_score', s);
   }
 
   void _startGame() {
     setState(() {
       _waitingToStart = false;
       _newBest = false;
+      _score = 0;
+      _level = 0;
+      _shotsLeft = _kShotsPerLevel;
+      _timeLeft = _kTotalGameSeconds;
+      _targetDrift = 0.0;
+      _targetDriftDir = 1.0;
+      _projectile = null;
+      _particles.clear();
     });
     _ctrl.forward();
   }
@@ -2946,81 +3087,35 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
     super.dispose();
   }
 
+  // ── main tick ──────────────────────────────────────────────────────────────
   void _tick() {
     if (_gameOver || _waitingToStart) return;
-    final dt = 1 / 60.0;
+    const dt = 1 / 60.0;
     setState(() {
-      // Move player toward drag target
-      if (_dragTarget != null) {
-        final dx = _dragTarget!.dx - _px;
-        final dy = _dragTarget!.dy - _py;
-        _px += dx * 5 * dt;
-        _py += dy * 5 * dt;
-        _px = _px.clamp(0.05, 0.95);
-        _py = _py.clamp(0.05, 0.95);
+      // Countdown timer
+      _timeLeft -= dt;
+      if (_timeLeft <= 0) {
+        _timeLeft = 0;
+        _endGame();
+        return;
       }
 
-      // Spawn asteroids
-      if (_rng.nextDouble() < 0.04) {
-        final side = _rng.nextInt(4);
-        double ax, ay, avx, avy;
-        final isDangerous = _rng.nextDouble() < 0.2;
-        switch (side) {
-          case 0: ax = -0.05; ay = _rng.nextDouble(); avx = 0.15 + _rng.nextDouble() * 0.1; avy = (_rng.nextDouble() - 0.5) * 0.1; break;
-          case 1: ax = 1.05; ay = _rng.nextDouble(); avx = -(0.15 + _rng.nextDouble() * 0.1); avy = (_rng.nextDouble() - 0.5) * 0.1; break;
-          case 2: ax = _rng.nextDouble(); ay = -0.05; avx = (_rng.nextDouble() - 0.5) * 0.1; avy = 0.15 + _rng.nextDouble() * 0.1; break;
-          default: ax = _rng.nextDouble(); ay = 1.05; avx = (_rng.nextDouble() - 0.5) * 0.1; avy = -(0.15 + _rng.nextDouble() * 0.1); break;
-        }
-        _asteroids.add(_Asteroid(ax, ay, avx, avy, isDangerous));
-      }
-
-      // Update asteroids — gravity pull
-      for (final a in _asteroids) {
-        final dx = _px - a.x;
-        final dy = _py - a.y;
-        final dist = sqrt(dx * dx + dy * dy).clamp(0.05, 2.0);
-        final force = 0.002 / (dist * dist);
-        a.vx += dx / dist * force;
-        a.vy += dy / dist * force;
-        a.x += a.vx * dt * 3;
-        a.y += a.vy * dt * 3;
-
-        // Capture check
-        final captureDist = (_planetRadius / 400) + 0.03;
-        if (dist < captureDist) {
-          if (a.dangerous) {
-            _health--;
-            _spawnP(a.x, a.y, Colors.redAccent, 15);
-            a.captured = true;
-            if (_health <= 0) {
-              _gameOver = true;
-              if (_score > _highScore) {
-                _highScore = _score;
-                _newBest = true;
-                _saveHighScore(_score);
-              }
-              _ctrl.stop();
-            }
-          } else {
-            _score++;
-            _orbiting.add(_OrbitObject(_rng.nextDouble() * 2 * pi, 0.03 + _orbiting.length * 0.008, _getStarColor()));
-            a.captured = true;
-            _spawnP(a.x, a.y, Colors.cyanAccent, 8);
-            // Level up
-            if (_score % 5 == 0) {
-              _planetRadius += 2;
-            }
-          }
+      // Move target drift
+      if (_currentLevel.targetMoves && _canvasSize != Size.zero) {
+        _targetDrift += _targetDriftDir * _kTargetMoveSpeed * dt;
+        final maxDrift = _canvasSize.width * 0.12;
+        if (_targetDrift.abs() > maxDrift) {
+          _targetDriftDir = -_targetDriftDir;
+          _targetDrift = _targetDrift.sign * maxDrift;
         }
       }
-      _asteroids.removeWhere((a) => a.captured || a.x < -0.2 || a.x > 1.2 || a.y < -0.2 || a.y > 1.2);
 
-      // Update orbiting objects
-      for (final o in _orbiting) {
-        o.angle += 2 * dt;
+      // Advance projectile physics
+      if (_projectile != null && _projectile!.alive) {
+        _advanceProjectile(_projectile!, dt);
       }
 
-      // Particles
+      // Age particles
       for (final p in _particles) {
         p.x += p.vx * dt;
         p.y += p.vy * dt;
@@ -3030,18 +3125,190 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
     });
   }
 
-  Color _getStarColor() {
-    final colors = [Colors.cyanAccent, Colors.amberAccent, Colors.white, Colors.lightBlueAccent, Colors.purpleAccent];
-    return colors[_rng.nextInt(colors.length)];
+  void _advanceProjectile(_Projectile proj, double dt) {
+    if (_canvasSize == Size.zero) return;
+    final size = _canvasSize;
+
+    // Sub-step for accuracy
+    const subSteps = 4;
+    final subDt = dt / subSteps;
+
+    for (int s = 0; s < subSteps; s++) {
+      // Gravity from each body
+      for (final body in _currentLevel.bodies) {
+        final bx = body.pos.dx * size.width;
+        final by = body.pos.dy * size.height;
+        final dx = bx - proj.x;
+        final dy = by - proj.y;
+        final distSq = (dx * dx + dy * dy).clamp(100.0, 1e9);
+        final dist = sqrt(distSq);
+        final force = _kGravityConstant * body.mass / distSq;
+        proj.vx += (dx / dist) * force * subDt;
+        proj.vy += (dy / dist) * force * subDt;
+
+        // Collide with body
+        if (dist < body.radius + _kProjectileRadius) {
+          proj.alive = false;
+          _spawnParticles(proj.x, proj.y, Colors.orangeAccent, 12);
+          return;
+        }
+      }
+
+      proj.x += proj.vx * subDt;
+      proj.y += proj.vy * subDt;
+
+      // Record trail (throttled)
+      if (s == 0) {
+        proj.trail.add(Offset(proj.x, proj.y));
+        if (proj.trail.length > 40) proj.trail.removeAt(0);
+      }
+
+      // Hit target?
+      final tpx = _targetPx(size);
+      final tdx = proj.x - tpx.dx;
+      final tdy = proj.y - tpx.dy;
+      final tdist = sqrt(tdx * tdx + tdy * tdy);
+      if (tdist < _targetRadius + _kProjectileRadius) {
+        proj.alive = false;
+        _onHit();
+        return;
+      }
+
+      // Out of bounds — add generous margin
+      if (proj.x < -80 || proj.x > size.width + 80 || proj.y < -80 || proj.y > size.height + 80) {
+        proj.alive = false;
+        _onMiss();
+        return;
+      }
+    }
   }
 
-  void _spawnP(double fx, double fy, Color c, int n) {
+  void _onHit() {
+    final size = _canvasSize;
+    final tpx = _targetPx(size);
+    // Score: base + time bonus + shot bonus
+    final timeBonus = (_timeLeft / _kTotalGameSeconds * 50).round();
+    final shotBonus = _shotsLeft * _kBonusPerExtraShot;
+    _score += _kPointsPerHit + timeBonus + shotBonus;
+    _spawnParticles(tpx.dx / size.width, tpx.dy / size.height, Colors.cyanAccent, 20, normalized: true);
+    _spawnParticles(tpx.dx / size.width, tpx.dy / size.height, Colors.amberAccent, 12, normalized: true);
+    // Advance level
+    _level++;
+    _shotsLeft = _kShotsPerLevel;
+    _targetDrift = 0.0;
+    _targetDriftDir = 1.0;
+    _projectile = null;
+  }
+
+  void _onMiss() {
+    _shotsLeft--;
+    if (_shotsLeft <= 0) {
+      // No shots left — lose a level (floor 0) and refill shots
+      if (_level > 0) _level--;
+      _shotsLeft = _kShotsPerLevel;
+    }
+    _projectile = null;
+  }
+
+  void _endGame() {
+    _gameOver = true;
+    if (_score > _highScore) {
+      _highScore = _score;
+      _newBest = true;
+      _saveHighScore(_score);
+    }
+    _ctrl.stop();
+  }
+
+  // ── aiming input ───────────────────────────────────────────────────────────
+  void _onDragStart(DragStartDetails d) {
+    if (_gameOver || _waitingToStart) return;
+    if (_projectile != null && _projectile!.alive) return; // busy
+    setState(() {
+      _dragStart = d.localPosition;
+      _dragCurrent = d.localPosition;
+    });
+  }
+
+  void _onDragUpdate(DragUpdateDetails d) {
+    if (_dragStart == null) return;
+    setState(() { _dragCurrent = d.localPosition; });
+  }
+
+  void _onDragEnd(DragEndDetails _) {
+    if (_dragStart == null || _dragCurrent == null) return;
+    if (_canvasSize == Size.zero) return;
+
+    final cannonPx = Offset(_cannonFrac.dx * _canvasSize.width, _cannonFrac.dy * _canvasSize.height);
+
+    // Vector FROM drag current TO drag start gives launch direction (pull-back slingshot feel)
+    final dx = _dragStart!.dx - _dragCurrent!.dx;
+    final dy = _dragStart!.dy - _dragCurrent!.dy;
+    final dragLen = sqrt(dx * dx + dy * dy).clamp(1.0, 200.0);
+    final rawSpeed = (dragLen * _kDragToSpeedScale).clamp(_kMinLaunchSpeed, _kMaxLaunchSpeed);
+    final nx = dx / dragLen;
+    final ny = dy / dragLen;
+
+    setState(() {
+      _projectile = _Projectile(
+        x: cannonPx.dx, y: cannonPx.dy,
+        vx: nx * rawSpeed, vy: ny * rawSpeed,
+      );
+      _dragStart = null;
+      _dragCurrent = null;
+    });
+  }
+
+  // ── trajectory preview ─────────────────────────────────────────────────────
+  List<Offset> _buildPreview(Size size) {
+    if (!_isDragging) return [];
+    final cannonPx = Offset(_cannonFrac.dx * size.width, _cannonFrac.dy * size.height);
+    final dx = _dragStart!.dx - _dragCurrent!.dx;
+    final dy = _dragStart!.dy - _dragCurrent!.dy;
+    final dragLen = sqrt(dx * dx + dy * dy).clamp(1.0, 200.0);
+    final rawSpeed = (dragLen * _kDragToSpeedScale).clamp(_kMinLaunchSpeed, _kMaxLaunchSpeed);
+    final nx = dx / dragLen;
+    final ny = dy / dragLen;
+
+    double px = cannonPx.dx, py = cannonPx.dy;
+    double vx = nx * rawSpeed, vy = ny * rawSpeed;
+    final pts = <Offset>[];
+
+    for (int i = 0; i < _kPreviewSteps; i++) {
+      for (final body in _currentLevel.bodies) {
+        final bx = body.pos.dx * size.width;
+        final by = body.pos.dy * size.height;
+        final ddx = bx - px;
+        final ddy = by - py;
+        final distSq = (ddx * ddx + ddy * ddy).clamp(100.0, 1e9);
+        final dist = sqrt(distSq);
+        final force = _kGravityConstant * body.mass / distSq;
+        vx += (ddx / dist) * force * _kPreviewDt;
+        vy += (ddy / dist) * force * _kPreviewDt;
+      }
+      px += vx * _kPreviewDt;
+      py += vy * _kPreviewDt;
+      pts.add(Offset(px, py));
+      if (px < -80 || px > size.width + 80 || py < -80 || py > size.height + 80) break;
+    }
+    return pts;
+  }
+
+  // ── particles ──────────────────────────────────────────────────────────────
+  void _spawnParticles(double fx, double fy, Color c, int n, {bool normalized = false}) {
+    final cx = normalized ? fx * _canvasSize.width : fx;
+    final cy = normalized ? fy * _canvasSize.height : fy;
     for (int i = 0; i < n; i++) {
+      final angle = _rng.nextDouble() * 2 * pi;
+      final speed = 40 + _rng.nextDouble() * 120;
       _particles.add(_JuiceParticle(
-        x: fx, y: fy,
-        vx: (_rng.nextDouble() - 0.5) * 0.5,
-        vy: (_rng.nextDouble() - 0.5) * 0.5,
-        life: 0.5, color: c,
+        x: cx / (_canvasSize.width.clamp(1, double.infinity)),
+        y: cy / (_canvasSize.height.clamp(1, double.infinity)),
+        vx: cos(angle) * speed / _canvasSize.width,
+        vy: sin(angle) * speed / _canvasSize.height,
+        life: 0.6 + _rng.nextDouble() * 0.4,
+        color: c,
+        radius: 2.5 + _rng.nextDouble() * 2,
       ));
     }
   }
@@ -3049,114 +3316,124 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   void _restart() {
     _ctrl.reset();
     setState(() {
-      _px = 0.5; _py = 0.5;
-      _planetRadius = 16;
-      _score = 0; _health = 3;
-      _gameOver = false;
       _waitingToStart = true;
+      _gameOver = false;
+      _score = 0;
+      _level = 0;
+      _shotsLeft = _kShotsPerLevel;
+      _timeLeft = _kTotalGameSeconds;
       _newBest = false;
-      _asteroids.clear();
-      _orbiting.clear();
+      _projectile = null;
       _particles.clear();
-      _dragTarget = null;
+      _dragStart = null;
+      _dragCurrent = null;
+      _targetDrift = 0.0;
+      _targetDriftDir = 1.0;
     });
   }
 
+  // ── build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
+      _canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
       return GestureDetector(
-        onPanStart: (d) { if (!_gameOver && !_waitingToStart) _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h); },
-        onPanUpdate: (d) { if (!_gameOver && !_waitingToStart) setState(() => _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h)); },
-        onPanEnd: (_) {},
+        onPanStart: (d) {
+          if (_waitingToStart) { _startGame(); return; }
+          _onDragStart(d);
+        },
+        onPanUpdate: _onDragUpdate,
+        onPanEnd: _onDragEnd,
         onTapDown: (d) {
-          if (_waitingToStart) {
-            _startGame();
-          } else if (!_gameOver) {
-            setState(() => _dragTarget = Offset(d.localPosition.dx / w, d.localPosition.dy / h));
-          }
+          if (_waitingToStart) _startGame();
         },
         child: Container(
           color: Colors.black,
           child: CustomPaint(
-            painter: _GravityWellPainter(
-              _px, _py, _planetRadius, _asteroids, _orbiting, _particles, _health, _score,
+            painter: _CannonGravityPainter(
+              cannonFrac: _cannonFrac,
+              level: _currentLevel,
+              targetPos: _targetPx(_canvasSize),
+              targetRadius: _targetRadius,
+              projectile: _projectile,
+              particles: _particles,
+              preview: _buildPreview(_canvasSize),
+              dragStart: _dragStart,
+              dragCurrent: _dragCurrent,
+              canvasSize: _canvasSize,
             ),
-            child: Stack(
-              children: [
-                // HUD (visible during gameplay)
-                if (!_waitingToStart)
-                  Positioned(
-                    top: 8, left: 16, right: 16,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: List.generate(3, (i) => Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: Icon(Icons.circle, size: 14, color: i < _health ? Colors.greenAccent : Colors.grey.withValues(alpha: 0.3)),
-                          )),
+            child: Stack(children: [
+              // ── HUD ──────────────────────────────────────────────────────
+              if (!_waitingToStart && !_gameOver)
+                Positioned(
+                  top: 8, left: 16, right: 16,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Shot pips
+                      Row(children: List.generate(_kShotsPerLevel, (i) => Padding(
+                        padding: const EdgeInsets.only(right: 3),
+                        child: Icon(Icons.circle, size: 11,
+                          color: i < _shotsLeft ? Colors.cyanAccent : Colors.white12),
+                      ))),
+                      // Timer
+                      Text(
+                        '${_timeLeft.ceil()}s',
+                        style: TextStyle(
+                          fontFamily: 'Avenir', fontSize: 16,
+                          color: _timeLeft < 10 ? Colors.redAccent : Colors.white70,
+                          fontWeight: _timeLeft < 10 ? FontWeight.bold : FontWeight.normal,
                         ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
-                            if (_highScore > 0)
-                              Text('Best: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white30)),
-                          ],
-                        ),
-                      ],
+                      ),
+                      // Score + level
+                      Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                        Text('$_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
+                        Text('Lv ${_level + 1}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white30)),
+                      ]),
+                    ],
+                  ),
+                ),
+
+              // ── Start screen ─────────────────────────────────────────────
+              if (_waitingToStart)
+                Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Text('Orbit Catch', style: TextStyle(fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+                  const SizedBox(height: 14),
+                  const Text('Drag from the cannon to aim.\nGravity will bend your shot.\nHit the target to level up!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
+                  const SizedBox(height: 20),
+                  if (_highScore > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.amberAccent)),
+                    ),
+                  const Text('Tap or drag to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 17, color: Colors.white70)),
+                ])),
+
+              // ── Game over screen ──────────────────────────────────────────
+              if (_gameOver)
+                Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text('Time\'s Up!  $_score pts',
+                    style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+                  if (_newBest)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Text('NEW BEST!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                    ),
+                  const SizedBox(height: 8),
+                  Text('Best: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
+                  const SizedBox(height: 14),
+                  GestureDetector(
+                    onTap: _restart,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                      decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
+                      child: const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
                     ),
                   ),
-                // Start screen
-                if (_waitingToStart)
-                  Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('Gravity Well', style: TextStyle(fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
-                        const SizedBox(height: 16),
-                        const Text('Drag to move. Capture asteroids.\nAvoid red objects.', textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
-                        const SizedBox(height: 20),
-                        if (_highScore > 0)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 20),
-                            child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent)),
-                          ),
-                        const Text('Tap to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.white70)),
-                      ],
-                    ),
-                  ),
-                // Game over screen
-                if (_gameOver)
-                  Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('Game Over! Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-                        if (_newBest)
-                          const Padding(
-                            padding: EdgeInsets.only(top: 8),
-                            child: Text('NEW BEST!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-                          ),
-                        const SizedBox(height: 8),
-                        Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.amberAccent)),
-                        const SizedBox(height: 12),
-                        GestureDetector(
-                          onTap: _restart,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-                            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
-                            child: const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
+                ])),
+            ]),
           ),
         ),
       );
@@ -3164,89 +3441,172 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   }
 }
 
-class _Asteroid {
-  double x, y, vx, vy;
-  bool dangerous;
-  bool captured;
-  _Asteroid(this.x, this.y, this.vx, this.vy, this.dangerous) : captured = false;
-}
-
-class _OrbitObject {
-  double angle, orbitRadius;
-  Color color;
-  _OrbitObject(this.angle, this.orbitRadius, this.color);
-}
-
-class _GravityWellPainter extends CustomPainter {
-  final double px, py, planetRadius;
-  final List<_Asteroid> asteroids;
-  final List<_OrbitObject> orbiting;
+class _CannonGravityPainter extends CustomPainter {
+  final Offset cannonFrac;
+  final _CannonLevel level;
+  final Offset targetPos; // already in canvas px
+  final double targetRadius;
+  final _Projectile? projectile;
   final List<_JuiceParticle> particles;
-  final int health, score;
+  final List<Offset> preview;
+  final Offset? dragStart;
+  final Offset? dragCurrent;
+  final Size canvasSize;
 
-  _GravityWellPainter(this.px, this.py, this.planetRadius, this.asteroids, this.orbiting, this.particles, this.health, this.score);
+  _CannonGravityPainter({
+    required this.cannonFrac,
+    required this.level,
+    required this.targetPos,
+    required this.targetRadius,
+    required this.projectile,
+    required this.particles,
+    required this.preview,
+    required this.dragStart,
+    required this.dragCurrent,
+    required this.canvasSize,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Background stars
+    // ── Background stars (static seed) ────────────────────────────────────
     final starRng = Random(42);
-    final starPaint = Paint()..color = Colors.white.withValues(alpha: 0.3);
-    for (int i = 0; i < 80; i++) {
+    for (int i = 0; i < 90; i++) {
+      final alpha = 0.15 + starRng.nextDouble() * 0.35;
       canvas.drawCircle(
         Offset(starRng.nextDouble() * size.width, starRng.nextDouble() * size.height),
-        0.5 + starRng.nextDouble() * 1.0,
-        starPaint,
+        0.5 + starRng.nextDouble() * 1.2,
+        Paint()..color = Colors.white.withValues(alpha: alpha),
       );
     }
 
-    final cx = px * size.width;
-    final cy = py * size.height;
+    final cannonPx = Offset(cannonFrac.dx * size.width, cannonFrac.dy * size.height);
 
-    // Gravity field rings
-    for (int i = 3; i >= 1; i--) {
-      canvas.drawCircle(
-        Offset(cx, cy), planetRadius + i * 25,
-        Paint()..color = Colors.cyanAccent.withValues(alpha: 0.03 * i)..style = PaintingStyle.stroke..strokeWidth = 0.5,
-      );
+    // ── Gravity bodies ─────────────────────────────────────────────────────
+    for (final body in level.bodies) {
+      final bx = body.pos.dx * size.width;
+      final by = body.pos.dy * size.height;
+      final bPos = Offset(bx, by);
+
+      // Influence rings
+      for (int r = 4; r >= 1; r--) {
+        canvas.drawCircle(bPos, body.radius + r * 18.0,
+          Paint()
+            ..color = body.color.withValues(alpha: 0.025 * r)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 0.8);
+      }
+      // Glow
+      canvas.drawCircle(bPos, body.radius + 6,
+        Paint()..color = body.color.withValues(alpha: 0.18));
+      // Body
+      canvas.drawCircle(bPos, body.radius,
+        Paint()..color = body.color);
+      // Highlight
+      canvas.drawCircle(Offset(bx - body.radius * 0.3, by - body.radius * 0.3), body.radius * 0.35,
+        Paint()..color = Colors.white.withValues(alpha: 0.22));
     }
 
-    // Player planet
-    canvas.drawCircle(Offset(cx, cy), planetRadius + 4, Paint()..color = Colors.cyanAccent.withValues(alpha: 0.15));
-    canvas.drawCircle(Offset(cx, cy), planetRadius, Paint()..color = const Color(0xFF2196F3));
-    canvas.drawCircle(Offset(cx, cy), planetRadius * 0.6, Paint()..color = const Color(0xFF42A5F5).withValues(alpha: 0.5));
+    // ── Target ─────────────────────────────────────────────────────────────
+    // Outer pulse ring
+    canvas.drawCircle(targetPos, targetRadius + 8,
+      Paint()..color = Colors.amberAccent.withValues(alpha: 0.15)..style = PaintingStyle.stroke..strokeWidth = 1.5);
+    // Target zone
+    canvas.drawCircle(targetPos, targetRadius,
+      Paint()..color = Colors.amberAccent.withValues(alpha: 0.25));
+    canvas.drawCircle(targetPos, targetRadius,
+      Paint()..color = Colors.amberAccent..style = PaintingStyle.stroke..strokeWidth = 2.0);
+    // Crosshair
+    final ch = Paint()..color = Colors.amberAccent.withValues(alpha: 0.6)..strokeWidth = 1.2;
+    canvas.drawLine(Offset(targetPos.dx - 10, targetPos.dy), Offset(targetPos.dx + 10, targetPos.dy), ch);
+    canvas.drawLine(Offset(targetPos.dx, targetPos.dy - 10), Offset(targetPos.dx, targetPos.dy + 10), ch);
 
-    // Orbiting objects
-    for (final o in orbiting) {
-      final ox = cx + cos(o.angle) * (planetRadius + 8 + o.orbitRadius * size.width * 0.5);
-      final oy = cy + sin(o.angle) * (planetRadius + 8 + o.orbitRadius * size.width * 0.5);
-      canvas.drawCircle(Offset(ox, oy), 3, Paint()..color = o.color);
+    // ── Cannon ─────────────────────────────────────────────────────────────
+    // Determine barrel angle from drag or default upward-right
+    double barrelAngle = -pi / 4;
+    if (dragStart != null && dragCurrent != null) {
+      final ddx = dragStart!.dx - dragCurrent!.dx;
+      final ddy = dragStart!.dy - dragCurrent!.dy;
+      barrelAngle = atan2(ddy, ddx);
+    } else if (projectile != null) {
+      barrelAngle = atan2(projectile!.vy, projectile!.vx);
+    }
+    final barrelLen = 28.0;
+    final barrelEnd = Offset(
+      cannonPx.dx + cos(barrelAngle) * barrelLen,
+      cannonPx.dy + sin(barrelAngle) * barrelLen,
+    );
+    // Base
+    canvas.drawCircle(cannonPx, 14, Paint()..color = const Color(0xFF37474F));
+    canvas.drawCircle(cannonPx, 10, Paint()..color = const Color(0xFF546E7A));
+    // Barrel
+    canvas.drawLine(cannonPx, barrelEnd,
+      Paint()..color = const Color(0xFF90A4AE)..strokeWidth = 8..strokeCap = StrokeCap.round);
+    canvas.drawLine(cannonPx, barrelEnd,
+      Paint()..color = const Color(0xFFCFD8DC)..strokeWidth = 4..strokeCap = StrokeCap.round);
+
+    // ── Drag aim line ──────────────────────────────────────────────────────
+    if (dragStart != null && dragCurrent != null) {
+      final ddx = dragStart!.dx - dragCurrent!.dx;
+      final ddy = dragStart!.dy - dragCurrent!.dy;
+      final dragLen = sqrt(ddx * ddx + ddy * ddy).clamp(1.0, 200.0);
+      final powerFrac = (dragLen / 200.0).clamp(0.0, 1.0);
+      final aimColor = Color.lerp(Colors.cyanAccent, Colors.orangeAccent, powerFrac)!;
+
+      // Drag line from start to current
+      canvas.drawLine(dragStart!, dragCurrent!,
+        Paint()..color = aimColor.withValues(alpha: 0.35)..strokeWidth = 1.5..style = PaintingStyle.stroke);
+
+      // Power bar arc
+      final arcRect = Rect.fromCircle(center: cannonPx, radius: 22);
+      canvas.drawArc(arcRect, -pi, pi * powerFrac, false,
+        Paint()..color = aimColor.withValues(alpha: 0.7)..strokeWidth = 3..style = PaintingStyle.stroke..strokeCap = StrokeCap.round);
     }
 
-    // Asteroids
-    for (final a in asteroids) {
-      final ax = a.x * size.width;
-      final ay = a.y * size.height;
-      if (a.dangerous) {
-        canvas.drawCircle(Offset(ax, ay), 7, Paint()..color = Colors.redAccent.withValues(alpha: 0.4));
-        canvas.drawCircle(Offset(ax, ay), 5, Paint()..color = Colors.redAccent);
-      } else {
-        canvas.drawCircle(Offset(ax, ay), 5, Paint()..color = Colors.white.withValues(alpha: 0.6));
-        canvas.drawCircle(Offset(ax, ay), 3, Paint()..color = Colors.amberAccent);
+    // ── Trajectory preview dots ────────────────────────────────────────────
+    if (preview.isNotEmpty) {
+      for (int i = 0; i < preview.length; i++) {
+        final alpha = (1.0 - i / preview.length) * 0.55;
+        final r = 2.5 - (i / preview.length) * 1.5;
+        canvas.drawCircle(preview[i], r.clamp(0.5, 2.5),
+          Paint()..color = Colors.cyanAccent.withValues(alpha: alpha));
       }
     }
 
-    // Particles
+    // ── Projectile trail ───────────────────────────────────────────────────
+    if (projectile != null) {
+      final trail = projectile!.trail;
+      for (int i = 1; i < trail.length; i++) {
+        final alpha = (i / trail.length) * 0.6;
+        canvas.drawLine(trail[i - 1], trail[i],
+          Paint()..color = Colors.cyanAccent.withValues(alpha: alpha)..strokeWidth = 2.0..strokeCap = StrokeCap.round);
+      }
+
+      // Projectile itself
+      if (projectile!.alive) {
+        canvas.drawCircle(Offset(projectile!.x, projectile!.y), _kProjectileRadius + 3,
+          Paint()..color = Colors.cyanAccent.withValues(alpha: 0.3));
+        canvas.drawCircle(Offset(projectile!.x, projectile!.y), _kProjectileRadius,
+          Paint()..color = Colors.cyanAccent);
+        canvas.drawCircle(Offset(projectile!.x, projectile!.y), _kProjectileRadius * 0.45,
+          Paint()..color = Colors.white.withValues(alpha: 0.8));
+      }
+    }
+
+    // ── Particles ──────────────────────────────────────────────────────────
     for (final p in particles) {
-      if (p.life > 0) {
+      if (p.life > 0 && size.width > 0 && size.height > 0) {
         final px2 = p.x * size.width;
         final py2 = p.y * size.height;
-        canvas.drawCircle(Offset(px2, py2), 2.5, Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)));
+        canvas.drawCircle(
+          Offset(px2, py2), p.radius,
+          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+        );
       }
     }
   }
 
   @override
-  bool shouldRepaint(covariant _GravityWellPainter old) => true;
+  bool shouldRepaint(covariant _CannonGravityPainter old) => true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

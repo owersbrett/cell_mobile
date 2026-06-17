@@ -867,17 +867,37 @@ class _ResourcesPainter extends CustomPainter {
 // 3. OrganismHarvestGame — "Potato Harvest"
 // ============================================================================
 
+// ---------------------------------------------------------------------------
+// _PotatoPatch — state for one cell in the 4×4 harvest grid
+// ---------------------------------------------------------------------------
 class _PotatoPatch {
-  double progress; // 0..1
-  double growSpeed;
+  double progress; // 0..1 — grow progress toward ripe
+  double growSpeed; // progress units per second (base, before difficulty mult)
   bool harvested = false;
   bool rotten = false;
   bool isGolden;
-  double rotTimer = 0; // how long it's been fully ripe
+  double rotTimer = 0; // seconds spent fully ripe before harvest
   _PotatoPatch({
     this.progress = 0,
     this.growSpeed = 0.08,
     this.isGolden = false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// _ScorePop — floating score label that rises and fades
+// ---------------------------------------------------------------------------
+class _ScorePop {
+  double x, y;
+  double vy = -90; // pixels per second (upward = negative)
+  double life = 1.0; // 0..1, fades out
+  final String label;
+  final Color color;
+  _ScorePop({
+    required this.x,
+    required this.y,
+    required this.label,
+    required this.color,
   });
 }
 
@@ -889,30 +909,81 @@ class OrganismHarvestGame extends StatefulWidget {
 
 class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     with SingleTickerProviderStateMixin {
+  // ── Difficulty / timing knobs ────────────────────────────────────────────
+  /// Total game length in seconds (hard cap — always ends here).
+  static const double _gameDuration = 60.0;
+
+  /// Base grow-speed range for a fresh patch at the start of the game.
+  static const double _baseGrowMin = 0.055;
+  static const double _baseGrowMax = 0.095;
+
+  /// How much the grow-speed multiplier increases per second elapsed.
+  /// Ramps from 1.0 at t=0 up to [_difficultyPlateau] at t=[_plateauTime].
+  static const double _difficultyRampRate = 0.018; // ×/s
+
+  /// Grow-speed multiplier is capped here — difficulty plateaus, never goes
+  /// unplayable.
+  static const double _difficultyPlateau = 1.65;
+
+  // Difficulty plateaus at ~37s — ( (_difficultyPlateau-1) / _difficultyRampRate )
+
+  /// Seconds a ripe potato can sit before it rots.
+  static const double _rotWindow = 4.5;
+
+  /// Seconds before rot at which we show the urgent red border.
+  static const double _rotWarnThreshold = 2.5;
+
+  /// Chance a new patch is a golden potato.
+  static const double _goldenChance = 0.10;
+
+  /// Milliseconds before a harvested patch re-sprouts.
+  static const int _replantDelayMs = 550;
+
+  /// Helper cooldown in seconds between auto-saves.
+  static const double _helperCooldownMax = 7.0;
+
+  /// Water boost multiplier on grow speed (cosmetic — player waters to rush
+  /// a patch to ripe faster, then harvests before it rots).
+  static const double _waterSpeedMult = 2.2;
+
+  /// Seconds a water boost lasts.
+  static const double _waterDuration = 5.0;
+
+  /// Seconds within which two harvests count as a combo continuation.
+  static const double _comboWindow = 1.8;
+
+  // ── Runtime state ─────────────────────────────────────────────────────────
   late AnimationController _ticker;
   final Random _rng = Random();
 
   double _lastTime = 0;
+  double _elapsed = 0; // total seconds played (for difficulty curve)
   int _score = 0;
   int _totalHarvested = 0;
   bool _gameOver = false;
-  double _timeRemaining = 180.0; // 3 minutes
+  double _timeRemaining = _gameDuration;
+
+  static const int _rows = 4;
+  static const int _cols = 4;
   final List<List<_PotatoPatch>> _grid = [];
+
+  // Visual feedback
   final List<_FxParticle> _fx = [];
+  final List<_ScorePop> _pops = [];
+
+  // Combo
+  int _combo = 0;
+  double _comboTimer = 0; // counts down; reset on each harvest
 
   // Coins and helper system
   int _coins = 0;
   bool _helperHired = false;
   int _helperUsesLeft = 0;
-  double _helperCooldown = 0; // seconds remaining
-  static const double _helperCooldownMax = 8.0;
+  double _helperCooldown = 0;
 
   // Water powerup
   bool _waterActive = false;
   double _waterTimer = 0;
-
-  static const int _rows = 4;
-  static const int _cols = 4;
 
   @override
   void initState() {
@@ -932,11 +1003,18 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     }
   }
 
+  /// Grow speed for a fresh patch, scaled by current difficulty.
+  double _currentDiffMult() {
+    final ramp = _elapsed * _difficultyRampRate;
+    return 1.0 + ramp.clamp(0.0, _difficultyPlateau - 1.0);
+  }
+
   _PotatoPatch _newPatch() {
+    final base = _baseGrowMin + _rng.nextDouble() * (_baseGrowMax - _baseGrowMin);
     return _PotatoPatch(
-      progress: _rng.nextDouble() * 0.2,
-      growSpeed: 0.06 + _rng.nextDouble() * 0.06,
-      isGolden: _rng.nextDouble() < 0.08,
+      progress: _rng.nextDouble() * 0.15,
+      growSpeed: base * _currentDiffMult(),
+      isGolden: _rng.nextDouble() < _goldenChance,
     );
   }
 
@@ -950,11 +1028,13 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     if (_gameOver) return;
     final now = _ticker.lastElapsedDuration?.inMicroseconds ?? 0;
     final t = now / 1e6;
-    final dt = _lastTime == 0 ? 0.016 : (t - _lastTime).clamp(0, 0.05);
+    final dt = (_lastTime == 0 ? 0.016 : (t - _lastTime)).clamp(0.0, 0.05);
     _lastTime = t;
 
     setState(() {
-      // 3-minute time limit
+      _elapsed += dt;
+
+      // ── Hard 60-second cap ──────────────────────────────────────────────
       _timeRemaining -= dt;
       if (_timeRemaining <= 0) {
         _timeRemaining = 0;
@@ -962,7 +1042,16 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
         return;
       }
 
-      // Update water timer
+      // ── Combo decay ─────────────────────────────────────────────────────
+      if (_combo > 0) {
+        _comboTimer -= dt;
+        if (_comboTimer <= 0) {
+          _combo = 0;
+          _comboTimer = 0;
+        }
+      }
+
+      // ── Water timer ─────────────────────────────────────────────────────
       if (_waterActive) {
         _waterTimer -= dt;
         if (_waterTimer <= 0) {
@@ -971,86 +1060,71 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
         }
       }
 
-      // Update helper cooldown
+      // ── Helper cooldown ─────────────────────────────────────────────────
       if (_helperHired && _helperCooldown > 0) {
-        _helperCooldown -= dt;
-        if (_helperCooldown < 0) _helperCooldown = 0;
+        _helperCooldown = (_helperCooldown - dt).clamp(0.0, _helperCooldownMax);
       }
 
-      final double speedMult = _waterActive ? 2.0 : 1.0;
+      final double speedMult = _waterActive ? _waterSpeedMult : 1.0;
 
-      bool anyGrowing = false;
+      // ── Patch updates ───────────────────────────────────────────────────
       for (int r = 0; r < _rows; r++) {
         for (int c = 0; c < _cols; c++) {
           final patch = _grid[r][c];
-          if (patch.harvested) continue;
-          if (patch.rotten) continue;
+          if (patch.harvested || patch.rotten) continue;
 
           if (patch.progress < 1.0) {
             patch.progress =
-                (patch.progress + patch.growSpeed * speedMult * dt).clamp(0, 1);
-            anyGrowing = true;
+                (patch.progress + patch.growSpeed * speedMult * dt).clamp(0.0, 1.0);
           } else {
-            // Fully ripe — start rot timer
             patch.rotTimer += dt;
 
-            // Helper auto-harvest: when progress > 85% and about to rot
+            // Helper auto-save: rescues patches dangerously close to rotting
             if (_helperHired &&
                 _helperUsesLeft > 0 &&
                 _helperCooldown <= 0 &&
-                patch.rotTimer > 2.5) {
-              // Helper saves this potato
+                patch.rotTimer > _rotWarnThreshold) {
               _helperUsesLeft--;
               _helperCooldown = _helperCooldownMax;
-              _doHarvest(r, c);
+              _doHarvest(r, c, fromHelper: true);
               continue;
             }
 
-            if (patch.rotTimer > 4.0) {
+            if (patch.rotTimer > _rotWindow) {
               patch.rotten = true;
-            } else {
-              anyGrowing = true;
             }
           }
         }
       }
 
-      // Check game over: all patches rotten or harvested with none growing
-      if (!anyGrowing) {
-        bool allDone = true;
-        for (int r = 0; r < _rows; r++) {
-          for (int c = 0; c < _cols; c++) {
-            final patch = _grid[r][c];
-            if (!patch.rotten && !patch.harvested) {
-              allDone = false;
-              break;
-            }
-          }
-          if (!allDone) break;
-        }
-        if (allDone) {
-          _gameOver = true;
-        }
-      }
-
-      // Update fx
+      // ── FX particles ─────────────────────────────────────────────────────
       for (final p in _fx) {
         p.x += p.vx * dt;
         p.y += p.vy * dt;
-        p.vy += 150 * dt;
-        p.life -= dt * 1.5;
+        p.vy += 160 * dt; // gravity
+        p.life -= dt * 1.8;
       }
       _fx.removeWhere((p) => p.life <= 0);
+
+      // ── Score pops ───────────────────────────────────────────────────────
+      for (final pop in _pops) {
+        pop.y += pop.vy * dt;
+        pop.life -= dt * 1.1;
+      }
+      _pops.removeWhere((pop) => pop.life <= 0);
     });
   }
 
-  void _doHarvest(int r, int c) {
+  // ── Harvest logic ─────────────────────────────────────────────────────────
+
+  void _doHarvest(int r, int c, {bool fromHelper = false}) {
     final patch = _grid[r][c];
     if (patch.harvested || patch.rotten) return;
 
     patch.harvested = true;
     _totalHarvested++;
 
+    // Base points
     int points;
     int coinEarned;
     if (patch.progress >= 0.9) {
@@ -1063,11 +1137,23 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
       points = patch.isGolden ? 10 : 2;
       coinEarned = patch.isGolden ? 1 : 0;
     }
-    _score += points;
+
+    // Combo multiplier (only for player taps, not helper)
+    int comboBonus = 0;
+    if (!fromHelper) {
+      _combo++;
+      _comboTimer = _comboWindow;
+      if (_combo >= 2) {
+        comboBonus = (_combo - 1) * 3; // +3 per combo step above ×1
+      }
+    }
+
+    final totalPoints = points + comboBonus;
+    _score += totalPoints;
     _coins += coinEarned;
 
-    // Auto-replant after delay
-    Future.delayed(const Duration(milliseconds: 800), () {
+    // Auto-replant
+    Future.delayed(Duration(milliseconds: _replantDelayMs), () {
       if (!mounted) return;
       setState(() {
         _grid[r][c] = _newPatch();
@@ -1075,15 +1161,63 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     });
   }
 
-  void _harvest(int r, int c) {
+  void _spawnHarvestFx(double px, double py, _PotatoPatch patch, int points) {
+    final Color burstColor = patch.isGolden
+        ? const Color(0xFFFFD700)
+        : patch.progress >= 0.9
+            ? const Color(0xFF66BB6A)
+            : const Color(0xFFA5D6A7);
+
+    final int count = patch.isGolden ? 14 : 8;
+    for (int i = 0; i < count; i++) {
+      final angle = _rng.nextDouble() * pi * 2;
+      final speed = 60 + _rng.nextDouble() * 90;
+      _fx.add(_FxParticle(
+        x: px,
+        y: py,
+        vx: cos(angle) * speed,
+        vy: sin(angle) * speed - 30,
+        life: 0.55 + _rng.nextDouble() * 0.35,
+        color: burstColor,
+        size: patch.isGolden ? 5 + _rng.nextDouble() * 3 : 3 + _rng.nextDouble() * 3,
+      ));
+    }
+
+    // Score pop label
+    final labelColor = _combo >= 3
+        ? const Color(0xFFFF9800)
+        : patch.isGolden
+            ? const Color(0xFFFFD700)
+            : Colors.white;
+    final label = _combo >= 2 ? '+$points ×$_combo' : '+$points';
+    _pops.add(_ScorePop(x: px, y: py - 12, label: label, color: labelColor));
+  }
+
+  void _harvest(int r, int c, double px, double py) {
     if (_gameOver) return;
     final patch = _grid[r][c];
     if (patch.harvested || patch.rotten) return;
 
     setState(() {
+      // Capture pre-harvest state for FX
+      final bool wasGolden = patch.isGolden;
+      final double prog = patch.progress;
+
+      int points;
+      if (prog >= 0.9) {
+        points = wasGolden ? 50 : 10;
+      } else if (prog >= 0.5) {
+        points = wasGolden ? 25 : 5;
+      } else {
+        points = wasGolden ? 10 : 2;
+      }
+      // Will be re-calculated in _doHarvest, but we need combo state for FX
       _doHarvest(r, c);
+      _spawnHarvestFx(px, py, patch, points + (_combo > 1 ? (_combo - 1) * 3 : 0));
     });
   }
+
+  // ── Powerup actions ───────────────────────────────────────────────────────
 
   void _hireHelper() {
     if (_coins >= 10) {
@@ -1101,7 +1235,7 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
       setState(() {
         _coins -= 3;
         _waterActive = true;
-        _waterTimer = 5.0;
+        _waterTimer = _waterDuration;
       });
     }
   }
@@ -1112,487 +1246,636 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
       _totalHarvested = 0;
       _gameOver = false;
       _lastTime = 0;
+      _elapsed = 0;
       _coins = 0;
       _helperHired = false;
       _helperUsesLeft = 0;
       _helperCooldown = 0;
       _waterActive = false;
       _waterTimer = 0;
-      _timeRemaining = 180.0;
+      _timeRemaining = _gameDuration;
+      _combo = 0;
+      _comboTimer = 0;
       _fx.clear();
+      _pops.clear();
       _initGrid();
     });
   }
 
+  // ── Visual helpers ────────────────────────────────────────────────────────
+
   Color _patchColor(_PotatoPatch p) {
-    if (p.rotten) return const Color(0xFF4E342E);
-    if (p.harvested) return const Color(0xFF263238);
+    if (p.rotten) return const Color(0xFF3E2723);
+    if (p.harvested) return const Color(0xFF1C2A30);
     Color base;
     if (p.progress < 0.5) {
       base = const Color(0xFF5D4037);
     } else if (p.progress < 0.9) {
       base = const Color(0xFF7B5E3B);
     } else {
-      base = const Color(0xFF4CAF50);
+      // Fully ripe — green, shifting toward red as rot timer advances
+      final rotFrac = (p.rotTimer / _rotWindow).clamp(0.0, 1.0);
+      base = Color.lerp(const Color(0xFF4CAF50), const Color(0xFFEF5350), rotFrac)!;
     }
-    // Blue tint when watered
     if (_waterActive && !p.harvested && !p.rotten) {
-      base = Color.lerp(base, const Color(0xFF42A5F5), 0.25)!;
+      base = Color.lerp(base, const Color(0xFF42A5F5), 0.22)!;
     }
     return base;
   }
+
+  /// Border color & width for a patch — golden trim, rot warning, default.
+  ({Color color, double width}) _patchBorder(_PotatoPatch p) {
+    if (p.harvested || p.rotten) {
+      return (color: Colors.white10, width: 1.0);
+    }
+    if (p.isGolden) {
+      return (color: const Color(0xFFFFD700).withValues(alpha: 0.7), width: 2.0);
+    }
+    if (p.progress >= 1.0 && p.rotTimer > _rotWarnThreshold) {
+      // Urgent: use a pulsing red shade based on how deep into warning we are
+      final urgency = ((p.rotTimer - _rotWarnThreshold) /
+              (_rotWindow - _rotWarnThreshold))
+          .clamp(0.0, 1.0);
+      return (
+        color: Color.lerp(const Color(0xFFEF9A9A), const Color(0xFFEF5350), urgency)!,
+        width: 2.0
+      );
+    }
+    if (p.progress >= 0.9) {
+      return (color: const Color(0xFF4CAF50).withValues(alpha: 0.55), width: 1.5);
+    }
+    return (color: Colors.white12, width: 1.0);
+  }
+
+  /// Grade string for end screen based on score.
+  String _grade() {
+    if (_score >= 300) return 'S';
+    if (_score >= 200) return 'A';
+    if (_score >= 130) return 'B';
+    if (_score >= 70) return 'C';
+    return 'D';
+  }
+
+  Color _gradeColor() {
+    switch (_grade()) {
+      case 'S': return const Color(0xFFFFD700);
+      case 'A': return const Color(0xFF66BB6A);
+      case 'B': return const Color(0xFF42A5F5);
+      case 'C': return const Color(0xFFFFB74D);
+      default:  return const Color(0xFFEF5350);
+    }
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final w = constraints.maxWidth;
       final h = constraints.maxHeight;
-      // Calculate responsive grid sizing
-      final hudHeight = 70.0;
-      final bottomBarHeight = 60.0;
-      final gridPadding = 12.0;
-      final availableH = h - hudHeight - bottomBarHeight - gridPadding * 2;
-      final availableW = w - gridPadding * 2;
-      final spacing = 6.0;
-      final patchW = (availableW - (_cols - 1) * spacing) / _cols;
-      final patchH = (availableH - (_rows - 1) * spacing) / _rows;
-      final patchSize = patchW < patchH ? patchW : patchH;
+      const double hudHeight = 72.0;
+      const double bottomBarHeight = 62.0;
+      const double gridPadding = 12.0;
+      final double availableH = h - hudHeight - bottomBarHeight - gridPadding * 2;
+      final double availableW = w - gridPadding * 2;
+      const double spacing = 7.0;
+      final double patchW = (availableW - (_cols - 1) * spacing) / _cols;
+      final double patchH = (availableH - (_rows - 1) * spacing) / _rows;
+      final double patchSize = patchW < patchH ? patchW : patchH;
 
-      return GestureDetector(
-        onTap: _gameOver ? _restart : null,
-        child: Container(
-          color: const Color(0xFF1B1B1B),
-          child: Stack(
-            children: [
-              // HUD top row
-              Positioned(
-                top: 8,
-                left: 12,
-                right: 12,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Score: $_score',
-                          style: const TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white70,
-                          ),
+      return Container(
+        color: const Color(0xFF161616),
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            // ── HUD ────────────────────────────────────────────────────────
+            Positioned(
+              top: 8,
+              left: 12,
+              right: 12,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Score + harvested
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Score: $_score',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
                         ),
-                        Text(
-                          'Harvested: $_totalHarvested',
-                          style: const TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 12,
-                            color: Colors.white38,
-                          ),
+                      ),
+                      Text(
+                        'Harvested: $_totalHarvested',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 11,
+                          color: Colors.white38,
                         ),
-                        Text(
-                          '${(_timeRemaining ~/ 60)}:${(_timeRemaining % 60).toInt().toString().padLeft(2, '0')}',
-                          style: TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: _timeRemaining < 30 ? const Color(0xFFEF5350) : Colors.white54,
-                          ),
+                      ),
+                    ],
+                  ),
+
+                  // Combo indicator (hidden when combo is 0)
+                  AnimatedOpacity(
+                    opacity: _combo >= 2 ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF9800).withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFFF9800), width: 1),
+                      ),
+                      child: Text(
+                        '×$_combo COMBO',
+                        style: const TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFFFF9800),
                         ),
-                      ],
+                      ),
                     ),
-                    // Coins
-                    Row(
-                      children: [
-                        const Icon(Icons.monetization_on,
-                            size: 18, color: Color(0xFFFFD700)),
-                        const SizedBox(width: 3),
-                        Text(
-                          '$_coins',
-                          style: const TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFFFFD700),
-                          ),
+                  ),
+
+                  // Timer + coins
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        '${(_timeRemaining ~/ 60).toString().padLeft(1, '0')}:${(_timeRemaining % 60).toInt().toString().padLeft(2, '0')}',
+                        style: TextStyle(
+                          fontFamily: 'Avenir',
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: _timeRemaining < 15
+                              ? const Color(0xFFEF5350)
+                              : _timeRemaining < 30
+                                  ? const Color(0xFFFFB74D)
+                                  : Colors.white60,
                         ),
-                      ],
-                    ),
-                    // Helper mascot indicator
-                    if (_helperHired && _helperUsesLeft > 0)
+                      ),
                       Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Text('🥔',
-                              style: TextStyle(fontSize: 16)),
+                          const Icon(Icons.monetization_on,
+                              size: 14, color: Color(0xFFFFD700)),
                           const SizedBox(width: 2),
                           Text(
-                            'x$_helperUsesLeft',
+                            '$_coins',
                             style: const TextStyle(
                               fontFamily: 'Avenir',
-                              fontSize: 12,
-                              color: Colors.white54,
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFFFD700),
                             ),
                           ),
-                          if (_helperCooldown > 0) ...[
-                            const SizedBox(width: 4),
+                          if (_helperHired && _helperUsesLeft > 0) ...[
+                            const SizedBox(width: 6),
+                            const Text('🥔',
+                                style: TextStyle(fontSize: 12)),
                             Text(
-                              '${_helperCooldown.toStringAsFixed(0)}s',
+                              '×$_helperUsesLeft',
                               style: const TextStyle(
                                 fontFamily: 'Avenir',
-                                fontSize: 10,
-                                color: Colors.white30,
+                                fontSize: 11,
+                                color: Colors.white54,
                               ),
                             ),
                           ],
                         ],
                       ),
-                    // Restart button
-                    GestureDetector(
-                      onTap: _restart,
-                      child: const Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.refresh,
-                            color: Colors.white24, size: 20),
+                    ],
+                  ),
+
+                  // Restart
+                  GestureDetector(
+                    onTap: _restart,
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(Icons.refresh, color: Colors.white24, size: 20),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // ── Water boost badge ──────────────────────────────────────────
+            if (_waterActive)
+              Positioned(
+                top: 52,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF42A5F5).withValues(alpha: 0.25),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                          color: const Color(0xFF42A5F5).withValues(alpha: 0.5)),
+                    ),
+                    child: Text(
+                      '💧 Water ×${_waterSpeedMult.toStringAsFixed(1)}  ${_waterTimer.toStringAsFixed(1)}s',
+                      style: const TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 11,
+                        color: Color(0xFF90CAF9),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // ── Grid ──────────────────────────────────────────────────────
+            Positioned(
+              top: hudHeight,
+              left: gridPadding,
+              right: gridPadding,
+              bottom: bottomBarHeight,
+              child: Center(
+                child: SizedBox(
+                  width: patchSize * _cols + spacing * (_cols - 1),
+                  height: patchSize * _rows + spacing * (_rows - 1),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: List.generate(_rows, (r) {
+                      return Padding(
+                        padding: EdgeInsets.only(
+                            bottom: r < _rows - 1 ? spacing : 0),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: List.generate(_cols, (c) {
+                            final patch = _grid[r][c];
+                            final border = _patchBorder(patch);
+                            final bool isRipe = patch.progress >= 0.9 &&
+                                !patch.harvested &&
+                                !patch.rotten;
+                            return Padding(
+                              padding: EdgeInsets.only(
+                                  right: c < _cols - 1 ? spacing : 0),
+                              child: GestureDetector(
+                                onTapDown: (details) {
+                                  // Use the tap position for FX origin
+                                  _harvest(r, c,
+                                      gridPadding +
+                                          c * (patchSize + spacing) +
+                                          patchSize / 2,
+                                      hudHeight +
+                                          r * (patchSize + spacing) +
+                                          patchSize / 2);
+                                },
+                                child: Container(
+                                  width: patchSize,
+                                  height: patchSize,
+                                  decoration: BoxDecoration(
+                                    color: _patchColor(patch),
+                                    borderRadius: BorderRadius.circular(9),
+                                    border: Border.all(
+                                      color: border.color,
+                                      width: border.width,
+                                    ),
+                                    boxShadow: isRipe
+                                        ? [
+                                            BoxShadow(
+                                              color: (patch.isGolden
+                                                      ? const Color(0xFFFFD700)
+                                                      : const Color(0xFF4CAF50))
+                                                  .withValues(alpha: 0.45),
+                                              blurRadius: 10,
+                                              spreadRadius: 1,
+                                            ),
+                                          ]
+                                        : null,
+                                  ),
+                                  child: _buildPatchContent(patch, patchSize),
+                                ),
+                              ),
+                            );
+                          }),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+              ),
+            ),
+
+            // ── FX particles ──────────────────────────────────────────────
+            ..._fx.where((p) => p.life > 0).map((p) => Positioned(
+                  left: p.x - p.size / 2,
+                  top: p.y - p.size / 2,
+                  child: Container(
+                    width: p.size,
+                    height: p.size,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: p.color.withValues(alpha: p.life.clamp(0.0, 1.0)),
+                    ),
+                  ),
+                )),
+
+            // ── Score pops ────────────────────────────────────────────────
+            ..._pops.where((pop) => pop.life > 0).map((pop) => Positioned(
+                  left: pop.x - 24,
+                  top: pop.y,
+                  child: Opacity(
+                    opacity: pop.life.clamp(0.0, 1.0),
+                    child: Text(
+                      pop.label,
+                      style: TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: pop.color,
+                        shadows: const [
+                          Shadow(
+                            color: Colors.black,
+                            blurRadius: 4,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                )),
+
+            // ── Bottom action bar ─────────────────────────────────────────
+            if (!_gameOver)
+              Positioned(
+                bottom: 8,
+                left: 12,
+                right: 12,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildActionButton(
+                      label: 'Helper',
+                      cost: 10,
+                      icon: '🥔',
+                      enabled: _coins >= 10,
+                      activeColor: const Color(0xFFE19816),
+                      activeBg: const Color(0xFF4E342E),
+                      onTap: _hireHelper,
+                    ),
+                    _buildActionButton(
+                      label: 'Water',
+                      cost: 3,
+                      iconWidget: Icon(
+                        Icons.water_drop,
+                        size: 14,
+                        color: _coins >= 3 && !_waterActive
+                            ? const Color(0xFF42A5F5)
+                            : Colors.white24,
+                      ),
+                      enabled: _coins >= 3 && !_waterActive,
+                      activeColor: const Color(0xFF42A5F5),
+                      activeBg: const Color(0xFF1A3A4A),
+                      onTap: _activateWater,
+                    ),
+                    const Text(
+                      'Tap to harvest!',
+                      style: TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 10,
+                        color: Colors.white24,
                       ),
                     ),
                   ],
                 ),
               ),
-              // Water active indicator
-              if (_waterActive)
-                Positioned(
-                  top: 48,
-                  left: 0,
-                  right: 0,
+
+            // ── Game-over overlay ─────────────────────────────────────────
+            if (_gameOver)
+              GestureDetector(
+                onTap: _restart,
+                child: Container(
+                  color: Colors.black54,
                   child: Center(
                     child: Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 3),
+                          horizontal: 32, vertical: 28),
+                      margin: const EdgeInsets.symmetric(horizontal: 32),
                       decoration: BoxDecoration(
-                        color:
-                            const Color(0xFF42A5F5).withValues(alpha: 0.3),
-                        borderRadius: BorderRadius.circular(8),
+                        color: const Color(0xFF1E1E1E),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                            color: _gradeColor().withValues(alpha: 0.6), width: 2),
                       ),
-                      child: Text(
-                        'Water Boost: ${_waterTimer.toStringAsFixed(1)}s',
-                        style: const TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 11,
-                          color: Color(0xFF90CAF9),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              // Responsive Grid
-              Positioned(
-                top: hudHeight,
-                left: gridPadding,
-                right: gridPadding,
-                bottom: bottomBarHeight,
-                child: Center(
-                  child: SizedBox(
-                    width: patchSize * _cols + spacing * (_cols - 1),
-                    height: patchSize * _rows + spacing * (_rows - 1),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: List.generate(_rows, (r) {
-                        return Padding(
-                          padding: EdgeInsets.only(
-                              bottom: r < _rows - 1 ? spacing : 0),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: List.generate(_cols, (c) {
-                              final patch = _grid[r][c];
-                              return Padding(
-                                padding: EdgeInsets.only(
-                                    right: c < _cols - 1 ? spacing : 0),
-                                child: GestureDetector(
-                                  onTap: () => _harvest(r, c),
-                                  child: Container(
-                                    width: patchSize,
-                                    height: patchSize,
-                                    decoration: BoxDecoration(
-                                      color: _patchColor(patch),
-                                      borderRadius:
-                                          BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: patch.isGolden &&
-                                                !patch.harvested
-                                            ? const Color(0xFFFFD700)
-                                                .withValues(alpha: 0.5)
-                                            : Colors.white12,
-                                        width: patch.isGolden &&
-                                                !patch.harvested
-                                            ? 2
-                                            : 1,
-                                      ),
-                                      boxShadow: patch.progress >= 0.9 &&
-                                              !patch.harvested &&
-                                              !patch.rotten
-                                          ? [
-                                              BoxShadow(
-                                                color: const Color(
-                                                        0xFF4CAF50)
-                                                    .withValues(
-                                                        alpha: 0.4),
-                                                blurRadius: 8,
-                                              ),
-                                            ]
-                                          : null,
-                                    ),
-                                    child: Column(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        if (patch.rotten)
-                                          Icon(Icons.close,
-                                              color: Colors.white24,
-                                              size: patchSize * 0.35)
-                                        else if (patch.harvested)
-                                          Icon(Icons.check,
-                                              color: Colors.white24,
-                                              size: patchSize * 0.3)
-                                        else ...[
-                                          Icon(
-                                            Icons.grass,
-                                            color: patch.isGolden
-                                                ? const Color(0xFFFFD700)
-                                                : Colors.white54,
-                                            size: patchSize * 0.3 +
-                                                patch.progress *
-                                                    patchSize *
-                                                    0.1,
-                                          ),
-                                          SizedBox(
-                                              height: patchSize * 0.04),
-                                          // Progress bar
-                                          Container(
-                                            width: patchSize * 0.6,
-                                            height: patchSize * 0.07,
-                                            decoration: BoxDecoration(
-                                              borderRadius:
-                                                  BorderRadius.circular(
-                                                      3),
-                                              border: Border.all(
-                                                  color: Colors.white24),
-                                            ),
-                                            child:
-                                                FractionallySizedBox(
-                                              alignment:
-                                                  Alignment.centerLeft,
-                                              widthFactor:
-                                                  patch.progress,
-                                              child: Container(
-                                                decoration:
-                                                    BoxDecoration(
-                                                  borderRadius:
-                                                      BorderRadius
-                                                          .circular(2),
-                                                  color: patch.progress <
-                                                          0.5
-                                                      ? Colors.orange
-                                                      : patch.progress <
-                                                              0.9
-                                                          ? Colors.yellow
-                                                          : patch.rotTimer >
-                                                                  2.5
-                                                              ? Colors
-                                                                  .red
-                                                              : Colors
-                                                                  .green,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Harvest Done!',
+                            style: const TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
-                        );
-                      }),
+                          const SizedBox(height: 10),
+                          // Grade badge
+                          Container(
+                            width: 54,
+                            height: 54,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _gradeColor().withValues(alpha: 0.15),
+                              border: Border.all(color: _gradeColor(), width: 2.5),
+                            ),
+                            child: Center(
+                              child: Text(
+                                _grade(),
+                                style: TextStyle(
+                                  fontFamily: 'Avenir',
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.bold,
+                                  color: _gradeColor(),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Score: $_score',
+                            style: const TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFE19816),
+                            ),
+                          ),
+                          Text(
+                            '$_totalHarvested potatoes harvested',
+                            style: const TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 13,
+                              color: Colors.white54,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF4CAF50).withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                  color: const Color(0xFF4CAF50).withValues(alpha: 0.5)),
+                            ),
+                            child: const Text(
+                              'Tap to Play Again',
+                              style: TextStyle(
+                                fontFamily: 'Avenir',
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF81C784),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-              // FX particles
-              ..._fx.where((p) => p.life > 0).map((p) => Positioned(
-                    left: p.x - p.size / 2,
-                    top: p.y - p.size / 2,
-                    child: Container(
-                      width: p.size,
-                      height: p.size,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color:
-                            p.color.withValues(alpha: p.life.clamp(0.0, 1.0)),
-                      ),
-                    ),
-                  )),
-              // Bottom action bar
-              if (!_gameOver)
-                Positioned(
-                  bottom: 8,
-                  left: 12,
-                  right: 12,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      // Hire Helper button
-                      GestureDetector(
-                        onTap: _coins >= 10 ? _hireHelper : null,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: _coins >= 10
-                                ? const Color(0xFF4E342E)
-                                : const Color(0xFF2C2C2C),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: _coins >= 10
-                                  ? const Color(0xFFE19816)
-                                  : Colors.white12,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Text('🥔',
-                                  style: TextStyle(fontSize: 14)),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Helper (10)',
-                                style: TextStyle(
-                                  fontFamily: 'Avenir',
-                                  fontSize: 11,
-                                  color: _coins >= 10
-                                      ? const Color(0xFFE19816)
-                                      : Colors.white24,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      // Water button
-                      GestureDetector(
-                        onTap: _coins >= 3 && !_waterActive
-                            ? _activateWater
-                            : null,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: _coins >= 3 && !_waterActive
-                                ? const Color(0xFF1A3A4A)
-                                : const Color(0xFF2C2C2C),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: _coins >= 3 && !_waterActive
-                                  ? const Color(0xFF42A5F5)
-                                  : Colors.white12,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.water_drop,
-                                size: 14,
-                                color: _coins >= 3 && !_waterActive
-                                    ? const Color(0xFF42A5F5)
-                                    : Colors.white24,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Water (3)',
-                                style: TextStyle(
-                                  fontFamily: 'Avenir',
-                                  fontSize: 11,
-                                  color: _coins >= 3 && !_waterActive
-                                      ? const Color(0xFF42A5F5)
-                                      : Colors.white24,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      // Tip
-                      const Text(
-                        'Tap to harvest!',
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 10,
-                          color: Colors.white24,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              // Game over overlay
-              if (_gameOver)
-                Center(
-                  child: Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: const Color(0xCC000000),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text(
-                          'Game Over',
-                          style: TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white70,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Final Score: $_score',
-                          style: const TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 20,
-                            color: Color(0xFFE19816),
-                          ),
-                        ),
-                        Text(
-                          'Harvested: $_totalHarvested potatoes',
-                          style: const TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 14,
-                            color: Colors.white54,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Tap to Play Again',
-                          style: TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 14,
-                            color: Colors.white38,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          ),
+          ],
         ),
       );
     });
+  }
+
+  // ── Sub-builders ──────────────────────────────────────────────────────────
+
+  Widget _buildPatchContent(_PotatoPatch p, double patchSize) {
+    if (p.rotten) {
+      return Icon(Icons.close, color: Colors.white24, size: patchSize * 0.35);
+    }
+    if (p.harvested) {
+      return Icon(Icons.check, color: Colors.white24, size: patchSize * 0.3);
+    }
+    // Growing / ripe
+    final bool isRipe = p.progress >= 0.9;
+    final Color iconColor = p.isGolden
+        ? const Color(0xFFFFD700)
+        : isRipe
+            ? const Color(0xFF81C784)
+            : Colors.white54;
+    final double iconSize =
+        patchSize * 0.28 + p.progress * patchSize * 0.12;
+
+    // Progress bar color
+    Color barColor;
+    if (p.progress < 0.5) {
+      barColor = const Color(0xFFFF8F00); // orange
+    } else if (p.progress < 0.9) {
+      barColor = const Color(0xFFFFEE58); // yellow
+    } else if (p.rotTimer > _rotWarnThreshold) {
+      barColor = const Color(0xFFEF5350); // urgent red
+    } else {
+      barColor = const Color(0xFF66BB6A); // ripe green
+    }
+
+    // Rot urgency — show a shrinking "time left" bar when ripe
+    final double rotFrac = isRipe
+        ? (1.0 - (p.rotTimer / _rotWindow).clamp(0.0, 1.0))
+        : 1.0;
+
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.grass, color: iconColor, size: iconSize),
+        SizedBox(height: patchSize * 0.04),
+        // Grow progress bar
+        ClipRRect(
+          borderRadius: BorderRadius.circular(3),
+          child: Container(
+            width: patchSize * 0.62,
+            height: patchSize * 0.07,
+            color: Colors.white10,
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: p.progress,
+              child: Container(color: barColor),
+            ),
+          ),
+        ),
+        // Rot countdown bar (visible only when ripe)
+        if (isRipe) ...[
+          SizedBox(height: patchSize * 0.025),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: Container(
+              width: patchSize * 0.62,
+              height: patchSize * 0.045,
+              color: Colors.white10,
+              child: FractionallySizedBox(
+                alignment: Alignment.centerLeft,
+                widthFactor: rotFrac,
+                child: Container(
+                  color: Color.lerp(
+                    const Color(0xFFEF5350),
+                    const Color(0xFF4CAF50),
+                    rotFrac,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildActionButton({
+    required String label,
+    required int cost,
+    String? icon,
+    Widget? iconWidget,
+    required bool enabled,
+    required Color activeColor,
+    required Color activeBg,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: enabled ? activeBg : const Color(0xFF2A2A2A),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(
+            color: enabled ? activeColor : Colors.white10,
+            width: enabled ? 1.5 : 1.0,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null)
+              Text(icon, style: const TextStyle(fontSize: 14))
+            else if (iconWidget != null)
+              iconWidget,
+            const SizedBox(width: 5),
+            Text(
+              '$label ($cost)',
+              style: TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 11,
+                color: enabled ? activeColor : Colors.white24,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
