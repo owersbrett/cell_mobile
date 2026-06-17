@@ -6720,14 +6720,63 @@ class _GravitySlingPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// NeuronConnectGame — "Signal Router"
-// Route electrical signals through a neural network by rotating gate directions
+// NeuronConnectGame — "Cosmic Web" time-trial
+// Route signals through an escalating sequence of cosmic-web puzzles as fast
+// as you can within the time limit. Each solved puzzle instantly spawns a harder
+// one. Score is puzzles cleared × speed bonus. Impossible to fully master.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Direction a gate routes the signal.
+// ---------------------------------------------------------------------------
+// FEEL / VISUAL CONSTANTS — tweak here without touching game logic
+// ---------------------------------------------------------------------------
+
+/// Total seconds for the time-trial run.
+const double _ncTrialDuration = 60.0;
+
+/// How fast the signal moves across one cell (cells per second).
+const double _ncSignalSpeed = 3.2;
+
+/// Starfield: number of background stars.
+const int _ncStarCount = 110;
+
+/// Glow bloom radius on nodes (logical pixels added to node radius for blur).
+const double _ncNodeGlowBlur = 14.0;
+
+/// Glow bloom radius on the signal dot.
+const double _ncSignalGlowBlur = 12.0;
+
+/// Particle count burst on puzzle clear.
+const int _ncClearParticles = 28;
+
+/// Particle count burst on signal death.
+const int _ncDeadParticles = 14;
+
+/// Particle lifetime on clear (seconds).
+const double _ncClearParticleLife = 1.1;
+
+/// Particle lifetime on death (seconds).
+const double _ncDeadParticleLife = 0.7;
+
+/// Easing exponent for particle spread (higher = tighter burst).
+const double _ncParticleSpeedMax = 2.4;
+
+/// Points awarded per cleared puzzle (multiplied by puzzle index for escalation).
+const int _ncBasePoints = 100;
+
+/// Connection beam stroke width (dp).
+const double _ncBeamWidth = 3.5;
+
+/// Animated beam shimmer cycle duration (seconds).
+const double _ncBeamShimmerPeriod = 1.4;
+
+// ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+/// Direction a node's exit gate points.
 enum _GateDir { up, right, down, left }
 
-/// Grid offset produced by each direction.
+/// Grid offset for each direction.
 const Map<_GateDir, List<int>> _gateDelta = {
   _GateDir.up: [0, -1],
   _GateDir.right: [1, 0],
@@ -6735,163 +6784,81 @@ const Map<_GateDir, List<int>> _gateDelta = {
   _GateDir.left: [-1, 0],
 };
 
-/// Type of a node on the puzzle grid.
+/// Node type on the puzzle grid.
 enum _SRNodeType { normal, source, target, blocker }
 
-/// A single node in the puzzle grid.
+/// A single node in the grid.
 class _SRNode {
   _SRNodeType type;
   _GateDir dir;
   final _GateDir initialDir;
   final bool locked;
-  _SRNode({
-    required this.type,
-    required this.dir,
-    this.locked = false,
-  }) : initialDir = dir;
-
+  _SRNode({required this.type, required this.dir, this.locked = false})
+      : initialDir = dir;
   void resetDir() => dir = initialDir;
 }
 
-/// Definition of a single level.
+/// One puzzle layout.
 class _SRLevel {
   final int cols;
   final int rows;
   final List<_SRNode> nodes;
   final int minRotations;
-  final String? tutorialText;
-
-  _SRLevel({
-    required this.cols,
-    required this.rows,
-    required this.nodes,
-    required this.minRotations,
-    this.tutorialText,
-  });
+  _SRLevel({required this.cols, required this.rows, required this.nodes, required this.minRotations});
 }
 
-/// One signal travelling through the grid during animation.
+/// A live signal travelling through the grid.
 class _SRSignal {
-  int col, row;
-  int nextCol, nextRow;
+  int col, row, nextCol, nextRow;
   double t;
-  bool dead;
-  bool arrived;
+  bool dead, arrived;
   final List<List<int>> trail;
   final int id;
-  _SRSignal({
-    required this.col,
-    required this.row,
-    required this.id,
-  })  : nextCol = col,
-        nextRow = row,
-        t = 0,
-        dead = false,
-        arrived = false,
-        trail = [
-          [col, row]
-        ];
+  _SRSignal({required this.col, required this.row, required this.id})
+      : nextCol = col, nextRow = row, t = 0, dead = false, arrived = false,
+        trail = [[col, row]];
+}
+
+/// One star in the animated starfield background.
+class _NCStar {
+  final double x, y, radius, brightness, twinklePhase, twinkleSpeed;
+  const _NCStar({required this.x, required this.y, required this.radius,
+      required this.brightness, required this.twinklePhase, required this.twinkleSpeed});
 }
 
 // ---------------------------------------------------------------------------
-// Level definitions
+// Level generation
 // ---------------------------------------------------------------------------
 
-List<_SRLevel> _buildHandcraftedLevels() {
-  _SRNode n(_SRNodeType type, _GateDir dir, {bool locked = false}) =>
-      _SRNode(type: type, dir: dir, locked: locked);
-
-  const normal = _SRNodeType.normal;
-  const source = _SRNodeType.source;
-  const target = _SRNodeType.target;
-  const blocker = _SRNodeType.blocker;
-  const up = _GateDir.up;
-  const right = _GateDir.right;
-  const down = _GateDir.down;
-  const left = _GateDir.left;
-
-  return [
-    // Level 1: 3x3, source top-left, target bottom-right, 2 rotations
-    _SRLevel(
-      cols: 3, rows: 3, minRotations: 2,
-      tutorialText: 'Tap nodes to rotate arrows.\nGuide the signal to the red node.',
-      nodes: [
-        n(source, right), n(normal, up),    n(normal, down),
-        n(normal, down),  n(normal, right), n(normal, left),
-        n(normal, right), n(normal, up),    n(target, left),
-      ],
-    ),
-    // Level 2: 3x3, source top-right, target bottom-left, 3 rotations
-    _SRLevel(
-      cols: 3, rows: 3, minRotations: 3,
-      nodes: [
-        n(normal, down),  n(normal, up),   n(source, down),
-        n(normal, right), n(normal, up),   n(normal, up),
-        n(target, right), n(normal, left), n(normal, left),
-      ],
-    ),
-    // Level 3: 4x3, blockers introduced
-    _SRLevel(
-      cols: 4, rows: 3, minRotations: 3,
-      nodes: [
-        n(source, right), n(normal, right),  n(normal, up),     n(normal, down),
-        n(normal, up),    n(blocker, right), n(normal, up),     n(normal, down),
-        n(normal, right), n(normal, right),  n(blocker, right), n(target, left),
-      ],
-    ),
-    // Level 4: 4x4, locked nodes, single valid path
-    _SRLevel(
-      cols: 4, rows: 4, minRotations: 4,
-      nodes: [
-        n(source, down),             n(normal, left, locked: true), n(normal, down),  n(normal, left),
-        n(normal, right),            n(normal, up),                 n(blocker, right), n(normal, down),
-        n(normal, up, locked: true), n(normal, right),              n(normal, down),  n(normal, left),
-        n(normal, right),            n(blocker, right),             n(normal, right), n(target, left),
-      ],
-    ),
-    // Level 5: 5x4, two sources, two targets, both must arrive
-    _SRLevel(
-      cols: 5, rows: 4, minRotations: 5,
-      nodes: [
-        n(source, down),  n(normal, up),    n(blocker, right), n(normal, down),  n(source, down),
-        n(normal, right), n(normal, right), n(normal, down),   n(normal, left),  n(normal, left),
-        n(normal, up),    n(normal, down),  n(normal, right),  n(normal, up),    n(normal, down),
-        n(target, up),    n(normal, right), n(blocker, right), n(normal, left),  n(target, up),
-      ],
-    ),
-  ];
-}
-
-/// Procedurally generate a level for indices >= 5.
-_SRLevel _generateProceduralLevel(int levelIndex, Random rng) {
-  final cols = 4 + ((levelIndex - 5) ~/ 2).clamp(0, 4);
-  final rows = 4 + ((levelIndex - 4) ~/ 3).clamp(0, 3);
+/// Returns an escalating level for the given index (0-based).
+/// Grids grow from 3×3 up to 7×6 and blocker/lock density increases.
+_SRLevel _ncGenerateLevel(int idx, Random rng) {
+  // Grid size escalation: starts 3×3, grows every 2 puzzles
+  final cols = (3 + (idx ~/ 2)).clamp(3, 7);
+  final rows = (3 + (idx ~/ 3)).clamp(3, 6);
+  final total = cols * rows;
+  final blockerChance = (0.05 + idx * 0.015).clamp(0.0, 0.22);
+  final lockChance = (0.0 + idx * 0.01).clamp(0.0, 0.15);
   final dirs = _GateDir.values;
-  final totalNodes = cols * rows;
 
-  final nodes = List<_SRNode>.generate(totalNodes, (i) {
+  final nodes = List<_SRNode>.generate(total, (i) {
     final col = i % cols;
     final row = i ~/ cols;
-    if (col == 0 && row == 0) {
-      return _SRNode(type: _SRNodeType.source, dir: _GateDir.right);
-    }
-    if (col == cols - 1 && row == rows - 1) {
-      return _SRNode(type: _SRNodeType.target, dir: _GateDir.left);
-    }
-    if (col > 0 && row > 0 && col < cols - 1 && row < rows - 1 && rng.nextDouble() < 0.12) {
+    if (col == 0 && row == 0) return _SRNode(type: _SRNodeType.source, dir: _GateDir.right);
+    if (col == cols - 1 && row == rows - 1) return _SRNode(type: _SRNodeType.target, dir: _GateDir.left);
+    if (col > 0 && row > 0 && col < cols - 1 && row < rows - 1 && rng.nextDouble() < blockerChance) {
       return _SRNode(type: _SRNodeType.blocker, dir: _GateDir.right);
     }
-    final locked = rng.nextDouble() < 0.10;
+    final locked = rng.nextDouble() < lockChance;
     return _SRNode(type: _SRNodeType.normal, dir: dirs[rng.nextInt(4)], locked: locked);
   });
 
-  // BFS to find a valid path, then scramble directions along it
-  final visited = List<bool>.filled(totalNodes, false);
-  final parent = List<int>.filled(totalNodes, -1);
+  // BFS to find a solvable path, then scramble directions by 1-3 rotations
+  final visited = List<bool>.filled(total, false);
+  final parent = List<int>.filled(total, -1);
   final queue = <int>[0];
   visited[0] = true;
   bool found = false;
-
   while (queue.isNotEmpty && !found) {
     final cur = queue.removeAt(0);
     final cx = cur % cols;
@@ -6901,45 +6868,40 @@ _SRLevel _generateProceduralLevel(int levelIndex, Random rng) {
       final ny = cy + _gateDelta[d]![1];
       if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
       final ni = ny * cols + nx;
-      if (visited[ni]) continue;
-      if (nodes[ni].type == _SRNodeType.blocker) continue;
+      if (visited[ni] || nodes[ni].type == _SRNodeType.blocker) continue;
       visited[ni] = true;
       parent[ni] = cur;
       queue.add(ni);
-      if (ni == totalNodes - 1) { found = true; break; }
+      if (ni == total - 1) { found = true; break; }
     }
   }
-
   if (found) {
-    int cur = totalNodes - 1;
+    int cur = total - 1;
     while (parent[cur] != -1) {
       final prev = parent[cur];
-      final px = prev % cols;
-      final py = prev ~/ cols;
-      final cx2 = cur % cols;
-      final cy2 = cur ~/ cols;
-      final dx = cx2 - px;
-      final dy = cy2 - py;
+      final dx = (cur % cols) - (prev % cols);
+      final dy = (cur ~/ cols) - (prev ~/ cols);
       _GateDir needed;
       if (dx == 1) { needed = _GateDir.right; }
       else if (dx == -1) { needed = _GateDir.left; }
       else if (dy == 1) { needed = _GateDir.down; }
       else { needed = _GateDir.up; }
-
       if (nodes[prev].type != _SRNodeType.target && !nodes[prev].locked) {
         final rotations = 1 + rng.nextInt(3);
-        int idx = _GateDir.values.indexOf(needed);
-        idx = (idx + rotations) % 4;
-        nodes[prev] = _SRNode(type: nodes[prev].type, dir: _GateDir.values[idx], locked: nodes[prev].locked);
+        final scrambled = (_GateDir.values.indexOf(needed) + rotations) % 4;
+        nodes[prev] = _SRNode(type: nodes[prev].type, dir: _GateDir.values[scrambled], locked: false);
       } else if (nodes[prev].type != _SRNodeType.target && nodes[prev].locked) {
         nodes[prev] = _SRNode(type: nodes[prev].type, dir: needed, locked: true);
       }
       cur = prev;
     }
   }
-
-  return _SRLevel(cols: cols, rows: rows, nodes: nodes, minRotations: 3 + levelIndex);
+  return _SRLevel(cols: cols, rows: rows, nodes: nodes, minRotations: 2 + idx);
 }
+
+// ---------------------------------------------------------------------------
+// Main widget
+// ---------------------------------------------------------------------------
 
 class NeuronConnectGame extends StatefulWidget {
   const NeuronConnectGame({Key? key}) : super(key: key);
@@ -6949,239 +6911,276 @@ class NeuronConnectGame extends StatefulWidget {
 
 class _NeuronConnectGameState extends State<NeuronConnectGame>
     with SingleTickerProviderStateMixin {
-  static const _prefsKey = 'neuron_connect_stars';
-  static const int _totalLevelsShown = 12;
 
-  late AnimationController _ctrl;
-  final Random _rng = Random();
+  // ── state machine ─────────────────────────────────────────────────────────
+  // Phase: intro → trial → done
+  _NCPhase _phase = _NCPhase.intro;
 
-  Map<int, int> _starData = {};
-  bool _onLevelSelect = true;
-  int _currentLevel = 0;
+  // ── timer ─────────────────────────────────────────────────────────────────
+  double _elapsed = 0; // seconds elapsed in trial
+  double _lastWallTime = 0;
+
+  // ── puzzle state ──────────────────────────────────────────────────────────
+  int _puzzleIndex = 0; // how many puzzles spawned so far
+  int _puzzlesCleared = 0;
+  int _score = 0;
   late _SRLevel _level;
-  int _moveCount = 0;
   List<_SRNode> _playNodes = [];
   List<_SRSignal> _activeSignals = [];
-  bool _animating = false;
-  double _lastTime = 0;
-  bool _levelComplete = false;
+  bool _signalAnimating = false;
   bool _signalDead = false;
+
+  // ── cosmetics ─────────────────────────────────────────────────────────────
   final List<_JuiceParticle> _particles = [];
+  late List<_NCStar> _stars;
+  double _beamPhase = 0; // drives shimmer on connection trails
+  double _completionFlashAlpha = 0; // white flash on clear
 
-  int get _unlockedUpTo {
-    int m = 0;
-    for (int i = 0; i < _totalLevelsShown; i++) {
-      if (_starData.containsKey(i)) { m = i + 1; } else { break; }
-    }
-    return m.clamp(0, _totalLevelsShown - 1);
-  }
-
-  int get _totalStars => _starData.values.fold(0, (a, b) => a + b);
+  // ── misc ──────────────────────────────────────────────────────────────────
+  final Random _rng = Random();
+  late AnimationController _ctrl;
 
   @override
   void initState() {
     super.initState();
+    _stars = List.generate(_ncStarCount, (_) => _NCStar(
+      x: _rng.nextDouble(), y: _rng.nextDouble(),
+      radius: 0.5 + _rng.nextDouble() * 1.8,
+      brightness: 0.3 + _rng.nextDouble() * 0.7,
+      twinklePhase: _rng.nextDouble() * 2 * pi,
+      twinkleSpeed: 0.5 + _rng.nextDouble() * 1.5,
+    ));
     _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick);
-    _lastTime = _now();
-    _loadStars();
   }
-
-  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
 
   @override
   void dispose() { _ctrl.dispose(); super.dispose(); }
 
-  Future<void> _loadStars() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_prefsKey);
-    if (raw != null) {
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      _starData = decoded.map((k, v) => MapEntry(int.parse(k), v as int));
-    }
-    if (mounted) setState(() {});
+  double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
+
+  // ── phase transitions ─────────────────────────────────────────────────────
+
+  void _startTrial() {
+    _puzzleIndex = 0;
+    _puzzlesCleared = 0;
+    _score = 0;
+    _elapsed = 0;
+    _lastWallTime = _now();
+    _spawnNextPuzzle();
+    setState(() => _phase = _NCPhase.trial);
+    _ctrl.forward(from: 0);
   }
 
-  Future<void> _saveStars() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsKey, jsonEncode(_starData.map((k, v) => MapEntry(k.toString(), v))));
-  }
-
-  void _loadLevel(int index) {
-    final handcrafted = _buildHandcraftedLevels();
-    _level = index < handcrafted.length ? handcrafted[index] : _generateProceduralLevel(index, Random(index * 7 + 42));
+  void _spawnNextPuzzle() {
+    _level = _ncGenerateLevel(_puzzleIndex, Random(_puzzleIndex * 31 + 7));
     _playNodes = _level.nodes.map((n) => _SRNode(type: n.type, dir: n.dir, locked: n.locked)).toList();
-    _moveCount = 0;
     _activeSignals.clear();
-    _particles.clear();
-    _animating = false;
-    _levelComplete = false;
+    _signalAnimating = false;
     _signalDead = false;
   }
 
-  void _resetLevel() {
-    setState(() {
-      for (int i = 0; i < _playNodes.length; i++) {
-        if (!_playNodes[i].locked) _playNodes[i].dir = _level.nodes[i].dir;
-      }
-      _moveCount = 0;
-      _activeSignals.clear();
-      _particles.clear();
-      _animating = false;
-      _levelComplete = false;
-      _signalDead = false;
-    });
+  void _endTrial() {
+    setState(() => _phase = _NCPhase.done);
+    _ctrl.stop();
   }
 
+  // ── input ─────────────────────────────────────────────────────────────────
+
   void _rotateNode(int index) {
-    if (_animating || _levelComplete) return;
+    if (_phase != _NCPhase.trial || _signalAnimating) return;
     final node = _playNodes[index];
     if (node.type == _SRNodeType.blocker || node.locked) return;
     setState(() {
       node.dir = _GateDir.values[(_GateDir.values.indexOf(node.dir) + 1) % 4];
-      _moveCount++;
       _signalDead = false;
     });
   }
 
   void _sendSignal() {
-    if (_animating || _levelComplete) return;
+    if (_phase != _NCPhase.trial || _signalAnimating) return;
     setState(() {
       _activeSignals.clear();
-      _particles.clear();
       _signalDead = false;
-      _animating = true;
-      _lastTime = _now();
+      _signalAnimating = true;
       int sigId = 0;
       for (int i = 0; i < _playNodes.length; i++) {
         if (_playNodes[i].type == _SRNodeType.source) {
           _activeSignals.add(_SRSignal(col: i % _level.cols, row: i ~/ _level.cols, id: sigId++));
         }
       }
-      _ctrl.forward(from: 0);
     });
   }
+
+  // ── tick ──────────────────────────────────────────────────────────────────
 
   void _tick() {
-    if (!_animating) return;
     final now = _now();
-    final dt = (now - _lastTime).clamp(0.001, 0.05);
-    _lastTime = now;
+    final dt = (now - _lastWallTime).clamp(0.001, 0.05);
+    _lastWallTime = now;
 
     setState(() {
-      for (final p in _particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+      _beamPhase += dt;
+      if (_completionFlashAlpha > 0) _completionFlashAlpha = (_completionFlashAlpha - dt * 3).clamp(0.0, 1.0);
+
+      // ── advance particles ──────────────────────────────────────────────
+      for (final p in _particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
       _particles.removeWhere((p) => p.life <= 0);
 
-      bool anyMoving = false;
-      for (final sig in _activeSignals) {
-        if (sig.dead || sig.arrived) continue;
-        anyMoving = true;
-        sig.t += dt * 2.8;
-        if (sig.t >= 1.0) {
-          sig.col = sig.nextCol;
-          sig.row = sig.nextRow;
-          sig.t = 0;
-          sig.trail.add([sig.col, sig.row]);
-
-          final ni = sig.row * _level.cols + sig.col;
-          if (_playNodes[ni].type == _SRNodeType.target) {
-            sig.arrived = true;
-            for (int i = 0; i < 12; i++) {
-              final a = _rng.nextDouble() * 2 * pi;
-              _particles.add(_JuiceParticle(x: sig.col.toDouble(), y: sig.row.toDouble(), vx: cos(a) * 1.5, vy: sin(a) * 1.5, life: 0.8, color: Colors.greenAccent));
-            }
-            continue;
-          }
-
-          final delta = _gateDelta[_playNodes[ni].dir]!;
-          final ncol = sig.col + delta[0];
-          final nrow = sig.row + delta[1];
-
-          if (ncol < 0 || nrow < 0 || ncol >= _level.cols || nrow >= _level.rows) {
-            sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble()); continue;
-          }
-          final nni = nrow * _level.cols + ncol;
-          if (_playNodes[nni].type == _SRNodeType.blocker) {
-            sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble()); continue;
-          }
-          if (sig.trail.any((p) => p[0] == ncol && p[1] == nrow)) {
-            sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble()); continue;
-          }
-          sig.nextCol = ncol;
-          sig.nextRow = nrow;
+      if (_phase == _NCPhase.trial) {
+        // ── advance clock ──────────────────────────────────────────────
+        _elapsed += dt;
+        if (_elapsed >= _ncTrialDuration) {
+          _elapsed = _ncTrialDuration;
+          _endTrial();
+          return;
         }
-      }
 
-      if (!anyMoving || _activeSignals.every((s) => s.dead || s.arrived)) {
-        if (_activeSignals.isNotEmpty && _activeSignals.every((s) => s.arrived)) {
-          _levelComplete = true;
-          _animating = false;
-          int stars;
-          if (_moveCount <= _level.minRotations) { stars = 3; }
-          else if (_moveCount <= _level.minRotations * 2) { stars = 2; }
-          else { stars = 1; }
-          final prev = _starData[_currentLevel] ?? 0;
-          if (stars > prev) { _starData[_currentLevel] = stars; _saveStars(); }
-        } else if (_activeSignals.any((s) => s.dead)) {
-          _signalDead = true;
-          _animating = false;
+        // ── advance signal ─────────────────────────────────────────────
+        if (!_signalAnimating) return;
+        bool anyMoving = false;
+        for (final sig in _activeSignals) {
+          if (sig.dead || sig.arrived) continue;
+          anyMoving = true;
+          sig.t += dt * _ncSignalSpeed;
+          if (sig.t >= 1.0) {
+            sig.col = sig.nextCol;
+            sig.row = sig.nextRow;
+            sig.t = 0;
+            sig.trail.add([sig.col, sig.row]);
+
+            final ni = sig.row * _level.cols + sig.col;
+            if (_playNodes[ni].type == _SRNodeType.target) {
+              sig.arrived = true;
+              _spawnClearParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows);
+              continue;
+            }
+            final delta = _gateDelta[_playNodes[ni].dir]!;
+            final nc = sig.col + delta[0];
+            final nr = sig.row + delta[1];
+            if (nc < 0 || nr < 0 || nc >= _level.cols || nr >= _level.rows) {
+              sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows); continue;
+            }
+            final nni = nr * _level.cols + nc;
+            if (_playNodes[nni].type == _SRNodeType.blocker) {
+              sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows); continue;
+            }
+            if (sig.trail.any((p) => p[0] == nc && p[1] == nr)) {
+              sig.dead = true; _spawnDeadParticles(sig.col.toDouble(), sig.row.toDouble(), _level.cols, _level.rows); continue;
+            }
+            sig.nextCol = nc;
+            sig.nextRow = nr;
+          }
+        }
+
+        final allDone = !anyMoving || _activeSignals.every((s) => s.dead || s.arrived);
+        if (allDone) {
+          if (_activeSignals.isNotEmpty && _activeSignals.every((s) => s.arrived)) {
+            // ── puzzle cleared ─────────────────────────────────────────
+            _puzzlesCleared++;
+            final timeBonus = ((_ncTrialDuration - _elapsed) / _ncTrialDuration * 50).round();
+            _score += _ncBasePoints * (_puzzleIndex + 1) + timeBonus;
+            _completionFlashAlpha = 0.5;
+            _puzzleIndex++;
+            _spawnNextPuzzle();
+          } else if (_activeSignals.any((s) => s.dead)) {
+            _signalDead = true;
+            _signalAnimating = false;
+          }
         }
       }
     });
   }
 
-  void _spawnDeadParticles(double x, double y) {
-    for (int i = 0; i < 8; i++) {
+  // ── particle helpers ──────────────────────────────────────────────────────
+
+  void _spawnClearParticles(double gc, double gr, int cols, int rows) {
+    for (int i = 0; i < _ncClearParticles; i++) {
       final a = _rng.nextDouble() * 2 * pi;
-      _particles.add(_JuiceParticle(x: x, y: y, vx: cos(a) * 1.5, vy: sin(a) * 1.5, life: 0.6, color: Colors.redAccent));
+      final spd = 0.4 + _rng.nextDouble() * (_ncParticleSpeedMax - 0.4);
+      // store in normalised [0,1] space that the painter converts
+      final nx = (gc + 0.5) / cols;
+      final ny = (gr + 0.5) / rows;
+      _particles.add(_JuiceParticle(
+        x: nx, y: ny,
+        vx: cos(a) * spd / cols,
+        vy: sin(a) * spd / rows,
+        life: _ncClearParticleLife,
+        color: i % 3 == 0 ? Colors.cyanAccent : i % 3 == 1 ? Colors.purpleAccent : Colors.white,
+        radius: 2.5 + _rng.nextDouble() * 2.0,
+      ));
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_onLevelSelect) return _buildLevelSelect();
-    return _buildPuzzle();
+  void _spawnDeadParticles(double gc, double gr, int cols, int rows) {
+    for (int i = 0; i < _ncDeadParticles; i++) {
+      final a = _rng.nextDouble() * 2 * pi;
+      final spd = 0.2 + _rng.nextDouble() * 1.2;
+      final nx = (gc + 0.5) / cols;
+      final ny = (gr + 0.5) / rows;
+      _particles.add(_JuiceParticle(
+        x: nx, y: ny,
+        vx: cos(a) * spd / cols,
+        vy: sin(a) * spd / rows,
+        life: _ncDeadParticleLife,
+        color: Colors.redAccent,
+        radius: 2.0 + _rng.nextDouble() * 1.5,
+      ));
+    }
   }
 
-  Widget _buildLevelSelect() {
+  // ── build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    switch (_phase) {
+      case _NCPhase.intro: return _buildIntro();
+      case _NCPhase.trial: return _buildTrial();
+      case _NCPhase.done:  return _buildDone();
+    }
+  }
+
+  // ── intro screen ──────────────────────────────────────────────────────────
+
+  Widget _buildIntro() {
     return Container(
-      color: const Color(0xFF080818),
+      color: const Color(0xFF04040F),
       child: SafeArea(
-        child: Column(children: [
-          const SizedBox(height: 18),
-          const Text('Signal Router', style: TextStyle(fontFamily: 'Avenir', fontSize: 26, fontWeight: FontWeight.bold, color: Colors.cyanAccent, letterSpacing: 2)),
-          const SizedBox(height: 6),
-          Text('Total Stars: $_totalStars / ${_totalLevelsShown * 3}', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amber.withValues(alpha: 0.8))),
-          const SizedBox(height: 20),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: GridView.builder(
-                itemCount: _totalLevelsShown,
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 14, crossAxisSpacing: 14),
-                itemBuilder: (context, index) {
-                  final unlocked = index <= _unlockedUpTo;
-                  final stars = _starData[index] ?? 0;
-                  return GestureDetector(
-                    onTap: unlocked ? () => setState(() { _currentLevel = index; _loadLevel(index); _onLevelSelect = false; }) : null,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: unlocked ? const Color(0xFF152040) : const Color(0xFF0A0A14),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: unlocked ? Colors.cyanAccent.withValues(alpha: 0.4) : Colors.white10, width: 1.5),
-                      ),
-                      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                        Text('${index + 1}', style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: unlocked ? Colors.white : Colors.white24)),
-                        const SizedBox(height: 4),
-                        if (unlocked)
-                          Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(3, (i) => Icon(i < stars ? Icons.star : Icons.star_border, size: 14, color: i < stars ? Colors.amber : Colors.white24)))
-                        else
-                          const Icon(Icons.lock, size: 16, color: Colors.white24),
-                      ]),
-                    ),
-                  );
-                },
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          // title
+          const Text('COSMIC WEB', style: TextStyle(fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold, color: Colors.cyanAccent, letterSpacing: 4)),
+          const SizedBox(height: 8),
+          Text('NEURAL SIGNAL TRIAL', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, letterSpacing: 3, color: Colors.white.withValues(alpha: 0.4))),
+          const SizedBox(height: 40),
+          // instructions
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 36),
+            child: Column(children: [
+              _instrRow(Icons.touch_app, 'Tap nodes to rotate their exit gate'),
+              const SizedBox(height: 12),
+              _instrRow(Icons.send, 'Hit FIRE to send the signal'),
+              const SizedBox(height: 12),
+              _instrRow(Icons.bolt, 'Clear each puzzle — next one spawns instantly'),
+              const SizedBox(height: 12),
+              _instrRow(Icons.timer, 'You have ${_ncTrialDuration.toInt()}s. Go as far as you can.'),
+            ]),
+          ),
+          const SizedBox(height: 48),
+          GestureDetector(
+            onTap: _startTrial,
+            child: Container(
+              width: 200, height: 52,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFF00B4D8), Color(0xFF7B2FBE)]),
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [BoxShadow(color: const Color(0xFF00B4D8).withValues(alpha: 0.45), blurRadius: 20, spreadRadius: 2)],
               ),
+              alignment: Alignment.center,
+              child: const Text('LAUNCH', style: TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 3)),
             ),
           ),
         ]),
@@ -7189,197 +7188,374 @@ class _NeuronConnectGameState extends State<NeuronConnectGame>
     );
   }
 
-  Widget _buildPuzzle() {
-    return LayoutBuilder(builder: (context, constraints) {
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
-      return Container(
-        color: const Color(0xFF080818),
-        child: Stack(children: [
-          Positioned.fill(
-            child: GestureDetector(
-              onTapDown: (d) { if (!_animating) { final idx = _nodeAtPosition(d.localPosition, w, h); if (idx != null) _rotateNode(idx); } },
-              child: CustomPaint(painter: _SignalRouterPainter(level: _level, nodes: _playNodes, signals: _activeSignals, particles: _particles, levelComplete: _levelComplete)),
+  Widget _instrRow(IconData icon, String text) {
+    return Row(children: [
+      Icon(icon, size: 18, color: Colors.cyanAccent.withValues(alpha: 0.7)),
+      const SizedBox(width: 12),
+      Expanded(child: Text(text, style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white.withValues(alpha: 0.65)))),
+    ]);
+  }
+
+  // ── trial screen ──────────────────────────────────────────────────────────
+
+  Widget _buildTrial() {
+    final timeLeft = (_ncTrialDuration - _elapsed).clamp(0.0, _ncTrialDuration);
+    final timeFrac = timeLeft / _ncTrialDuration;
+    final timerColor = timeFrac > 0.4 ? Colors.cyanAccent : timeFrac > 0.15 ? Colors.amber : Colors.redAccent;
+
+    return LayoutBuilder(builder: (ctx, box) {
+      final w = box.maxWidth;
+      final h = box.maxHeight;
+      return Stack(children: [
+        // ── background + puzzle canvas ────────────────────────────────
+        Positioned.fill(
+          child: GestureDetector(
+            onTapDown: (d) {
+              if (!_signalAnimating) {
+                final idx = _ncNodeAtPos(d.localPosition, w, h);
+                if (idx != null) _rotateNode(idx);
+              }
+            },
+            child: CustomPaint(
+              painter: _NCPainter(
+                level: _level,
+                nodes: _playNodes,
+                signals: _activeSignals,
+                particles: _particles,
+                stars: _stars,
+                beamPhase: _beamPhase,
+                completionFlash: _completionFlashAlpha,
+              ),
             ),
           ),
-          // Top bar
-          Positioned(top: 8, left: 12, right: 12, child: Row(children: [
-            GestureDetector(
-              onTap: () => setState(() { _onLevelSelect = true; _animating = false; _ctrl.stop(); }),
-              child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(6)), child: const Icon(Icons.arrow_back, size: 18, color: Colors.white70)),
-            ),
-            const SizedBox(width: 10),
-            Text('Level ${_currentLevel + 1}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
-            const Spacer(),
-            Text('Moves: $_moveCount', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
-          ])),
-          // Tutorial text
-          if (_level.tutorialText != null && !_animating && !_levelComplete && _moveCount == 0)
-            Positioned(top: 40, left: 20, right: 20, child: Text(_level.tutorialText!, textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white.withValues(alpha: 0.4)))),
-          // Bottom buttons
-          Positioned(bottom: 16, left: 20, right: 20, child: Row(children: [
-            Expanded(child: GestureDetector(
-              onTap: _resetLevel,
-              child: Container(height: 44, decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24, width: 1)), alignment: Alignment.center, child: const Text('Reset', style: TextStyle(fontFamily: 'Avenir', fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white70))),
-            )),
-            const SizedBox(width: 14),
-            Expanded(flex: 2, child: GestureDetector(
-              onTap: (_animating || _levelComplete) ? null : _sendSignal,
-              child: Container(height: 44, decoration: BoxDecoration(color: (_animating || _levelComplete) ? Colors.grey.withValues(alpha: 0.2) : const Color(0xFF00B4D8), borderRadius: BorderRadius.circular(10)), alignment: Alignment.center, child: Text(_levelComplete ? 'Solved!' : 'Send Signal', style: TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: _levelComplete ? Colors.greenAccent : Colors.white))),
-            )),
-          ])),
-          // Dead-end message
-          if (_signalDead && !_animating)
-            Positioned(bottom: 72, left: 20, right: 20, child: Center(child: Text('Signal lost! Rearrange arrows and try again.', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.redAccent.withValues(alpha: 0.8))))),
-          // Level complete overlay
-          if (_levelComplete)
-            Positioned(bottom: 68, left: 20, right: 20, child: Column(children: [
-              Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(3, (i) {
-                int stars;
-                if (_moveCount <= _level.minRotations) { stars = 3; }
-                else if (_moveCount <= _level.minRotations * 2) { stars = 2; }
-                else { stars = 1; }
-                return Icon(i < stars ? Icons.star : Icons.star_border, size: 28, color: i < stars ? Colors.amber : Colors.white24);
-              })),
-              const SizedBox(height: 8),
-              GestureDetector(
-                onTap: () => setState(() { if (_currentLevel < _totalLevelsShown - 1) { _currentLevel++; _loadLevel(_currentLevel); } else { _onLevelSelect = true; } }),
-                child: Container(height: 38, width: 160, decoration: BoxDecoration(color: Colors.greenAccent.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.greenAccent, width: 1)), alignment: Alignment.center, child: Text(_currentLevel < _totalLevelsShown - 1 ? 'Next Level' : 'Back to Levels', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.w600, color: Colors.greenAccent))),
+        ),
+
+        // ── top bar ───────────────────────────────────────────────────
+        Positioned(top: 0, left: 0, right: 0,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                colors: [const Color(0xCC04040F), Colors.transparent],
               ),
-            ])),
-        ]),
-      );
+            ),
+            child: Row(children: [
+              // timer ring + number
+              SizedBox(width: 42, height: 42,
+                child: Stack(alignment: Alignment.center, children: [
+                  CircularProgressIndicator(
+                    value: timeFrac,
+                    strokeWidth: 3,
+                    backgroundColor: Colors.white12,
+                    valueColor: AlwaysStoppedAnimation(timerColor),
+                  ),
+                  Text(timeLeft.ceil().toString(),
+                    style: TextStyle(fontFamily: 'Avenir', fontSize: 13, fontWeight: FontWeight.bold, color: timerColor)),
+                ]),
+              ),
+              const SizedBox(width: 12),
+              // puzzle counter
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('WEB #${_puzzleIndex + 1}',
+                  style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold, color: Colors.cyanAccent, letterSpacing: 1.5)),
+                Text('${_level.cols}×${_level.rows} grid',
+                  style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white.withValues(alpha: 0.4))),
+              ]),
+              const Spacer(),
+              // score
+              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                Text('$_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                Text('${_puzzlesCleared} cleared',
+                  style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white.withValues(alpha: 0.4))),
+              ]),
+            ]),
+          ),
+        ),
+
+        // ── fire button + dead msg ─────────────────────────────────────
+        Positioned(bottom: 14, left: 20, right: 20,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (_signalDead && !_signalAnimating)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('Signal lost — reroute and fire again',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.redAccent.withValues(alpha: 0.85))),
+              ),
+            GestureDetector(
+              onTap: _signalAnimating ? null : _sendSignal,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                height: 50,
+                decoration: BoxDecoration(
+                  gradient: _signalAnimating
+                    ? null
+                    : const LinearGradient(colors: [Color(0xFF00B4D8), Color(0xFF7B2FBE)]),
+                  color: _signalAnimating ? Colors.white10 : null,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: _signalAnimating ? [] : [
+                    BoxShadow(color: const Color(0xFF00B4D8).withValues(alpha: 0.5), blurRadius: 16, spreadRadius: 1),
+                  ],
+                ),
+                alignment: Alignment.center,
+                child: Text(_signalAnimating ? 'TRANSMITTING...' : 'FIRE SIGNAL',
+                  style: TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold,
+                    color: _signalAnimating ? Colors.white38 : Colors.white, letterSpacing: 2)),
+              ),
+            ),
+          ]),
+        ),
+      ]);
     });
   }
 
-  int? _nodeAtPosition(Offset pos, double w, double h) {
-    final cols = _level.cols;
-    final rows = _level.rows;
-    final cellSize = _gridCellSize(w, h, cols, rows);
-    final gridW = cols * cellSize;
-    final gridH = rows * cellSize;
-    final ox = (w - gridW) / 2;
-    final oy = (h - gridH) / 2;
+  // ── done screen ───────────────────────────────────────────────────────────
+
+  Widget _buildDone() {
+    return Container(
+      color: const Color(0xFF04040F),
+      child: SafeArea(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('TRIAL COMPLETE', style: TextStyle(fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white.withValues(alpha: 0.9), letterSpacing: 3)),
+          const SizedBox(height: 30),
+          _resultRow('Score', '$_score'),
+          const SizedBox(height: 10),
+          _resultRow('Webs Cleared', '$_puzzlesCleared'),
+          const SizedBox(height: 10),
+          _resultRow('Furthest Web', 'Grid ${_level.cols}×${_level.rows}'),
+          const SizedBox(height: 48),
+          GestureDetector(
+            onTap: () => setState(() {
+              _phase = _NCPhase.intro;
+              _particles.clear();
+            }),
+            child: Container(
+              width: 180, height: 50,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFF00B4D8), Color(0xFF7B2FBE)]),
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.35), blurRadius: 18)],
+              ),
+              alignment: Alignment.center,
+              child: const Text('PLAY AGAIN', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _resultRow(String label, String value) {
+    return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Text('$label  ', style: TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white.withValues(alpha: 0.45))),
+      Text(value, style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+    ]);
+  }
+
+  // ── hit-test ──────────────────────────────────────────────────────────────
+
+  int? _ncNodeAtPos(Offset pos, double w, double h) {
+    final cellSize = _ncCellSize(w, h, _level.cols, _level.rows);
+    final ox = (w - _level.cols * cellSize) / 2;
+    final oy = (h - _level.rows * cellSize) / 2 + 20;
     for (int i = 0; i < _playNodes.length; i++) {
-      final col = i % cols;
-      final row = i ~/ cols;
-      final cx = ox + col * cellSize + cellSize / 2;
-      final cy = oy + row * cellSize + cellSize / 2;
-      if ((pos - Offset(cx, cy)).distance <= cellSize * 0.35 + 6) return i;
+      final cx = ox + (i % _level.cols) * cellSize + cellSize / 2;
+      final cy = oy + (i ~/ _level.cols) * cellSize + cellSize / 2;
+      if ((pos - Offset(cx, cy)).distance <= cellSize * 0.38 + 6) return i;
     }
     return null;
   }
 
-  double _gridCellSize(double w, double h, int cols, int rows) {
-    final cellW = (w - 40) / cols;
-    final cellH = (h - 140) / rows;
-    return cellW < cellH ? cellW : cellH;
+  double _ncCellSize(double w, double h, int cols, int rows) {
+    final cw = (w - 32) / cols;
+    final ch = (h - 160) / rows;
+    return cw < ch ? cw : ch;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Custom painter for the Signal Router puzzle grid
+// Phase enum for the time-trial state machine
+// ---------------------------------------------------------------------------
+enum _NCPhase { intro, trial, done }
+
+// ---------------------------------------------------------------------------
+// Painter: starfield + cosmic grid + glowing nodes + beam trails + particles
 // ---------------------------------------------------------------------------
 
-class _SignalRouterPainter extends CustomPainter {
+class _NCPainter extends CustomPainter {
   final _SRLevel level;
   final List<_SRNode> nodes;
   final List<_SRSignal> signals;
   final List<_JuiceParticle> particles;
-  final bool levelComplete;
+  final List<_NCStar> stars;
+  final double beamPhase;
+  final double completionFlash;
 
-  _SignalRouterPainter({required this.level, required this.nodes, required this.signals, required this.particles, required this.levelComplete});
+  _NCPainter({
+    required this.level,
+    required this.nodes,
+    required this.signals,
+    required this.particles,
+    required this.stars,
+    required this.beamPhase,
+    required this.completionFlash,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF080818));
+    // ── deep-space background ──────────────────────────────────────────
+    final bgPaint = Paint()
+      ..shader = ui.Gradient.linear(
+        Offset.zero, Offset(size.width, size.height),
+        [const Color(0xFF04040F), const Color(0xFF080820), const Color(0xFF0D0628)],
+        [0.0, 0.5, 1.0],
+      );
+    canvas.drawRect(Offset.zero & size, bgPaint);
+
+    // ── starfield ─────────────────────────────────────────────────────
+    for (final s in stars) {
+      final twinkle = 0.5 + 0.5 * sin(s.twinklePhase + beamPhase * s.twinkleSpeed);
+      final alpha = (s.brightness * twinkle).clamp(0.0, 1.0);
+      canvas.drawCircle(
+        Offset(s.x * size.width, s.y * size.height),
+        s.radius,
+        Paint()..color = Colors.white.withValues(alpha: alpha),
+      );
+    }
+
+    // ── cosmic web faint connection lines (background) ─────────────────
     final cols = level.cols;
     final rows = level.rows;
-    final cellW = (size.width - 40) / cols;
-    final cellH = (size.height - 140) / rows;
-    final cellSize = cellW < cellH ? cellW : cellH;
-    final gridW = cols * cellSize;
-    final gridH = rows * cellSize;
-    final ox = (size.width - gridW) / 2;
-    final oy = (size.height - gridH) / 2;
-    final nodeRadius = cellSize * 0.35;
+    final cellSize = _cellSize(size, cols, rows);
+    final ox = (size.width - cols * cellSize) / 2;
+    final oy = (size.height - rows * cellSize) / 2 + 20;
 
-    // Faint grid
-    final gridPaint = Paint()..color = Colors.white.withValues(alpha: 0.04)..strokeWidth = 0.5;
-    for (int c = 0; c <= cols; c++) { final x = ox + c * cellSize; canvas.drawLine(Offset(x, oy), Offset(x, oy + gridH), gridPaint); }
-    for (int r = 0; r <= rows; r++) { final y = oy + r * cellSize; canvas.drawLine(Offset(ox, y), Offset(ox + gridW, y), gridPaint); }
+    final cosmicPaint = Paint()..color = Colors.cyanAccent.withValues(alpha: 0.035)..strokeWidth = 0.8;
+    for (int c = 0; c < cols; c++) {
+      for (int r = 0; r < rows; r++) {
+        final x = ox + c * cellSize + cellSize / 2;
+        final y = oy + r * cellSize + cellSize / 2;
+        if (c < cols - 1) canvas.drawLine(Offset(x, y), Offset(x + cellSize, y), cosmicPaint);
+        if (r < rows - 1) canvas.drawLine(Offset(x, y), Offset(x, y + cellSize), cosmicPaint);
+      }
+    }
 
-    // Nodes
+    // ── nodes ──────────────────────────────────────────────────────────
+    final nodeRadius = cellSize * 0.32;
     for (int i = 0; i < nodes.length; i++) {
-      final col = i % cols;
-      final row = i ~/ cols;
-      final cx = ox + col * cellSize + cellSize / 2;
-      final cy = oy + row * cellSize + cellSize / 2;
+      final c = i % cols;
+      final r = i ~/ cols;
+      final cx = ox + c * cellSize + cellSize / 2;
+      final cy = oy + r * cellSize + cellSize / 2;
       final center = Offset(cx, cy);
       final node = nodes[i];
 
       if (node.type == _SRNodeType.blocker) {
-        canvas.drawCircle(center, nodeRadius, Paint()..color = const Color(0xFF1A1A2A));
-        canvas.drawCircle(center, nodeRadius, Paint()..color = Colors.white10..style = PaintingStyle.stroke..strokeWidth = 1.5);
-        final xPaint = Paint()..color = Colors.white24..strokeWidth = 2..strokeCap = StrokeCap.round;
-        final xr = nodeRadius * 0.4;
-        canvas.drawLine(Offset(cx - xr, cy - xr), Offset(cx + xr, cy + xr), xPaint);
-        canvas.drawLine(Offset(cx + xr, cy - xr), Offset(cx - xr, cy + xr), xPaint);
+        // dark hexagonal blocker
+        canvas.drawCircle(center, nodeRadius, Paint()..color = const Color(0xFF0E0E20));
+        canvas.drawCircle(center, nodeRadius,
+          Paint()..color = Colors.white.withValues(alpha: 0.08)..style = PaintingStyle.stroke..strokeWidth = 1.5);
+        final xp = Paint()..color = Colors.white.withValues(alpha: 0.18)..strokeWidth = 2..strokeCap = StrokeCap.round;
+        final xr = nodeRadius * 0.38;
+        canvas.drawLine(Offset(cx - xr, cy - xr), Offset(cx + xr, cy + xr), xp);
+        canvas.drawLine(Offset(cx + xr, cy - xr), Offset(cx - xr, cy + xr), xp);
         continue;
       }
 
-      Color nodeColor;
+      Color coreColor;
       Color glowColor;
       switch (node.type) {
-        case _SRNodeType.source: nodeColor = const Color(0xFF00E676); glowColor = Colors.greenAccent; break;
-        case _SRNodeType.target: nodeColor = const Color(0xFFFF1744); glowColor = Colors.redAccent; break;
-        default: nodeColor = const Color(0xFF4FC3F7); glowColor = Colors.cyanAccent;
+        case _SRNodeType.source:
+          coreColor = const Color(0xFF00E5FF); glowColor = Colors.cyanAccent; break;
+        case _SRNodeType.target:
+          coreColor = const Color(0xFFEA00FF); glowColor = Colors.purpleAccent; break;
+        default:
+          coreColor = const Color(0xFF4DFFDB); glowColor = const Color(0xFF4DFFDB);
       }
 
-      canvas.drawCircle(center, nodeRadius + 6, Paint()..color = glowColor.withValues(alpha: 0.08)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
-      canvas.drawCircle(center, nodeRadius, Paint()..color = nodeColor.withValues(alpha: node.locked ? 0.25 : 0.5));
-      canvas.drawCircle(center, nodeRadius, Paint()..color = nodeColor.withValues(alpha: 0.7)..style = PaintingStyle.stroke..strokeWidth = 2);
+      // outer glow bloom
+      canvas.drawCircle(center, nodeRadius + _ncNodeGlowBlur,
+        Paint()..color = glowColor.withValues(alpha: 0.10)..maskFilter = MaskFilter.blur(BlurStyle.normal, _ncNodeGlowBlur));
 
-      _drawArrow(canvas, center, node.dir, nodeRadius * 0.55, nodeColor.withValues(alpha: node.locked ? 0.4 : 0.9));
+      // filled core
+      canvas.drawCircle(center, nodeRadius,
+        Paint()..color = coreColor.withValues(alpha: node.locked ? 0.2 : 0.35));
 
+      // rim
+      canvas.drawCircle(center, nodeRadius,
+        Paint()..color = coreColor.withValues(alpha: node.locked ? 0.5 : 0.85)..style = PaintingStyle.stroke..strokeWidth = 1.8);
+
+      // arrow
+      _drawArrow(canvas, center, node.dir, nodeRadius * 0.52, coreColor.withValues(alpha: node.locked ? 0.35 : 0.9));
+
+      // S / T label
       if (node.type == _SRNodeType.source || node.type == _SRNodeType.target) {
         final label = node.type == _SRNodeType.source ? 'S' : 'T';
-        final tp = TextPainter(text: TextSpan(text: label, style: TextStyle(fontFamily: 'Avenir', fontSize: nodeRadius * 0.6, fontWeight: FontWeight.bold, color: Colors.white.withValues(alpha: 0.85))), textDirection: TextDirection.ltr)..layout();
+        final tp = TextPainter(
+          text: TextSpan(text: label, style: TextStyle(fontFamily: 'Avenir', fontSize: nodeRadius * 0.62, fontWeight: FontWeight.bold, color: Colors.white.withValues(alpha: 0.9))),
+          textDirection: TextDirection.ltr,
+        )..layout();
         tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
       }
 
+      // lock icon
       if (node.locked && node.type == _SRNodeType.normal) {
-        final ls = nodeRadius * 0.3;
-        final lp = Paint()..color = Colors.white30..strokeWidth = 1.2..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
-        canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(cx, cy + nodeRadius * 0.28), width: ls, height: ls * 0.8), const Radius.circular(1)), lp);
-        canvas.drawArc(Rect.fromCenter(center: Offset(cx, cy + nodeRadius * 0.28 - ls * 0.4), width: ls * 0.7, height: ls * 0.7), pi, pi, false, lp);
+        final ls = nodeRadius * 0.28;
+        final lp = Paint()..color = Colors.white38..strokeWidth = 1.1..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
+        canvas.drawRRect(RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset(cx, cy + nodeRadius * 0.26), width: ls, height: ls * 0.8), const Radius.circular(1)), lp);
+        canvas.drawArc(Rect.fromCenter(center: Offset(cx, cy + nodeRadius * 0.26 - ls * 0.38), width: ls * 0.68, height: ls * 0.68), pi, pi, false, lp);
       }
     }
 
-    // Signal trails
+    // ── signal trails (animated beam) ─────────────────────────────────
     for (final sig in signals) {
       if (sig.trail.length < 2) continue;
-      final tp = Paint()..strokeWidth = 3..strokeCap = StrokeCap.round..style = PaintingStyle.stroke;
-      if (sig.arrived) { tp.color = Colors.greenAccent.withValues(alpha: 0.6); }
-      else if (sig.dead) { tp.color = Colors.redAccent.withValues(alpha: 0.5); }
-      else { tp.color = Colors.yellowAccent.withValues(alpha: 0.4); }
-      final path = ui.Path();
-      for (int i = 0; i < sig.trail.length; i++) {
-        final tx = ox + sig.trail[i][0] * cellSize + cellSize / 2;
-        final ty = oy + sig.trail[i][1] * cellSize + cellSize / 2;
-        if (i == 0) { path.moveTo(tx, ty); } else { path.lineTo(tx, ty); }
+      Color beamColor;
+      if (sig.arrived) {
+        beamColor = Colors.cyanAccent;
+      } else if (sig.dead) {
+        beamColor = Colors.redAccent;
+      } else {
+        // shimmer: oscillate between cyan and purple
+        final shimmer = 0.5 + 0.5 * sin(beamPhase * (2 * pi / _ncBeamShimmerPeriod));
+        beamColor = Color.lerp(Colors.cyanAccent, Colors.purpleAccent, shimmer)!;
       }
-      if (!sig.dead && !sig.arrived && sig.t > 0) {
-        final fx = ox + sig.col * cellSize + cellSize / 2;
-        final fy = oy + sig.row * cellSize + cellSize / 2;
-        final tx = ox + sig.nextCol * cellSize + cellSize / 2;
-        final ty = oy + sig.nextRow * cellSize + cellSize / 2;
-        path.lineTo(fx + (tx - fx) * sig.t, fy + (ty - fy) * sig.t);
+
+      // glow pass
+      final glowPaint = Paint()
+        ..color = beamColor.withValues(alpha: 0.18)
+        ..strokeWidth = _ncBeamWidth + 6
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+      // core pass
+      final corePaint = Paint()
+        ..color = beamColor.withValues(alpha: sig.arrived ? 0.7 : 0.55)
+        ..strokeWidth = _ncBeamWidth
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke;
+
+      for (final paint in [glowPaint, corePaint]) {
+        final path = ui.Path();
+        for (int k = 0; k < sig.trail.length; k++) {
+          final tx = ox + sig.trail[k][0] * cellSize + cellSize / 2;
+          final ty = oy + sig.trail[k][1] * cellSize + cellSize / 2;
+          if (k == 0) { path.moveTo(tx, ty); } else { path.lineTo(tx, ty); }
+        }
+        if (!sig.dead && !sig.arrived && sig.t > 0) {
+          final fx = ox + sig.col * cellSize + cellSize / 2;
+          final fy = oy + sig.row * cellSize + cellSize / 2;
+          final tx = ox + sig.nextCol * cellSize + cellSize / 2;
+          final ty = oy + sig.nextRow * cellSize + cellSize / 2;
+          path.lineTo(fx + (tx - fx) * sig.t, fy + (ty - fy) * sig.t);
+        }
+        canvas.drawPath(path, paint);
       }
-      canvas.drawPath(path, tp);
     }
 
-    // Signal dots
+    // ── signal dots ───────────────────────────────────────────────────
     for (final sig in signals) {
       if (sig.dead || sig.arrived) continue;
       double sx, sy;
@@ -7394,36 +7570,60 @@ class _SignalRouterPainter extends CustomPainter {
         sx = ox + sig.col * cellSize + cellSize / 2;
         sy = oy + sig.row * cellSize + cellSize / 2;
       }
-      canvas.drawCircle(Offset(sx, sy), 10, Paint()..color = Colors.yellowAccent.withValues(alpha: 0.15));
-      canvas.drawCircle(Offset(sx, sy), 6, Paint()..color = Colors.yellowAccent.withValues(alpha: 0.6));
-      canvas.drawCircle(Offset(sx, sy), 3, Paint()..color = Colors.white);
+      // outer glow
+      canvas.drawCircle(Offset(sx, sy), _ncSignalGlowBlur,
+        Paint()..color = Colors.cyanAccent.withValues(alpha: 0.20)..maskFilter = MaskFilter.blur(BlurStyle.normal, _ncSignalGlowBlur));
+      // mid ring
+      canvas.drawCircle(Offset(sx, sy), 7,
+        Paint()..color = Colors.cyanAccent.withValues(alpha: 0.55));
+      // hot core
+      canvas.drawCircle(Offset(sx, sy), 3.5,
+        Paint()..color = Colors.white);
     }
 
-    // Particles
+    // ── particles ─────────────────────────────────────────────────────
     for (final p in particles) {
       if (p.life <= 0) continue;
-      final px = ox + p.x * cellSize + cellSize / 2;
-      final py = oy + p.y * cellSize + cellSize / 2;
-      canvas.drawCircle(Offset(px, py), 3, Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)));
+      final alpha = (p.life / p.maxLife).clamp(0.0, 1.0);
+      canvas.drawCircle(
+        Offset(p.x * size.width, p.y * size.height),
+        p.radius * alpha,
+        Paint()..color = p.color.withValues(alpha: alpha)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+      );
+    }
+
+    // ── completion flash ──────────────────────────────────────────────
+    if (completionFlash > 0) {
+      canvas.drawRect(Offset.zero & size,
+        Paint()..color = Colors.cyanAccent.withValues(alpha: completionFlash * 0.18));
     }
   }
 
   void _drawArrow(Canvas canvas, Offset center, _GateDir dir, double length, Color color) {
-    final paint = Paint()..color = color..strokeWidth = 2.5..strokeCap = StrokeCap.round..style = PaintingStyle.stroke;
-    double angle;
-    switch (dir) { case _GateDir.up: angle = -pi / 2; break; case _GateDir.right: angle = 0; break; case _GateDir.down: angle = pi / 2; break; case _GateDir.left: angle = pi; }
-    final tipX = center.dx + cos(angle) * length;
-    final tipY = center.dy + sin(angle) * length;
-    final tailX = center.dx - cos(angle) * length * 0.4;
-    final tailY = center.dy - sin(angle) * length * 0.4;
-    canvas.drawLine(Offset(tailX, tailY), Offset(tipX, tipY), paint);
-    final hl = length * 0.4;
-    canvas.drawLine(Offset(tipX, tipY), Offset(tipX + cos(angle + pi * 0.8) * hl, tipY + sin(angle + pi * 0.8) * hl), paint);
-    canvas.drawLine(Offset(tipX, tipY), Offset(tipX + cos(angle - pi * 0.8) * hl, tipY + sin(angle - pi * 0.8) * hl), paint);
+    final paint = Paint()..color = color..strokeWidth = 2.2..strokeCap = StrokeCap.round..style = PaintingStyle.stroke;
+    final angle = switch (dir) {
+      _GateDir.up => -pi / 2,
+      _GateDir.right => 0.0,
+      _GateDir.down => pi / 2,
+      _GateDir.left => pi,
+    };
+    final tip = Offset(center.dx + cos(angle) * length, center.dy + sin(angle) * length);
+    final tail = Offset(center.dx - cos(angle) * length * 0.38, center.dy - sin(angle) * length * 0.38);
+    canvas.drawLine(tail, tip, paint);
+    final hl = length * 0.38;
+    canvas.drawLine(tip, Offset(tip.dx + cos(angle + pi * 0.78) * hl, tip.dy + sin(angle + pi * 0.78) * hl), paint);
+    canvas.drawLine(tip, Offset(tip.dx + cos(angle - pi * 0.78) * hl, tip.dy + sin(angle - pi * 0.78) * hl), paint);
+  }
+
+  double _cellSize(Size size, int cols, int rows) {
+    final cw = (size.width - 32) / cols;
+    final ch = (size.height - 160) / rows;
+    return cw < ch ? cw : ch;
   }
 
   @override
-  bool shouldRepaint(covariant _SignalRouterPainter old) => true;
+  bool shouldRepaint(covariant _NCPainter old) => true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
