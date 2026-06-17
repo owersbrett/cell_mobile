@@ -3164,288 +3164,177 @@ class _FarmRotationGameState extends State<FarmRotationGame>
 }
 
 // ============================================================================
-// 6. SupplyChainGame — "Potato Pipeline"
+// 6. SupplyChainGame — "Delivery" (BioScale.supplyChain)
 // ============================================================================
+//
+// ─── ECONOMY CONSTANTS (tune here) ──────────────────────────────────────────
+//  Starting cash              : _kStartCash        = 120
+//  Farm produces potatoes/sec : _kFarmRate         = 1.2
+//  Node throughput multiplier : _kFlowRate         = 0.8  (potatoes/sec per channel)
+//  Node costs                 : _kNodeCost         (per type, see map below)
+//  Market prices ($/potato)   : _kMarketPrice      (per market type, see map)
+//  Market unlock thresholds   : _kMarketUnlock     (wealth needed to unlock)
+//  Channel toggle anim sec    : _kToggleFlash      = 0.25
+//  Game duration (seconds)    : _kGameDuration     = 60.0
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Product types flowing through the pipeline
-enum _PotatoProduct { raw, clean, peeled, fries, baked, chips }
+const double _kStartCash = 120;
+const double _kFarmRate = 1.2; // raw potatoes produced per second
+const double _kFlowRate = 0.8; // potatoes per second per active channel
+const double _kToggleFlash = 0.25;
+const double _kGameDuration = 60.0;
 
-/// Node types in the puzzle grid
-enum _PipeNodeType {
-  farm,
-  washer,
-  peeler,
-  fryer,
-  baker,
-  chipper,
-  splitter,
-  store,
-  restaurant,
-  factory_
+/// Node types the player can place (plus the head Farm node)
+enum _ScNodeType {
+  farm, // head node — always present, not purchasable
+  processing, // turns raw → processed ($20)
+  storage, // buffers; multiplies payout 1.5× on connected channel ($35)
+  distribution, // fans out to 2 markets ($60)
+  premiumProcessing, // turns processed → premium ($80)
 }
 
-Color _pipeNodeColor(_PipeNodeType t) {
-  switch (t) {
-    case _PipeNodeType.farm:
-      return const Color(0xFF4CAF50);
-    case _PipeNodeType.washer:
-      return const Color(0xFF42A5F5);
-    case _PipeNodeType.peeler:
-      return const Color(0xFFFFEB3B);
-    case _PipeNodeType.fryer:
-      return const Color(0xFFFF9800);
-    case _PipeNodeType.baker:
-      return const Color(0xFF8D6E63);
-    case _PipeNodeType.chipper:
-      return const Color(0xFFEF5350);
-    case _PipeNodeType.splitter:
-      return const Color(0xFFE0E0E0);
-    case _PipeNodeType.store:
-      return const Color(0xFF9C27B0);
-    case _PipeNodeType.restaurant:
-      return const Color(0xFFFF5722);
-    case _PipeNodeType.factory_:
-      return const Color(0xFF607D8B);
-  }
+/// Market types — final sale destinations
+enum _ScMarket {
+  localStore, // cheap, always unlocked
+  supermarket, // mid, unlocks at $300
+  restaurant, // premium, unlocks at $800
+  export_, // best, unlocks at $2000
 }
 
-String _pipeNodeLabel(_PipeNodeType t) {
-  switch (t) {
-    case _PipeNodeType.farm:
-      return 'Farm';
-    case _PipeNodeType.washer:
-      return 'Wash';
-    case _PipeNodeType.peeler:
-      return 'Peel';
-    case _PipeNodeType.fryer:
-      return 'Fry';
-    case _PipeNodeType.baker:
-      return 'Bake';
-    case _PipeNodeType.chipper:
-      return 'Chip';
-    case _PipeNodeType.splitter:
-      return 'Split';
-    case _PipeNodeType.store:
-      return 'Store';
-    case _PipeNodeType.restaurant:
-      return 'Diner';
-    case _PipeNodeType.factory_:
-      return 'Factory';
-  }
-}
+// Node costs
+const Map<_ScNodeType, double> _kNodeCost = {
+  _ScNodeType.farm: 0, // not purchasable
+  _ScNodeType.processing: 20,
+  _ScNodeType.storage: 35,
+  _ScNodeType.distribution: 60,
+  _ScNodeType.premiumProcessing: 80,
+};
 
-String _scProductName(_PotatoProduct p) {
-  switch (p) {
-    case _PotatoProduct.raw:
-      return 'Raw';
-    case _PotatoProduct.clean:
-      return 'Clean';
-    case _PotatoProduct.peeled:
-      return 'Peeled';
-    case _PotatoProduct.fries:
-      return 'Fries';
-    case _PotatoProduct.baked:
-      return 'Baked';
-    case _PotatoProduct.chips:
-      return 'Chips';
-  }
-}
+// Market prices per potato sold
+const Map<_ScMarket, double> _kMarketPrice = {
+  _ScMarket.localStore: 1.5,
+  _ScMarket.supermarket: 3.0,
+  _ScMarket.restaurant: 6.0,
+  _ScMarket.export_: 12.0,
+};
 
-Color _scProductColor(_PotatoProduct p) {
-  switch (p) {
-    case _PotatoProduct.raw:
-      return const Color(0xFF8D6E63);
-    case _PotatoProduct.clean:
-      return const Color(0xFFBCAAA4);
-    case _PotatoProduct.peeled:
-      return const Color(0xFFFFF8E1);
-    case _PotatoProduct.fries:
-      return const Color(0xFFFFD54F);
-    case _PotatoProduct.baked:
-      return const Color(0xFFA1887F);
-    case _PotatoProduct.chips:
-      return const Color(0xFFFFB74D);
-  }
-}
+// Wealth threshold to unlock each market
+const Map<_ScMarket, double> _kMarketUnlock = {
+  _ScMarket.localStore: 0,
+  _ScMarket.supermarket: 300,
+  _ScMarket.restaurant: 800,
+  _ScMarket.export_: 2000,
+};
 
-_PotatoProduct _destWants(_PipeNodeType t) {
-  switch (t) {
-    case _PipeNodeType.store:
-      return _PotatoProduct.baked;
-    case _PipeNodeType.restaurant:
-      return _PotatoProduct.fries;
-    case _PipeNodeType.factory_:
-      return _PotatoProduct.chips;
-    default:
-      return _PotatoProduct.raw;
-  }
-}
+// ─── Node data ───────────────────────────────────────────────────────────────
 
-_PotatoProduct? _nodeAccepts(_PipeNodeType t) {
-  switch (t) {
-    case _PipeNodeType.washer:
-      return _PotatoProduct.raw;
-    case _PipeNodeType.peeler:
-      return _PotatoProduct.clean;
-    case _PipeNodeType.fryer:
-      return _PotatoProduct.peeled;
-    case _PipeNodeType.baker:
-      return _PotatoProduct.clean;
-    case _PipeNodeType.chipper:
-      return _PotatoProduct.peeled;
-    default:
-      return null;
-  }
-}
-
-_PotatoProduct? _nodeProduces(_PipeNodeType t) {
-  switch (t) {
-    case _PipeNodeType.washer:
-      return _PotatoProduct.clean;
-    case _PipeNodeType.peeler:
-      return _PotatoProduct.peeled;
-    case _PipeNodeType.fryer:
-      return _PotatoProduct.fries;
-    case _PipeNodeType.baker:
-      return _PotatoProduct.baked;
-    case _PipeNodeType.chipper:
-      return _PotatoProduct.chips;
-    default:
-      return null;
-  }
-}
-
-bool _isDest(_PipeNodeType t) =>
-    t == _PipeNodeType.store ||
-    t == _PipeNodeType.restaurant ||
-    t == _PipeNodeType.factory_;
-
-class _PipeNode {
-  final _PipeNodeType type;
-  final int row, col;
-  bool jammed = false;
-  double jamTimer = 0;
-  double processTimer = 0;
-  bool processing = false;
-  _PotatoProduct? heldProduct;
+class _ScNode {
+  final _ScNodeType type;
+  final Offset position; // logical board position (0..1 x/y)
   double glowTimer = 0;
-  int deliveredCount = 0;
-  _PipeNode({required this.type, required this.row, required this.col});
+  _ScNode({required this.type, required this.position});
 }
 
-class _Pipe {
-  final int fromIdx;
-  final int toIdx;
-  _Pipe({required this.fromIdx, required this.toIdx});
+// ─── Channel data ─────────────────────────────────────────────────────────────
+// A channel connects two nodes (or a node to a market).
+// The player taps it to toggle ON/OFF.
+
+class _ScChannel {
+  final int fromNodeIdx; // index into _ScEmpireState._nodes
+  final _ScMarket? toMarket; // null → connects to another node
+  final int? toNodeIdx; // index into _nodes (if toMarket is null)
+  bool active = true;
+  double flashTimer = 0; // visual toggle flash
+
+  _ScChannel.toNode({required this.fromNodeIdx, required int nodeIdx})
+      : toMarket = null,
+        toNodeIdx = nodeIdx;
+  _ScChannel.toMarket({required this.fromNodeIdx, required _ScMarket market})
+      : toMarket = market,
+        toNodeIdx = null;
 }
 
-class _TravelingPotato {
-  _PotatoProduct product;
-  int fromNodeIdx;
-  int toNodeIdx;
-  double progress;
-  _TravelingPotato({
-    required this.product,
-    required this.fromNodeIdx,
-    required this.toNodeIdx,
-    this.progress = 0,
-  });
+// ─── Traveling potato visual ──────────────────────────────────────────────────
+class _ScTraveler {
+  final int channelIdx;
+  double progress; // 0..1
+  bool isPremium;
+  _ScTraveler({required this.channelIdx, this.progress = 0, this.isPremium = false});
 }
 
-class _PipeLevel {
-  final String name;
-  final String hint;
-  final List<_PipeNode> nodes;
-  final int requiredPerDest;
-  _PipeLevel({
-    required this.name,
-    required this.hint,
-    required this.nodes,
-    this.requiredPerDest = 5,
-  });
+// ─── Market node (placed on board when unlocked and player buys a dist node) ──
+class _ScMarketSlot {
+  final _ScMarket market;
+  final Offset position;
+  double earnFlash = 0;
+  _ScMarketSlot({required this.market, required this.position});
 }
 
-List<_PipeLevel> _buildLevels() {
-  return [
-    _PipeLevel(
-      name: 'Tutorial',
-      hint: 'Connect Farm to Washer to Baker to Store',
-      requiredPerDest: 3,
-      nodes: [
-        _PipeNode(type: _PipeNodeType.farm, row: 1, col: 0),
-        _PipeNode(type: _PipeNodeType.washer, row: 1, col: 1),
-        _PipeNode(type: _PipeNodeType.baker, row: 1, col: 2),
-        _PipeNode(type: _PipeNodeType.store, row: 1, col: 3),
-      ],
-    ),
-    _PipeLevel(
-      name: 'Two Paths',
-      hint: 'Route fries to Diner, baked to Store',
-      requiredPerDest: 4,
-      nodes: [
-        _PipeNode(type: _PipeNodeType.farm, row: 1, col: 0),
-        _PipeNode(type: _PipeNodeType.washer, row: 1, col: 1),
-        _PipeNode(type: _PipeNodeType.peeler, row: 0, col: 2),
-        _PipeNode(type: _PipeNodeType.fryer, row: 0, col: 3),
-        _PipeNode(type: _PipeNodeType.restaurant, row: 0, col: 4),
-        _PipeNode(type: _PipeNodeType.baker, row: 2, col: 2),
-        _PipeNode(type: _PipeNodeType.store, row: 2, col: 3),
-      ],
-    ),
-    _PipeLevel(
-      name: 'Splitter',
-      hint: 'Use the splitter to feed two chains',
-      requiredPerDest: 4,
-      nodes: [
-        _PipeNode(type: _PipeNodeType.farm, row: 1, col: 0),
-        _PipeNode(type: _PipeNodeType.washer, row: 1, col: 1),
-        _PipeNode(type: _PipeNodeType.splitter, row: 1, col: 2),
-        _PipeNode(type: _PipeNodeType.peeler, row: 0, col: 3),
-        _PipeNode(type: _PipeNodeType.fryer, row: 0, col: 4),
-        _PipeNode(type: _PipeNodeType.restaurant, row: 0, col: 5),
-        _PipeNode(type: _PipeNodeType.baker, row: 2, col: 3),
-        _PipeNode(type: _PipeNodeType.store, row: 2, col: 4),
-      ],
-    ),
-    _PipeLevel(
-      name: 'Maze',
-      hint: 'Route around! The direct path won\'t work',
-      requiredPerDest: 4,
-      nodes: [
-        _PipeNode(type: _PipeNodeType.farm, row: 0, col: 0),
-        _PipeNode(type: _PipeNodeType.washer, row: 0, col: 1),
-        _PipeNode(type: _PipeNodeType.baker, row: 0, col: 2),
-        _PipeNode(type: _PipeNodeType.peeler, row: 1, col: 1),
-        _PipeNode(type: _PipeNodeType.chipper, row: 1, col: 2),
-        _PipeNode(type: _PipeNodeType.factory_, row: 1, col: 3),
-        _PipeNode(type: _PipeNodeType.farm, row: 2, col: 0),
-        _PipeNode(type: _PipeNodeType.washer, row: 2, col: 1),
-        _PipeNode(type: _PipeNodeType.baker, row: 2, col: 2),
-        _PipeNode(type: _PipeNodeType.store, row: 2, col: 3),
-      ],
-    ),
-    _PipeLevel(
-      name: 'Full Network',
-      hint: 'Route all 3 products to their destinations',
-      requiredPerDest: 5,
-      nodes: [
-        _PipeNode(type: _PipeNodeType.farm, row: 0, col: 0),
-        _PipeNode(type: _PipeNodeType.washer, row: 0, col: 1),
-        _PipeNode(type: _PipeNodeType.splitter, row: 0, col: 2),
-        _PipeNode(type: _PipeNodeType.peeler, row: 0, col: 3),
-        _PipeNode(type: _PipeNodeType.fryer, row: 0, col: 4),
-        _PipeNode(type: _PipeNodeType.restaurant, row: 0, col: 5),
-        _PipeNode(type: _PipeNodeType.baker, row: 1, col: 3),
-        _PipeNode(type: _PipeNodeType.store, row: 1, col: 4),
-        _PipeNode(type: _PipeNodeType.farm, row: 2, col: 0),
-        _PipeNode(type: _PipeNodeType.washer, row: 2, col: 1),
-        _PipeNode(type: _PipeNodeType.peeler, row: 2, col: 2),
-        _PipeNode(type: _PipeNodeType.chipper, row: 2, col: 3),
-        _PipeNode(type: _PipeNodeType.factory_, row: 2, col: 4),
-      ],
-    ),
-  ];
+// ─── Colors / labels ─────────────────────────────────────────────────────────
+Color _scNodeColor(_ScNodeType t) {
+  switch (t) {
+    case _ScNodeType.farm:
+      return const Color(0xFF4CAF50);
+    case _ScNodeType.processing:
+      return const Color(0xFF42A5F5);
+    case _ScNodeType.storage:
+      return const Color(0xFFFFEB3B);
+    case _ScNodeType.distribution:
+      return const Color(0xFFFF9800);
+    case _ScNodeType.premiumProcessing:
+      return const Color(0xFFE040FB);
+  }
 }
+
+String _scNodeLabel(_ScNodeType t) {
+  switch (t) {
+    case _ScNodeType.farm:
+      return 'FARM';
+    case _ScNodeType.processing:
+      return 'PROC';
+    case _ScNodeType.storage:
+      return 'STOR';
+    case _ScNodeType.distribution:
+      return 'DIST';
+    case _ScNodeType.premiumProcessing:
+      return 'PREM';
+  }
+}
+
+Color _scMarketColor(_ScMarket m) {
+  switch (m) {
+    case _ScMarket.localStore:
+      return const Color(0xFF80CBC4);
+    case _ScMarket.supermarket:
+      return const Color(0xFF81C784);
+    case _ScMarket.restaurant:
+      return const Color(0xFFFFB74D);
+    case _ScMarket.export_:
+      return const Color(0xFFE57373);
+  }
+}
+
+String _scMarketLabel(_ScMarket m) {
+  switch (m) {
+    case _ScMarket.localStore:
+      return 'LOCAL';
+    case _ScMarket.supermarket:
+      return 'SUPER';
+    case _ScMarket.restaurant:
+      return 'REST.';
+    case _ScMarket.export_:
+      return 'EXPRT';
+  }
+}
+
+String _scMarketPriceLabel(_ScMarket m) => '\$${_kMarketPrice[m]!.toStringAsFixed(1)}/🥔';
+
+// ─── Palette ────────────────────────────────────────────────────────────────
+const _kBg = Color(0xFF0D1B2A);
+const _kAccentGold = Color(0xFFFFD600);
+
+
+// ─── SupplyChainGame public widget ───────────────────────────────────────────
 
 class SupplyChainGame extends StatefulWidget {
   const SupplyChainGame({Key? key}) : super(key: key);
@@ -3453,34 +3342,59 @@ class SupplyChainGame extends StatefulWidget {
   State<SupplyChainGame> createState() => _SupplyChainGameState();
 }
 
+// ─── Board layout helpers ─────────────────────────────────────────────────────
+// The board is a free-form canvas.  Node logical positions use the [0,1]x[0,1]
+// unit square; the painter maps them to screen pixels.
+// Placed nodes live in a grid of 5 columns x 5 rows (indices 0..4).
+// Column 0 is fixed to the FARM.  Player nodes occupy cols 1-3; markets col 4.
+
+const int _kBoardCols = 5;
+const int _kBoardRows = 5;
+const double _kNodeR = 28.0; // visual node radius
+const double _kFarmNodeR = 34.0; // slightly bigger farm
+
+// ─── State ───────────────────────────────────────────────────────────────────
 class _SupplyChainGameState extends State<SupplyChainGame>
     with SingleTickerProviderStateMixin {
   late AnimationController _ticker;
 
+  // Game time
+  double _elapsed = 0;
   double _lastTime = 0;
-  int _score = 0;
-  int _jams = 0;
-  int _currentLevel = 0;
-  bool _levelComplete = false;
-  bool _gameWon = false;
-  double _levelTime = 0;
-  double _totalTime = 0;
+  bool _gameOver = false;
 
-  late List<_PipeLevel> _levels;
-  List<_PipeNode> _nodes = [];
-  final List<_Pipe> _pipes = [];
-  final List<_TravelingPotato> _travelers = [];
+  // Economy
+  double _cash = _kStartCash;
+  double _totalEarned = 0; // final score
+
+  // Board state
+  // Index 0 is always the farm (fixed, col 0, row 2).
+  final List<_ScNode> _nodes = [];
+  final List<_ScChannel> _channels = [];
+  final List<_ScMarketSlot> _markets = [];
+
+  // Per-channel payout accumulator: cash building up before integer payout
+  final Map<int, double> _channelAccum = {};
+
+  // Traveling potato visuals
+  final List<_ScTraveler> _travelers = [];
+
+  // Drag-to-place: player drags a node type from the shop onto the board
+  _ScNodeType? _draggingType;
+  Offset? _dragPos;
+
+  // Selected shop item (held finger position for drop)
+  int? _hoveredCell; // flat index into grid
+
+  // Fx
   final List<_FxParticle> _fx = [];
-  final Map<int, double> _farmTimers = {};
-
-  int? _dragFromNode;
-  Offset? _dragCurrent;
+  // _earnPops removed — market flash provides visual earn feedback
 
   @override
   void initState() {
     super.initState();
-    _levels = _buildLevels();
-    _loadLevel(0);
+    // Place the head Farm node at grid center-left
+    _nodes.add(_ScNode(type: _ScNodeType.farm, position: _gridPos(0, 2)));
     _ticker = AnimationController(
       vsync: this,
       duration: const Duration(days: 1),
@@ -3494,187 +3408,973 @@ class _SupplyChainGameState extends State<SupplyChainGame>
     super.dispose();
   }
 
-  void _loadLevel(int idx) {
-    _currentLevel = idx;
-    _levelComplete = false;
-    _levelTime = 0;
-    _lastTime = 0;
-    _pipes.clear();
-    _travelers.clear();
-    _fx.clear();
-    _farmTimers.clear();
-    _dragFromNode = null;
-    _dragCurrent = null;
-    final src = _levels[idx].nodes;
-    _nodes = List.generate(src.length,
-        (i) => _PipeNode(type: src[i].type, row: src[i].row, col: src[i].col));
-    for (int i = 0; i < _nodes.length; i++) {
-      if (_nodes[i].type == _PipeNodeType.farm) _farmTimers[i] = 0;
-    }
+  // ── Grid helpers ────────────────────────────────────────────────────────────
+  Offset _gridPos(int col, int row) =>
+      Offset((col + 0.5) / _kBoardCols, (row + 0.5) / _kBoardRows);
+
+  Offset _gridPosPixels(int col, int row, double w, double h) {
+    final margin = 110.0; // top HUD margin
+    final boardH = h - margin - 130; // bottom shop strip
+    return Offset(
+      (col + 0.5) / _kBoardCols * w,
+      margin + (row + 0.5) / _kBoardRows * boardH,
+    );
   }
 
-  Offset _nodeCenter(int idx, double w, double h) {
-    final node = _nodes[idx];
-    int minR = 999, maxR = -999, minC = 999, maxC = -999;
-    for (final n in _nodes) {
-      if (n.row < minR) minR = n.row;
-      if (n.row > maxR) maxR = n.row;
-      if (n.col < minC) minC = n.col;
-      if (n.col > maxC) maxC = n.col;
-    }
-    final cellW = w / (maxC - minC + 2);
-    final cellH = (h - 100) / (maxR - minR + 2);
-    return Offset(cellW * (node.col - minC + 1), 80 + cellH * (node.row - minR + 1));
+  Offset _nodePixels(int idx, double w, double h) {
+    final nd = _nodes[idx];
+    final margin = 110.0;
+    final boardH = h - margin - 130;
+    return Offset(nd.position.dx * w, margin + nd.position.dy * boardH);
   }
 
-  bool _areAdjacent(int a, int b) {
-    // Use pixel distance so diagonal and nearby nodes can connect.
-    // LayoutBuilder size is not available here, so we use a reasonable
-    // default. _nodeCenter already normalises positions – grab approximate
-    // canvas size from the current context to compute real pixel positions.
-    final ctx = context;
-    final box = ctx.findRenderObject() as RenderBox?;
-    final w = box?.size.width ?? 400;
-    final h = box?.size.height ?? 600;
-    final dist = (_nodeCenter(a, w, h) - _nodeCenter(b, w, h)).distance;
-    return dist < 260;
-  }
-
-  bool _pipeExists(int a, int b) {
-    for (final p in _pipes) {
-      if ((p.fromIdx == a && p.toIdx == b) || (p.fromIdx == b && p.toIdx == a)) return true;
+  // ── Channel helpers ─────────────────────────────────────────────────────────
+  bool _channelExists(int fromIdx, {int? toNodeIdx, _ScMarket? toMarket}) {
+    for (final ch in _channels) {
+      if (ch.fromNodeIdx != fromIdx) continue;
+      if (toNodeIdx != null && ch.toNodeIdx == toNodeIdx) return true;
+      if (toMarket != null && ch.toMarket == toMarket) return true;
     }
     return false;
   }
 
-  List<int> _getOutputs(int nodeIdx) {
-    final out = <int>[];
-    for (final p in _pipes) {
-      if (p.fromIdx == nodeIdx) out.add(p.toIdx);
-    }
-    return out;
-  }
+  // When placing a new node, auto-connect it to a suitable upstream node with a
+  // new channel (default active).  Also auto-connect distribution nodes to any
+  // unlocked market that has no channel yet.
+  void _autoConnect(_ScNode node, int newIdx) {
+    if (node.type == _ScNodeType.farm) return;
 
-  int? _nodeAtPosition(Offset pos, double w, double h) {
-    for (int i = 0; i < _nodes.length; i++) {
-      if ((pos - _nodeCenter(i, w, h)).distance < 56) return i;
-    }
-    return null;
-  }
-
-  void _update() {
-    if (_levelComplete || _gameWon) return;
-    final now = _ticker.lastElapsedDuration?.inMicroseconds ?? 0;
-    final t = now / 1e6;
-    final dt = _lastTime == 0 ? 0.016 : (t - _lastTime).clamp(0, 0.05);
-    _lastTime = t;
-
-    setState(() {
-      _levelTime += dt;
-      for (final node in _nodes) {
-        if (node.jammed) node.jamTimer += dt;
-        if (node.glowTimer > 0) node.glowTimer -= dt;
+    // Find the "nearest" upstream node (farm or any processing/storage/dist node)
+    int? bestUp;
+    double bestDist = double.infinity;
+    for (int i = 0; i < newIdx; i++) {
+      if (_nodes[i].type == _ScNodeType.farm ||
+          _nodes[i].type == _ScNodeType.processing ||
+          _nodes[i].type == _ScNodeType.storage ||
+          _nodes[i].type == _ScNodeType.distribution) {
+        final d = (_nodes[i].position - node.position).distance;
+        if (d < bestDist &&
+            !_channelExists(i, toNodeIdx: newIdx)) {
+          bestDist = d;
+          bestUp = i;
+        }
       }
-      for (final farmIdx in _farmTimers.keys.toList()) {
-        _farmTimers[farmIdx] = (_farmTimers[farmIdx] ?? 0) + dt;
-        if (_farmTimers[farmIdx]! >= 3.0) {
-          _farmTimers[farmIdx] = 0;
-          if (!_nodes[farmIdx].jammed) {
-            for (final outIdx in _getOutputs(farmIdx)) {
-              _travelers.add(_TravelingPotato(product: _PotatoProduct.raw, fromNodeIdx: farmIdx, toNodeIdx: outIdx));
+    }
+    if (bestUp != null) {
+      final ch = _ScChannel.toNode(fromNodeIdx: bestUp, nodeIdx: newIdx);
+      _channels.add(ch);
+      _channelAccum[_channels.length - 1] = 0;
+    }
+
+    // Distribution node: connect to all unlocked markets not yet connected
+    if (node.type == _ScNodeType.distribution) {
+      for (final ms in _markets) {
+        if (!_channelExists(newIdx, toMarket: ms.market)) {
+          final ch = _ScChannel.toMarket(fromNodeIdx: newIdx, market: ms.market);
+          _channels.add(ch);
+          _channelAccum[_channels.length - 1] = 0;
+        }
+      }
+    }
+
+    // Also connect this node to any distribution nodes that follow it spatially
+    // (dist node in a later column with no upstream channel yet).
+    if (node.type != _ScNodeType.distribution) {
+      for (int i = 0; i < newIdx; i++) {
+        if (_nodes[i].type == _ScNodeType.distribution) {
+          if (!_channelExists(newIdx, toNodeIdx: i)) {
+            final ch = _ScChannel.toNode(fromNodeIdx: newIdx, nodeIdx: i);
+            _channels.add(ch);
+            _channelAccum[_channels.length - 1] = 0;
+          }
+        }
+      }
+    }
+  }
+
+  // ── Market unlock check ──────────────────────────────────────────────────────
+  void _checkMarketUnlocks() {
+    for (final m in _ScMarket.values) {
+      if (_totalEarned >= (_kMarketUnlock[m] ?? 0)) {
+        if (!_markets.any((ms) => ms.market == m)) {
+          // Place market slot at col 4, next available row
+          final row = _markets.length.clamp(0, _kBoardRows - 1);
+          final slot = _ScMarketSlot(
+            market: m,
+            position: _gridPos(4, row),
+          );
+          _markets.add(slot);
+          // Auto-connect all distribution nodes to this new market
+          for (int i = 0; i < _nodes.length; i++) {
+            if (_nodes[i].type == _ScNodeType.distribution) {
+              if (!_channelExists(i, toMarket: m)) {
+                final ch = _ScChannel.toMarket(fromNodeIdx: i, market: m);
+                _channels.add(ch);
+                _channelAccum[_channels.length - 1] = 0;
+              }
             }
           }
         }
       }
-      final arrived = <_TravelingPotato>[];
-      for (final trav in _travelers) { trav.progress += dt; if (trav.progress >= 1.0) arrived.add(trav); }
+    }
+  }
 
-      for (final trav in arrived) {
-        _travelers.remove(trav);
-        final dn = _nodes[trav.toNodeIdx];
-        if (dn.jammed) continue;
-        if (_isDest(dn.type)) {
-          if (trav.product == _destWants(dn.type)) { _score += 10; dn.deliveredCount++; dn.glowTimer = 1.0; _checkLevelComplete(); }
-          else { dn.jammed = true; dn.jamTimer = 0; _jams++; _score = (_score - 5).clamp(0, 999999); }
-        } else if (dn.type == _PipeNodeType.splitter) {
-          if (!dn.processing && dn.heldProduct == null) { dn.heldProduct = trav.product; dn.processing = true; dn.processTimer = 0; }
-        } else {
-          final acc = _nodeAccepts(dn.type);
-          if (acc != null && trav.product == acc) { if (!dn.processing && dn.heldProduct == null) { dn.heldProduct = trav.product; dn.processing = true; dn.processTimer = 0; } }
-          else { dn.jammed = true; dn.jamTimer = 0; _jams++; _score = (_score - 5).clamp(0, 999999); }
+  // ── Throughput multiplier for a channel ─────────────────────────────────────
+  // Storage nodes on the from-side double the payout rate.
+  double _channelMultiplier(int chIdx) {
+    final ch = _channels[chIdx];
+    if (!ch.active) return 0;
+    final fromType = _nodes[ch.fromNodeIdx].type;
+    if (fromType == _ScNodeType.storage) return 1.5;
+    return 1.0;
+  }
+
+  // Whether this channel carries premium potatoes (upstream premiumProcessing)
+  bool _channelIsPremium(int chIdx) {
+    final ch = _channels[chIdx];
+    return _nodes[ch.fromNodeIdx].type == _ScNodeType.premiumProcessing;
+  }
+
+  // ── Update loop ──────────────────────────────────────────────────────────────
+  void _update() {
+    if (_gameOver) return;
+    final now = _ticker.lastElapsedDuration?.inMicroseconds ?? 0;
+    final t = now / 1e6;
+    final dt = _lastTime == 0 ? 0.016 : (t - _lastTime).clamp(0.0, 0.05);
+    _lastTime = t;
+
+    setState(() {
+      _elapsed += dt;
+      if (_elapsed >= _kGameDuration) {
+        _elapsed = _kGameDuration;
+        _gameOver = true;
+        return;
+      }
+
+      // Glow / flash timers
+      for (final nd in _nodes) {
+        if (nd.glowTimer > 0) nd.glowTimer -= dt;
+      }
+      for (int i = 0; i < _channels.length; i++) {
+        if (_channels[i].flashTimer > 0) _channels[i].flashTimer -= dt;
+      }
+      for (final ms in _markets) {
+        if (ms.earnFlash > 0) ms.earnFlash -= dt;
+      }
+
+      // Farm produces raw potatoes → feeds active channels from farm
+      final farmIdx = 0;
+      for (int ci = 0; ci < _channels.length; ci++) {
+        final ch = _channels[ci];
+        if (ch.fromNodeIdx != farmIdx || !ch.active) continue;
+        if (ch.toNodeIdx == null) continue; // farm never connects to market directly
+        _channelAccum[ci] = (_channelAccum[ci] ?? 0) + _kFarmRate * dt;
+        if (_channelAccum[ci]! >= 1.0) {
+          _channelAccum[ci] = _channelAccum[ci]! - 1.0;
+          _spawnTraveler(ci, isPremium: false);
+          _nodes[farmIdx].glowTimer = 0.15;
         }
       }
-      for (int i = 0; i < _nodes.length; i++) {
-        final node = _nodes[i];
-        if (node.processing && !node.jammed) {
-          node.processTimer += dt;
-          if (node.processTimer >= 1.0) {
-            node.processing = false;
-            final outs = _getOutputs(i);
-            if (node.type == _PipeNodeType.splitter) { for (final o in outs) _travelers.add(_TravelingPotato(product: node.heldProduct!, fromNodeIdx: i, toNodeIdx: o)); }
-            else { final op = _nodeProduces(node.type); if (op != null) for (final o in outs) _travelers.add(_TravelingPotato(product: op, fromNodeIdx: i, toNodeIdx: o)); }
-            node.heldProduct = null; node.processTimer = 0;
+
+      // Node-to-node channels: flow based on _kFlowRate × multiplier
+      for (int ci = 0; ci < _channels.length; ci++) {
+        final ch = _channels[ci];
+        if (!ch.active) continue;
+        if (ch.toNodeIdx == null) continue; // market channel handled below
+        if (ch.fromNodeIdx == farmIdx) continue; // already handled
+        final mult = _channelMultiplier(ci);
+        _channelAccum[ci] = (_channelAccum[ci] ?? 0) + _kFlowRate * mult * dt;
+        if (_channelAccum[ci]! >= 1.0) {
+          _channelAccum[ci] = _channelAccum[ci]! - 1.0;
+          _spawnTraveler(ci, isPremium: _channelIsPremium(ci));
+          _nodes[ch.fromNodeIdx].glowTimer = 0.15;
+        }
+      }
+
+      // Market channels: when traveler arrives via a market channel, earn cash
+      for (int ci = 0; ci < _channels.length; ci++) {
+        final ch = _channels[ci];
+        if (!ch.active || ch.toMarket == null) continue;
+        final mult = _channelMultiplier(ci);
+        _channelAccum[ci] = (_channelAccum[ci] ?? 0) + _kFlowRate * mult * dt;
+        if (_channelAccum[ci]! >= 1.0) {
+          _channelAccum[ci] = _channelAccum[ci]! - 1.0;
+          _spawnTraveler(ci, isPremium: _channelIsPremium(ci));
+          final basePrice = _kMarketPrice[ch.toMarket]!;
+          final price = _channelIsPremium(ci) ? basePrice * 2.0 : basePrice;
+          _cash += price;
+          _totalEarned += price;
+          // Flash the market slot
+          for (final ms in _markets) {
+            if (ms.market == ch.toMarket) {
+              ms.earnFlash = 0.4;
+              break;
+            }
           }
+          _checkMarketUnlocks();
         }
       }
-      for (final p in _fx) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 1.5; }
+
+      // Travelers
+      for (final tr in _travelers) {
+        tr.progress += dt * 1.6;
+      }
+      _travelers.removeWhere((tr) => tr.progress >= 1.0);
+
+      // Fx
+      for (final p in _fx) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt * 2.0;
+      }
       _fx.removeWhere((p) => p.life <= 0);
+
     });
   }
 
-  void _checkLevelComplete() {
-    final level = _levels[_currentLevel]; bool allDone = true;
-    for (final node in _nodes) { if (_isDest(node.type) && node.deliveredCount < level.requiredPerDest) { allDone = false; break; } }
-    if (allDone) { _levelComplete = true; _score += (60 - _levelTime).clamp(0, 60).toInt() * 2; _totalTime += _levelTime; if (_currentLevel >= _levels.length - 1) _gameWon = true; }
+  void _spawnTraveler(int channelIdx, {required bool isPremium}) {
+    _travelers.add(_ScTraveler(
+      channelIdx: channelIdx,
+      progress: 0,
+      isPremium: isPremium,
+    ));
   }
-  void _clearJam(int idx) { setState(() { final n = _nodes[idx]; if (n.jammed) { n.jammed = false; n.jamTimer = 0; n.heldProduct = null; n.processing = false; n.processTimer = 0; } }); }
-  void _removePipeAt(Offset pos, double w, double h) {
-    int? best; double bestD = 30;
-    for (int i = 0; i < _pipes.length; i++) { final a = _nodeCenter(_pipes[i].fromIdx, w, h), b = _nodeCenter(_pipes[i].toIdx, w, h); final ab = b - a, ap = pos - a; final t2 = ((ap.dx * ab.dx + ap.dy * ab.dy) / (ab.dx * ab.dx + ab.dy * ab.dy + 0.0001)).clamp(0.0, 1.0); final d = (pos - (a + ab * t2)).distance; if (d < bestD) { bestD = d; best = i; } }
-    if (best != null) setState(() { _pipes.removeAt(best!); });
+
+  // ── Buy & place a node ───────────────────────────────────────────────────────
+  void _buyNode(_ScNodeType type, int col, int row) {
+    final cost = _kNodeCost[type]!;
+    if (_cash < cost) return;
+    // Don't let player overwrite existing node
+    for (final nd in _nodes) {
+      final approxCol = (nd.position.dx * _kBoardCols).floor();
+      final approxRow = (nd.position.dy * _kBoardRows).floor();
+      if (approxCol == col && approxRow == row) return;
+    }
+    // Col 0 reserved for farm; col 4 reserved for markets
+    if (col == 0 || col == 4) return;
+
+    setState(() {
+      _cash -= cost;
+      final nd = _ScNode(type: type, position: _gridPos(col, row));
+      _nodes.add(nd);
+      _autoConnect(nd, _nodes.length - 1);
+    });
   }
-  Set<int> _getEligibleTargets(int fromIdx, double w, double h) {
-    final targets = <int>{};
-    for (int i = 0; i < _nodes.length; i++) {
-      if (i == fromIdx) continue;
-      if (_pipeExists(fromIdx, i)) continue;
-      final dist = (_nodeCenter(fromIdx, w, h) - _nodeCenter(i, w, h)).distance;
-      if (dist < 260) targets.add(i);
+
+  // ── Toggle channel ───────────────────────────────────────────────────────────
+  void _toggleChannel(int ci) {
+    setState(() {
+      _channels[ci].active = !_channels[ci].active;
+      _channels[ci].flashTimer = _kToggleFlash;
+    });
+  }
+
+  Offset _channelEndPixels(_ScChannel ch, double w, double h) {
+    if (ch.toNodeIdx != null) return _nodePixels(ch.toNodeIdx!, w, h);
+    // Market
+    for (final ms in _markets) {
+      if (ms.market == ch.toMarket) {
+        final margin = 110.0;
+        final boardH = h - margin - 130;
+        return Offset(ms.position.dx * w, margin + ms.position.dy * boardH);
+      }
+    }
+    return Offset(w * 0.9, h * 0.5);
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (ctx, constraints) {
+      final w = constraints.maxWidth;
+      final h = constraints.maxHeight;
+      return Container(
+        color: _kBg,
+        child: Stack(children: [
+          // ── Board canvas ──
+          CustomPaint(
+            size: Size(w, h),
+            painter: _ScBoardPainter(
+              nodes: _nodes,
+              channels: _channels,
+              markets: _markets,
+              travelers: _travelers,
+              nodePixels: (i) => _nodePixels(i, w, h),
+              channelEnd: (ch) => _channelEndPixels(ch, w, h),
+              dragType: _draggingType,
+              dragPos: _dragPos,
+              hoveredCell: _hoveredCell,
+              boardColsFn: (col, row) => _gridPosPixels(col, row, w, h),
+            ),
+          ),
+
+          // ── Node widgets overlaid ──
+          ..._buildNodeWidgets(w, h),
+          // ── Cell drop targets (invisible tap zones when shop item selected) ──
+          ..._buildCellDropTargets(w, h),
+          ..._buildChannelToggleButtons(w, h),
+          ..._buildMarketWidgets(w, h),
+
+          // ── HUD ──
+          _buildHud(w),
+
+          // ── Shop ──
+          _buildShop(w, h),
+
+          // ── Game Over overlay ──
+          if (_gameOver) _buildGameOverOverlay(),
+        ]),
+      );
+    });
+  }
+
+  // ── HUD bar ─────────────────────────────────────────────────────────────────
+  Widget _buildHud(double w) {
+    final timeLeft = (_kGameDuration - _elapsed).clamp(0.0, _kGameDuration);
+    final pct = timeLeft / _kGameDuration;
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Container(
+        height: 108,
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+        color: Colors.black.withValues(alpha: 0.55),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '\$${_cash.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 26,
+                    fontWeight: FontWeight.w900,
+                    color: _kAccentGold,
+                  ),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      'EMPIRE',
+                      style: TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 10,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        letterSpacing: 2,
+                      ),
+                    ),
+                    Text(
+                      '\$${_totalEarned.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // Clock bar
+            Row(children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: Container(
+                    height: 7,
+                    color: Colors.white.withValues(alpha: 0.08),
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: pct,
+                      child: Container(
+                        color: pct > 0.3
+                            ? const Color(0xFF4CAF50)
+                            : const Color(0xFFEF5350),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${timeLeft.toStringAsFixed(0)}s',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 12,
+                  color: Colors.white.withValues(alpha: 0.6),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            // Market unlock hints
+            Row(children: _ScMarket.values.map((m) {
+              final unlocked = _markets.any((ms) => ms.market == m);
+              final threshold = _kMarketUnlock[m]!;
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: unlocked
+                        ? _scMarketColor(m).withValues(alpha: 0.22)
+                        : Colors.white.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: unlocked
+                          ? _scMarketColor(m).withValues(alpha: 0.6)
+                          : Colors.white12,
+                      width: 0.8,
+                    ),
+                  ),
+                  child: Text(
+                    unlocked
+                        ? '${_scMarketLabel(m)} ${_scMarketPriceLabel(m)}'
+                        : '${_scMarketLabel(m)} \$${threshold.toStringAsFixed(0)}',
+                    style: TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 8,
+                      color: unlocked
+                          ? _scMarketColor(m)
+                          : Colors.white.withValues(alpha: 0.25),
+                    ),
+                  ),
+                ),
+              );
+            }).toList()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Shop strip ──────────────────────────────────────────────────────────────
+  // Player drags from shop icons to board cells to place nodes.
+  // Tapping a shop item when nothing is being dragged starts a drag.
+  Widget _buildShop(double w, double h) {
+    final shopItems = [
+      _ScNodeType.processing,
+      _ScNodeType.storage,
+      _ScNodeType.distribution,
+      _ScNodeType.premiumProcessing,
+    ];
+    return Positioned(
+      bottom: 0,
+      left: 0,
+      right: 0,
+      height: 124,
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.7),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 6),
+              child: Text(
+                'DRAG TO PLACE — tap board cell to drop',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 8,
+                  color: Colors.white.withValues(alpha: 0.3),
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: shopItems.map((type) {
+                  final cost = _kNodeCost[type]!;
+                  final canAfford = _cash >= cost;
+                  final color = _scNodeColor(type);
+                  return GestureDetector(
+                    onLongPressStart: (_) {
+                      setState(() {
+                        _draggingType = type;
+                      });
+                    },
+                    onTap: () {
+                      if (!canAfford) return;
+                      setState(() {
+                        _draggingType = _draggingType == type ? null : type;
+                      });
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      width: 68,
+                      decoration: BoxDecoration(
+                        color: _draggingType == type
+                            ? color.withValues(alpha: 0.3)
+                            : color.withValues(alpha: canAfford ? 0.12 : 0.04),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: _draggingType == type
+                              ? color
+                              : color.withValues(alpha: canAfford ? 0.4 : 0.1),
+                          width: _draggingType == type ? 2 : 1,
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: color.withValues(alpha: canAfford ? 0.25 : 0.08),
+                              border: Border.all(color: color.withValues(alpha: canAfford ? 0.7 : 0.2), width: 1.5),
+                            ),
+                            child: Center(
+                              child: Text(
+                                _scNodeLabel(type)[0],
+                                style: TextStyle(
+                                  fontFamily: 'Avenir',
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white.withValues(alpha: canAfford ? 1.0 : 0.3),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            _scNodeLabel(type),
+                            style: TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 8,
+                              color: Colors.white.withValues(alpha: canAfford ? 0.7 : 0.3),
+                            ),
+                          ),
+                          Text(
+                            '\$${cost.toStringAsFixed(0)}',
+                            style: TextStyle(
+                              fontFamily: 'Avenir',
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: canAfford ? _kAccentGold : Colors.white24,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Board node widgets ───────────────────────────────────────────────────────
+  List<Widget> _buildNodeWidgets(double w, double h) {
+    return _nodes.asMap().entries.map((e) {
+      final i = e.key;
+      final nd = e.value;
+      final pos = _nodePixels(i, w, h);
+      final r = nd.type == _ScNodeType.farm ? _kFarmNodeR : _kNodeR;
+      final col = _scNodeColor(nd.type);
+      final gl = nd.glowTimer > 0;
+
+      return Positioned(
+        left: pos.dx - r,
+        top: pos.dy - r,
+        child: GestureDetector(
+          // Tapping the farm (or any node) while a type is selected → ignore
+          // (only empty cells accept drops)
+          onTap: () {},
+          child: Container(
+            width: r * 2,
+            height: r * 2,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: col.withValues(alpha: gl ? 0.45 : 0.25),
+              border: Border.all(
+                color: gl ? Colors.white : col.withValues(alpha: 0.8),
+                width: gl ? 2.5 : 1.5,
+              ),
+              boxShadow: gl
+                  ? [BoxShadow(color: col.withValues(alpha: 0.5), blurRadius: 12)]
+                  : null,
+            ),
+            child: Center(
+              child: Text(
+                _scNodeLabel(nd.type),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: nd.type == _ScNodeType.farm ? 10 : 9,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white.withValues(alpha: 0.9),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  // ── Grid cell tap-to-drop overlay ───────────────────────────────────────────
+  // Rendered inside the CustomPaint, but we also need tap handling overlaid.
+  // We create invisible tap targets for all cells in cols 1-3.
+  List<Widget> _buildCellDropTargets(double w, double h) {
+    if (_draggingType == null) return [];
+    final targets = <Widget>[];
+    for (int col = 1; col <= 3; col++) {
+      for (int row = 0; row < _kBoardRows; row++) {
+        final center = _gridPosPixels(col, row, w, h);
+        final cellW = w / _kBoardCols;
+        final boardH = h - 110.0 - 130;
+        final cellH = boardH / _kBoardRows;
+        // Check if occupied
+        bool occupied = false;
+        for (final nd in _nodes) {
+          final nc = (nd.position.dx * _kBoardCols).floor();
+          final nr = (nd.position.dy * _kBoardRows).floor();
+          if (nc == col && nr == row) { occupied = true; break; }
+        }
+        targets.add(Positioned(
+          left: center.dx - cellW / 2,
+          top: center.dy - cellH / 2,
+          width: cellW,
+          height: cellH,
+          child: GestureDetector(
+            onTap: () {
+              if (_draggingType != null && !occupied) {
+                _buyNode(_draggingType!, col, row);
+                setState(() { _draggingType = null; });
+              }
+            },
+            child: Container(color: Colors.transparent),
+          ),
+        ));
+      }
     }
     return targets;
   }
 
-  void _nextLevel() { setState(() { _loadLevel(_currentLevel + 1); _lastTime = 0; }); }
+  // ── Channel toggle buttons ───────────────────────────────────────────────────
+  List<Widget> _buildChannelToggleButtons(double w, double h) {
+    return _channels.asMap().entries.map((e) {
+      final ci = e.key;
+      final ch = e.value;
+      final a = _nodePixels(ch.fromNodeIdx, w, h);
+      final b = _channelEndPixels(ch, w, h);
+      final mid = Offset.lerp(a, b, 0.5)!;
+      final isOn = ch.active;
+      final flash = ch.flashTimer > 0;
 
-  void _restart() { setState(() { _score = 0; _jams = 0; _totalTime = 0; _gameWon = false; _loadLevel(0); _lastTime = 0; }); }
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
+      return Positioned(
+        left: mid.dx - 12,
+        top: mid.dy - 12,
+        child: GestureDetector(
+          onTap: () => _toggleChannel(ci),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 100),
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: flash
+                  ? Colors.white.withValues(alpha: 0.6)
+                  : isOn
+                      ? const Color(0xFF4CAF50).withValues(alpha: 0.85)
+                      : Colors.red.withValues(alpha: 0.7),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.5),
+                width: 1,
+              ),
+              boxShadow: isOn
+                  ? [BoxShadow(color: const Color(0xFF4CAF50).withValues(alpha: 0.4), blurRadius: 6)]
+                  : null,
+            ),
+            child: Center(
+              child: Text(
+                isOn ? '●' : '○',
+                style: const TextStyle(fontSize: 10, color: Colors.white),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).toList();
+  }
 
-      return GestureDetector(
-        onPanStart: (d) { if (_levelComplete || _gameWon) return; final p = d.localPosition; final hit = _nodeAtPosition(p, w, h); if (hit != null) { if (_nodes[hit].jammed) { _clearJam(hit); return; } _dragFromNode = hit; _dragCurrent = p; } },
-        onPanUpdate: (d) { if (_dragFromNode == null) return; setState(() { _dragCurrent = d.localPosition; }); },
-        onPanEnd: (d) { if (_dragFromNode != null && _dragCurrent != null) { final hit = _nodeAtPosition(_dragCurrent!, w, h); if (hit != null && hit != _dragFromNode && _areAdjacent(_dragFromNode!, hit) && !_pipeExists(_dragFromNode!, hit)) setState(() { _pipes.add(_Pipe(fromIdx: _dragFromNode!, toIdx: hit)); }); } setState(() { _dragFromNode = null; _dragCurrent = null; }); },
-        onTapUp: (d) { if (_levelComplete || _gameWon) return; final p = d.localPosition; final hit = _nodeAtPosition(p, w, h); if (hit != null && _nodes[hit].jammed) { _clearJam(hit); return; } _removePipeAt(p, w, h); },
+  // ── Market slot widgets ──────────────────────────────────────────────────────
+  List<Widget> _buildMarketWidgets(double w, double h) {
+    return _markets.map((ms) {
+      final margin = 110.0;
+      final boardH = h - margin - 130;
+      final pos = Offset(ms.position.dx * w, margin + ms.position.dy * boardH);
+      final col = _scMarketColor(ms.market);
+      final flash = ms.earnFlash > 0;
+      const r = 26.0;
+      return Positioned(
+        left: pos.dx - r,
+        top: pos.dy - r,
         child: Container(
-          color: const Color(0xFF1A1A2E),
-          child: Stack(
+          width: r * 2,
+          height: r * 2,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: col.withValues(alpha: flash ? 0.5 : 0.2),
+            border: Border.all(
+              color: col.withValues(alpha: flash ? 1.0 : 0.6),
+              width: flash ? 2.5 : 1.5,
+            ),
+            boxShadow: flash
+                ? [BoxShadow(color: col.withValues(alpha: 0.6), blurRadius: 14)]
+                : null,
+          ),
+          child: Center(
+            child: Text(
+              _scMarketLabel(ms.market),
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 7,
+                fontWeight: FontWeight.bold,
+                color: Colors.white.withValues(alpha: 0.9),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  // ── Game Over overlay ────────────────────────────────────────────────────────
+  Widget _buildGameOverOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.75),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-            CustomPaint(size: Size(w, h), painter: _PipeGridPainter(nodes: _nodes, pipes: _pipes, travelers: _travelers, nodeCenter: (i) => _nodeCenter(i, w, h), dragFrom: _dragFromNode != null ? _nodeCenter(_dragFromNode!, w, h) : null, dragTo: _dragCurrent, eligibleTargets: _dragFromNode != null ? _getEligibleTargets(_dragFromNode!, w, h) : const {})),
-            ..._nodes.asMap().entries.map((e) { final i = e.key; final n = e.value; final c = _nodeCenter(i, w, h); final s = n.type == _PipeNodeType.splitter ? 36.0 : 42.0; return Positioned(left: c.dx - s / 2, top: c.dy - s / 2, child: _buildNodeWidget(n, s, _pipeNodeColor(n.type))); }),
-            ..._nodes.asMap().entries.map((e) { final n = e.value; final c = _nodeCenter(e.key, w, h); String l = _pipeNodeLabel(n.type); if (_isDest(n.type)) l += '\n(${_scProductName(_destWants(n.type))})'; return Positioned(left: c.dx - 30, top: c.dy + 24, child: SizedBox(width: 60, child: Text(l, textAlign: TextAlign.center, style: const TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white54, height: 1.2)))); }),
-            ..._nodes.asMap().entries.where((e) => _isDest(e.value.type)).map((e) { final n = e.value; final c = _nodeCenter(e.key, w, h); final nd = _levels[_currentLevel].requiredPerDest; return Positioned(left: c.dx - 15, top: c.dy - 32, child: Container(padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(4)), child: Text('${n.deliveredCount}/$nd', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, fontWeight: FontWeight.bold, color: n.deliveredCount >= nd ? const Color(0xFF4CAF50) : Colors.white70)))); }),
-            Positioned(top: 8, left: 12, right: 12, child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Level ${_currentLevel + 1}: ${_levels[_currentLevel].name}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)), Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF4CAF50)))])),
-            Positioned(top: 28, left: 12, right: 12, child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Flexible(child: Text(_levels[_currentLevel].hint, style: const TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Colors.white38))), Text('Jams: $_jams', style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Color(0xFFEF5350)))])),
-            const Positioned(bottom: 12, left: 0, right: 0, child: Center(child: Text('Drag to connect. Tap pipe to remove. Tap jammed node to clear.', style: TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white24)))),
-            if (_levelComplete && !_gameWon) _buildOverlay(title: 'Level Complete!', subtitle: 'Time: ${_levelTime.toStringAsFixed(1)}s', buttonText: 'Next Level', onButton: _nextLevel),
-            if (_gameWon) _buildOverlay(title: 'All Levels Complete!', subtitle: 'Score: $_score | Jams: $_jams | Time: ${_totalTime.toStringAsFixed(1)}s', buttonText: 'Play Again', onButton: _restart),
-          ], ), ));
+              const Text(
+                'TIME\'S UP!',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 32,
+                  fontWeight: FontWeight.w900,
+                  color: _kAccentGold,
+                  letterSpacing: 3,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Empire Value',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 14,
+                  color: Colors.white.withValues(alpha: 0.5),
+                  letterSpacing: 2,
+                ),
+              ),
+              Text(
+                '\$${_totalEarned.toStringAsFixed(0)}',
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 48,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '${_nodes.length - 1} nodes built · ${_channels.length} channels',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 12,
+                  color: Colors.white.withValues(alpha: 0.45),
+                ),
+              ),
+              const SizedBox(height: 28),
+              GestureDetector(
+                onTap: _restart,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: _kAccentGold,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Text(
+                    'Play Again',
+                    style: TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _restart() {
+    setState(() {
+      _elapsed = 0;
+      _lastTime = 0;
+      _gameOver = false;
+      _cash = _kStartCash;
+      _totalEarned = 0;
+      _nodes.clear();
+      _channels.clear();
+      _markets.clear();
+      _channelAccum.clear();
+      _travelers.clear();
+      _fx.clear();
+      _draggingType = null;
+      _dragPos = null;
+      _hoveredCell = null;
+      _nodes.add(_ScNode(type: _ScNodeType.farm, position: _gridPos(0, 2)));
     });
   }
-  Widget _buildNodeWidget(_PipeNode node, double size, Color color) { final isJ = node.jammed; final isP = node.processing; final gl = node.glowTimer > 0; double sx = 0; if (isJ) sx = (node.jamTimer * 40).remainder(2.0) > 1.0 ? 3.0 : -3.0; final bg = isJ ? Colors.red.withValues(alpha: 0.6) : isP ? color.withValues(alpha: 0.7) : color.withValues(alpha: 0.3); final bc = gl ? const Color(0xFF4CAF50) : isJ ? Colors.red : color.withValues(alpha: 0.8); final sh = <BoxShadow>[if (gl) BoxShadow(color: const Color(0xFF4CAF50).withValues(alpha: 0.6), blurRadius: 14), if (isJ) BoxShadow(color: Colors.red.withValues(alpha: 0.5), blurRadius: 10)]; final lbl = Text(_pipeNodeLabel(node.type)[0], style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white)); Widget shape; if (node.type == _PipeNodeType.splitter) { shape = Transform.rotate(angle: 0.785398, child: Container(width: size * 0.75, height: size * 0.75, decoration: BoxDecoration(color: bg, border: Border.all(color: bc, width: 2), boxShadow: sh))); } else if (node.type == _PipeNodeType.farm || _isDest(node.type)) { shape = Container(width: size, height: size, decoration: BoxDecoration(shape: BoxShape.circle, color: bg, border: Border.all(color: bc, width: gl ? 3 : 2), boxShadow: sh), child: Center(child: lbl)); } else { shape = Container(width: size, height: size, decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), color: bg, border: Border.all(color: bc, width: 2), boxShadow: sh), child: Center(child: lbl)); } if (isP) shape = Stack(alignment: Alignment.center, children: [shape, SizedBox(width: size + 4, height: size + 4, child: CircularProgressIndicator(value: node.processTimer, strokeWidth: 2, color: color))]); return Transform.translate(offset: Offset(sx, 0), child: shape); }
-  Widget _buildOverlay({required String title, required String subtitle, required String buttonText, required VoidCallback onButton}) { return Positioned.fill(child: Container(color: Colors.black.withValues(alpha: 0.7), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(title, style: const TextStyle(fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)), const SizedBox(height: 8), Text(subtitle, style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)), const SizedBox(height: 20), GestureDetector(onTap: onButton, child: Container(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), color: const Color(0xFF4CAF50)), child: Text(buttonText, style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)))), const SizedBox(height: 12), GestureDetector(onTap: _restart, child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6), decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.white24)), child: const Text('Restart All', style: TextStyle(fontFamily: 'Avenir', fontSize: 12, color: Colors.white54))))])))); }
 }
-class _PipeGridPainter extends CustomPainter { final List<_PipeNode> nodes; final List<_Pipe> pipes; final List<_TravelingPotato> travelers; final Offset Function(int) nodeCenter; final Offset? dragFrom; final Offset? dragTo; final Set<int> eligibleTargets; _PipeGridPainter({required this.nodes, required this.pipes, required this.travelers, required this.nodeCenter, this.dragFrom, this.dragTo, this.eligibleTargets = const {}}); @override void paint(Canvas canvas, Size size) { final gp = Paint()..color = Colors.white.withValues(alpha: 0.03)..strokeWidth = 1; for (double x = 0; x < size.width; x += 40) canvas.drawLine(Offset(x, 0), Offset(x, size.height), gp); for (double y = 0; y < size.height; y += 40) canvas.drawLine(Offset(0, y), Offset(size.width, y), gp); for (final pipe in pipes) { final f = nodeCenter(pipe.fromIdx), t2 = nodeCenter(pipe.toIdx); bool act = false; for (final tr in travelers) { if ((tr.fromNodeIdx == pipe.fromIdx && tr.toNodeIdx == pipe.toIdx) || (tr.fromNodeIdx == pipe.toIdx && tr.toNodeIdx == pipe.fromIdx)) { act = true; break; } } canvas.drawLine(f, t2, Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.08))..strokeWidth = 12..strokeCap = StrokeCap.round); canvas.drawLine(f, t2, Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.15))..strokeWidth = 8..strokeCap = StrokeCap.round); final mid = Offset.lerp(f, t2, 0.5)!; final dir = t2 - f; final len = dir.distance; if (len > 0) { final nm = Offset(dir.dx / len, dir.dy / len); canvas.drawPath(Path()..moveTo((mid + nm * 8).dx, (mid + nm * 8).dy)..lineTo((mid + Offset(-nm.dy, nm.dx) * 4).dx, (mid + Offset(-nm.dy, nm.dx) * 4).dy)..lineTo((mid + Offset(nm.dy, -nm.dx) * 4).dx, (mid + Offset(nm.dy, -nm.dx) * 4).dy)..close(), Paint()..color = (act ? const Color(0xFF4CAF50).withValues(alpha: 0.7) : Colors.white.withValues(alpha: 0.2))..style = PaintingStyle.fill); } } /* Eligible target highlights while dragging */ for (final idx in eligibleTargets) { final c = nodeCenter(idx); canvas.drawCircle(c, 30, Paint()..color = const Color(0xFF4CAF50).withValues(alpha: 0.12)); canvas.drawCircle(c, 30, Paint()..color = const Color(0xFF4CAF50).withValues(alpha: 0.25)..style = PaintingStyle.stroke..strokeWidth = 1.5); } if (dragFrom != null && dragTo != null) canvas.drawLine(dragFrom!, dragTo!, Paint()..color = Colors.white.withValues(alpha: 0.3)..strokeWidth = 4..strokeCap = StrokeCap.round); for (final trav in travelers) { final f = nodeCenter(trav.fromNodeIdx), t2 = nodeCenter(trav.toNodeIdx); final pos = Offset.lerp(f, t2, trav.progress.clamp(0.0, 1.0))!; final col = _scProductColor(trav.product); switch (trav.product) { case _PotatoProduct.raw: canvas.drawCircle(pos, 7, Paint()..color = col); canvas.drawCircle(pos + const Offset(2, -2), 3, Paint()..color = col.withValues(alpha: 0.6)); break; case _PotatoProduct.clean: canvas.drawCircle(pos, 7, Paint()..color = col); break; case _PotatoProduct.peeled: canvas.drawCircle(pos, 7, Paint()..color = col); canvas.drawCircle(pos, 7, Paint()..color = Colors.white.withValues(alpha: 0.3)..style = PaintingStyle.stroke..strokeWidth = 1); break; case _PotatoProduct.fries: for (int i = -1; i <= 1; i++) canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromCenter(center: pos + Offset(i * 4.0, 0), width: 3, height: 12), const Radius.circular(1)), Paint()..color = col); break; case _PotatoProduct.baked: canvas.drawOval(Rect.fromCenter(center: pos, width: 14, height: 10), Paint()..color = col); for (int i = -1; i <= 1; i++) canvas.drawPath(Path()..moveTo(pos.dx + i * 4, pos.dy - 6)..quadraticBezierTo(pos.dx + i * 4 + 2, pos.dy - 10, pos.dx + i * 4, pos.dy - 14), Paint()..color = Colors.white.withValues(alpha: 0.4)..strokeWidth = 1..style = PaintingStyle.stroke); break; case _PotatoProduct.chips: for (int i = 0; i < 3; i++) canvas.drawCircle(pos + Offset((i - 1) * 5.0, (i % 2 == 0 ? -2 : 2).toDouble()), 3.5, Paint()..color = col); break; } } } @override bool shouldRepaint(covariant _PipeGridPainter old) => true; }
+
+// ─── Board painter ────────────────────────────────────────────────────────────
+class _ScBoardPainter extends CustomPainter {
+  final List<_ScNode> nodes;
+  final List<_ScChannel> channels;
+  final List<_ScMarketSlot> markets;
+  final List<_ScTraveler> travelers;
+  final Offset Function(int idx) nodePixels;
+  final Offset Function(_ScChannel ch) channelEnd;
+  final _ScNodeType? dragType;
+  final Offset? dragPos;
+  final int? hoveredCell;
+  final Offset Function(int col, int row) boardColsFn;
+
+  _ScBoardPainter({
+    required this.nodes,
+    required this.channels,
+    required this.markets,
+    required this.travelers,
+    required this.nodePixels,
+    required this.channelEnd,
+    this.dragType,
+    this.dragPos,
+    this.hoveredCell,
+    required this.boardColsFn,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Faint grid
+    final gridPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.03)
+      ..strokeWidth = 0.5;
+    for (double x = 0; x < size.width; x += size.width / _kBoardCols) {
+      canvas.drawLine(Offset(x, 110), Offset(x, size.height - 130), gridPaint);
+    }
+    final boardH = size.height - 110 - 130;
+    for (double y = 0; y <= boardH; y += boardH / _kBoardRows) {
+      canvas.drawLine(Offset(0, 110 + y), Offset(size.width, 110 + y), gridPaint);
+    }
+
+    // Drop target cells when dragging
+    if (dragType != null) {
+      for (int col = 1; col <= 3; col++) {
+        for (int row = 0; row < _kBoardRows; row++) {
+          final center = boardColsFn(col, row);
+          final cellW = size.width / _kBoardCols;
+          final cellH = boardH / _kBoardRows;
+          bool occupied = false;
+          for (final nd in nodes) {
+            final nc = (nd.position.dx * _kBoardCols).floor();
+            final nr = (nd.position.dy * _kBoardRows).floor();
+            if (nc == col && nr == row) { occupied = true; break; }
+          }
+          if (!occupied) {
+            canvas.drawRRect(
+              RRect.fromRectAndRadius(
+                Rect.fromCenter(center: center, width: cellW - 4, height: cellH - 4),
+                const Radius.circular(6),
+              ),
+              Paint()..color = Colors.white.withValues(alpha: 0.07),
+            );
+            canvas.drawRRect(
+              RRect.fromRectAndRadius(
+                Rect.fromCenter(center: center, width: cellW - 4, height: cellH - 4),
+                const Radius.circular(6),
+              ),
+              Paint()
+                ..color = _scNodeColor(dragType!).withValues(alpha: 0.25)
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.2,
+            );
+          }
+        }
+      }
+    }
+
+    // Channels
+    for (int ci = 0; ci < channels.length; ci++) {
+      final ch = channels[ci];
+      final a = nodePixels(ch.fromNodeIdx);
+      final b = channelEnd(ch);
+      final active = ch.active;
+      final flash = ch.flashTimer > 0;
+
+      // Line shadow/glow
+      if (active) {
+        canvas.drawLine(
+          a, b,
+          Paint()
+            ..color = const Color(0xFF4CAF50).withValues(alpha: flash ? 0.5 : 0.15)
+            ..strokeWidth = 10
+            ..strokeCap = StrokeCap.round,
+        );
+      }
+      canvas.drawLine(
+        a, b,
+        Paint()
+          ..color = active
+              ? (flash
+                  ? Colors.white.withValues(alpha: 0.7)
+                  : const Color(0xFF4CAF50).withValues(alpha: 0.6))
+              : Colors.red.withValues(alpha: 0.35)
+          ..strokeWidth = active ? 3 : 2
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    // Traveling potatoes
+    for (final tr in travelers) {
+      if (tr.channelIdx >= channels.length) continue;
+      final ch = channels[tr.channelIdx];
+      final a = nodePixels(ch.fromNodeIdx);
+      final b = channelEnd(ch);
+      final pos = Offset.lerp(a, b, tr.progress.clamp(0.0, 1.0))!;
+      final col = tr.isPremium ? const Color(0xFFE040FB) : const Color(0xFFD4A017);
+      canvas.drawCircle(pos, tr.isPremium ? 6 : 5, Paint()..color = col);
+      if (tr.isPremium) {
+        canvas.drawCircle(
+          pos, 7,
+          Paint()
+            ..color = col.withValues(alpha: 0.4)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScBoardPainter old) => true;
+}

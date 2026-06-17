@@ -3617,17 +3617,28 @@ class _CannonGravityPainter extends CustomPainter {
 // Progressive stages: each win adds a tower or a planet, alternating.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _HanoiPlanet {
-  final String name;
-  final Color color;
-  final int sizeRank; // 0 = smallest, higher = larger
+// ── SolarSortGame — "Orbital Mechanic" ────────────────────────────────────────
+// REPLACED: spiral-drawing game. Draw a continuous spiral; score = total
+// full revolutions (2π accumulated angle) across attempts. 60-second session.
+// ──────────────────────────────────────────────────────────────────────────────
 
-  const _HanoiPlanet({
-    required this.name,
-    required this.color,
-    required this.sizeRank,
-  });
-}
+// ── Feel constants ────────────────────────────────────────────────────────────
+// Minimum number of points already in the path before intersection checks
+// start (skip the first N segments — they can't cross anything meaningful yet).
+const int _kSpiralSkipHeadSegments = 6;
+
+// Segment-segment intersection tolerance: two segments are only flagged as
+// crossing when the crossing parameter t/u are strictly inside (tol, 1-tol).
+// Keeping this small avoids false positives from adjacent/near-touching segs
+// while still catching genuine crossings.
+const double _kIntersectTol = 0.01;
+
+// Points awarded per completed revolution on attempt 1.
+// Each subsequent attempt reduces the reward by this factor (escalation).
+const int _kBasePointsPerRev = 100;
+const double _kAttemptDecayFactor = 0.85;
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 class SolarSortGame extends StatefulWidget {
   const SolarSortGame({Key? key}) : super(key: key);
@@ -3635,488 +3646,540 @@ class SolarSortGame extends StatefulWidget {
   State<SolarSortGame> createState() => _SolarSortGameState();
 }
 
+class _SpiralPoint {
+  final double x, y;
+  const _SpiralPoint(this.x, this.y);
+  Offset get offset => Offset(x, y);
+}
+
 class _SolarSortGameState extends State<SolarSortGame>
-    with TickerProviderStateMixin {
-  static const _planetNames = ['Jupiter', 'Saturn', 'Neptune', 'Uranus', 'Earth', 'Mars', 'Venus', 'Mercury'];
-  static const _planetColors = [Color(0xFFCC9966), Color(0xFFDDCC88), Color(0xFF4466AA), Color(0xFF88CCDD), Color(0xFF4488CC), Color(0xFFCC5533), Color(0xFFE8A84C), Color(0xFFB0B0B0)];
+    with SingleTickerProviderStateMixin {
+  // ── game state ──────────────────────────────────────────────────────────────
+  static const int _gameDuration = 60; // seconds
 
-  // Stage config: [numTowers, numPlanets]
-  static List<int> _stageConfig(int stage) {
-    // Stages 1-3: 3 planets, 3 towers
-    // Stages 4-5: 4 planets, 3 towers
-    // Stages 6-7: 5 planets, 3 towers
-    // Stages 8-9: 5 planets, 4 towers
-    // Stages 10+: 6-7 planets, 4 towers
-    if (stage <= 3) return [3, 3];
-    if (stage <= 5) return [3, 4];
-    if (stage <= 7) return [3, 5];
-    if (stage <= 9) return [4, 5];
-    if (stage <= 11) return [4, 6];
-    return [4, min(7, 3 + (stage ~/ 2))];
-  }
+  bool _running = false;
+  bool _gameOver = false;
+  int _secondsLeft = _gameDuration;
+  int _totalScore = 0;
+  int _attemptScore = 0;   // score for current live attempt
+  int _attemptNumber = 0;  // 1-based; increments on each break/restart
+  double _bestRevs = 0;    // best single-attempt revolution count (display)
 
-  int _stage = 1;
-  int _moveCount = 0;
-  int? _selectedTower;
-  bool _won = false;
-  bool _showMenu = true;
-  Map<int, int> _bestMoves = {};
+  // Current drawn path for this attempt.
+  final List<_SpiralPoint> _path = [];
 
-  late List<List<_HanoiPlanet>> _towers; // current state
-  late List<List<_HanoiPlanet>> _goalTowers; // target state
-  late List<_HanoiPlanet> _activePlanets;
-  int _numTowers = 3;
-  int _numPlanets = 3;
+  // Accumulated angle (radians) around the running centroid — used for
+  // revolution counting.  Resets to 0 on each new attempt.
+  double _accumulatedAngle = 0;
 
-  AnimationController? _shakeCtrl;
-  Animation<double>? _shakeAnim;
-  int? _shakeTower;
+  // Previous angle relative to current centroid, needed to compute delta.
+  double? _prevAngle;
 
-  late AnimationController _glowCtrl;
-  late Animation<double> _glowAnim;
+  // Running centroid of the drawn path (updated incrementally).
+  double _centroidX = 0;
+  double _centroidY = 0;
+
+  // Flash-break animation state.
+  bool _flashBreak = false;
+
+  late AnimationController _pulseCtrl;
+  late Animation<double> _pulseAnim;
+
+  // Timer handle.
+  DateTime? _startTime;
+  bool _timerActive = false;
 
   @override
   void initState() {
     super.initState();
-    _towers = List.generate(3, (_) => <_HanoiPlanet>[]);
-    _goalTowers = List.generate(3, (_) => <_HanoiPlanet>[]);
-    _activePlanets = [];
-    _glowCtrl = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 800),
+    _pulseCtrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 600),
     )..repeat(reverse: true);
-    _glowAnim = Tween<double>(begin: 0.3, end: 1.0).animate(
-      CurvedAnimation(parent: _glowCtrl, curve: Curves.easeInOut),
+    _pulseAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
+      CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
-    _loadProgress();
   }
 
   @override
   void dispose() {
-    _glowCtrl.dispose();
-    _shakeCtrl?.dispose();
+    _pulseCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _loadProgress() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedStage = prefs.getInt('solar_architect_stage') ?? 1;
-    final bestJson = prefs.getString('solar_architect_best_moves');
-    Map<int, int> best = {};
-    if (bestJson != null) {
-      final decoded = jsonDecode(bestJson) as Map<String, dynamic>;
-      for (final e in decoded.entries) {
-        best[int.parse(e.key)] = e.value as int;
+  // ── timer ───────────────────────────────────────────────────────────────────
+  void _startGame() {
+    setState(() {
+      _running = true;
+      _gameOver = false;
+      _secondsLeft = _gameDuration;
+      _totalScore = 0;
+      _attemptScore = 0;
+      _attemptNumber = 0;
+      _bestRevs = 0;
+      _timerActive = true;
+      _startTime = DateTime.now();
+    });
+    _resetAttempt(bankScore: false);
+    _tick();
+  }
+
+  void _tick() {
+    if (!mounted || !_timerActive) return;
+    final elapsed = DateTime.now().difference(_startTime!).inSeconds;
+    final left = _gameDuration - elapsed;
+    if (left <= 0) {
+      setState(() {
+        _secondsLeft = 0;
+        _running = false;
+        _gameOver = true;
+        _timerActive = false;
+        // Bank any partial score from current attempt.
+        _bankCurrentAttempt();
+      });
+      return;
+    }
+    setState(() => _secondsLeft = left);
+    Future.delayed(const Duration(seconds: 1), _tick);
+  }
+
+  // ── attempt helpers ─────────────────────────────────────────────────────────
+
+  /// How many full revolutions (integer) the current path has completed.
+  int get _currentRevolutions => (_accumulatedAngle.abs() / (2 * pi)).floor();
+
+  /// Score value for the current attempt's completed revolutions.
+  int _scoreForRevs(int revs) {
+    if (revs <= 0) return 0;
+    final multiplier = pow(_kAttemptDecayFactor, _attemptNumber - 1).toDouble();
+    return (revs * _kBasePointsPerRev * multiplier).round();
+  }
+
+  void _bankCurrentAttempt() {
+    final revs = _currentRevolutions;
+    final score = _scoreForRevs(revs);
+    _totalScore += score;
+    if (revs > _bestRevs) _bestRevs = revs.toDouble();
+  }
+
+  void _resetAttempt({required bool bankScore}) {
+    if (bankScore) _bankCurrentAttempt();
+    _attemptNumber++;
+    _path.clear();
+    _accumulatedAngle = 0;
+    _prevAngle = null;
+    _centroidX = 0;
+    _centroidY = 0;
+    _attemptScore = 0;
+  }
+
+  // ── drawing logic ────────────────────────────────────────────────────────────
+
+  void _onPanStart(DragStartDetails d) {
+    if (!_running) return;
+    _resetAttempt(bankScore: false);
+    final pt = d.localPosition;
+    _path.add(_SpiralPoint(pt.dx, pt.dy));
+    _centroidX = pt.dx;
+    _centroidY = pt.dy;
+    _prevAngle = null;
+  }
+
+  void _onPanUpdate(DragUpdateDetails d) {
+    if (!_running) return;
+    final pt = d.localPosition;
+    final newPt = _SpiralPoint(pt.dx, pt.dy);
+
+    // ── check self-intersection BEFORE committing the new point ──────────────
+    if (_path.length >= _kSpiralSkipHeadSegments + 1) {
+      if (_checkIntersection(newPt)) {
+        // Break! Flash and restart this attempt.
+        _triggerBreak();
+        return;
       }
     }
-    if (!mounted) return;
+
+    // Commit point.
+    _path.add(newPt);
+
+    // ── update running centroid ───────────────────────────────────────────────
+    final n = _path.length.toDouble();
+    _centroidX = (_centroidX * (n - 1) + pt.dx) / n;
+    _centroidY = (_centroidY * (n - 1) + pt.dy) / n;
+
+    // ── accumulate angle for revolution counting ──────────────────────────────
+    final dx = pt.dx - _centroidX;
+    final dy = pt.dy - _centroidY;
+    final ang = atan2(dy, dx);
+    if (_prevAngle != null) {
+      double delta = ang - _prevAngle!;
+      // Wrap delta into (-π, π] — handles the ±π discontinuity.
+      if (delta > pi) delta -= 2 * pi;
+      if (delta <= -pi) delta += 2 * pi;
+      _accumulatedAngle += delta;
+    }
+    _prevAngle = ang;
+
+    // Update live attempt score display.
     setState(() {
-      _stage = savedStage;
-      _bestMoves = best;
-      _showMenu = true;
+      _attemptScore = _scoreForRevs(_currentRevolutions);
     });
   }
 
-  Future<void> _saveProgress() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('solar_architect_stage', _stage);
-    final bestJson = <String, int>{};
-    for (final e in _bestMoves.entries) {
-      bestJson[e.key.toString()] = e.value;
-    }
-    await prefs.setString('solar_architect_best_moves', jsonEncode(bestJson));
+  void _onPanEnd(DragEndDetails d) {
+    // Finger lifted: bank what was drawn, start fresh on next touch.
+    if (!_running) return;
+    setState(() { _bankCurrentAttempt(); _resetAttempt(bankScore: false); });
   }
 
-  /// Generate a valid Hanoi state: distribute planets across towers,
-  /// ensuring each tower has planets in decreasing size (largest at bottom).
-  /// Uses a deterministic seed so each stage always generates the same puzzle.
-  List<List<_HanoiPlanet>> _generateValidState(int seed, List<_HanoiPlanet> planets, int numTowers) {
-    final rng = Random(seed);
-    final towers = List.generate(numTowers, (_) => <_HanoiPlanet>[]);
-    // Sort planets by sizeRank descending (largest first)
-    final sorted = List<_HanoiPlanet>.from(planets);
-    sorted.sort((a, b) => b.sizeRank.compareTo(a.sizeRank));
-    // Assign each planet (from largest to smallest) to a random tower
-    for (final planet in sorted) {
-      final towerIdx = rng.nextInt(numTowers);
-      towers[towerIdx].insert(0, planet); // insert at top (smallest on top)
-    }
-    return towers;
-  }
-
-  void _initStage(int stage) {
-    final cfg = _stageConfig(stage);
-    _numTowers = cfg[0];
-    _numPlanets = cfg[1];
-    _activePlanets = [];
-    for (int i = 0; i < _numPlanets; i++) {
-      final defIdx = _planetNames.length - _numPlanets + i;
-      _activePlanets.add(_HanoiPlanet(
-        name: _planetNames[defIdx],
-        color: _planetColors[defIdx],
-        sizeRank: _numPlanets - 1 - i,
-      ));
-    }
-
-    // Initial state: all planets stacked on tower 0
-    _towers = List.generate(_numTowers, (_) => <_HanoiPlanet>[]);
-    // Stack largest at bottom (index 0 is top of tower in our model)
-    final startSorted = List<_HanoiPlanet>.from(_activePlanets);
-    startSorted.sort((a, b) => b.sizeRank.compareTo(a.sizeRank));
-    _towers[0] = startSorted.toList(); // largest at index 0 (bottom), smallest last (top)
-    // Actually in our model, index 0 = top, so we want smallest at index 0
-    _towers[0] = startSorted.reversed.toList();
-
-    // Goal state: generate a valid configuration that's different from start
-    // Use stage * 1000 + attempt as seed to ensure different goals
-    int attempt = 0;
-    do {
-      _goalTowers = _generateValidState(stage * 1000 + attempt, _activePlanets, _numTowers);
-      attempt++;
-    } while (_statesMatch(_towers, _goalTowers) && attempt < 100);
-
-    _moveCount = 0;
-    _selectedTower = null;
-    _won = false;
-    _shakeTower = null;
-  }
-
-  bool _statesMatch(List<List<_HanoiPlanet>> a, List<List<_HanoiPlanet>> b) {
-    if (a.length != b.length) return false;
-    for (int i = 0; i < a.length; i++) {
-      if (a[i].length != b[i].length) return false;
-      for (int j = 0; j < a[i].length; j++) {
-        if (a[i][j].sizeRank != b[i][j].sizeRank) return false;
-      }
-    }
-    return true;
-  }
-
-  void _startStage(int stage) {
-    setState(() { _stage = stage; _showMenu = false; _initStage(stage); });
-  }
-
-  void _onTapTower(int towerIdx) {
-    if (_won) return;
+  void _triggerBreak() {
     setState(() {
-      if (_selectedTower == null) {
-        if (_towers[towerIdx].isNotEmpty) _selectedTower = towerIdx;
-      } else if (_selectedTower == towerIdx) {
-        _selectedTower = null;
-      } else {
-        final fromTower = _towers[_selectedTower!];
-        final toTower = _towers[towerIdx];
-        final planet = fromTower.first; // top of tower
-        if (toTower.isEmpty || toTower.first.sizeRank > planet.sizeRank) {
-          fromTower.removeAt(0);
-          toTower.insert(0, planet);
-          _moveCount++;
-          _selectedTower = null;
-          // Check win: current matches goal
-          if (_statesMatch(_towers, _goalTowers)) {
-            _won = true;
-            final prev = _bestMoves[_stage];
-            if (prev == null || _moveCount < prev) _bestMoves[_stage] = _moveCount;
-            _saveProgress();
-          }
-        } else {
-          _triggerShake(_selectedTower!);
-          _selectedTower = null;
-        }
-      }
+      _flashBreak = true;
+      _bankCurrentAttempt();
+      _resetAttempt(bankScore: false);
+    });
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted) setState(() => _flashBreak = false);
     });
   }
 
-  void _triggerShake(int towerIdx) {
-    _shakeTower = towerIdx;
-    _shakeCtrl?.dispose();
-    _shakeCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
-    _shakeAnim = Tween<double>(begin: 0, end: 1).animate(CurvedAnimation(parent: _shakeCtrl!, curve: Curves.elasticIn));
-    _shakeCtrl!.addStatusListener((s) { if (s == AnimationStatus.completed && mounted) setState(() => _shakeTower = null); });
-    _shakeCtrl!.addListener(() { if (mounted) setState(() {}); });
-    _shakeCtrl!.forward();
+  // ── self-intersection ─────────────────────────────────────────────────────
+  //
+  // Test the prospective new segment (last path point → newPt) against all
+  // earlier non-adjacent segments.  Uses standard parametric segment-segment
+  // intersection with tolerance guards to avoid false positives.
+  //
+  // Two segments AB and CD intersect when:
+  //   t = ((C-A)×(D-C)) / ((B-A)×(D-C))
+  //   u = ((C-A)×(B-A)) / ((B-A)×(D-C))
+  // and both t, u ∈ (tol, 1-tol).
+  //
+  // We skip the last _kSpiralSkipHeadSegments segments (adjacent + near
+  // neighbours) because a tight-but-valid spiral will always come close to
+  // itself; only a genuine crossing (both params strictly interior) fires.
+  bool _checkIntersection(_SpiralPoint newPt) {
+    if (_path.length < 2) return false;
+    final ax = _path[_path.length - 1].x;
+    final ay = _path[_path.length - 1].y;
+    final bx = newPt.x;
+    final by = newPt.y;
+
+    // Check against all segments [i, i+1] except the last
+    // _kSpiralSkipHeadSegments ones (including the one we're extending).
+    final lastSafe = _path.length - 1 - _kSpiralSkipHeadSegments;
+    if (lastSafe < 1) return false;
+
+    for (int i = 0; i < lastSafe - 1; i++) {
+      final cx2 = _path[i].x;
+      final cy2 = _path[i].y;
+      final dx2 = _path[i + 1].x;
+      final dy2 = _path[i + 1].y;
+
+      // (B-A)
+      final rX = bx - ax, rY = by - ay;
+      // (D-C)
+      final sX = dx2 - cx2, sY = dy2 - cy2;
+
+      final denom = rX * sY - rY * sX; // cross(r, s)
+      if (denom.abs() < 1e-10) continue; // parallel
+
+      // (C-A)
+      final qX = cx2 - ax, qY = cy2 - ay;
+
+      final t = (qX * sY - qY * sX) / denom;
+      final u = (qX * rY - qY * rX) / denom;
+
+      if (t > _kIntersectTol && t < 1.0 - _kIntersectTol &&
+          u > _kIntersectTol && u < 1.0 - _kIntersectTol) {
+        return true; // genuine crossing
+      }
+    }
+    return false;
   }
 
-  double _shakeOffset() {
-    if (_shakeTower == null || _shakeAnim == null) return 0;
-    final t = _shakeAnim!.value;
-    return sin(t * pi * 6) * 8 * (1.0 - t);
-  }
+  // ── build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    if (_showMenu) return _buildMenu();
+    if (_gameOver) return _buildGameOver();
+    if (!_running) return _buildStart();
     return _buildGame();
   }
 
-  Widget _buildMenu() {
-    final maxStage = _bestMoves.isEmpty ? 1 : _bestMoves.keys.fold<int>(1, (mx, k) => k > mx ? k : mx) + 1;
-    final highestUnlocked = max(maxStage, _stage);
+  Widget _buildStart() {
     return Container(
       color: const Color(0xFF050515),
       child: SafeArea(
-        child: Column(children: [
-          const SizedBox(height: 24),
-          const Text('Orbital Mechanic', style: TextStyle(fontFamily: 'Avenir', fontSize: 24, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-          const SizedBox(height: 8),
-          const Text('Match the target orbital configuration', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
-          const SizedBox(height: 24),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              itemCount: highestUnlocked,
-              itemBuilder: (context, i) {
-                final stage = i + 1;
-                final cfg = _stageConfig(stage);
-                final best = _bestMoves[stage];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: GestureDetector(
-                    onTap: () => _startStage(stage),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
-                        color: Colors.white.withValues(alpha: 0.05),
-                        border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.3)),
-                      ),
-                      child: Row(children: [
-                        Text('Puzzle $stage', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white)),
-                        const SizedBox(width: 12),
-                        Text('${cfg[0]} pillars / ${cfg[1]} planets', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white38)),
-                        const Spacer(),
-                        if (best != null) Text('Best: $best', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.amberAccent))
-                        else const Text('unsolved', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white24)),
-                      ]),
-                    ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Text('Orbital Mechanic',
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 26,
+                  fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+              const SizedBox(height: 16),
+              const Text(
+                'Draw a continuous spiral with your finger.\n'
+                'Score points for every full loop you complete.\n\n'
+                'Cross your own path and it resets — '
+                'your best loops are banked.\n\n'
+                '60 seconds. Go.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 14,
+                  color: Colors.white60, height: 1.6),
+              ),
+              const SizedBox(height: 32),
+              GestureDetector(
+                onTap: _startGame,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 14),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.amber.withValues(alpha: 0.15),
+                    border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.6)),
                   ),
-                );
-              },
-            ),
+                  child: const Text('START', style: TextStyle(
+                    fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold,
+                    color: Colors.amberAccent, letterSpacing: 2)),
+                ),
+              ),
+            ]),
           ),
-        ]),
+        ),
       ),
     );
   }
 
   Widget _buildGame() {
-    return LayoutBuilder(builder: (context, constraints) {
-      final w = constraints.maxWidth;
-      final h = constraints.maxHeight;
-      // Goal preview takes top area
-      final goalHeight = 90.0;
-      final towerAreaTop = goalHeight + 10;
-      final towerAreaBottom = h - 40;
-      final towerAreaHeight = towerAreaBottom - towerAreaTop;
-      final towerSpacing = w / (_numTowers + 1);
-      final maxDiskWidth = (towerSpacing * 0.85).clamp(30.0, 120.0);
-      final minDiskWidth = maxDiskWidth * 0.3;
-      final diskHeight = (towerAreaHeight / (_numPlanets + 3)).clamp(14.0, 28.0);
-      return GestureDetector(
-        onTapDown: (details) {
-          if (_won) return;
-          final tapX = details.localPosition.dx;
-          final tapY = details.localPosition.dy;
-          if (tapY < goalHeight) return; // ignore taps on goal area
-          for (int i = 0; i < _numTowers; i++) {
-            final cx = towerSpacing * (i + 1);
-            if ((tapX - cx).abs() < towerSpacing * 0.45) { _onTapTower(i); return; }
-          }
-        },
-        child: Container(color: const Color(0xFF050515), child: Stack(children: [
-          CustomPaint(size: Size(w, h), painter: _HanoiStarsPainter()),
-
-          // Goal configuration preview
-          Positioned(
-            top: 0, left: 0, right: 0, height: goalHeight,
-            child: Container(
-              decoration: const BoxDecoration(
-                color: Color(0xFF0A0A25),
-                border: Border(bottom: BorderSide(color: Color(0xFF333355))),
-              ),
-              child: Column(
-                children: [
-                  const SizedBox(height: 6),
-                  const Text('TARGET CONFIGURATION', style: TextStyle(
-                    fontFamily: 'Avenir', fontSize: 10, color: Colors.amberAccent,
-                    letterSpacing: 1.5, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  Expanded(child: _buildGoalPreview(w, goalHeight - 24)),
-                ],
+    return GestureDetector(
+      onPanStart: _onPanStart,
+      onPanUpdate: _onPanUpdate,
+      onPanEnd: _onPanEnd,
+      child: Container(
+        color: _flashBreak ? const Color(0x33FF4444) : const Color(0xFF050515),
+        child: Stack(children: [
+          // Canvas for the spiral.
+          Positioned.fill(
+            child: CustomPaint(
+              painter: _SpiralPainter(
+                points: List.unmodifiable(_path),
+                revolutions: _currentRevolutions,
+                flashBreak: _flashBreak,
+                pulseValue: _pulseAnim.value,
               ),
             ),
           ),
 
-          // HUD below goal
-          Positioned(top: goalHeight + 2, left: 16, right: 16, child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              GestureDetector(onTap: () => setState(() => _showMenu = true),
-                child: const Icon(Icons.arrow_back_ios, color: Colors.white38, size: 18)),
-              Text('Puzzle $_stage', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, fontWeight: FontWeight.w600, color: Colors.amberAccent)),
-              Text('Moves: $_moveCount', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
-              GestureDetector(
-                onTap: () => _startStage(_stage),
-                child: const Icon(Icons.refresh, color: Colors.white38, size: 18),
-              ),
-            ],
-          )),
-
-          // Tower poles
-          for (int i = 0; i < _numTowers; i++)
-            Positioned(left: towerSpacing * (i + 1) - 3, top: towerAreaTop + 30,
-              child: Container(width: 6, height: towerAreaHeight - 30,
-                decoration: BoxDecoration(borderRadius: BorderRadius.circular(3),
-                  gradient: const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                    colors: [Color(0xFF333344), Color(0xFF555566)])))),
-          // Bases
-          for (int i = 0; i < _numTowers; i++)
-            Positioned(left: towerSpacing * (i + 1) - maxDiskWidth / 2 - 4, top: towerAreaBottom - 4,
-              child: Container(width: maxDiskWidth + 8, height: 6,
-                decoration: BoxDecoration(borderRadius: BorderRadius.circular(3), color: const Color(0xFF666677)))),
-
-          // Planet disks
-          for (int ti = 0; ti < _numTowers; ti++)
-            for (int pi2 = 0; pi2 < _towers[ti].length; pi2++)
-              _buildPlanetDisk(tower: ti, stackIndex: pi2, planet: _towers[ti][pi2],
-                towerSpacing: towerSpacing, towerAreaBottom: towerAreaBottom,
-                diskHeight: diskHeight, maxDiskWidth: maxDiskWidth, minDiskWidth: minDiskWidth),
-
-          // Match indicators per tower
-          for (int i = 0; i < _numTowers; i++)
-            Positioned(
-              left: towerSpacing * (i + 1) - 8, top: towerAreaBottom + 4,
-              child: Icon(
-                _towerMatches(i) ? Icons.check_circle : Icons.radio_button_unchecked,
-                size: 16,
-                color: _towerMatches(i) ? Colors.greenAccent : Colors.white12,
-              ),
-            ),
-
-          if (_won) _buildWinOverlay(),
-        ])),
-      );
-    });
-  }
-
-  bool _towerMatches(int towerIdx) {
-    if (towerIdx >= _towers.length || towerIdx >= _goalTowers.length) return false;
-    final current = _towers[towerIdx];
-    final goal = _goalTowers[towerIdx];
-    if (current.length != goal.length) return false;
-    for (int i = 0; i < current.length; i++) {
-      if (current[i].sizeRank != goal[i].sizeRank) return false;
-    }
-    return true;
-  }
-
-  Widget _buildGoalPreview(double totalWidth, double previewHeight) {
-    final spacing = totalWidth / (_numTowers + 1);
-    final miniDiskH = min(10.0, (previewHeight - 10) / (_numPlanets + 1));
-    final miniMaxW = (spacing * 0.7).clamp(20.0, 60.0);
-    final miniMinW = miniMaxW * 0.3;
-    return Stack(
-      children: [
-        // Mini tower poles
-        for (int i = 0; i < _numTowers; i++)
+          // HUD
           Positioned(
-            left: spacing * (i + 1) - 1,
-            top: 4,
-            child: Container(width: 2, height: previewHeight - 8,
-              color: const Color(0xFF444466)),
-          ),
-        // Mini bases
-        for (int i = 0; i < _numTowers; i++)
-          Positioned(
-            left: spacing * (i + 1) - miniMaxW / 2 - 2,
-            bottom: 2,
-            child: Container(width: miniMaxW + 4, height: 3,
-              decoration: BoxDecoration(borderRadius: BorderRadius.circular(1.5), color: const Color(0xFF555577))),
-          ),
-        // Mini planet disks for goal state
-        for (int ti = 0; ti < _numTowers; ti++)
-          for (int pi2 = 0; pi2 < _goalTowers[ti].length; pi2++)
-            Builder(builder: (context) {
-              final planet = _goalTowers[ti][pi2];
-              final fraction = (planet.sizeRank + 1) / _numPlanets;
-              final diskW = miniMinW + (miniMaxW - miniMinW) * fraction;
-              final cx = spacing * (ti + 1);
-              final totalInTower = _goalTowers[ti].length;
-              final fromBottom = totalInTower - 1 - pi2;
-              final baseY = previewHeight - 6 - (fromBottom + 1) * (miniDiskH + 1);
-              return Positioned(
-                left: cx - diskW / 2,
-                top: baseY,
-                child: Container(
-                  width: diskW, height: miniDiskH,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(miniDiskH / 2),
-                    color: planet.color,
-                  ),
+            top: 0, left: 0, right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // Timer
+                    _HudChip(
+                      label: 'TIME',
+                      value: '$_secondsLeft s',
+                      urgent: _secondsLeft <= 10,
+                    ),
+                    // Current attempt loops
+                    _HudChip(
+                      label: 'LOOPS',
+                      value: '$_currentRevolutions',
+                      urgent: false,
+                    ),
+                    // Total score
+                    _HudChip(
+                      label: 'SCORE',
+                      value: '${_totalScore + _attemptScore}',
+                      urgent: false,
+                    ),
+                  ],
                 ),
-              );
-            }),
-      ],
+              ),
+            ),
+          ),
+
+          // Break flash label
+          if (_flashBreak)
+            Center(
+              child: Text('CROSSED!',
+                style: TextStyle(
+                  fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold,
+                  color: Colors.redAccent.withValues(alpha: 0.9),
+                  letterSpacing: 3,
+                )),
+            ),
+
+          // Instruction hint when no path yet
+          if (_path.isEmpty)
+            Center(
+              child: AnimatedBuilder(
+                animation: _pulseAnim,
+                builder: (_, __) => Opacity(
+                  opacity: _pulseAnim.value,
+                  child: const Text('Draw a spiral',
+                    style: TextStyle(fontFamily: 'Avenir', fontSize: 18,
+                      color: Colors.white24)),
+                ),
+              ),
+            ),
+        ]),
+      ),
     );
   }
 
-  Widget _buildWinOverlay() {
-    return Center(child: Container(
-      padding: const EdgeInsets.all(24), margin: const EdgeInsets.symmetric(horizontal: 32),
-      decoration: BoxDecoration(color: const Color(0xDD101025), borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.5))),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Puzzle Solved!', style: TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-        const SizedBox(height: 8),
-        Text('Moves: $_moveCount', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
-        if (_bestMoves[_stage] != null) Text('Best: ${_bestMoves[_stage]} moves', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
-        const SizedBox(height: 16),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          GestureDetector(onTap: () => _startStage(_stage), child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)), child: const Text('Retry', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)))),
-          const SizedBox(width: 12),
-          GestureDetector(onTap: () => _startStage(_stage + 1), child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.amber.withValues(alpha: 0.2), border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.5))), child: const Text('Next Puzzle', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)))),
-        ]),
-        const SizedBox(height: 8),
-        GestureDetector(onTap: () => setState(() => _showMenu = true), child: const Text('Puzzle Select', style: TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white38, decoration: TextDecoration.underline))),
-      ]),
-    ));
-  }
-
-  Widget _buildPlanetDisk({required int tower, required int stackIndex, required _HanoiPlanet planet, required double towerSpacing, required double towerAreaBottom, required double diskHeight, required double maxDiskWidth, required double minDiskWidth}) {
-    final isSelected = _selectedTower == tower && stackIndex == 0;
-    final isShaking = _shakeTower == tower && stackIndex == 0;
-    final fraction = (planet.sizeRank + 1) / _numPlanets;
-    final diskWidth = minDiskWidth + (maxDiskWidth - minDiskWidth) * fraction;
-    final cx = towerSpacing * (tower + 1);
-    final totalDisks = _towers[tower].length;
-    final diskFromBottom = totalDisks - 1 - stackIndex;
-    final baseY = towerAreaBottom - 6 - (diskFromBottom + 1) * (diskHeight + 2);
-    final liftY = isSelected ? -30.0 : 0.0;
-    final shakeX = isShaking ? _shakeOffset() : 0.0;
-    return Positioned(left: cx - diskWidth / 2 + shakeX, top: baseY + liftY,
-      child: AnimatedBuilder(animation: _glowAnim, builder: (context, child) {
-        return Container(width: diskWidth, height: diskHeight,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(diskHeight / 2),
-            boxShadow: isSelected ? [BoxShadow(color: planet.color.withValues(alpha: _glowAnim.value * 0.7), blurRadius: 12, spreadRadius: 3)] : [BoxShadow(color: planet.color.withValues(alpha: 0.3), blurRadius: 4)],
-            gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color.lerp(planet.color, Colors.white, 0.3)!, planet.color, Color.lerp(planet.color, Colors.black, 0.3)!]),
+  Widget _buildGameOver() {
+    return Container(
+      color: const Color(0xFF050515),
+      child: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Text('Time\'s Up!',
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 28,
+                  fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+              const SizedBox(height: 20),
+              _ScoreLine(label: 'Final Score', value: '$_totalScore'),
+              const SizedBox(height: 6),
+              _ScoreLine(label: 'Best Attempt', value: '${_bestRevs.floor()} loops'),
+              const SizedBox(height: 6),
+              _ScoreLine(label: 'Attempts', value: '$_attemptNumber'),
+              const SizedBox(height: 32),
+              GestureDetector(
+                onTap: _startGame,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 14),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.amber.withValues(alpha: 0.15),
+                    border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.6)),
+                  ),
+                  child: const Text('PLAY AGAIN', style: TextStyle(
+                    fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold,
+                    color: Colors.amberAccent, letterSpacing: 2)),
+                ),
+              ),
+            ]),
           ),
-          child: Center(child: Text(planet.name, style: TextStyle(fontFamily: 'Avenir', fontSize: (diskHeight * 0.45).clamp(8.0, 12.0), fontWeight: FontWeight.w600, color: Colors.white.withValues(alpha: 0.9)), overflow: TextOverflow.ellipsis)),
-        );
-      }),
+        ),
+      ),
     );
   }
 }
 
-class _HanoiStarsPainter extends CustomPainter {
+// ── Small HUD chip ─────────────────────────────────────────────────────────
+class _HudChip extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool urgent;
+  const _HudChip({required this.label, required this.value, required this.urgent});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        color: Colors.white.withValues(alpha: 0.05),
+        border: Border.all(
+          color: urgent
+              ? Colors.redAccent.withValues(alpha: 0.7)
+              : Colors.amberAccent.withValues(alpha: 0.2)),
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Text(label, style: TextStyle(
+          fontFamily: 'Avenir', fontSize: 9, letterSpacing: 1.2,
+          color: urgent ? Colors.redAccent : Colors.white38)),
+        Text(value, style: TextStyle(
+          fontFamily: 'Avenir', fontSize: 15, fontWeight: FontWeight.bold,
+          color: urgent ? Colors.redAccent : Colors.amberAccent)),
+      ]),
+    );
+  }
+}
+
+// ── Score line for game-over screen ────────────────────────────────────────
+class _ScoreLine extends StatelessWidget {
+  final String label;
+  final String value;
+  const _ScoreLine({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Text(label, style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
+      Text(value, style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+    ]);
+  }
+}
+
+// ── Spiral painter ─────────────────────────────────────────────────────────
+class _SpiralPainter extends CustomPainter {
+  final List<_SpiralPoint> points;
+  final int revolutions;
+  final bool flashBreak;
+  final double pulseValue;
+
+  const _SpiralPainter({
+    required this.points,
+    required this.revolutions,
+    required this.flashBreak,
+    required this.pulseValue,
+  });
+
   @override
   void paint(Canvas canvas, Size size) {
-    final rng = Random(42);
-    for (int i = 0; i < 100; i++) {
-      canvas.drawCircle(Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height), 0.3 + rng.nextDouble() * 0.8, Paint()..color = Colors.white.withValues(alpha: 0.05 + rng.nextDouble() * 0.15));
+    if (points.length < 2) return;
+
+    // Color cycles gently through revolutions for visual feedback.
+    final hue = (revolutions * 30.0) % 360;
+    final strokeColor = flashBreak
+        ? Colors.redAccent
+        : HSVColor.fromAHSV(1.0, hue, 0.7, 0.95).toColor();
+
+    final paint = Paint()
+      ..color = strokeColor
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    final glowPaint = Paint()
+      ..color = strokeColor.withValues(alpha: 0.18 * pulseValue)
+      ..strokeWidth = 8
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+
+    final path = Path();
+    path.moveTo(points[0].x, points[0].y);
+    for (int i = 1; i < points.length; i++) {
+      path.lineTo(points[i].x, points[i].y);
+    }
+
+    canvas.drawPath(path, glowPaint);
+    canvas.drawPath(path, paint);
+
+    // Draw a small dot at the current tip.
+    if (points.isNotEmpty) {
+      canvas.drawCircle(
+        points.last.offset, 4,
+        Paint()..color = strokeColor.withValues(alpha: 0.9),
+      );
     }
   }
 
   @override
-  bool shouldRepaint(covariant _HanoiStarsPainter old) => false;
+  bool shouldRepaint(covariant _SpiralPainter old) =>
+      old.points.length != points.length ||
+      old.revolutions != revolutions ||
+      old.flashBreak != flashBreak ||
+      old.pulseValue != pulseValue;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
