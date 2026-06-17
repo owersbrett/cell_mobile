@@ -16,6 +16,75 @@ const Color _kGood = Color(0xFF69F0AE);
 const Color _kBad = Color(0xFFFF5252);
 const Color _kWarn = Color(0xFFFFB300); // instability / "needs a nucleus"
 
+// ── Element name table (Z = 1..54) ───────────────────────────────────────────
+/// Each entry is [name, symbol]. Index 0 is unused (Z=0 = no element).
+/// Z=1 → index 1 (Hydrogen), Z=54 → index 54 (Xenon).
+const List<List<String>> _kElements = [
+  ['', ''],            // 0 – placeholder
+  ['HYDROGEN',   'H'],  // 1
+  ['HELIUM',     'He'], // 2
+  ['LITHIUM',    'Li'], // 3
+  ['BERYLLIUM',  'Be'], // 4
+  ['BORON',      'B'],  // 5
+  ['CARBON',     'C'],  // 6
+  ['NITROGEN',   'N'],  // 7
+  ['OXYGEN',     'O'],  // 8
+  ['FLUORINE',   'F'],  // 9
+  ['NEON',       'Ne'], // 10
+  ['SODIUM',     'Na'], // 11
+  ['MAGNESIUM',  'Mg'], // 12
+  ['ALUMINIUM',  'Al'], // 13
+  ['SILICON',    'Si'], // 14
+  ['PHOSPHORUS', 'P'],  // 15
+  ['SULFUR',     'S'],  // 16
+  ['CHLORINE',   'Cl'], // 17
+  ['ARGON',      'Ar'], // 18
+  ['POTASSIUM',  'K'],  // 19
+  ['CALCIUM',    'Ca'], // 20
+  ['SCANDIUM',   'Sc'], // 21
+  ['TITANIUM',   'Ti'], // 22
+  ['VANADIUM',   'V'],  // 23
+  ['CHROMIUM',   'Cr'], // 24
+  ['MANGANESE',  'Mn'], // 25
+  ['IRON',       'Fe'], // 26
+  ['COBALT',     'Co'], // 27
+  ['NICKEL',     'Ni'], // 28
+  ['COPPER',     'Cu'], // 29
+  ['ZINC',       'Zn'], // 30
+  ['GALLIUM',    'Ga'], // 31
+  ['GERMANIUM',  'Ge'], // 32
+  ['ARSENIC',    'As'], // 33
+  ['SELENIUM',   'Se'], // 34
+  ['BROMINE',    'Br'], // 35
+  ['KRYPTON',    'Kr'], // 36
+  ['RUBIDIUM',   'Rb'], // 37
+  ['STRONTIUM',  'Sr'], // 38
+  ['YTTRIUM',    'Y'],  // 39
+  ['ZIRCONIUM',  'Zr'], // 40
+  ['NIOBIUM',    'Nb'], // 41
+  ['MOLYBDENUM', 'Mo'], // 42
+  ['TECHNETIUM', 'Tc'], // 43
+  ['RUTHENIUM',  'Ru'], // 44
+  ['RHODIUM',    'Rh'], // 45
+  ['PALLADIUM',  'Pd'], // 46
+  ['SILVER',     'Ag'], // 47
+  ['CADMIUM',    'Cd'], // 48
+  ['INDIUM',     'In'], // 49
+  ['TIN',        'Sn'], // 50
+  ['ANTIMONY',   'Sb'], // 51
+  ['TELLURIUM',  'Te'], // 52
+  ['IODINE',     'I'],  // 53
+  ['XENON',      'Xe'], // 54
+];
+
+/// Returns "NAME · SYM" for the element with atomic number [z],
+/// or null when [z] is 0 (nothing built yet).
+String? _elementLabel(int z) {
+  if (z <= 0 || z >= _kElements.length) return null;
+  final e = _kElements[z];
+  return '${e[0]} · ${e[1]}';
+}
+
 // ── Fertilizer banking ────────────────────────────────────────────────────────
 // The four potato macronutrients are auto-banked when the proton count passes
 // their atomic number. Each adds _kFertilizerBonus to the final score.
@@ -809,6 +878,19 @@ class _TargetPanel extends StatelessWidget {
                     letterSpacing: 1.4,
                   ),
                 ),
+                if (_elementLabel(gotP) != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    _elementLabel(gotP)!,
+                    style: TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: _kAccent.withValues(alpha: 0.95),
+                      letterSpacing: 1.1,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 3),
                 Row(
                   children: [
