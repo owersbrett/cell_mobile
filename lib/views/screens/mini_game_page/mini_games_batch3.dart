@@ -3,7 +3,6 @@ import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ---------------------------------------------------------------------------
@@ -4183,8 +4182,46 @@ class _SpiralPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. GalaxyCollectorGame — "Galaxy Builder"
+// 5. GalaxyCollectorGame — "Star Deflector"
+//    Draw circles around incoming threats: match the required RADIUS and
+//    DIRECTION (CW / CCW) to deflect them. Wrong answer = penalty.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Feel constants ─────────────────────────────────────────────────────────
+// Required circle radius range (fraction of screen short-side, normalised 0-1)
+const double _kMinReqRadius = 0.08; // smallest ring the player must draw
+const double _kMaxReqRadius = 0.22; // largest ring at game start
+
+// Tolerance: how close the player's radius must be (fraction of req radius).
+// Starts loose, tightens with wave. Clamps to a floor so it stays humanly possible.
+const double _kToleranceBase = 0.45;   // ±45 % at wave 1
+const double _kToleranceFloor = 0.15;  // ±15 % at high waves (tightest)
+const double _kToleranceStep = 0.04;   // tolerance shrinks by this per wave
+
+// Collision timer: how long (seconds) a threat lives before it "hits"
+const double _kBaseCollisionTime = 4.5; // wave 1
+const double _kMinCollisionTime  = 1.6; // absolute minimum at extreme waves
+
+// Spawn: average gap between new threats (seconds).
+const double _kBaseSpawnInterval = 2.8; // wave 1
+const double _kMinSpawnInterval  = 0.5; // absolute floor at extreme waves
+const double _kSpawnAccelPerWave = 0.25; // seconds removed per wave
+
+// Points
+const int _kPointsCorrect    = 10;  // base points for a valid deflection
+const int _kBonusPerWave     = 3;   // extra pts per current wave for correct
+const int _kPenaltyWrongDir  = -5;  // drew correct size but wrong direction
+const int _kPenaltyWrongSize = -3;  // drew correct direction but wrong size
+const int _kPenaltyBothWrong = -2;  // both wrong (gesture counted but useless)
+const int _kPenaltyCollision = -8;  // threat hit impact zone (never deflected)
+
+// Gesture: minimum number of sampled points for a gesture to be evaluated
+const int _kMinGesturePoints = 12;
+
+// Minimum arc: gesture must sweep at least this many radians total (unsigned)
+// to be considered a circular gesture vs a straight swipe.
+const double _kMinGestureArc = 3.5; // ~200 degrees
+// ────────────────────────────────────────────────────────────────────────────
 
 class GalaxyCollectorGame extends StatefulWidget {
   const GalaxyCollectorGame({Key? key}) : super(key: key);
@@ -4192,425 +4229,670 @@ class GalaxyCollectorGame extends StatefulWidget {
   State<GalaxyCollectorGame> createState() => _GalaxyCollectorGameState();
 }
 
-enum _GBPhase { start, playing, gameOver }
+enum _GCPhase { start, playing, gameOver }
+enum _GCDir { cw, ccw }
 
-class _GBStar {
-  double x, y, life, maxLife;
-  Color color;
-  int points;
-  bool collected;
+// A threat on a collision course with the centre
+class _GCThreat {
+  /// Normalised position (0-1 coords)
+  double x, y;
+  /// Normalised velocity (per second)
+  double vx, vy;
+  /// Required circle radius (normalised 0-1 of screen short-side)
+  double reqRadius;
+  /// Required draw direction
+  _GCDir reqDir;
+  /// Time remaining before impact
+  double timeLeft;
+  double maxTime;
+  /// Scale-in animation [0,1]
   double scale;
-  bool hostile;
-  _GBStar(this.x, this.y, this.life, this.color, this.points, {this.hostile = false}) : maxLife = life, collected = false, scale = 0.0;
-}
-
-class _GBBlackHole {
-  double x, y, life;
-  _GBBlackHole(this.x, this.y, this.life);
-}
-
-class _GBZipTrail {
-  double sx, sy, tx, ty, t;
+  /// Deflection result flash
+  double flashGood, flashBad;
+  bool deflected;
   Color color;
-  _GBZipTrail(this.sx, this.sy, this.tx, this.ty, this.color) : t = 0.0;
+
+  _GCThreat({
+    required this.x, required this.y,
+    required this.vx, required this.vy,
+    required this.reqRadius, required this.reqDir,
+    required this.timeLeft, required this.color,
+  }) : maxTime = timeLeft, scale = 0.0,
+       flashGood = 0.0, flashBad = 0.0, deflected = false;
 }
 
-class _GBCreature {
-  double x, y, vx, vy, size, age;
-  _GBCreature(this.x, this.y, this.vx, this.vy) : size = 0.02, age = 0;
+// Stores a completed gesture stroke with its analysis result
+class _GCGesture {
+  final Offset centroid;
+  final double radius;   // normalised
+  final _GCDir dir;
+  double life;           // display lifetime in seconds
+  final bool good;
+
+  _GCGesture({required this.centroid, required this.radius,
+    required this.dir, required this.good}) : life = 0.5;
+}
+
+// ─── Gesture accumulator (raw points in normalised coords) ──────────────────
+class _GCStroke {
+  final List<Offset> pts = [];
+  bool active = false;
+
+  void start(Offset p) { pts.clear(); pts.add(p); active = true; }
+  void add(Offset p)   { if (active) pts.add(p); }
+  void end()           { active = false; }
 }
 
 class _GalaxyCollectorGameState extends State<GalaxyCollectorGame>
     with SingleTickerProviderStateMixin {
+
   late AnimationController _ctrl;
   final Random _rng = Random();
-  final FocusNode _focusNode = FocusNode();
-  _GBPhase _phase = _GBPhase.start;
-  double _cx = 0.5, _cy = 0.5, _kbDx = 0, _kbDy = 0;
-  int _score = 0, _galaxyStars = 0, _missCount = 0, _streak = 0, _bestStreak = 0;
-  int _multiplier = 1, _multiplierRemaining = 0, _galaxyLevel = 1, _highScore = 0;
-  int _lives = 3;
-  double _playerSize = 0.035;
-  double _galaxyAngle = 0, _milestoneTimer = 0, _darkFlash = 0;
-  String? _milestoneText;
+  _GCPhase _phase = _GCPhase.start;
+
+  // Gameplay state
+  int _score = 0, _wave = 1, _highScore = 0;
+  int _lives = 3, _streak = 0, _bestStreak = 0;
+  double _spawnTimer = 0.0;
+  double _waveTimer  = 0.0;       // time in current wave (seconds)
+  double _flashGood  = 0.0;       // full-screen green flash
+  double _flashBad   = 0.0;       // full-screen red flash
+  String? _toastText;
+  double _toastTimer = 0.0;
   DateTime? _startTime;
-  final List<_GBStar> _stars = [];
-  final List<_GBBlackHole> _blackHoles = [];
-  final List<_GBCreature> _creatures = [];
+
+  final List<_GCThreat>  _threats  = [];
   final List<_JuiceParticle> _particles = [];
-  final List<_GBZipTrail> _zipTrails = [];
-  int get _spiralArms => _galaxyLevel.clamp(1, 8);
+  final List<_GCGesture> _gestures = [];
+
+  // Active stroke being drawn
+  final _GCStroke _stroke = _GCStroke();
+  // Last resolved stroke shown on-screen until next gesture starts
+  List<Offset> _lastStrokePts = [];
 
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))..addListener(_tick)..forward();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
+      ..addListener(_tick)..forward();
     _loadHighScore();
   }
 
   Future<void> _loadHighScore() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() { _highScore = prefs.getInt('galaxy_builder_high_score') ?? 0; });
+    setState(() { _highScore = prefs.getInt('galaxy_collector_hs') ?? 0; });
   }
 
   Future<void> _saveHighScore() async {
     if (_score > _highScore) {
       _highScore = _score;
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('galaxy_builder_high_score', _score);
+      await prefs.setInt('galaxy_collector_hs', _score);
     }
   }
 
   @override
-  void dispose() { _ctrl.dispose(); _focusNode.dispose(); super.dispose(); }
+  void dispose() { _ctrl.dispose(); super.dispose(); }
 
   void _startGame() {
     setState(() {
-      _phase = _GBPhase.playing; _cx = 0.5; _cy = 0.5; _kbDx = 0; _kbDy = 0;
-      _score = 0; _galaxyStars = 0; _missCount = 0; _streak = 0; _bestStreak = 0;
-      _multiplier = 1; _multiplierRemaining = 0; _galaxyLevel = 1; _galaxyAngle = 0;
-      _lives = 3; _playerSize = 0.035;
-      _milestoneText = null; _milestoneTimer = 0; _darkFlash = 0;
-      _stars.clear(); _blackHoles.clear(); _creatures.clear(); _particles.clear(); _zipTrails.clear();
+      _phase = _GCPhase.playing;
+      _score = 0; _wave = 1; _lives = 3; _streak = 0; _bestStreak = 0;
+      _spawnTimer = 0.0; _waveTimer = 0.0;
+      _flashGood = 0.0; _flashBad = 0.0;
+      _toastText = null; _toastTimer = 0.0;
+      _threats.clear(); _particles.clear(); _gestures.clear();
+      _lastStrokePts = [];
       _startTime = DateTime.now();
     });
-    _focusNode.requestFocus();
   }
 
-  void _endGame() { _saveHighScore(); setState(() { _phase = _GBPhase.gameOver; }); }
+  void _endGame() { _saveHighScore(); setState(() { _phase = _GCPhase.gameOver; }); }
 
+  // ── Per-wave derived constants ───────────────────────────────────────────
+  double get _spawnInterval => (_kBaseSpawnInterval - (_wave - 1) * _kSpawnAccelPerWave).clamp(_kMinSpawnInterval, _kBaseSpawnInterval);
+  double get _collisionTime => (_kBaseCollisionTime - (_wave - 1) * 0.2).clamp(_kMinCollisionTime, _kBaseCollisionTime);
+  double get _tolerance     => (_kToleranceBase - (_wave - 1) * _kToleranceStep).clamp(_kToleranceFloor, _kToleranceBase);
+  int    get _maxThreats    => 1 + _wave ~/ 2;  // 1 at wave1, grows by 1 every 2 waves
+
+  // ── Game loop ────────────────────────────────────────────────────────────
   void _tick() {
-    if (_phase != _GBPhase.playing) return;
+    if (_phase != _GCPhase.playing) return;
     const dt = 1 / 60.0;
     setState(() {
-      _galaxyAngle += dt * 0.3;
-      if (_kbDx != 0 || _kbDy != 0) { _cx += _kbDx * dt * 0.8; _cy += _kbDy * dt * 0.8; }
+      _waveTimer += dt;
+      // Advance wave every 20 seconds
+      if (_waveTimer >= 20.0) { _waveTimer = 0.0; _wave++; _toast('Wave $_wave!'); }
 
-      // Stars spawn faster and fade faster as level increases
-      final spawnChance = 0.04 + _galaxyLevel * 0.014;
-      if (_rng.nextDouble() < spawnChance) {
-        final roll = _rng.nextDouble();
-        Color c; int pts; bool hostile = false;
-        final hostileChance = (_galaxyLevel - 1) * 0.05; // 0% at lv1, ~20% at lv5
-        if (_rng.nextDouble() < hostileChance) {
-          c = const Color(0xFFFF1744); pts = 0; hostile = true;
-        } else if (roll < 0.5) { c = Colors.white; pts = 1; }
-        else if (roll < 0.8) { c = Colors.yellowAccent; pts = 2; }
-        else { c = const Color(0xFF88CCFF); pts = 3; }
-        double sx = _rng.nextDouble() * 0.95 + 0.025;
-        double sy = _rng.nextDouble() * 0.85 + 0.12;
-        if (sx > 0.75 && sy < 0.2) sx = _rng.nextDouble() * 0.7 + 0.025;
-        final starLife = hostile
-            ? 3.0 + _rng.nextDouble() * 2.0
-            : (2.5 - _galaxyLevel * 0.12).clamp(1.3, 2.5) + _rng.nextDouble() * 0.5;
-        _stars.add(_GBStar(sx, sy, starLife, c, pts, hostile: hostile));
+      // Spawn threats
+      _spawnTimer -= dt;
+      if (_spawnTimer <= 0.0 && _threats.length < _maxThreats) {
+        _spawnTimer = _spawnInterval * (0.7 + _rng.nextDouble() * 0.6);
+        _spawnThreat();
       }
 
-      final maxBH = 1 + (_galaxyLevel ~/ 2);
-      if (_rng.nextDouble() < 0.002 + _galaxyLevel * 0.001 && _blackHoles.length < maxBH) {
-        _blackHoles.add(_GBBlackHole(_rng.nextDouble() * 0.8 + 0.1, _rng.nextDouble() * 0.7 + 0.2, 5.0));
-      }
+      // Update threats
+      for (final t in _threats) {
+        if (t.deflected) { t.flashGood = (t.flashGood - dt * 2).clamp(0.0, 1.0); continue; }
+        t.scale = (t.scale + dt / 0.35).clamp(0.0, 1.0);
+        t.x += t.vx * dt;
+        t.y += t.vy * dt;
+        t.timeLeft -= dt;
+        if (t.flashBad > 0) t.flashBad = (t.flashBad - dt * 3).clamp(0.0, 1.0);
+        if (t.flashGood > 0) t.flashGood = (t.flashGood - dt * 2).clamp(0.0, 1.0);
 
-      for (final s in _stars) { if (s.scale < 1.0) s.scale = (s.scale + dt / 0.3).clamp(0.0, 1.0); s.life -= dt; }
-      for (final s in _stars) {
-        if (s.life <= 0 && !s.collected && !s.hostile) {
-          _missCount++; _streak = 0; _multiplier = 1; _multiplierRemaining = 0;
-          if (_missCount >= 15) { _endGame(); return; }
-        }
-      }
-      _stars.removeWhere((s) => s.life <= 0);
-
-      for (final bh in _blackHoles) {
-        final dx = bh.x - _cx; final dy = bh.y - _cy;
-        final dist = sqrt(dx * dx + dy * dy).clamp(0.05, 2.0);
-        _cx += dx / dist * (0.0008 / (dist * dist)); _cy += dy / dist * (0.0008 / (dist * dist));
-        if (dist < 0.05) {
-          final stolen = min(_galaxyStars, 5);
-          if (stolen > 0) { _galaxyStars -= stolen; _score = max(0, _score - stolen); _darkFlash = 0.5; _spawnBurst(bh.x, bh.y, Colors.purpleAccent, 10); _galaxyLevel = _calcLevel(_galaxyStars); }
-        }
-        bh.life -= dt;
-      }
-      _blackHoles.removeWhere((bh) => bh.life <= 0);
-
-      // Creature spawning — dark matter entities from level 3+
-      if (_galaxyLevel >= 3 && _rng.nextDouble() < 0.003 + (_galaxyLevel - 3) * 0.002 && _creatures.length < _galaxyLevel - 1) {
-        final edge = _rng.nextInt(4);
-        double cx2, cy2;
-        switch (edge) {
-          case 0: cx2 = _rng.nextDouble(); cy2 = -0.05; break;
-          case 1: cx2 = 1.05; cy2 = _rng.nextDouble(); break;
-          case 2: cx2 = _rng.nextDouble(); cy2 = 1.05; break;
-          default: cx2 = -0.05; cy2 = _rng.nextDouble();
-        }
-        _creatures.add(_GBCreature(cx2, cy2, 0, 0));
-      }
-
-      // Creature AI — chase player
-      for (final cr in _creatures) {
-        cr.age += dt;
-        final cdx = _cx - cr.x; final cdy = _cy - cr.y;
-        final cdist = sqrt(cdx * cdx + cdy * cdy).clamp(0.01, 2.0);
-        final chaseSpeed = 0.15 + _galaxyLevel * 0.02;
-        cr.vx += (cdx / cdist) * chaseSpeed * dt;
-        cr.vy += (cdy / cdist) * chaseSpeed * dt;
-        final spd = sqrt(cr.vx * cr.vx + cr.vy * cr.vy);
-        final maxSpd = 0.12 + _galaxyLevel * 0.01;
-        if (spd > maxSpd) { cr.vx = cr.vx / spd * maxSpd; cr.vy = cr.vy / spd * maxSpd; }
-        cr.x += cr.vx * dt; cr.y += cr.vy * dt;
-        cr.size = (0.02 + cr.age * 0.002).clamp(0.02, 0.04);
-        if (cdist < _playerSize + cr.size * 0.5) {
-          _lives--; _darkFlash = 0.5; _streak = 0; _multiplier = 1; _multiplierRemaining = 0;
-          _spawnBurst(cr.x, cr.y, Colors.deepPurple, 12);
-          cr.x = -2; // mark for removal
+        // Check if threat reached the danger zone (within 0.08 of centre)
+        final dx = t.x - 0.5, dy = t.y - 0.5;
+        final dist = sqrt(dx * dx + dy * dy);
+        if (dist < 0.08 || t.timeLeft <= 0.0) {
+          // Collision!
+          _score = max(0, _score + _kPenaltyCollision);
+          _lives--;
+          _flashBad = 0.7;
+          _streak = 0;
+          _spawnBurst(t.x, t.y, Colors.redAccent, 14);
+          t.deflected = true; // reuse flag to mark for removal
+          _toast('Miss!');
           if (_lives <= 0) { _endGame(); return; }
         }
       }
-      _creatures.removeWhere((c) => c.x < -1 || c.x > 2 || c.y < -1 || c.y > 2);
+      _threats.removeWhere((t) => t.deflected && t.flashGood <= 0.01);
 
-      // Star collection
-      for (final s in _stars) {
-        if (s.collected) continue;
-        if (sqrt((_cx - s.x) * (_cx - s.x) + (_cy - s.y) * (_cy - s.y)) < _playerSize) {
-          s.collected = true;
-          if (s.hostile) {
-            // Hostile star — damage!
-            _lives--; _darkFlash = 0.4; _streak = 0; _multiplier = 1; _multiplierRemaining = 0;
-            _spawnBurst(s.x, s.y, const Color(0xFFFF1744), 8);
-            if (_lives <= 0) { _endGame(); return; }
-          } else {
-            _score += s.points * _multiplier; _galaxyStars++; _streak++;
-            if (_streak > _bestStreak) _bestStreak = _streak;
-            if (_streak % 5 == 0 && _streak > 0) { _multiplier = 2; _multiplierRemaining = 5; }
-            if (_multiplierRemaining > 0 && _multiplier == 2) { _multiplierRemaining--; if (_multiplierRemaining <= 0) _multiplier = 1; }
-            _zipTrails.add(_GBZipTrail(s.x, s.y, 0.92, 0.08, s.color));
-            _spawnBurst(s.x, s.y, s.color, 4);
-            // Player grows as they collect
-            _playerSize = (0.035 + _galaxyStars * 0.0008).clamp(0.035, 0.07);
-            final ol = _galaxyLevel; _galaxyLevel = _calcLevel(_galaxyStars);
-            if (_galaxyLevel > ol) _showMs('Galaxy Level $_galaxyLevel!');
-            if (_galaxyStars == 10) _showMs('10 Stars! Galaxy forming...');
-            if (_galaxyStars == 25) _showMs('25 Stars! Spiral emerging!');
-            if (_galaxyStars == 50) _showMs('50 Stars! Beautiful galaxy!');
-            if (_galaxyStars == 100) _showMs('100 Stars! Magnificent!');
-          }
-        }
-      }
-      _cx = _cx.clamp(0.02, 0.98); _cy = _cy.clamp(0.02, 0.98);
-      for (final z in _zipTrails) z.t += dt * 3.0;
-      _zipTrails.removeWhere((z) => z.t >= 1.0);
+      // Particles & gestures
       for (final p in _particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
       _particles.removeWhere((p) => p.life <= 0);
-      if (_milestoneTimer > 0) { _milestoneTimer -= dt; if (_milestoneTimer <= 0) _milestoneText = null; }
-      if (_darkFlash > 0) _darkFlash = (_darkFlash - dt * 2).clamp(0.0, 1.0);
+      for (final g in _gestures) { g.life -= dt; }
+      _gestures.removeWhere((g) => g.life <= 0);
+
+      if (_flashGood > 0) _flashGood = (_flashGood - dt * 2.5).clamp(0.0, 1.0);
+      if (_flashBad  > 0) _flashBad  = (_flashBad  - dt * 2.5).clamp(0.0, 1.0);
+      if (_toastTimer > 0) { _toastTimer -= dt; if (_toastTimer <= 0) _toastText = null; }
     });
   }
 
-  int _calcLevel(int s) { if (s >= 100) return 5 + (s - 100) ~/ 25; if (s >= 50) return 4; if (s >= 25) return 3; if (s >= 10) return 2; return 1; }
-  void _showMs(String t) { _milestoneText = t; _milestoneTimer = 2.0; }
-  void _spawnBurst(double x, double y, Color c, int n) { for (int i = 0; i < n; i++) _particles.add(_JuiceParticle(x: x, y: y, vx: (_rng.nextDouble() - 0.5) * 0.4, vy: (_rng.nextDouble() - 0.5) * 0.4, life: 0.4 + _rng.nextDouble() * 0.3, color: c, radius: 2)); }
-  String _fmtDur(Duration d) => '${d.inMinutes}m ${d.inSeconds % 60}s';
+  void _spawnThreat() {
+    // Pick an edge to spawn from
+    final edge = _rng.nextInt(4);
+    double sx, sy;
+    switch (edge) {
+      case 0: sx = _rng.nextDouble(); sy = -0.06; break;
+      case 1: sx = 1.06; sy = _rng.nextDouble(); break;
+      case 2: sx = _rng.nextDouble(); sy = 1.06; break;
+      default: sx = -0.06; sy = _rng.nextDouble();
+    }
+    // Aim roughly at centre with some scatter
+    final scatter = (_rng.nextDouble() - 0.5) * 0.25;
+    double tx = 0.5 + scatter, ty = 0.5 + scatter;
+    double dx = tx - sx, dy = ty - sy;
+    final dist = sqrt(dx * dx + dy * dy).clamp(0.01, 2.0);
+    final colTime = _collisionTime * (0.85 + _rng.nextDouble() * 0.3);
+    final spd = dist / colTime;
+    final vx = dx / dist * spd, vy = dy / dist * spd;
 
-  KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
-    final key = event.logicalKey; final isDown = event is KeyDownEvent || event is KeyRepeatEvent;
-    double dx = 0, dy = 0;
-    if (key == LogicalKeyboardKey.keyW || key == LogicalKeyboardKey.arrowUp) dy = -1;
-    if (key == LogicalKeyboardKey.keyS || key == LogicalKeyboardKey.arrowDown) dy = 1;
-    if (key == LogicalKeyboardKey.keyA || key == LogicalKeyboardKey.arrowLeft) dx = -1;
-    if (key == LogicalKeyboardKey.keyD || key == LogicalKeyboardKey.arrowRight) dx = 1;
-    if (dx != 0 || dy != 0) { setState(() { if (isDown) { _kbDx = dx; _kbDy = dy; } else { if (dx != 0) _kbDx = 0; if (dy != 0) _kbDy = 0; } }); return KeyEventResult.handled; }
-    return KeyEventResult.ignored;
+    // Required radius: widen range a little at higher waves
+    final rLo = _kMinReqRadius;
+    final rHi = _kMaxReqRadius - (_wave - 1) * 0.005; // range narrows very slightly
+    final reqR = rLo + _rng.nextDouble() * (rHi - rLo).clamp(0.0, rHi - rLo);
+    final reqDir = _rng.nextBool() ? _GCDir.cw : _GCDir.ccw;
+
+    // Colour by direction
+    final col = reqDir == _GCDir.cw
+        ? const Color(0xFF64B5F6)   // blue for CW
+        : const Color(0xFFFFB74D);  // amber for CCW
+
+    _threats.add(_GCThreat(
+      x: sx, y: sy, vx: vx, vy: vy,
+      reqRadius: reqR, reqDir: reqDir,
+      timeLeft: colTime, color: col,
+    ));
   }
 
+  // ── Gesture evaluation ───────────────────────────────────────────────────
+
+  /// Analyse the stroke and attempt to deflect a nearby threat.
+  void _evaluateStroke(Size screenSize) {
+    final pts = _stroke.pts;
+    if (pts.length < _kMinGesturePoints) return;
+
+    // Compute centroid in normalised coords
+    double sumX = 0, sumY = 0;
+    for (final p in pts) { sumX += p.dx; sumY += p.dy; }
+    final cx = sumX / pts.length;
+    final cy = sumY / pts.length;
+    final centroidNorm = Offset(cx, cy);
+
+    // Mean radius (normalised by screen short-side so it matches reqRadius units)
+    final shortSide = min(screenSize.width, screenSize.height);
+    double sumR = 0;
+    for (final p in pts) {
+      sumR += sqrt((p.dx - cx) * (p.dx - cx) + (p.dy - cy) * (p.dy - cy));
+    }
+    final meanRadNorm = (sumR / pts.length) / shortSide;
+
+    // Rotation direction via accumulated signed angle (shoelace-style).
+    // For each consecutive triplet of points compute the signed cross product
+    // of (B-A) × (C-B); summing these gives the winding sense.
+    double signedArea = 0.0;
+    for (int i = 0; i < pts.length - 1; i++) {
+      signedArea += (pts[i].dx * pts[i + 1].dy) - (pts[i + 1].dx * pts[i].dy);
+    }
+    final detectedDir = signedArea < 0 ? _GCDir.cw : _GCDir.ccw;
+    // (In Flutter screen coords Y-down: CW rotation gives negative shoelace area)
+
+    // Minimum arc check — ensure the stroke actually sweeps enough angle
+    double totalArc = 0.0;
+    for (int i = 1; i < pts.length - 1; i++) {
+      final ax = pts[i].dx - cx,     ay = pts[i].dy - cy;
+      final bx = pts[i+1].dx - cx, by = pts[i+1].dy - cy;
+      final rA = sqrt(ax*ax + ay*ay).clamp(1e-9, double.infinity);
+      final rB = sqrt(bx*bx + by*by).clamp(1e-9, double.infinity);
+      final cosA = ((ax*bx + ay*by) / (rA * rB)).clamp(-1.0, 1.0);
+      totalArc += acos(cosA);
+    }
+    if (totalArc < _kMinGestureArc) return; // too short — ignore
+
+    // Find the closest undeflected threat within a generous spatial window
+    _GCThreat? best;
+    double bestDist = double.infinity;
+    for (final t in _threats) {
+      if (t.deflected) continue;
+      final d = sqrt((t.x - cx) * (t.x - cx) + (t.y - cy) * (t.y - cy));
+      if (d < bestDist) { bestDist = d; best = t; }
+    }
+    if (best == null || bestDist > 0.45) return; // no plausible target
+
+    // Evaluate match
+    final tol = _tolerance;
+    final sizeOk = (meanRadNorm - best.reqRadius).abs() <= best.reqRadius * tol;
+    final dirOk  = detectedDir == best.reqDir;
+    final good   = sizeOk && dirOk;
+
+    if (good) {
+      final pts2 = _kPointsCorrect + _kBonusPerWave * _wave;
+      _score += pts2;
+      _streak++;
+      if (_streak > _bestStreak) _bestStreak = _streak;
+      best.deflected = true;
+      best.flashGood = 1.0;
+      _flashGood = 0.5;
+      _spawnBurst(best.x, best.y, best.color, 12);
+      final extra = _streak >= 3 ? ' ${_streak}x streak!' : '';
+      _toast('+$pts2$extra');
+    } else {
+      int pen;
+      if (sizeOk && !dirOk) { pen = _kPenaltyWrongDir; _toast('Wrong direction!'); }
+      else if (!sizeOk && dirOk) { pen = _kPenaltyWrongSize; _toast('Wrong size!'); }
+      else { pen = _kPenaltyBothWrong; _toast('Miss!'); }
+      _score = max(0, _score + pen);
+      _streak = 0;
+      best.flashBad = 1.0;
+      _flashBad = 0.4;
+    }
+
+    _gestures.add(_GCGesture(
+      centroid: centroidNorm,
+      radius: meanRadNorm,
+      dir: detectedDir,
+      good: good,
+    ));
+  }
+
+  void _toast(String t) { _toastText = t; _toastTimer = 1.4; }
+  void _spawnBurst(double x, double y, Color c, int n) {
+    for (int i = 0; i < n; i++) {
+      _particles.add(_JuiceParticle(
+        x: x, y: y,
+        vx: (_rng.nextDouble() - 0.5) * 0.5,
+        vy: (_rng.nextDouble() - 0.5) * 0.5,
+        life: 0.4 + _rng.nextDouble() * 0.35,
+        color: c, radius: 2.5,
+      ));
+    }
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    return Focus(focusNode: _focusNode, autofocus: true, onKeyEvent: _handleKey,
-      child: LayoutBuilder(builder: (context, constraints) {
-        final w = constraints.maxWidth, h = constraints.maxHeight;
-        if (_phase == _GBPhase.start) return _buildStart();
-        if (_phase == _GBPhase.gameOver) return _buildOver();
-        return GestureDetector(
-          onPanStart: (d) => setState(() { _cx = (d.localPosition.dx / w).clamp(0.02, 0.98); _cy = (d.localPosition.dy / h).clamp(0.02, 0.98); }),
-          onPanUpdate: (d) => setState(() { _cx = (d.localPosition.dx / w).clamp(0.02, 0.98); _cy = (d.localPosition.dy / h).clamp(0.02, 0.98); }),
-          onTapDown: (d) => setState(() { _cx = (d.localPosition.dx / w).clamp(0.02, 0.98); _cy = (d.localPosition.dy / h).clamp(0.02, 0.98); }),
-          child: Container(color: Colors.black, child: CustomPaint(
-            painter: _GalaxyBuilderPainter(cx: _cx, cy: _cy, stars: _stars, blackHoles: _blackHoles, creatures: _creatures, particles: _particles, zipTrails: _zipTrails, galaxyStars: _galaxyStars, galaxyAngle: _galaxyAngle, spiralArms: _spiralArms, darkFlash: _darkFlash, playerSize: _playerSize, lives: _lives),
+    if (_phase == _GCPhase.start)   return _buildStart();
+    if (_phase == _GCPhase.gameOver) return _buildOver();
+    return LayoutBuilder(builder: (ctx, constraints) {
+      final w = constraints.maxWidth, h = constraints.maxHeight;
+      final shortSide = min(w, h);
+      return GestureDetector(
+        onPanStart: (d) {
+          final norm = Offset(d.localPosition.dx / w, d.localPosition.dy / h);
+          setState(() { _stroke.start(norm); _lastStrokePts = []; });
+        },
+        onPanUpdate: (d) {
+          final norm = Offset(d.localPosition.dx / w, d.localPosition.dy / h);
+          setState(() { _stroke.add(norm); });
+        },
+        onPanEnd: (_) {
+          setState(() {
+            _stroke.end();
+            _lastStrokePts = List.unmodifiable(_stroke.pts);
+            _evaluateStroke(Size(w, h));
+          });
+        },
+        child: Container(
+          color: Colors.black,
+          child: CustomPaint(
+            painter: _StarDeflectorPainter(
+              threats: _threats,
+              particles: _particles,
+              gestures: _gestures,
+              strokePts: _stroke.active ? _stroke.pts : _lastStrokePts,
+              shortSide: shortSide,
+              flashGood: _flashGood,
+              flashBad: _flashBad,
+            ),
             child: Stack(children: [
+              // HUD
               Positioned(top: 8, left: 12, right: 12, child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text('Stars: $_score${_multiplier > 1 ? '  ${_multiplier}x!' : ''}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-                    Text('Galaxy Lv $_galaxyLevel', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white54)),
+                    Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                    Text('Wave $_wave', style: const TextStyle(fontFamily: 'Avenir', fontSize: 13, color: Colors.white54)),
                   ]),
                   const SizedBox(height: 4),
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text('GOAL: Catch glowing stars before they fade', style: TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white.withValues(alpha: 0.35))),
+                    Text(
+                      'Draw circles: match SIZE & DIRECTION',
+                      style: TextStyle(fontFamily: 'Avenir', fontSize: 9, color: Colors.white.withValues(alpha: 0.35)),
+                    ),
                     Row(mainAxisSize: MainAxisSize.min, children: [
                       ...List.generate(3, (i) => Padding(
                         padding: const EdgeInsets.only(left: 3),
-                        child: Icon(Icons.favorite, size: 14, color: i < _lives ? const Color(0xFFFF5252) : Colors.white12),
-                      )),
-                      const SizedBox(width: 6),
-                      ...List.generate(15, (i) => Container(
-                        margin: const EdgeInsets.only(left: 1), width: 3, height: 3,
-                        decoration: BoxDecoration(shape: BoxShape.circle, color: i < (15 - _missCount) ? Colors.greenAccent.withValues(alpha: 0.5) : Colors.red.withValues(alpha: 0.1)),
+                        child: Icon(Icons.favorite, size: 14,
+                          color: i < _lives ? const Color(0xFFFF5252) : Colors.white12),
                       )),
                     ]),
                   ]),
+                  if (_streak >= 3) Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text('Streak: $_streak', style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.cyanAccent)),
+                  ),
                 ]),
               )),
-              if (_milestoneText != null) Positioned(top: 80, left: 0, right: 0, child: Center(child: Text(_milestoneText!, style: TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.amberAccent.withValues(alpha: (_milestoneTimer / 2.0).clamp(0.0, 1.0)))))),
+              // Toast
+              if (_toastText != null) Positioned(
+                top: 90, left: 0, right: 0,
+                child: Center(child: Text(
+                  _toastText!,
+                  style: TextStyle(
+                    fontFamily: 'Avenir', fontSize: 20, fontWeight: FontWeight.bold,
+                    color: (_toastText!.startsWith('+') ? Colors.greenAccent : Colors.redAccent)
+                        .withValues(alpha: (_toastTimer / 1.4).clamp(0.0, 1.0)),
+                  ),
+                )),
+              ),
+              // Direction legend bottom
+              Positioned(bottom: 12, left: 0, right: 0, child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _DirLegend(color: const Color(0xFF64B5F6), label: 'CW', clockwise: true),
+                  const SizedBox(width: 24),
+                  _DirLegend(color: const Color(0xFFFFB74D), label: 'CCW', clockwise: false),
+                ],
+              )),
             ]),
-          )),
-        );
-      }),
-    );
+          ),
+        ),
+      );
+    });
   }
 
   Widget _buildStart() {
-    return GestureDetector(onTap: _startGame, child: Container(color: Colors.black, child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-      const Text('Galaxy Builder', style: TextStyle(fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white)),
-      const SizedBox(height: 12),
-      const Text('Catch stars before they fade.\nAvoid red stars and dark matter.', textAlign: TextAlign.center, style: TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white54)),
-      const SizedBox(height: 20),
-      if (_highScore > 0) Padding(padding: const EdgeInsets.only(bottom: 16), child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent))),
-      const Text('Tap to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
-    ]))));
+    return GestureDetector(onTap: _startGame, child: Container(
+      color: Colors.black,
+      child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Text('Star Deflector', style: TextStyle(fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white)),
+        const SizedBox(height: 12),
+        const Text(
+          'Stars are on a collision course!\nDraw a circle around each one:\nmatch its SIZE and DIRECTION arrow.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54),
+        ),
+        const SizedBox(height: 16),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          _DirLegend(color: const Color(0xFF64B5F6), label: 'BLUE = clockwise', clockwise: true),
+          const SizedBox(width: 20),
+          _DirLegend(color: const Color(0xFFFFB74D), label: 'AMBER = counter-CW', clockwise: false),
+        ]),
+        const SizedBox(height: 20),
+        if (_highScore > 0) Padding(
+          padding: const EdgeInsets.only(bottom: 14),
+          child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent)),
+        ),
+        const Text('Tap to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
+      ])),
+    ));
   }
 
   Widget _buildOver() {
     final elapsed = _startTime != null ? DateTime.now().difference(_startTime!) : Duration.zero;
-    return GestureDetector(onTap: _startGame, child: Container(color: Colors.black, child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-      const Text('The universe went dark...', style: TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white70)),
-      const SizedBox(height: 20),
-      Text('Stars Collected: $_galaxyStars', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white)),
-      const SizedBox(height: 4),
-      Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.amberAccent)),
-      const SizedBox(height: 4),
-      Text('Galaxy Level: $_galaxyLevel', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.cyanAccent)),
-      const SizedBox(height: 4),
-      Text('Best Streak: $_bestStreak', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.orangeAccent)),
-      const SizedBox(height: 4),
-      Text('Time: ${_fmtDur(elapsed)}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white54)),
-      const SizedBox(height: 12),
-      if (_score >= _highScore && _score > 0) const Padding(padding: EdgeInsets.only(bottom: 8), child: Text('New High Score!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent))),
-      Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white38)),
-      const SizedBox(height: 20),
-      const Text('Build Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
-    ]))));
+    final mins = elapsed.inMinutes, secs = elapsed.inSeconds % 60;
+    return GestureDetector(onTap: _startGame, child: Container(
+      color: Colors.black,
+      child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Text('Collision!', style: TextStyle(fontFamily: 'Avenir', fontSize: 26, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+        const SizedBox(height: 20),
+        Text('Score: $_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.amberAccent)),
+        const SizedBox(height: 4),
+        Text('Wave Reached: $_wave', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.cyanAccent)),
+        const SizedBox(height: 4),
+        Text('Best Streak: $_bestStreak', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.orangeAccent)),
+        const SizedBox(height: 4),
+        Text('Time: ${mins}m ${secs}s', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.white54)),
+        const SizedBox(height: 12),
+        if (_score >= _highScore && _score > 0)
+          const Padding(padding: EdgeInsets.only(bottom: 8), child: Text('New High Score!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent))),
+        Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white38)),
+        const SizedBox(height: 20),
+        const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, color: Colors.cyanAccent)),
+      ])),
+    ));
   }
 }
 
-class _GalaxyBuilderPainter extends CustomPainter {
-  final double cx, cy, playerSize;
-  final List<_GBStar> stars;
-  final List<_GBBlackHole> blackHoles;
-  final List<_GBCreature> creatures;
-  final List<_JuiceParticle> particles;
-  final List<_GBZipTrail> zipTrails;
-  final int galaxyStars, spiralArms, lives;
-  final double galaxyAngle, darkFlash;
-  _GalaxyBuilderPainter({required this.cx, required this.cy, required this.stars, required this.blackHoles, required this.creatures, required this.particles, required this.zipTrails, required this.galaxyStars, required this.galaxyAngle, required this.spiralArms, required this.darkFlash, required this.playerSize, required this.lives});
+// ── Small legend widget ──────────────────────────────────────────────────────
+class _DirLegend extends StatelessWidget {
+  final Color color;
+  final String label;
+  final bool clockwise;
+  const _DirLegend({required this.color, required this.label, required this.clockwise});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      CustomPaint(size: const Size(20, 20), painter: _ArrowCirclePainter(color: color, clockwise: clockwise)),
+      const SizedBox(width: 6),
+      Text(label, style: TextStyle(fontFamily: 'Avenir', fontSize: 11, color: color)),
+    ]);
+  }
+}
+
+class _ArrowCirclePainter extends CustomPainter {
+  final Color color;
+  final bool clockwise;
+  const _ArrowCirclePainter({required this.color, required this.clockwise});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final rng = Random(42);
-    for (int i = 0; i < 60; i++) canvas.drawCircle(Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height), 0.3 + rng.nextDouble() * 0.6, Paint()..color = Colors.white.withValues(alpha: 0.06 + rng.nextDouble() * 0.04));
-
-    final gc = Offset(size.width - 45, 50);
-    if (galaxyStars > 0) canvas.drawCircle(gc, 15.0 + min(galaxyStars.toDouble(), 100.0) * 0.3, Paint()..color = Colors.white.withValues(alpha: 0.03));
-    for (int i = 0; i < min(galaxyStars, 300); i++) {
-      final arm = i % spiralArms;
-      final aa = galaxyAngle + arm * (2 * pi / spiralArms);
-      final r = 3.0 + i * 0.15;
-      final sa = aa + r * 0.12;
-      final sr = Random(i * 7 + 3);
-      final sc = sr.nextDouble() * 3.0 - 1.5;
-      canvas.drawCircle(Offset(gc.dx + cos(sa) * (r + sc), gc.dy + sin(sa) * (r + sc)), 0.8 + sr.nextDouble() * 0.6, Paint()..color = HSVColor.fromAHSV(0.7, (i * 25.0 + arm * 60) % 360, 0.4, 0.9).toColor());
-    }
-    if (galaxyStars > 0) { canvas.drawCircle(gc, 3, Paint()..color = Colors.white.withValues(alpha: 0.6)); canvas.drawCircle(gc, 5, Paint()..color = Colors.white.withValues(alpha: 0.15)); }
-
-    for (final s in stars) {
-      if (s.collected) continue;
-      final lr = (s.life / s.maxLife).clamp(0.0, 1.0);
-      final fade = lr < 0.3 ? lr / 0.3 : 1.0;
-      final a = fade * s.scale;
-      final sx = s.x * size.width, sy = s.y * size.height;
-      final sr = 3.0 * s.scale;
-      if (s.hostile) {
-        // Hostile star — spiky red with pulsing glow
-        canvas.drawCircle(Offset(sx, sy), sr * 3.0, Paint()..color = const Color(0xFFFF1744).withValues(alpha: a * 0.12));
-        final spikePath = Path();
-        const spikes = 6;
-        for (int i = 0; i < spikes * 2; i++) {
-          final ag = i * pi / spikes - pi / 2;
-          final r = i.isEven ? sr * 2.2 : sr * 0.8;
-          final px = sx + cos(ag) * r, py = sy + sin(ag) * r;
-          if (i == 0) spikePath.moveTo(px, py); else spikePath.lineTo(px, py);
-        }
-        spikePath.close();
-        canvas.drawPath(spikePath, Paint()..color = const Color(0xFFFF1744).withValues(alpha: a * 0.7));
-        canvas.drawPath(spikePath, Paint()..color = const Color(0xFFFF5252).withValues(alpha: a * 0.5)..style = PaintingStyle.stroke..strokeWidth = 1);
-        canvas.drawCircle(Offset(sx, sy), sr * 0.5, Paint()..color = Colors.white.withValues(alpha: a * 0.6));
-      } else {
-        canvas.drawCircle(Offset(sx, sy), sr * 2.5, Paint()..color = s.color.withValues(alpha: a * 0.15));
-        canvas.drawCircle(Offset(sx, sy), sr * 1.5, Paint()..color = s.color.withValues(alpha: a * 0.3));
-        canvas.drawCircle(Offset(sx, sy), sr, Paint()..color = s.color.withValues(alpha: a));
-      }
-    }
-
-    for (final bh in blackHoles) {
-      final bx = bh.x * size.width, by = bh.y * size.height;
-      final la = (bh.life / 5.0).clamp(0.0, 1.0);
-      final pp = Paint()..color = Colors.purple.withValues(alpha: 0.08 * la)..strokeWidth = 0.5;
-      for (int i = 0; i < 12; i++) { final ag = i * pi / 6; canvas.drawLine(Offset(bx + cos(ag) * 35, by + sin(ag) * 35), Offset(bx + cos(ag) * 10, by + sin(ag) * 10), pp); }
-      canvas.drawCircle(Offset(bx, by), 22, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.06 * la));
-      canvas.drawCircle(Offset(bx, by), 14, Paint()..color = Colors.deepPurple.withValues(alpha: 0.25 * la));
-      canvas.drawCircle(Offset(bx, by), 7, Paint()..color = Colors.black);
-      canvas.drawCircle(Offset(bx, by), 8, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.5 * la)..style = PaintingStyle.stroke..strokeWidth = 1.5);
-    }
-
-    // Dark matter creatures
-    for (final cr in creatures) {
-      final crx = cr.x * size.width, cry = cr.y * size.height;
-      final crr = cr.size * size.width * 0.5;
-      final ca = (cr.age * 2).clamp(0.0, 1.0);
-      // Tendrils
-      for (int i = 0; i < 5; i++) {
-        final ag = cr.age * 1.5 + i * pi * 2 / 5;
-        final tx = crx + cos(ag) * crr * 2.5;
-        final ty = cry + sin(ag) * crr * 2.5;
-        canvas.drawLine(Offset(crx, cry), Offset(tx, ty), Paint()..color = Colors.deepPurple.withValues(alpha: 0.3 * ca)..strokeWidth = 1.5..strokeCap = StrokeCap.round);
-      }
-      canvas.drawCircle(Offset(crx, cry), crr * 1.8, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.06 * ca));
-      canvas.drawCircle(Offset(crx, cry), crr, Paint()..color = Colors.deepPurple.withValues(alpha: 0.6 * ca));
-      canvas.drawCircle(Offset(crx, cry), crr * 0.5, Paint()..color = const Color(0xFFFF1744).withValues(alpha: 0.5 * ca));
-      canvas.drawCircle(Offset(crx, cry), crr, Paint()..color = Colors.purpleAccent.withValues(alpha: 0.4 * ca)..style = PaintingStyle.stroke..strokeWidth = 1);
-    }
-
-    for (final z in zipTrails) {
-      final t = z.t.clamp(0.0, 1.0); final et = t * t;
-      final ta = (1.0 - t).clamp(0.0, 1.0);
-      for (int i = 0; i < 4; i++) { final tt = (t - i * 0.05).clamp(0.0, 1.0); final te = tt * tt; canvas.drawCircle(Offset((z.sx + (z.tx - z.sx) * te) * size.width, (z.sy + (z.ty - z.sy) * te) * size.height), 1.5 - i * 0.3, Paint()..color = z.color.withValues(alpha: ta * (1.0 - i * 0.2))); }
-      canvas.drawCircle(Offset((z.sx + (z.tx - z.sx) * et) * size.width, (z.sy + (z.ty - z.sy) * et) * size.height), 2.5, Paint()..color = z.color.withValues(alpha: ta));
-    }
-
-    // Player — grows with stars collected
-    final cx2 = cx * size.width, cy2 = cy * size.height;
-    final pr = playerSize * size.width; // player radius in pixels
-    canvas.drawCircle(Offset(cx2, cy2), pr * 1.4, Paint()..color = Colors.white.withValues(alpha: 0.06)..style = PaintingStyle.stroke..strokeWidth = 1);
-    canvas.drawCircle(Offset(cx2, cy2), pr, Paint()..color = Colors.white.withValues(alpha: 0.12)..style = PaintingStyle.stroke..strokeWidth = 1);
-    canvas.drawCircle(Offset(cx2, cy2), pr * 0.6, Paint()..color = Colors.white.withValues(alpha: 0.08));
-    canvas.drawCircle(Offset(cx2, cy2), pr * 0.35, Paint()..color = Colors.white);
-
-    for (final p in particles) { if (p.life > 0) canvas.drawCircle(Offset(p.x * size.width, p.y * size.height), p.radius, Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0))); }
-
-    if (darkFlash > 0) canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), Paint()..color = Colors.black.withValues(alpha: darkFlash * 0.6));
+    final c = Offset(size.width / 2, size.height / 2);
+    final r = size.width / 2 - 2;
+    final paint = Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 1.5..strokeCap = StrokeCap.round;
+    canvas.drawArc(Rect.fromCircle(center: c, radius: r), -pi / 2, clockwise ? pi * 1.5 : -pi * 1.5, false, paint);
+    // Arrowhead
+    final endAngle = clockwise ? pi : -pi / 2;
+    final ax = c.dx + cos(endAngle) * r;
+    final ay = c.dy + sin(endAngle) * r;
+    final headAngle = clockwise ? endAngle + pi / 2 : endAngle - pi / 2;
+    canvas.drawLine(
+      Offset(ax, ay),
+      Offset(ax + cos(headAngle - 0.5) * 4, ay + sin(headAngle - 0.5) * 4),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(ax, ay),
+      Offset(ax + cos(headAngle + 0.5) * 4, ay + sin(headAngle + 0.5) * 4),
+      paint,
+    );
   }
 
   @override
-  bool shouldRepaint(covariant _GalaxyBuilderPainter old) => true;
+  bool shouldRepaint(covariant _ArrowCirclePainter old) => old.clockwise != clockwise || old.color != color;
+}
+
+// ── Main canvas painter ──────────────────────────────────────────────────────
+class _StarDeflectorPainter extends CustomPainter {
+  final List<_GCThreat> threats;
+  final List<_JuiceParticle> particles;
+  final List<_GCGesture> gestures;
+  final List<Offset> strokePts;
+  final double shortSide, flashGood, flashBad;
+
+  const _StarDeflectorPainter({
+    required this.threats, required this.particles,
+    required this.gestures, required this.strokePts,
+    required this.shortSide, required this.flashGood, required this.flashBad,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
+
+    // Background starfield
+    final rng = Random(99);
+    for (int i = 0; i < 70; i++) {
+      canvas.drawCircle(
+        Offset(rng.nextDouble() * w, rng.nextDouble() * h),
+        0.3 + rng.nextDouble() * 0.7,
+        Paint()..color = Colors.white.withValues(alpha: 0.05 + rng.nextDouble() * 0.05),
+      );
+    }
+
+    // Danger zone at centre
+    final cx = w * 0.5, cy = h * 0.5;
+    canvas.drawCircle(Offset(cx, cy), 22, Paint()..color = Colors.redAccent.withValues(alpha: 0.08));
+    canvas.drawCircle(Offset(cx, cy), 22, Paint()
+      ..color = Colors.redAccent.withValues(alpha: 0.3)
+      ..style = PaintingStyle.stroke..strokeWidth = 1.0);
+    canvas.drawCircle(Offset(cx, cy), 6, Paint()..color = Colors.redAccent.withValues(alpha: 0.5));
+
+    // Threats
+    for (final t in threats) {
+      final tx = t.x * w, ty = t.y * h;
+      final a = t.scale.clamp(0.0, 1.0);
+      final col = t.color;
+
+      // Body
+      if (t.flashGood > 0) {
+        canvas.drawCircle(Offset(tx, ty), 18 * a, Paint()..color = Colors.greenAccent.withValues(alpha: t.flashGood * 0.6));
+      }
+      if (t.flashBad > 0) {
+        canvas.drawCircle(Offset(tx, ty), 18 * a, Paint()..color = Colors.redAccent.withValues(alpha: t.flashBad * 0.5));
+      }
+
+      canvas.drawCircle(Offset(tx, ty), 14 * a, Paint()..color = col.withValues(alpha: a * 0.15));
+      canvas.drawCircle(Offset(tx, ty), 8 * a, Paint()..color = col.withValues(alpha: a * 0.5));
+      canvas.drawCircle(Offset(tx, ty), 4 * a, Paint()..color = Colors.white.withValues(alpha: a * 0.9));
+
+      // Required-radius ring
+      if (!t.deflected && t.scale > 0.5) {
+        final reqPx = t.reqRadius * shortSide;
+        final ringAlpha = a * 0.55;
+        canvas.drawCircle(Offset(tx, ty), reqPx, Paint()
+          ..color = col.withValues(alpha: ringAlpha)
+          ..style = PaintingStyle.stroke..strokeWidth = 1.5);
+        // Dashed tick marks at N/S/E/W for size reference
+        for (int q = 0; q < 4; q++) {
+          final ang = q * pi / 2;
+          final ox = cos(ang), oy = sin(ang);
+          canvas.drawLine(
+            Offset(tx + ox * (reqPx - 4), ty + oy * (reqPx - 4)),
+            Offset(tx + ox * (reqPx + 4), ty + oy * (reqPx + 4)),
+            Paint()..color = col.withValues(alpha: ringAlpha * 0.9)..strokeWidth = 2.0..strokeCap = StrokeCap.round,
+          );
+        }
+
+        // Direction arrow arcing around the ring
+        final arrowPaint = Paint()..color = col.withValues(alpha: a * 0.9)..style = PaintingStyle.stroke..strokeWidth = 2.0..strokeCap = StrokeCap.round;
+        final isCw = t.reqDir == _GCDir.cw;
+        // Draw a 120-degree arc as direction hint
+        canvas.drawArc(
+          Rect.fromCircle(center: Offset(tx, ty), radius: reqPx),
+          -pi / 2, isCw ? pi * 0.67 : -pi * 0.67, false, arrowPaint,
+        );
+        // Arrowhead
+        final endAng = isCw ? -pi / 2 + pi * 0.67 : -pi / 2 - pi * 0.67;
+        final eax = tx + cos(endAng) * reqPx;
+        final eay = ty + sin(endAng) * reqPx;
+        final headAng = endAng + (isCw ? pi / 2 : -pi / 2);
+        canvas.drawLine(
+          Offset(eax, eay),
+          Offset(eax + cos(headAng - 0.45) * 6, eay + sin(headAng - 0.45) * 6),
+          arrowPaint,
+        );
+        canvas.drawLine(
+          Offset(eax, eay),
+          Offset(eax + cos(headAng + 0.45) * 6, eay + sin(headAng + 0.45) * 6),
+          arrowPaint,
+        );
+
+        // Urgency countdown ring (shrinks towards zero)
+        final urgency = (t.timeLeft / t.maxTime).clamp(0.0, 1.0);
+        if (urgency < 0.6) {
+          canvas.drawCircle(Offset(tx, ty), 20 * a, Paint()
+            ..color = Colors.redAccent.withValues(alpha: (1.0 - urgency) * 0.35 * a)
+            ..style = PaintingStyle.stroke..strokeWidth = 1.0);
+        }
+      }
+    }
+
+    // Past gestures (resolved strokes drawn as fading rings)
+    for (final g in gestures) {
+      final gc = g.centroid;
+      final gx = gc.dx * w, gy = gc.dy * h;
+      final gpx = g.radius * shortSide;
+      final ga = (g.life / 0.5).clamp(0.0, 1.0);
+      final gcol = g.good ? Colors.greenAccent : Colors.redAccent;
+      canvas.drawCircle(Offset(gx, gy), gpx, Paint()
+        ..color = gcol.withValues(alpha: ga * 0.5)
+        ..style = PaintingStyle.stroke..strokeWidth = 2.0);
+    }
+
+    // Active stroke being drawn
+    if (strokePts.length > 1) {
+      final path = Path();
+      path.moveTo(strokePts.first.dx * w, strokePts.first.dy * h);
+      for (int i = 1; i < strokePts.length; i++) {
+        path.lineTo(strokePts[i].dx * w, strokePts[i].dy * h);
+      }
+      canvas.drawPath(path, Paint()
+        ..color = Colors.white.withValues(alpha: 0.55)
+        ..style = PaintingStyle.stroke..strokeWidth = 2.0..strokeCap = StrokeCap.round..strokeJoin = StrokeJoin.round);
+    }
+
+    // Particles
+    for (final p in particles) {
+      if (p.life > 0) {
+        canvas.drawCircle(
+          Offset(p.x * w, p.y * h), p.radius,
+          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
+        );
+      }
+    }
+
+    // Full-screen flashes
+    if (flashGood > 0) canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.greenAccent.withValues(alpha: flashGood * 0.15));
+    if (flashBad  > 0) canvas.drawRect(Rect.fromLTWH(0, 0, w, h), Paint()..color = Colors.redAccent.withValues(alpha: flashBad  * 0.25));
+  }
+
+  @override
+  bool shouldRepaint(covariant _StarDeflectorPainter old) => true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
