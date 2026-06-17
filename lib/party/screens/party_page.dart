@@ -8,9 +8,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../theme/potatuhs.dart';
+import '../party_actions.dart';
 import '../party_controller.dart';
 import '../party_models.dart';
 import '../party_session_store.dart';
+import '../net/party_net.dart';
+import '../net/party_session.dart';
 import 'party_setup_page.dart';
 
 const _kFont = Potatuhs.bodyFont; // Outfit — body/UI
@@ -41,9 +44,19 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   /// testing the board flow.
   final Random _debugRng = Random();
 
+  /// Non-null when this session is an ONLINE match (set once at initState).
+  PartyNet? _net;
+
   @override
   void initState() {
     super.initState();
+    final net = PartySession.active;
+    if (net != null) {
+      // ONLINE mode: no local save/resume logic.
+      _net = net;
+      return;
+    }
+    // LOCAL mode: existing save/resume behaviour unchanged.
     final saved = PartySessionStore.load();
     if (saved != null && saved.phase != PartyPhase.gameOver) {
       if (PartySessionStore.autoResume) {
@@ -104,6 +117,8 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   @override
   void dispose() {
     _controller?.removeListener(_persist);
+    // _net is owned by PartySession; we don't dispose it here (the user might
+    // navigate back and reconnect). Only PartySession.clear() disposes it.
     super.dispose();
   }
 
@@ -141,15 +156,55 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       ),
     );
     if (quit == true && mounted) {
-      // The dialog warns progress is lost, so drop the save too.
-      _controller?.removeListener(_persist);
-      PartySessionStore.clear();
+      if (_net != null) {
+        // Online: tear down the match; no local save to worry about.
+        PartySession.clear();
+        _net = null;
+      } else {
+        // Local: the dialog warns progress is lost, so drop the save too.
+        _controller?.removeListener(_persist);
+        PartySessionStore.clear();
+      }
       widget.onExit();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // ── ONLINE mode ───────────────────────────────────────────────────────────
+    final net = _net;
+    if (net != null) {
+      return AnimatedBuilder(
+        animation: net,
+        builder: (context, _) {
+          final c = net.controller;
+          if (c == null) {
+            // Waiting for the host to start the game.
+            return Scaffold(
+              backgroundColor: Potatuhs.inkDeep,
+              body: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(color: Potatuhs.gold),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Connecting…',
+                      style: Potatuhs.body(size: 16, color: Potatuhs.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+          final actions = OnlineActions(net);
+          final mySlot = net.mySlot ?? -1;
+          return _buildPhaseScreen(c, actions, net: net, mySlot: mySlot);
+        },
+      );
+    }
+
+    // ── LOCAL mode ────────────────────────────────────────────────────────────
     final controller = _controller;
     if (controller == null) {
       final setup = PartySetupView(onStart: _start, onExit: widget.onExit);
@@ -158,60 +213,116 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        switch (controller.phase) {
-          case PartyPhase.turnStart:
-          case PartyPhase.rollResult:
-          case PartyPhase.moving:
-          case PartyPhase.chooseBranch:
-          case PartyPhase.shopOffer:
-          case PartyPhase.spaceResolved:
-            return _BoardScreen(
-                controller: controller, onQuit: _confirmQuit);
-          case PartyPhase.minigameIntro:
-            return _MiniGameIntroScreen(controller: controller);
-          case PartyPhase.passPhone:
-            return _PassPhoneScreen(controller: controller);
-          case PartyPhase.minigamePlaying:
-            final spec = controller.currentSpec!;
-            final player = controller.miniPlayer;
-            final teamTag = controller.mode.isTeams
-                ? ' — ${kTeamNames[player.teamIndex]}'
-                : '';
-            final host = MiniGameHost(
-              // New host per attempt so state never leaks between players.
-              key: ValueKey(
-                  'mg_${controller.round}_${player.index}_${spec.id}'),
-              spec: spec,
-              playerLabel: '${player.name}$teamTag',
-              onComplete: controller.recordMiniScore,
-              onExit: () => controller.recordMiniScore(0),
-            );
-            return Stack(
-              children: [
-                host,
-                Positioned(
-                  top: 0,
-                  right: 0,
-                  child: SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 8, right: 12),
-                      child: _buildSkipButton(controller),
-                    ),
-                  ),
-                ),
-              ],
-            );
-          case PartyPhase.minigameResults:
-            return _MiniRoundResultsScreen(controller: controller);
-          case PartyPhase.gameOver:
-            return _PodiumScreen(
-              controller: controller,
-              onPlayAgain: _backToSetup,
-              onExit: widget.onExit,
-            );
-        }
+        final actions = LocalActions(controller);
+        return _buildPhaseScreen(controller, actions);
       },
     );
+  }
+
+  /// Builds the per-phase screen for both LOCAL and ONLINE paths.
+  /// [net] and [mySlot] are only non-null in ONLINE mode.
+  Widget _buildPhaseScreen(
+    PartyController c,
+    PartyActions actions, {
+    PartyNet? net,
+    int mySlot = -1,
+  }) {
+    final isOnline = net != null;
+
+    // Turn-gating: who can tap buttons right now.
+    bool boardInteractive() {
+      if (!isOnline) return true;
+      return mySlot == c.currentPlayerIndex;
+    }
+
+    bool miniPlayInteractive() {
+      if (!isOnline) return true;
+      return !c.hasSubmittedMiniScore(mySlot);
+    }
+
+    switch (c.phase) {
+      case PartyPhase.turnStart:
+      case PartyPhase.rollResult:
+      case PartyPhase.moving:
+      case PartyPhase.chooseBranch:
+      case PartyPhase.shopOffer:
+      case PartyPhase.spaceResolved:
+        return _BoardScreen(
+          controller: c,
+          actions: actions,
+          interactive: boardInteractive(),
+          onQuit: _confirmQuit,
+        );
+      case PartyPhase.minigameIntro:
+        return _MiniGameIntroScreen(
+          controller: c,
+          actions: actions,
+          interactive: !isOnline, // host auto-advances online
+        );
+      case PartyPhase.passPhone:
+        return _PassPhoneScreen(
+          controller: c,
+          actions: actions,
+          interactive: !isOnline, // host auto-advances online
+        );
+      case PartyPhase.minigamePlaying:
+        final spec = c.currentSpec!;
+        final player = c.miniPlayer;
+        final teamTag = c.mode.isTeams
+            ? ' — ${kTeamNames[player.teamIndex]}'
+            : '';
+        final interactive = miniPlayInteractive();
+        if (!interactive) {
+          // Non-interactive: read-only "Waiting for others…" overlay.
+          return Scaffold(
+            backgroundColor: Colors.black,
+            body: SafeArea(
+              child: Stack(
+                children: [
+                  // Render the board scoreboard for context.
+                  _MiniGameWaitingOverlay(controller: c),
+                ],
+              ),
+            ),
+          );
+        }
+        final host = MiniGameHost(
+          // New host per attempt so state never leaks between players.
+          key: ValueKey('mg_${c.round}_${player.index}_${spec.id}'),
+          spec: spec,
+          playerLabel: '${player.name}$teamTag',
+          onComplete: actions.recordMiniScore,
+          onExit: () => actions.recordMiniScore(0),
+        );
+        return Stack(
+          children: [
+            host,
+            Positioned(
+              top: 0,
+              right: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8, right: 12),
+                  child: _buildSkipButton(c, actions),
+                ),
+              ),
+            ),
+          ],
+        );
+      case PartyPhase.minigameResults:
+        return _MiniRoundResultsScreen(
+          controller: c,
+          actions: actions,
+          interactive: !isOnline, // host auto-advances online
+        );
+      case PartyPhase.gameOver:
+        if (isOnline) PartySession.clear();
+        return _PodiumScreen(
+          controller: c,
+          onPlayAgain: isOnline ? widget.onExit : _backToSetup,
+          onExit: widget.onExit,
+        );
+    }
   }
 
   /// Score that lands the current player strictly below everyone who has
@@ -226,9 +337,9 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   }
 
   /// Temporary "skip this game" affordance — forfeits the round to last place.
-  Widget _buildSkipButton(PartyController controller) {
+  Widget _buildSkipButton(PartyController controller, PartyActions actions) {
     return GestureDetector(
-      onTap: () => controller.recordMiniScore(_skipScore(controller)),
+      onTap: () => actions.recordMiniScore(_skipScore(controller)),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
@@ -335,13 +446,64 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
 }
 
 // ---------------------------------------------------------------------------
+// Online-only waiting overlay shown during minigamePlaying for non-active players
+// ---------------------------------------------------------------------------
+
+class _MiniGameWaitingOverlay extends StatelessWidget {
+  final PartyController controller;
+  const _MiniGameWaitingOverlay({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final spec = controller.currentSpec!;
+    final player = controller.miniPlayer;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(spec.icon, color: spec.accent, size: 54),
+            const SizedBox(height: 16),
+            Text(
+              spec.name.toUpperCase(),
+              style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                shadows: [Shadow(color: spec.accent, blurRadius: 14)],
+              ),
+            ),
+            const SizedBox(height: 24),
+            const CircularProgressIndicator(color: Potatuhs.gold),
+            const SizedBox(height: 16),
+            Text(
+              'Waiting for ${player.name}…',
+              style: Potatuhs.body(size: 15, color: Potatuhs.textSecondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Board screen: HUD + board + turn panel
 // ---------------------------------------------------------------------------
 
 class _BoardScreen extends StatefulWidget {
   final PartyController controller;
+  final PartyActions actions;
+  final bool interactive;
   final VoidCallback onQuit;
-  const _BoardScreen({required this.controller, required this.onQuit});
+  const _BoardScreen({
+    required this.controller,
+    required this.actions,
+    required this.interactive,
+    required this.onQuit,
+  });
 
   @override
   State<_BoardScreen> createState() => _BoardScreenState();
@@ -354,6 +516,7 @@ class _BoardScreenState extends State<_BoardScreen> {
   bool _diceSettled = false;
 
   PartyController get controller => widget.controller;
+  PartyActions get actions => widget.actions;
 
   @override
   void initState() {
@@ -399,7 +562,10 @@ class _BoardScreenState extends State<_BoardScreen> {
       setState(() => _diceSettled = true);
       return;
     }
-    controller.advanceStep();
+    // In online mode advanceStep() is a no-op; the host drives movement via the
+    // canonical stream and the phase will leave 'moving' when the replica
+    // catches up, which causes _syncMovement to cancel this timer naturally.
+    actions.advanceStep();
   }
 
   @override
@@ -413,22 +579,50 @@ class _BoardScreenState extends State<_BoardScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            _topBar(),
-            _scoreboard(),
-            const SizedBox(height: 4),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: _BoardView(
-                  controller: controller,
-                  positionOf: (p) => p.position,
-                  highlightPlayer: controller.currentPlayer.index,
+            Column(
+              children: [
+                _topBar(),
+                _scoreboard(),
+                const SizedBox(height: 4),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: _BoardView(
+                      controller: controller,
+                      positionOf: (p) => p.position,
+                      highlightPlayer: controller.currentPlayer.index,
+                    ),
+                  ),
+                ),
+                _turnPanel(),
+              ],
+            ),
+            // Online non-interactive overlay: the board renders read-only;
+            // action buttons in the turn panel are hidden (see _turnPanel), and
+            // a hint is shown at the bottom.
+            if (!widget.interactive)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  decoration: const BoxDecoration(
+                    color: Color(0xCC101018),
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(20)),
+                  ),
+                  child: Center(
+                    child: Text(
+                      'Waiting for ${controller.currentPlayer.name}…',
+                      style:
+                          Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
+                    ),
+                  ),
                 ),
               ),
-            ),
-            _turnPanel(),
           ],
         ),
       ),
@@ -599,6 +793,13 @@ class _BoardScreenState extends State<_BoardScreen> {
   }
 
   Widget _turnPanel() {
+    // When not interactive (online, not our turn), the overlay in build() shows
+    // the waiting hint instead; the turn panel is hidden beneath it. We still
+    // build it with empty content so the panel height stays consistent.
+    if (!widget.interactive) {
+      return const SizedBox(height: 70); // reserved space for the overlay
+    }
+
     final phase = controller.phase;
     final p = controller.currentPlayer;
     Widget child;
@@ -632,7 +833,7 @@ class _BoardScreenState extends State<_BoardScreen> {
                     alignment: WrapAlignment.center,
                     children: [
                       for (final item in p.items)
-                        _itemChip(item, () => controller.useItem(item)),
+                        _itemChip(item, () => actions.useItem(item)),
                     ],
                   ),
                 ],
@@ -668,11 +869,11 @@ class _BoardScreenState extends State<_BoardScreen> {
                     children: [
                       if (p.atp >= kAtpPlus2Cost)
                         _atpButton('+2', kAtpPlus2Cost,
-                            () => controller.useAtp(2)),
+                            () => actions.useAtp(2)),
                       if (p.atp >= kAtpPlus3Cost) ...[
                         const SizedBox(width: 8),
                         _atpButton('+3', kAtpPlus3Cost,
-                            () => controller.useAtp(3)),
+                            () => actions.useAtp(3)),
                       ],
                     ],
                   ),
@@ -689,7 +890,7 @@ class _BoardScreenState extends State<_BoardScreen> {
               fill: p.color,
               glowColor: p.color,
               textColor: Colors.black,
-              onTap: () => controller.roll(),
+              onTap: () => actions.roll(),
             ),
           ),
         ],
@@ -728,7 +929,7 @@ class _BoardScreenState extends State<_BoardScreen> {
           Row(
             children: [
               if (p.atp >= kAtpPlus1Cost) ...[
-                _atpButton('+1', kAtpPlus1Cost, () => controller.useAtp(1)),
+                _atpButton('+1', kAtpPlus1Cost, () => actions.useAtp(1)),
                 const SizedBox(width: 10),
               ],
               Expanded(
@@ -739,7 +940,7 @@ class _BoardScreenState extends State<_BoardScreen> {
                   fill: p.color,
                   glowColor: p.color,
                   textColor: Colors.black,
-                  onTap: controller.beginWalk,
+                  onTap: actions.beginWalk,
                 ),
               ),
             ],
@@ -811,7 +1012,7 @@ class _BoardScreenState extends State<_BoardScreen> {
             ),
           const SizedBox(height: 10),
           GestureDetector(
-            onTap: controller.confirmSpace,
+            onTap: actions.confirmSpace,
             child: Container(
               height: 46,
               width: double.infinity,
@@ -974,7 +1175,7 @@ class _BoardScreenState extends State<_BoardScreen> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: GestureDetector(
-        onTap: () => controller.choosePath(next),
+        onTap: () => actions.choosePath(next),
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -1050,7 +1251,7 @@ class _BoardScreenState extends State<_BoardScreen> {
           children: [
             Expanded(
               child: GestureDetector(
-                onTap: controller.buyPotato,
+                onTap: actions.buyPotato,
                 child: Container(
                   height: 50,
                   decoration: BoxDecoration(
@@ -1074,7 +1275,7 @@ class _BoardScreenState extends State<_BoardScreen> {
             const SizedBox(width: 10),
             Expanded(
               child: GestureDetector(
-                onTap: controller.skipPotato,
+                onTap: actions.skipPotato,
                 child: Container(
                   height: 50,
                   decoration: BoxDecoration(
@@ -1590,7 +1791,13 @@ class _BoardPathPainter extends CustomPainter {
 
 class _MiniGameIntroScreen extends StatelessWidget {
   final PartyController controller;
-  const _MiniGameIntroScreen({required this.controller});
+  final PartyActions actions;
+  final bool interactive;
+  const _MiniGameIntroScreen({
+    required this.controller,
+    required this.actions,
+    required this.interactive,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1684,7 +1891,7 @@ class _MiniGameIntroScreen extends StatelessWidget {
               ),
               if (kDebugMode) ...[
                 const SizedBox(height: 12),
-                _DebugGamePicker(controller: controller),
+                _DebugGamePicker(controller: controller, actions: actions),
               ],
               const SizedBox(height: 10),
               Center(
@@ -1715,8 +1922,9 @@ class _MiniGameIntroScreen extends StatelessWidget {
                 ),
               ),
               const Spacer(),
+              if (interactive)
               GestureDetector(
-                onTap: controller.beginMiniGameRound,
+                onTap: actions.beginMiniGameRound,
                 child: Container(
                   height: 56,
                   decoration: BoxDecoration(
@@ -1752,7 +1960,11 @@ class _MiniGameIntroScreen extends StatelessWidget {
 /// Debug-only: override the randomly chosen game on the intro screen.
 class _DebugGamePicker extends StatelessWidget {
   final PartyController controller;
-  const _DebugGamePicker({required this.controller});
+  final PartyActions actions;
+  const _DebugGamePicker({
+    required this.controller,
+    required this.actions,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1782,7 +1994,7 @@ class _DebugGamePicker extends StatelessWidget {
             children: [
               for (final s in MiniGameRegistry.enabledSpecs)
                 GestureDetector(
-                  onTap: () => controller.debugSetSpec(s),
+                  onTap: () => actions.debugSetSpec(s),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 9, vertical: 5),
@@ -1819,7 +2031,13 @@ class _DebugGamePicker extends StatelessWidget {
 
 class _PassPhoneScreen extends StatelessWidget {
   final PartyController controller;
-  const _PassPhoneScreen({required this.controller});
+  final PartyActions actions;
+  final bool interactive;
+  const _PassPhoneScreen({
+    required this.controller,
+    required this.actions,
+    required this.interactive,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1898,32 +2116,41 @@ class _PassPhoneScreen extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              GestureDetector(
-                onTap: controller.startMiniGameAttempt,
-                child: Container(
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: p.color,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                          color: p.color.withValues(alpha: 0.45),
-                          blurRadius: 18)
-                    ],
-                  ),
-                  child: Center(
-                    child: Text(
-                      "I'M ${p.name.toUpperCase()} — READY",
-                      style: const TextStyle(
-                          fontFamily: _kFont,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
-                          letterSpacing: 2),
+              if (interactive)
+                GestureDetector(
+                  onTap: actions.startMiniGameAttempt,
+                  child: Container(
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: p.color,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                            color: p.color.withValues(alpha: 0.45),
+                            blurRadius: 18)
+                      ],
+                    ),
+                    child: Center(
+                      child: Text(
+                        "I'M ${p.name.toUpperCase()} — READY",
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                            letterSpacing: 2),
+                      ),
                     ),
                   ),
+                )
+              else
+                Center(
+                  child: Text(
+                    'Waiting for ${p.name}…',
+                    style:
+                        Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -1934,7 +2161,13 @@ class _PassPhoneScreen extends StatelessWidget {
 
 class _MiniRoundResultsScreen extends StatelessWidget {
   final PartyController controller;
-  const _MiniRoundResultsScreen({required this.controller});
+  final PartyActions actions;
+  final bool interactive;
+  const _MiniRoundResultsScreen({
+    required this.controller,
+    required this.actions,
+    required this.interactive,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -2041,34 +2274,43 @@ class _MiniRoundResultsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
-              GestureDetector(
-                onTap: controller.confirmMiniGameResults,
-                child: Container(
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: _kAccent,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                          color: _kAccent.withValues(alpha: 0.45),
-                          blurRadius: 18)
-                    ],
-                  ),
-                  child: Center(
-                    child: Text(
-                      controller.round >= controller.totalRounds
-                          ? 'FINAL RESULTS'
-                          : 'BACK TO THE BOARD',
-                      style: const TextStyle(
-                          fontFamily: _kFont,
-                          fontSize: 17,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
-                          letterSpacing: 2),
+              if (interactive)
+                GestureDetector(
+                  onTap: actions.confirmMiniGameResults,
+                  child: Container(
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: _kAccent,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                            color: _kAccent.withValues(alpha: 0.45),
+                            blurRadius: 18)
+                      ],
+                    ),
+                    child: Center(
+                      child: Text(
+                        controller.round >= controller.totalRounds
+                            ? 'FINAL RESULTS'
+                            : 'BACK TO THE BOARD',
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                            letterSpacing: 2),
+                      ),
                     ),
                   ),
+                )
+              else
+                Center(
+                  child: Text(
+                    'Waiting for host…',
+                    style:
+                        Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
