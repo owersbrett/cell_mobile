@@ -2645,66 +2645,89 @@ class _RegionalMapPainter extends CustomPainter {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3. PlanetCatchGame — "Gravity Well"
+// Slingshot a missile through curved gravity fields — each round is a puzzle.
+// Three bodies of DIFFERENT SIZES anchor each level; bigger = stronger pull.
+// A straight shot always misses; you must exploit the curves to reach the target.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FEEL CONSTANTS — tweak these without touching game logic
 // ─────────────────────────────────────────────────────────────────────────────
-// Simulation runs at ~60 fps; all units are logical pixels / second unless noted.
 
 // Cannon
-const double _kMaxLaunchSpeed = 900.0; // px/s — maximum projectile speed
-const double _kMinLaunchSpeed = 200.0; // px/s — minimum launch speed (short drag)
-const double _kDragToSpeedScale = 2.2; // drag distance in px → speed multiplier
-const double _kProjectileRadius = 7.0; // visual + hit radius of the projectile
+const double _kMaxLaunchSpeed = 820.0; // px/s — maximum projectile speed
+const double _kMinLaunchSpeed = 180.0; // px/s — minimum launch speed
+const double _kDragToSpeedScale = 2.0; // drag px → speed multiplier
+const double _kProjectileRadius = 6.0; // visual + hit radius of missile
 
-// Gravity
-const double _kGravityConstant = 38000.0; // G — base pull strength (px³/s²)
-// Per-body mass is defined in _CannonLevel; G * mass = actual pull force constant.
+// Gravity — made STRONG so trajectories bend dramatically
+// G * mass / r^2 is the acceleration. With G=120000 and mass=3.5 at r=200px:
+//   a = 120000*3.5/40000 ≈ 10.5 px/s² per substep — very curvy.
+const double _kGravityConstant = 120000.0; // G — strong curvy pull
 
-// Trajectory preview
-const int _kPreviewSteps = 80; // simulation steps for the dotted preview arc
-const double _kPreviewDt = 0.025; // seconds per preview step (~2s of flight shown)
+// Per-body mass categories (used in _buildLevels):
+//   Large  body: mass 3.0–4.0, radius 38–50 px  → dominant slingshot anchor
+//   Medium body: mass 1.2–1.8, radius 22–30 px  → secondary curve deflector
+//   Small  body: mass 0.5–0.8, radius 12–16 px  → fine-tuning body
+
+// Trajectory preview — more steps so curvy paths show clearly
+const int _kPreviewSteps = 120; // steps for the dotted preview arc
+const double _kPreviewDt = 0.022; // seconds per step (~2.6 s of flight shown)
 
 // Target
-const double _kTargetBaseRadius = 26.0; // hit zone radius on level 1
-const double _kTargetRadiusShrinkPerLevel = 2.0; // target shrinks each level
+const double _kTargetBaseRadius = 24.0; // hit zone radius on level 1
+const double _kTargetRadiusShrinkPerLevel = 1.5; // shrinks each level
 
-// Levels & scoring
-const int _kPointsPerHit = 100; // base score per successful hit
-const int _kBonusPerExtraShot = 20; // bonus for spare shots left in ammo (unused)
-const int _kShotsPerLevel = 5; // shots available per level
-const double _kTotalGameSeconds = 60.0; // game ends after this many seconds
+// Scoring
+const int _kPointsPerHit = 100; // base score per hit
+const int _kBonusPerExtraShot = 25; // bonus per spare shot on level clear
+const int _kShotsPerLevel = 4; // shots per puzzle
+const double _kTotalGameSeconds = 60.0;
 
-// Moving target (unlocks from level 4)
-const double _kTargetMoveSpeed = 60.0; // px/s lateral speed of moving target
+// Moving target (later levels)
+const double _kTargetMoveSpeed = 55.0; // px/s lateral oscillation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One gravity body in a level layout.
+/// One gravity body in a puzzle layout.
 class _GravBody {
   final Offset pos; // fraction of canvas [0..1]
-  final double mass; // multiplied by _kGravityConstant
-  final Color color;
-  final double radius; // visual radius in px
-  _GravBody({required this.pos, required this.mass, required this.color, required this.radius});
+  final double mass; // multiplied by _kGravityConstant — larger = stronger
+  final Color color; // brand-palette color
+  final double radius; // visual radius in px — must correlate with mass
+  /// Label shown near body so player reads its size/gravity role
+  final String label; // e.g. 'GIANT', 'MID', 'SMALL'
+  _GravBody({
+    required this.pos,
+    required this.mass,
+    required this.color,
+    required this.radius,
+    this.label = '',
+  });
 }
 
-/// Static description of a single level.
+/// Static description of a single puzzle level.
 class _CannonLevel {
-  final List<_GravBody> bodies;
+  final List<_GravBody> bodies; // always ~3, different sizes
   final Offset targetPos; // fraction of canvas
   final bool targetMoves;
-  _CannonLevel({required this.bodies, required this.targetPos, this.targetMoves = false});
+  final String hint; // WarioWare-style instruction
+  _CannonLevel({
+    required this.bodies,
+    required this.targetPos,
+    this.targetMoves = false,
+    this.hint = '',
+  });
 }
 
-/// Live projectile in flight.
+/// Live missile in flight.
 class _Projectile {
   double x, y; // px
   double vx, vy; // px/s
   bool alive;
-  final List<Offset> trail; // for tail rendering (canvas px)
+  final List<Offset> trail;
   _Projectile({required this.x, required this.y, required this.vx, required this.vy})
-      : alive = true, trail = [];
+      : alive = true,
+        trail = [];
 }
 
 class PlanetCatchGame extends StatefulWidget {
@@ -2716,36 +2739,41 @@ class PlanetCatchGame extends StatefulWidget {
 class _PlanetCatchGameState extends State<PlanetCatchGame>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
-  final Random _rng = Random();
 
   // ── state ──────────────────────────────────────────────────────────────────
   bool _waitingToStart = true;
   bool _gameOver = false;
   int _score = 0;
-  int _level = 0; // index into _levels list (clamped when beyond)
+  int _level = 0;
   int _shotsLeft = _kShotsPerLevel;
   double _timeLeft = _kTotalGameSeconds;
   int _highScore = 0;
   bool _newBest = false;
 
+  // ── score pops ─────────────────────────────────────────────────────────────
+  final List<FxPop> _pops = [];
+
   // ── aiming ─────────────────────────────────────────────────────────────────
-  Offset? _dragStart; // where the drag began (canvas px)
-  Offset? _dragCurrent; // current drag position (canvas px)
+  Offset? _dragStart;
+  Offset? _dragCurrent;
   bool get _isDragging => _dragStart != null && _dragCurrent != null;
   Size _canvasSize = Size.zero;
 
   // ── live sim ───────────────────────────────────────────────────────────────
   _Projectile? _projectile;
-  final List<_JuiceParticle> _particles = [];
+  final List<FxParticle> _fxParticles = [];
 
-  // moving-target offset (px, signed)
+  // moving-target drift
   double _targetDrift = 0.0;
   double _targetDriftDir = 1.0;
+
+  // animate clock for atmosphere
+  double _t = 0.0;
 
   // ── level table ────────────────────────────────────────────────────────────
   late List<_CannonLevel> _levels;
 
-  // cannon origin (bottom-left corner, fraction)
+  // cannon origin (bottom-left area, fraction)
   static const Offset _cannonFrac = Offset(0.12, 0.82);
 
   @override
@@ -2757,57 +2785,124 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
     _loadHighScore();
   }
 
+  // ── puzzle layouts ─────────────────────────────────────────────────────────
+  // Every level has 3 bodies of clearly different sizes.
+  // The target is placed so only a curved path reaches it —
+  // a direct shot from the cannon corner hits a body or flies past.
   void _buildLevels() {
     _levels = [
-      // Level 1 — one medium planet, stationary target
-      _CannonLevel(bodies: [
-        _GravBody(pos: const Offset(0.5, 0.45), mass: 1.0, color: const Color(0xFF42A5F5), radius: 22),
-      ], targetPos: const Offset(0.82, 0.25)),
+      // ── Level 1 — INTRO: arc around the giant ─────────────────────────────
+      // Giant in center blocks straight shot; swing right of it to reach top-right target.
+      _CannonLevel(
+        bodies: [
+          _GravBody(pos: const Offset(0.50, 0.48), mass: 3.2, radius: 46,
+              color: Potatuhs.airForce, label: 'GIANT'),
+          _GravBody(pos: const Offset(0.72, 0.65), mass: 1.4, radius: 24,
+              color: Potatuhs.glaucous, label: 'MID'),
+          _GravBody(pos: const Offset(0.32, 0.32), mass: 0.6, radius: 13,
+              color: Potatuhs.copper, label: 'SMALL'),
+        ],
+        targetPos: const Offset(0.84, 0.22),
+        hint: 'SWING AROUND THE GIANT',
+      ),
 
-      // Level 2 — two bodies, target tucked behind them
-      _CannonLevel(bodies: [
-        _GravBody(pos: const Offset(0.4, 0.5), mass: 0.9, color: const Color(0xFF66BB6A), radius: 20),
-        _GravBody(pos: const Offset(0.65, 0.35), mass: 0.7, color: const Color(0xFFAB47BC), radius: 16),
-      ], targetPos: const Offset(0.78, 0.70)),
+      // ── Level 2 — SLINGSHOT: use giant as catapult ────────────────────────
+      // Target is behind and to the left of the giant; fly past, let it bend you back.
+      _CannonLevel(
+        bodies: [
+          _GravBody(pos: const Offset(0.55, 0.42), mass: 3.6, radius: 50,
+              color: Potatuhs.sienna, label: 'GIANT'),
+          _GravBody(pos: const Offset(0.28, 0.60), mass: 1.5, radius: 26,
+              color: Potatuhs.glaucous, label: 'MID'),
+          _GravBody(pos: const Offset(0.75, 0.72), mass: 0.7, radius: 14,
+              color: Potatuhs.copper, label: 'SMALL'),
+        ],
+        targetPos: const Offset(0.15, 0.22),
+        hint: 'SLINGSHOT — FLY PAST THE GIANT',
+      ),
 
-      // Level 3 — heavy central body (slingshot required)
-      _CannonLevel(bodies: [
-        _GravBody(pos: const Offset(0.52, 0.42), mass: 2.0, color: const Color(0xFFFFA726), radius: 30),
-      ], targetPos: const Offset(0.15, 0.18)),
+      // ── Level 3 — DOUBLE CURVE: mid deflects into small nudge ─────────────
+      // Aim slightly high-right; mid curves down; small redirects into target.
+      _CannonLevel(
+        bodies: [
+          _GravBody(pos: const Offset(0.40, 0.35), mass: 1.6, radius: 28,
+              color: Potatuhs.glaucous, label: 'MID'),
+          _GravBody(pos: const Offset(0.68, 0.30), mass: 0.6, radius: 13,
+              color: Potatuhs.copper, label: 'SMALL'),
+          _GravBody(pos: const Offset(0.30, 0.65), mass: 3.8, radius: 52,
+              color: Potatuhs.orange, label: 'GIANT'),
+        ],
+        targetPos: const Offset(0.85, 0.55),
+        hint: 'USE MID THEN SMALL TO DEFLECT',
+      ),
 
-      // Level 4 — moving target
-      _CannonLevel(bodies: [
-        _GravBody(pos: const Offset(0.45, 0.48), mass: 1.2, color: const Color(0xFF26C6DA), radius: 24),
-        _GravBody(pos: const Offset(0.70, 0.60), mass: 0.6, color: const Color(0xFFEF5350), radius: 14),
-      ], targetPos: const Offset(0.82, 0.22), targetMoves: true),
+      // ── Level 4 — ORBIT ASSIST + moving target ────────────────────────────
+      _CannonLevel(
+        bodies: [
+          _GravBody(pos: const Offset(0.52, 0.40), mass: 3.4, radius: 48,
+              color: Potatuhs.gold, label: 'GIANT'),
+          _GravBody(pos: const Offset(0.78, 0.55), mass: 1.3, radius: 23,
+              color: Potatuhs.glaucous, label: 'MID'),
+          _GravBody(pos: const Offset(0.28, 0.28), mass: 0.7, radius: 14,
+              color: Potatuhs.copper, label: 'SMALL'),
+        ],
+        targetPos: const Offset(0.82, 0.20),
+        targetMoves: true,
+        hint: 'LEAD THE MOVING TARGET',
+      ),
 
-      // Level 5 — three-body chaos
-      _CannonLevel(bodies: [
-        _GravBody(pos: const Offset(0.35, 0.38), mass: 1.1, color: const Color(0xFF7E57C2), radius: 22),
-        _GravBody(pos: const Offset(0.62, 0.30), mass: 0.8, color: const Color(0xFF26A69A), radius: 18),
-        _GravBody(pos: const Offset(0.55, 0.65), mass: 0.9, color: const Color(0xFFF06292), radius: 18),
-      ], targetPos: const Offset(0.80, 0.75)),
+      // ── Level 5 — S-CURVE: chain three bodies in sequence ─────────────────
+      _CannonLevel(
+        bodies: [
+          _GravBody(pos: const Offset(0.35, 0.42), mass: 3.5, radius: 49,
+              color: Potatuhs.orange, label: 'GIANT'),
+          _GravBody(pos: const Offset(0.60, 0.28), mass: 1.5, radius: 26,
+              color: Potatuhs.airForce, label: 'MID'),
+          _GravBody(pos: const Offset(0.75, 0.60), mass: 0.7, radius: 14,
+              color: Potatuhs.copper, label: 'SMALL'),
+        ],
+        targetPos: const Offset(0.88, 0.78),
+        hint: 'CHAIN THE S-CURVE',
+      ),
 
-      // Level 6 — very heavy star, target in tight spot, moves
-      _CannonLevel(bodies: [
-        _GravBody(pos: const Offset(0.50, 0.44), mass: 2.8, color: const Color(0xFFFFCA28), radius: 36),
-        _GravBody(pos: const Offset(0.28, 0.32), mass: 0.5, color: const Color(0xFF8D6E63), radius: 12),
-      ], targetPos: const Offset(0.85, 0.50), targetMoves: true),
+      // ── Level 6 — PINBALL: tight corridor, moving target ──────────────────
+      _CannonLevel(
+        bodies: [
+          _GravBody(pos: const Offset(0.45, 0.50), mass: 4.0, radius: 54,
+              color: Potatuhs.sienna, label: 'GIANT'),
+          _GravBody(pos: const Offset(0.72, 0.38), mass: 1.6, radius: 27,
+              color: Potatuhs.glaucous, label: 'MID'),
+          _GravBody(pos: const Offset(0.25, 0.30), mass: 0.8, radius: 15,
+              color: Potatuhs.gold, label: 'SMALL'),
+        ],
+        targetPos: const Offset(0.88, 0.50),
+        targetMoves: true,
+        hint: 'PINBALL THROUGH THE GAP',
+      ),
 
-      // Level 7 — four bodies, moving target, tiny goal
-      _CannonLevel(bodies: [
-        _GravBody(pos: const Offset(0.40, 0.35), mass: 1.0, color: const Color(0xFF42A5F5), radius: 20),
-        _GravBody(pos: const Offset(0.65, 0.40), mass: 1.0, color: const Color(0xFF66BB6A), radius: 20),
-        _GravBody(pos: const Offset(0.52, 0.62), mass: 1.0, color: const Color(0xFFFFA726), radius: 20),
-        _GravBody(pos: const Offset(0.30, 0.58), mass: 0.8, color: const Color(0xFFEF5350), radius: 16),
-      ], targetPos: const Offset(0.82, 0.18), targetMoves: true),
+      // ── Level 7 — EXPERT: all pull strong, tiny target, moves fast ─────────
+      _CannonLevel(
+        bodies: [
+          _GravBody(pos: const Offset(0.48, 0.44), mass: 4.0, radius: 54,
+              color: Potatuhs.gold, label: 'GIANT'),
+          _GravBody(pos: const Offset(0.70, 0.65), mass: 1.8, radius: 30,
+              color: Potatuhs.airForce, label: 'MID'),
+          _GravBody(pos: const Offset(0.30, 0.25), mass: 0.8, radius: 16,
+              color: Potatuhs.copper, label: 'SMALL'),
+        ],
+        targetPos: const Offset(0.82, 0.18),
+        targetMoves: true,
+        hint: 'EXPERT — FEEL THE CURVES',
+      ),
     ];
   }
 
-  _CannonLevel get _currentLevel => _levels[_level.clamp(0, _levels.length - 1)];
-  double get _targetRadius => (_kTargetBaseRadius - _level * _kTargetRadiusShrinkPerLevel).clamp(10.0, _kTargetBaseRadius);
+  _CannonLevel get _currentLevel =>
+      _levels[_level.clamp(0, _levels.length - 1)];
+  double get _targetRadius =>
+      (_kTargetBaseRadius - _level * _kTargetRadiusShrinkPerLevel)
+          .clamp(10.0, _kTargetBaseRadius);
 
-  // Effective target position in canvas px (accounts for drift on moving levels)
   Offset _targetPx(Size size) {
     final base = _currentLevel.targetPos;
     if (_currentLevel.targetMoves) {
@@ -2818,7 +2913,9 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
 
   Future<void> _loadHighScore() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() { _highScore = prefs.getInt('orbit_catch_high_score') ?? 0; });
+    setState(() {
+      _highScore = prefs.getInt('orbit_catch_high_score') ?? 0;
+    });
   }
 
   Future<void> _saveHighScore(int s) async {
@@ -2837,7 +2934,8 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
       _targetDrift = 0.0;
       _targetDriftDir = 1.0;
       _projectile = null;
-      _particles.clear();
+      _fxParticles.clear();
+      _pops.clear();
     });
     _ctrl.forward();
   }
@@ -2853,7 +2951,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
     if (_gameOver || _waitingToStart) return;
     const dt = 1 / 60.0;
     setState(() {
-      // Countdown timer
+      _t += dt;
       _timeLeft -= dt;
       if (_timeLeft <= 0) {
         _timeLeft = 0;
@@ -2861,56 +2959,54 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
         return;
       }
 
-      // Move target drift
+      // Moving target drift
       if (_currentLevel.targetMoves && _canvasSize != Size.zero) {
         _targetDrift += _targetDriftDir * _kTargetMoveSpeed * dt;
-        final maxDrift = _canvasSize.width * 0.12;
+        final maxDrift = _canvasSize.width * 0.10;
         if (_targetDrift.abs() > maxDrift) {
           _targetDriftDir = -_targetDriftDir;
           _targetDrift = _targetDrift.sign * maxDrift;
         }
       }
 
-      // Advance projectile physics
+      // Advance missile physics
       if (_projectile != null && _projectile!.alive) {
         _advanceProjectile(_projectile!, dt);
       }
 
-      // Age particles
-      for (final p in _particles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.life -= dt;
-      }
-      _particles.removeWhere((p) => p.life <= 0);
+      // Step FxParticles
+      _fxParticles.removeWhere((p) => !p.step(dt));
+
+      // Step score pops
+      _pops.removeWhere((p) => !p.step(dt));
     });
   }
 
+  // ── physics — high G, 8 sub-steps for accuracy ────────────────────────────
   void _advanceProjectile(_Projectile proj, double dt) {
     if (_canvasSize == Size.zero) return;
     final size = _canvasSize;
-
-    // Sub-step for accuracy
-    const subSteps = 4;
+    const subSteps = 8; // more sub-steps = more accurate curves
     final subDt = dt / subSteps;
 
     for (int s = 0; s < subSteps; s++) {
-      // Gravity from each body
       for (final body in _currentLevel.bodies) {
         final bx = body.pos.dx * size.width;
         final by = body.pos.dy * size.height;
         final dx = bx - proj.x;
         final dy = by - proj.y;
-        final distSq = (dx * dx + dy * dy).clamp(100.0, 1e9);
+        // Clamp minimum distance to avoid singularity (but keep it low enough
+        // that gravity feels strong very close to body surface).
+        final distSq = (dx * dx + dy * dy).clamp(400.0, 1e9);
         final dist = sqrt(distSq);
         final force = _kGravityConstant * body.mass / distSq;
         proj.vx += (dx / dist) * force * subDt;
         proj.vy += (dy / dist) * force * subDt;
 
-        // Collide with body
+        // Collision with body surface
         if (dist < body.radius + _kProjectileRadius) {
           proj.alive = false;
-          _spawnParticles(proj.x, proj.y, Colors.orangeAccent, 12);
+          _spawnBurst(Offset(proj.x, proj.y), Potatuhs.orange, 16);
           return;
         }
       }
@@ -2918,25 +3014,23 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
       proj.x += proj.vx * subDt;
       proj.y += proj.vy * subDt;
 
-      // Record trail (throttled)
-      if (s == 0) {
-        proj.trail.add(Offset(proj.x, proj.y));
-        if (proj.trail.length > 40) proj.trail.removeAt(0);
-      }
+      // Record trail (every sub-step)
+      proj.trail.add(Offset(proj.x, proj.y));
+      if (proj.trail.length > 55) proj.trail.removeAt(0);
 
       // Hit target?
       final tpx = _targetPx(size);
       final tdx = proj.x - tpx.dx;
       final tdy = proj.y - tpx.dy;
-      final tdist = sqrt(tdx * tdx + tdy * tdy);
-      if (tdist < _targetRadius + _kProjectileRadius) {
+      if (sqrt(tdx * tdx + tdy * tdy) < _targetRadius + _kProjectileRadius) {
         proj.alive = false;
-        _onHit();
+        _onHit(tpx);
         return;
       }
 
-      // Out of bounds — add generous margin
-      if (proj.x < -80 || proj.x > size.width + 80 || proj.y < -80 || proj.y > size.height + 80) {
+      // Out of bounds
+      if (proj.x < -100 || proj.x > size.width + 100 ||
+          proj.y < -100 || proj.y > size.height + 100) {
         proj.alive = false;
         _onMiss();
         return;
@@ -2944,16 +3038,19 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
     }
   }
 
-  void _onHit() {
-    final size = _canvasSize;
-    final tpx = _targetPx(size);
-    // Score: base + time bonus + shot bonus
-    final timeBonus = (_timeLeft / _kTotalGameSeconds * 50).round();
+  void _onHit(Offset tpx) {
+    final timeBonus = (_timeLeft / _kTotalGameSeconds * 60).round();
     final shotBonus = _shotsLeft * _kBonusPerExtraShot;
-    _score += _kPointsPerHit + timeBonus + shotBonus;
-    _spawnParticles(tpx.dx / size.width, tpx.dy / size.height, Colors.cyanAccent, 20, normalized: true);
-    _spawnParticles(tpx.dx / size.width, tpx.dy / size.height, Colors.amberAccent, 12, normalized: true);
-    // Advance level
+    final pts = _kPointsPerHit + timeBonus + shotBonus;
+    _score += pts;
+
+    // Big particle burst at target
+    _spawnBurst(tpx, Potatuhs.gold, 24);
+    _spawnBurst(tpx, Potatuhs.airForce, 14);
+
+    // Floating score pop
+    _pops.add(FxPop(tpx, '+$pts', Potatuhs.gold));
+
     _level++;
     _shotsLeft = _kShotsPerLevel;
     _targetDrift = 0.0;
@@ -2964,7 +3061,6 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   void _onMiss() {
     _shotsLeft--;
     if (_shotsLeft <= 0) {
-      // No shots left — lose a level (floor 0) and refill shots
       if (_level > 0) _level--;
       _shotsLeft = _kShotsPerLevel;
     }
@@ -2984,7 +3080,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   // ── aiming input ───────────────────────────────────────────────────────────
   void _onDragStart(DragStartDetails d) {
     if (_gameOver || _waitingToStart) return;
-    if (_projectile != null && _projectile!.alive) return; // busy
+    if (_projectile != null && _projectile!.alive) return;
     setState(() {
       _dragStart = d.localPosition;
       _dragCurrent = d.localPosition;
@@ -2993,41 +3089,41 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
 
   void _onDragUpdate(DragUpdateDetails d) {
     if (_dragStart == null) return;
-    setState(() { _dragCurrent = d.localPosition; });
+    setState(() {
+      _dragCurrent = d.localPosition;
+    });
   }
 
   void _onDragEnd(DragEndDetails _) {
     if (_dragStart == null || _dragCurrent == null) return;
     if (_canvasSize == Size.zero) return;
-
-    final cannonPx = Offset(_cannonFrac.dx * _canvasSize.width, _cannonFrac.dy * _canvasSize.height);
-
-    // Vector FROM drag current TO drag start gives launch direction (pull-back slingshot feel)
+    final cannonPx = Offset(
+        _cannonFrac.dx * _canvasSize.width, _cannonFrac.dy * _canvasSize.height);
     final dx = _dragStart!.dx - _dragCurrent!.dx;
     final dy = _dragStart!.dy - _dragCurrent!.dy;
     final dragLen = sqrt(dx * dx + dy * dy).clamp(1.0, 200.0);
-    final rawSpeed = (dragLen * _kDragToSpeedScale).clamp(_kMinLaunchSpeed, _kMaxLaunchSpeed);
+    final rawSpeed =
+        (dragLen * _kDragToSpeedScale).clamp(_kMinLaunchSpeed, _kMaxLaunchSpeed);
     final nx = dx / dragLen;
     final ny = dy / dragLen;
-
     setState(() {
       _projectile = _Projectile(
-        x: cannonPx.dx, y: cannonPx.dy,
-        vx: nx * rawSpeed, vy: ny * rawSpeed,
-      );
+          x: cannonPx.dx, y: cannonPx.dy, vx: nx * rawSpeed, vy: ny * rawSpeed);
       _dragStart = null;
       _dragCurrent = null;
     });
   }
 
-  // ── trajectory preview ─────────────────────────────────────────────────────
+  // ── trajectory preview — uses same gravity sim ─────────────────────────────
   List<Offset> _buildPreview(Size size) {
     if (!_isDragging) return [];
-    final cannonPx = Offset(_cannonFrac.dx * size.width, _cannonFrac.dy * size.height);
+    final cannonPx = Offset(
+        _cannonFrac.dx * size.width, _cannonFrac.dy * size.height);
     final dx = _dragStart!.dx - _dragCurrent!.dx;
     final dy = _dragStart!.dy - _dragCurrent!.dy;
     final dragLen = sqrt(dx * dx + dy * dy).clamp(1.0, 200.0);
-    final rawSpeed = (dragLen * _kDragToSpeedScale).clamp(_kMinLaunchSpeed, _kMaxLaunchSpeed);
+    final rawSpeed =
+        (dragLen * _kDragToSpeedScale).clamp(_kMinLaunchSpeed, _kMaxLaunchSpeed);
     final nx = dx / dragLen;
     final ny = dy / dragLen;
 
@@ -3041,7 +3137,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
         final by = body.pos.dy * size.height;
         final ddx = bx - px;
         final ddy = by - py;
-        final distSq = (ddx * ddx + ddy * ddy).clamp(100.0, 1e9);
+        final distSq = (ddx * ddx + ddy * ddy).clamp(400.0, 1e9);
         final dist = sqrt(distSq);
         final force = _kGravityConstant * body.mass / distSq;
         vx += (ddx / dist) * force * _kPreviewDt;
@@ -3050,28 +3146,16 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
       px += vx * _kPreviewDt;
       py += vy * _kPreviewDt;
       pts.add(Offset(px, py));
-      if (px < -80 || px > size.width + 80 || py < -80 || py > size.height + 80) break;
+      if (px < -100 || px > size.width + 100 ||
+          py < -100 || py > size.height + 100) break;
     }
     return pts;
   }
 
-  // ── particles ──────────────────────────────────────────────────────────────
-  void _spawnParticles(double fx, double fy, Color c, int n, {bool normalized = false}) {
-    final cx = normalized ? fx * _canvasSize.width : fx;
-    final cy = normalized ? fy * _canvasSize.height : fy;
-    for (int i = 0; i < n; i++) {
-      final angle = _rng.nextDouble() * 2 * pi;
-      final speed = 40 + _rng.nextDouble() * 120;
-      _particles.add(_JuiceParticle(
-        x: cx / (_canvasSize.width.clamp(1, double.infinity)),
-        y: cy / (_canvasSize.height.clamp(1, double.infinity)),
-        vx: cos(angle) * speed / _canvasSize.width,
-        vy: sin(angle) * speed / _canvasSize.height,
-        life: 0.6 + _rng.nextDouble() * 0.4,
-        color: c,
-        radius: 2.5 + _rng.nextDouble() * 2,
-      ));
-    }
+  // ── FX helpers ─────────────────────────────────────────────────────────────
+  void _spawnBurst(Offset at, Color color, int count) {
+    _fxParticles.addAll(
+        FxBurst.spawn(at, color, count: count, speed: 160, size: 4));
   }
 
   void _restart() {
@@ -3085,11 +3169,13 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
       _timeLeft = _kTotalGameSeconds;
       _newBest = false;
       _projectile = null;
-      _particles.clear();
+      _fxParticles.clear();
+      _pops.clear();
       _dragStart = null;
       _dragCurrent = null;
       _targetDrift = 0.0;
       _targetDriftDir = 1.0;
+      _t = 0.0;
     });
   }
 
@@ -3100,7 +3186,10 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
       _canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
       return GestureDetector(
         onPanStart: (d) {
-          if (_waitingToStart) { _startGame(); return; }
+          if (_waitingToStart) {
+            _startGame();
+            return;
+          }
           _onDragStart(d);
         },
         onPanUpdate: _onDragUpdate,
@@ -3108,181 +3197,398 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
         onTapDown: (d) {
           if (_waitingToStart) _startGame();
         },
-        child: Container(
-          color: Colors.black,
-          child: CustomPaint(
-            painter: _CannonGravityPainter(
-              cannonFrac: _cannonFrac,
-              level: _currentLevel,
-              targetPos: _targetPx(_canvasSize),
-              targetRadius: _targetRadius,
-              projectile: _projectile,
-              particles: _particles,
-              preview: _buildPreview(_canvasSize),
-              dragStart: _dragStart,
-              dragCurrent: _dragCurrent,
-              canvasSize: _canvasSize,
-            ),
-            child: Stack(children: [
-              // ── HUD ──────────────────────────────────────────────────────
-              if (!_waitingToStart && !_gameOver)
-                Positioned(
-                  top: 8, left: 16, right: 16,
+        child: CustomPaint(
+          painter: _GravityPuzzlePainter(
+            cannonFrac: _cannonFrac,
+            level: _currentLevel,
+            targetPos: _targetPx(_canvasSize),
+            targetRadius: _targetRadius,
+            projectile: _projectile,
+            fxParticles: _fxParticles,
+            pops: _pops,
+            preview: _buildPreview(_canvasSize),
+            dragStart: _dragStart,
+            dragCurrent: _dragCurrent,
+            t: _t,
+          ),
+          child: Stack(children: [
+            // ── HUD ──────────────────────────────────────────────────────
+            if (!_waitingToStart && !_gameOver) ...[
+              // Top bar
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Potatuhs.inkDeep.withValues(alpha: 0.92),
+                        Potatuhs.inkDeep.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       // Shot pips
-                      Row(children: List.generate(_kShotsPerLevel, (i) => Padding(
-                        padding: const EdgeInsets.only(right: 3),
-                        child: Icon(Icons.circle, size: 11,
-                          color: i < _shotsLeft ? Colors.cyanAccent : Colors.white12),
-                      ))),
+                      Row(
+                        children: List.generate(
+                          _kShotsPerLevel,
+                          (i) => Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: Icon(
+                              Icons.circle,
+                              size: 10,
+                              color: i < _shotsLeft
+                                  ? Potatuhs.gold
+                                  : Colors.white12,
+                            ),
+                          ),
+                        ),
+                      ),
                       // Timer
                       Text(
                         '${_timeLeft.ceil()}s',
                         style: TextStyle(
-                          fontFamily: 'Avenir', fontSize: 16,
-                          color: _timeLeft < 10 ? Colors.redAccent : Colors.white70,
-                          fontWeight: _timeLeft < 10 ? FontWeight.bold : FontWeight.normal,
+                          fontFamily: Potatuhs.bodyFont,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: _timeLeft < 8
+                              ? Colors.redAccent
+                              : Potatuhs.textSecondary,
                         ),
                       ),
                       // Score + level
-                      Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                        Text('$_score', style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, color: Colors.white70)),
-                        Text('Lv ${_level + 1}', style: const TextStyle(fontFamily: 'Avenir', fontSize: 11, color: Colors.white30)),
-                      ]),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            '$_score',
+                            style: TextStyle(
+                              fontFamily: Potatuhs.bodyFont,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: Potatuhs.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            'Lv ${_level + 1}',
+                            style: TextStyle(
+                              fontFamily: Potatuhs.bodyFont,
+                              fontSize: 10,
+                              color: Potatuhs.textFaint,
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
-
-              // ── Start screen ─────────────────────────────────────────────
-              if (_waitingToStart)
-                Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const Text('Orbit Catch', style: TextStyle(fontFamily: 'Avenir', fontSize: 28, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
-                  const SizedBox(height: 14),
-                  const Text('Drag from the cannon to aim.\nGravity will bend your shot.\nHit the target to level up!',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
-                  const SizedBox(height: 20),
-                  if (_highScore > 0)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 16),
-                      child: Text('High Score: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 15, color: Colors.amberAccent)),
+              ),
+              // Hint banner
+              Positioned(
+                bottom: 16,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: Potatuhs.inkPanel.withValues(alpha: 0.82),
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                  const Text('Tap or drag to Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 17, color: Colors.white70)),
-                ])),
-
-              // ── Game over screen ──────────────────────────────────────────
-              if (_gameOver)
-                Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text('Time\'s Up!  $_score pts',
-                    style: const TextStyle(fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-                  if (_newBest)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: Text('NEW BEST!', style: TextStyle(fontFamily: 'Avenir', fontSize: 18, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-                    ),
-                  const SizedBox(height: 8),
-                  Text('Best: $_highScore', style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.amberAccent)),
-                  const SizedBox(height: 14),
-                  GestureDetector(
-                    onTap: _restart,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-                      decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
-                      child: const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                    child: Text(
+                      _currentLevel.hint,
+                      style: TextStyle(
+                        fontFamily: Potatuhs.displayFont,
+                        fontSize: 12,
+                        color: Potatuhs.gold,
+                        letterSpacing: 1.2,
+                      ),
                     ),
                   ),
-                ])),
-            ]),
-          ),
+                ),
+              ),
+            ],
+
+            // ── Start screen ─────────────────────────────────────────────
+            if (_waitingToStart)
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'ORBIT CATCH',
+                      style: TextStyle(
+                        fontFamily: Potatuhs.displayFont,
+                        fontSize: 30,
+                        color: Potatuhs.gold,
+                        shadows: [
+                          Shadow(
+                              color: Potatuhs.gold.withValues(alpha: 0.6),
+                              blurRadius: 18)
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Text(
+                      'Drag to aim the cannon.\nBig planets = strong gravity.\nCurve the missile to hit the target!',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: Potatuhs.bodyFont,
+                        fontSize: 14,
+                        color: Potatuhs.textSecondary,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    if (_highScore > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: Text(
+                          'Best: $_highScore',
+                          style: TextStyle(
+                            fontFamily: Potatuhs.bodyFont,
+                            fontSize: 14,
+                            color: Potatuhs.sienna,
+                          ),
+                        ),
+                      ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 28, vertical: 11),
+                      decoration: BoxDecoration(
+                        gradient: Potatuhs.ctaGradient,
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                              color: Potatuhs.orange.withValues(alpha: 0.4),
+                              blurRadius: 16)
+                        ],
+                      ),
+                      child: Text(
+                        'TAP TO PLAY',
+                        style: TextStyle(
+                          fontFamily: Potatuhs.displayFont,
+                          fontSize: 15,
+                          color: Potatuhs.ink,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // ── Game over screen ──────────────────────────────────────────
+            if (_gameOver)
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'TIME\'S UP',
+                      style: TextStyle(
+                        fontFamily: Potatuhs.displayFont,
+                        fontSize: 26,
+                        color: Potatuhs.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '$_score pts',
+                      style: TextStyle(
+                        fontFamily: Potatuhs.displayFont,
+                        fontSize: 36,
+                        color: Potatuhs.gold,
+                        shadows: [
+                          Shadow(
+                              color: Potatuhs.gold.withValues(alpha: 0.5),
+                              blurRadius: 20)
+                        ],
+                      ),
+                    ),
+                    if (_newBest)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          'NEW BEST!',
+                          style: TextStyle(
+                            fontFamily: Potatuhs.displayFont,
+                            fontSize: 16,
+                            color: Potatuhs.orange,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Best: $_highScore',
+                      style: TextStyle(
+                        fontFamily: Potatuhs.bodyFont,
+                        fontSize: 13,
+                        color: Potatuhs.textFaint,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    GestureDetector(
+                      onTap: _restart,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 28, vertical: 10),
+                        decoration: BoxDecoration(
+                          gradient: Potatuhs.ctaGradient,
+                          borderRadius: BorderRadius.circular(22),
+                          boxShadow: [
+                            BoxShadow(
+                                color: Potatuhs.orange.withValues(alpha: 0.4),
+                                blurRadius: 14)
+                          ],
+                        ),
+                        child: Text(
+                          'PLAY AGAIN',
+                          style: TextStyle(
+                            fontFamily: Potatuhs.displayFont,
+                            fontSize: 14,
+                            color: Potatuhs.ink,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ]),
         ),
       );
     });
   }
 }
 
-class _CannonGravityPainter extends CustomPainter {
+// ── Painter ───────────────────────────────────────────────────────────────────
+
+class _GravityPuzzlePainter extends CustomPainter {
   final Offset cannonFrac;
   final _CannonLevel level;
   final Offset targetPos; // already in canvas px
   final double targetRadius;
   final _Projectile? projectile;
-  final List<_JuiceParticle> particles;
+  final List<FxParticle> fxParticles;
+  final List<FxPop> pops;
   final List<Offset> preview;
   final Offset? dragStart;
   final Offset? dragCurrent;
-  final Size canvasSize;
+  final double t; // seconds clock for atmosphere animation
 
-  _CannonGravityPainter({
+  _GravityPuzzlePainter({
     required this.cannonFrac,
     required this.level,
     required this.targetPos,
     required this.targetRadius,
     required this.projectile,
-    required this.particles,
+    required this.fxParticles,
+    required this.pops,
     required this.preview,
     required this.dragStart,
     required this.dragCurrent,
-    required this.canvasSize,
+    required this.t,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // ── Background stars (static seed) ────────────────────────────────────
-    final starRng = Random(42);
-    for (int i = 0; i < 90; i++) {
-      final alpha = 0.15 + starRng.nextDouble() * 0.35;
-      canvas.drawCircle(
-        Offset(starRng.nextDouble() * size.width, starRng.nextDouble() * size.height),
-        0.5 + starRng.nextDouble() * 1.2,
-        Paint()..color = Colors.white.withValues(alpha: alpha),
-      );
-    }
+    // ── Atmospheric background ─────────────────────────────────────────────
+    // Accent: blend of airForce/glaucous — space blue tint
+    GameFx.atmosphere(canvas, size, Potatuhs.airForce, t, motes: 48);
 
-    final cannonPx = Offset(cannonFrac.dx * size.width, cannonFrac.dy * size.height);
+    final cannonPx =
+        Offset(cannonFrac.dx * size.width, cannonFrac.dy * size.height);
 
-    // ── Gravity bodies ─────────────────────────────────────────────────────
-    for (final body in level.bodies) {
-      final bx = body.pos.dx * size.width;
-      final by = body.pos.dy * size.height;
-      final bPos = Offset(bx, by);
+    // ── Gravity bodies — drawn large→small so smaller bodies read on top ───
+    final sortedBodies = List<_GravBody>.from(level.bodies)
+      ..sort((a, b) => b.radius.compareTo(a.radius)); // large first
 
-      // Influence rings
-      for (int r = 4; r >= 1; r--) {
-        canvas.drawCircle(bPos, body.radius + r * 18.0,
+    for (final body in sortedBodies) {
+      final bPos = Offset(body.pos.dx * size.width, body.pos.dy * size.height);
+
+      // Gravity influence rings — scaled to mass so big bodies show wide reach
+      final ringCount = 5;
+      final ringSpacing = body.radius * 0.55;
+      for (int r = ringCount; r >= 1; r--) {
+        canvas.drawCircle(
+          bPos,
+          body.radius + r * ringSpacing,
           Paint()
-            ..color = body.color.withValues(alpha: 0.025 * r)
+            ..color = body.color.withValues(alpha: 0.018 * r)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 0.8);
+            ..strokeWidth = 0.7,
+        );
       }
-      // Glow
-      canvas.drawCircle(bPos, body.radius + 6,
-        Paint()..color = body.color.withValues(alpha: 0.18));
-      // Body
-      canvas.drawCircle(bPos, body.radius,
-        Paint()..color = body.color);
-      // Highlight
-      canvas.drawCircle(Offset(bx - body.radius * 0.3, by - body.radius * 0.3), body.radius * 0.35,
-        Paint()..color = Colors.white.withValues(alpha: 0.22));
+
+      // Atmosphere rim — size signals gravity to player
+      canvas.drawCircle(
+        bPos,
+        body.radius + 10,
+        Paint()
+          ..color = body.color.withValues(alpha: 0.22)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+      );
+
+      // Shaded orb body via GameFx.orb
+      GameFx.orb(canvas, bPos, body.radius, body.color,
+          glow: 1.3, specular: true);
+
+      // Saturn-style ring for the GIANT body (radius > 40)
+      if (body.radius >= 40) {
+        final ringPaint = Paint()
+          ..color = body.color.withValues(alpha: 0.35)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.5;
+        canvas.save();
+        canvas.translate(bPos.dx, bPos.dy);
+        canvas.scale(1.0, 0.30); // flatten to ellipse
+        canvas.drawCircle(Offset.zero, body.radius * 1.55, ringPaint);
+        canvas.restore();
+      }
+
+      // Size label — tiny, brand font
+      if (body.label.isNotEmpty) {
+        GameFx.text(
+          canvas,
+          body.label,
+          bPos.translate(0, body.radius + 14),
+          9,
+          body.color.withValues(alpha: 0.75),
+        );
+      }
     }
 
     // ── Target ─────────────────────────────────────────────────────────────
-    // Outer pulse ring
-    canvas.drawCircle(targetPos, targetRadius + 8,
-      Paint()..color = Colors.amberAccent.withValues(alpha: 0.15)..style = PaintingStyle.stroke..strokeWidth = 1.5);
-    // Target zone
-    canvas.drawCircle(targetPos, targetRadius,
-      Paint()..color = Colors.amberAccent.withValues(alpha: 0.25));
-    canvas.drawCircle(targetPos, targetRadius,
-      Paint()..color = Colors.amberAccent..style = PaintingStyle.stroke..strokeWidth = 2.0);
+    // Pulsing outer ring (animated via t)
+    final pulse = 0.5 + 0.5 * sin(t * 3.5);
+    canvas.drawCircle(
+      targetPos,
+      targetRadius + 10 + pulse * 4,
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.12 + 0.08 * pulse)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+    // Gold orb as target
+    GameFx.orb(canvas, targetPos, targetRadius, Potatuhs.gold,
+        glow: 1.5 + pulse * 0.5, rim: Potatuhs.sienna, specular: true);
     // Crosshair
-    final ch = Paint()..color = Colors.amberAccent.withValues(alpha: 0.6)..strokeWidth = 1.2;
-    canvas.drawLine(Offset(targetPos.dx - 10, targetPos.dy), Offset(targetPos.dx + 10, targetPos.dy), ch);
-    canvas.drawLine(Offset(targetPos.dx, targetPos.dy - 10), Offset(targetPos.dx, targetPos.dy + 10), ch);
+    final ch = Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.55)
+      ..strokeWidth = 1.2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(targetPos.translate(-10, 0), targetPos.translate(10, 0), ch);
+    canvas.drawLine(targetPos.translate(0, -10), targetPos.translate(0, 10), ch);
 
-    // ── Cannon ─────────────────────────────────────────────────────────────
-    // Determine barrel angle from drag or default upward-right
+    // ── Cannon — layered orb base + glowing barrel ─────────────────────────
     double barrelAngle = -pi / 4;
     if (dragStart != null && dragCurrent != null) {
       final ddx = dragStart!.dx - dragCurrent!.dx;
@@ -3291,83 +3597,112 @@ class _CannonGravityPainter extends CustomPainter {
     } else if (projectile != null) {
       barrelAngle = atan2(projectile!.vy, projectile!.vx);
     }
-    final barrelLen = 28.0;
+    const barrelLen = 30.0;
     final barrelEnd = Offset(
       cannonPx.dx + cos(barrelAngle) * barrelLen,
       cannonPx.dy + sin(barrelAngle) * barrelLen,
     );
-    // Base
-    canvas.drawCircle(cannonPx, 14, Paint()..color = const Color(0xFF37474F));
-    canvas.drawCircle(cannonPx, 10, Paint()..color = const Color(0xFF546E7A));
-    // Barrel
-    canvas.drawLine(cannonPx, barrelEnd,
-      Paint()..color = const Color(0xFF90A4AE)..strokeWidth = 8..strokeCap = StrokeCap.round);
-    canvas.drawLine(cannonPx, barrelEnd,
-      Paint()..color = const Color(0xFFCFD8DC)..strokeWidth = 4..strokeCap = StrokeCap.round);
 
-    // ── Drag aim line ──────────────────────────────────────────────────────
+    // Barrel glow + core
+    GameFx.glowLine(canvas, cannonPx, barrelEnd, Potatuhs.airForce,
+        width: 5, progress: 1.0);
+
+    // Cannon base as shaded orb
+    GameFx.orb(canvas, cannonPx, 15, Potatuhs.inkPanel,
+        glow: 0.6, rim: Potatuhs.airForce, specular: false);
+
+    // ── Drag aim indicator ─────────────────────────────────────────────────
     if (dragStart != null && dragCurrent != null) {
       final ddx = dragStart!.dx - dragCurrent!.dx;
       final ddy = dragStart!.dy - dragCurrent!.dy;
       final dragLen = sqrt(ddx * ddx + ddy * ddy).clamp(1.0, 200.0);
       final powerFrac = (dragLen / 200.0).clamp(0.0, 1.0);
-      final aimColor = Color.lerp(Colors.cyanAccent, Colors.orangeAccent, powerFrac)!;
+      final aimColor = Color.lerp(Potatuhs.airForce, Potatuhs.gold, powerFrac)!;
 
-      // Drag line from start to current
-      canvas.drawLine(dragStart!, dragCurrent!,
-        Paint()..color = aimColor.withValues(alpha: 0.35)..strokeWidth = 1.5..style = PaintingStyle.stroke);
+      // Drag vector line
+      canvas.drawLine(
+        dragStart!,
+        dragCurrent!,
+        Paint()
+          ..color = aimColor.withValues(alpha: 0.30)
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round,
+      );
 
-      // Power bar arc
-      final arcRect = Rect.fromCircle(center: cannonPx, radius: 22);
-      canvas.drawArc(arcRect, -pi, pi * powerFrac, false,
-        Paint()..color = aimColor.withValues(alpha: 0.7)..strokeWidth = 3..style = PaintingStyle.stroke..strokeCap = StrokeCap.round);
+      // Power arc
+      final arcRect = Rect.fromCircle(center: cannonPx, radius: 24);
+      canvas.drawArc(
+        arcRect,
+        -pi,
+        pi * powerFrac,
+        false,
+        Paint()
+          ..color = aimColor.withValues(alpha: 0.75)
+          ..strokeWidth = 3.0
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round,
+      );
     }
 
-    // ── Trajectory preview dots ────────────────────────────────────────────
+    // ── Trajectory preview dots — curvy arc reveals the puzzle ────────────
     if (preview.isNotEmpty) {
       for (int i = 0; i < preview.length; i++) {
-        final alpha = (1.0 - i / preview.length) * 0.55;
-        final r = 2.5 - (i / preview.length) * 1.5;
-        canvas.drawCircle(preview[i], r.clamp(0.5, 2.5),
-          Paint()..color = Colors.cyanAccent.withValues(alpha: alpha));
+        final frac = i / preview.length;
+        final alpha = (1.0 - frac) * 0.60;
+        final r = (2.8 - frac * 1.8).clamp(0.5, 2.8);
+        canvas.drawCircle(
+          preview[i],
+          r,
+          Paint()..color = Potatuhs.airForce.withValues(alpha: alpha),
+        );
       }
     }
 
-    // ── Projectile trail ───────────────────────────────────────────────────
+    // ── Missile trail ──────────────────────────────────────────────────────
     if (projectile != null) {
       final trail = projectile!.trail;
       for (int i = 1; i < trail.length; i++) {
-        final alpha = (i / trail.length) * 0.6;
-        canvas.drawLine(trail[i - 1], trail[i],
-          Paint()..color = Colors.cyanAccent.withValues(alpha: alpha)..strokeWidth = 2.0..strokeCap = StrokeCap.round);
+        final frac = i / trail.length;
+        // Glow pass
+        canvas.drawLine(
+          trail[i - 1],
+          trail[i],
+          Paint()
+            ..color = Potatuhs.airForce.withValues(alpha: frac * 0.35)
+            ..strokeWidth = 5
+            ..strokeCap = StrokeCap.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+        // Core
+        canvas.drawLine(
+          trail[i - 1],
+          trail[i],
+          Paint()
+            ..color = Colors.white.withValues(alpha: frac * 0.7)
+            ..strokeWidth = 2.0
+            ..strokeCap = StrokeCap.round,
+        );
       }
 
-      // Projectile itself
+      // Missile orb
       if (projectile!.alive) {
-        canvas.drawCircle(Offset(projectile!.x, projectile!.y), _kProjectileRadius + 3,
-          Paint()..color = Colors.cyanAccent.withValues(alpha: 0.3));
-        canvas.drawCircle(Offset(projectile!.x, projectile!.y), _kProjectileRadius,
-          Paint()..color = Colors.cyanAccent);
-        canvas.drawCircle(Offset(projectile!.x, projectile!.y), _kProjectileRadius * 0.45,
-          Paint()..color = Colors.white.withValues(alpha: 0.8));
+        final mPos = Offset(projectile!.x, projectile!.y);
+        GameFx.orb(canvas, mPos, _kProjectileRadius, Potatuhs.glaucous,
+            glow: 1.8, rim: Colors.white, specular: true);
       }
     }
 
-    // ── Particles ──────────────────────────────────────────────────────────
-    for (final p in particles) {
-      if (p.life > 0 && size.width > 0 && size.height > 0) {
-        final px2 = p.x * size.width;
-        final py2 = p.y * size.height;
-        canvas.drawCircle(
-          Offset(px2, py2), p.radius,
-          Paint()..color = p.color.withValues(alpha: (p.life / p.maxLife).clamp(0.0, 1.0)),
-        );
-      }
+    // ── FX particles ───────────────────────────────────────────────────────
+    FxBurst.paint(canvas, fxParticles);
+
+    // ── Score pops ─────────────────────────────────────────────────────────
+    for (final pop in pops) {
+      pop.paint(canvas);
     }
   }
 
   @override
-  bool shouldRepaint(covariant _CannonGravityPainter old) => true;
+  bool shouldRepaint(covariant _GravityPuzzlePainter old) => true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
