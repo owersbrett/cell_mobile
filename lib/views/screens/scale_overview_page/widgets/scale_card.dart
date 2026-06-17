@@ -143,7 +143,7 @@ class ScaleCard extends StatelessWidget {
                                 children: [
                                   Icon(Icons.explore, color: Color(0xFFAADD44), size: 12),
                                   SizedBox(width: 3),
-                                  Text('Explore', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Color(0xFFAADD44), fontWeight: FontWeight.w600)),
+                                  Text('Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Color(0xFFAADD44), fontWeight: FontWeight.w600)),
                                 ],
                               ),
                             ),

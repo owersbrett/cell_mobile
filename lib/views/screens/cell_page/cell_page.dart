@@ -237,7 +237,7 @@ class _CellPageState extends State<CellPage> {
                       BlocProvider.of<GeneralNavigationBloc>(context)
                           .add(NavigateTo(destination: GeneralNavigationEnum.whole_cell));
                       context.read<NavigationBloc>().add(
-                        NavigateToScreen(AppScreen.scaleOverview),
+                        NavigateToScreen(AppScreen.splash),
                       );
                     },
                     child: Icon(Icons.arrow_back, color: Colors.white70, size: 24),

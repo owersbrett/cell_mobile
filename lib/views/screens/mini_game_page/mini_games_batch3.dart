@@ -5670,7 +5670,7 @@ class _MultiverseChoiceGameState extends State<MultiverseChoiceGame>
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
                         decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
-                        child: const Text('Explore Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
+                        child: const Text('Play Again', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white70)),
                       ),
                     ),
                   ],

@@ -43,13 +43,23 @@ class SplashPage extends StatelessWidget {
               style: Potatuhs.display(size: 30, spacing: 3),
             ),
             SizedBox(height: 28),
-            // The home itself: two doors, no extra step.
+            // The home itself: three doors, no extra step.
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 380),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 child: Column(
                   children: [
+                    _SplashDoor(
+                      title: 'ORIGINAL',
+                      subtitle: 'The original interactive cell',
+                      icon: Icons.cell_wifi,
+                      accent: Potatuhs.glaucous,
+                      onTap: () => context
+                          .read<NavigationBloc>()
+                          .add(NavigateToScreen(AppScreen.cellInteractive)),
+                    ),
+                    const SizedBox(height: 14),
                     _SplashDoor(
                       title: 'LEARN',
                       subtitle: 'Explore the cell, scale by scale',
