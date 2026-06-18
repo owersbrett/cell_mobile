@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
+import 'package:cell_mobile/games/mini_game.dart';
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
@@ -19,24 +20,57 @@ import 'games/organ_system_game.dart';
 import 'mini_games_batch2.dart';
 import 'mini_games_batch3.dart';
 
-/// Generic mini-game page — routes to the appropriate simple game per scale.
-class MiniGamePage extends StatelessWidget {
+/// Generic mini-game page — routes to the appropriate game(s) per scale.
+///
+/// • 0 registry games on the scale → legacy single game (the `_buildGame` switch).
+/// • 1 registry game → launches it straight into the shared host.
+/// • 2+ registry games → shows a picker so the player chooses (e.g. particles →
+///   Collider or Accelerator).
+class MiniGamePage extends StatefulWidget {
   final BioScale scale;
   const MiniGamePage({Key? key, required this.scale}) : super(key: key);
 
   @override
+  State<MiniGamePage> createState() => _MiniGamePageState();
+}
+
+class _MiniGamePageState extends State<MiniGamePage> {
+  /// The game chosen from the picker (only used when a scale has 2+ games).
+  MiniGameSpec? _chosen;
+
+  BioScale get scale => widget.scale;
+
+  void _toOverview() => context
+      .read<NavigationBloc>()
+      .add(NavigateToScreen(AppScreen.scaleOverview));
+
+  @override
   Widget build(BuildContext context) {
-    // Party-ready scales play their reworked game through the shared host
-    // (intro + rules + timer + score), same build as in party mode.
-    final spec = MiniGameRegistry.forScale(scale);
+    final games = MiniGameRegistry.gamesForScale(scale);
+
+    // 2+ games and none chosen yet → let the player pick.
+    if (games.length > 1 && _chosen == null) {
+      return _GamePicker(
+        scale: scale,
+        games: games,
+        onBack: _toOverview,
+        onPick: (spec) => setState(() => _chosen = spec),
+      );
+    }
+
+    // A single registry game (or one chosen from the picker) → play it.
+    final spec = _chosen ?? (games.isNotEmpty ? games.first : null);
     if (spec != null) {
       return MiniGameHost(
         spec: spec,
-        onExit: () => context
-            .read<NavigationBloc>()
-            .add(NavigateToScreen(AppScreen.scaleOverview)),
+        // Back from a multi-game scale returns to the picker; otherwise to
+        // the scale overview.
+        onExit: games.length > 1
+            ? () => setState(() => _chosen = null)
+            : _toOverview,
       );
     }
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
@@ -137,6 +171,205 @@ class MiniGamePage extends StatelessWidget {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Game picker — shown when a scale has more than one game (e.g. particles →
+// Collider + Accelerator). Lets the player choose which to play.
+// ---------------------------------------------------------------------------
+
+class _GamePicker extends StatelessWidget {
+  final BioScale scale;
+  final List<MiniGameSpec> games;
+  final VoidCallback onBack;
+  final ValueChanged<MiniGameSpec> onPick;
+
+  const _GamePicker({
+    required this.scale,
+    required this.games,
+    required this.onBack,
+    required this.onPick,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 16, 4),
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: onBack,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0x88000000),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.arrow_back,
+                          color: Colors.white70, size: 22),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'CHOOSE A GAME',
+                    style: TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(54, 0, 16, 6),
+              child: Text(
+                '${scale.name.toUpperCase()} · ${games.length} games',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 11,
+                  letterSpacing: 1.2,
+                  color: Colors.white.withValues(alpha: 0.45),
+                ),
+              ),
+            ),
+            // Game cards
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(14, 6, 14, 16),
+                itemCount: games.length,
+                itemBuilder: (context, i) =>
+                    _GameCard(spec: games[i], onTap: () => onPick(games[i])),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GameCard extends StatelessWidget {
+  final MiniGameSpec spec;
+  final VoidCallback onTap;
+  const _GameCard({required this.spec, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = spec.accent;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              accent.withValues(alpha: 0.20),
+              accent.withValues(alpha: 0.05),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: accent.withValues(alpha: 0.5), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: accent.withValues(alpha: 0.22),
+              blurRadius: 16,
+              spreadRadius: -4,
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.25),
+                shape: BoxShape.circle,
+                border: Border.all(color: accent.withValues(alpha: 0.6)),
+              ),
+              child: Icon(spec.icon, color: accent, size: 26),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    spec.name,
+                    style: const TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    spec.tagline,
+                    style: TextStyle(
+                      fontFamily: 'Avenir',
+                      fontSize: 12,
+                      height: 1.2,
+                      color: Colors.white.withValues(alpha: 0.7),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      _chip(Icons.timer_outlined, '${spec.durationSeconds}s',
+                          accent),
+                      const SizedBox(width: 6),
+                      _chip(Icons.emoji_events_outlined, spec.scoreUnit, accent),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(Icons.play_circle_fill, color: accent, size: 32),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _chip(IconData icon, String label, Color accent) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: accent.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: accent.withValues(alpha: 0.9), size: 12),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontFamily: 'Avenir',
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withValues(alpha: 0.8),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // GAME 2: Particle Accelerator — tap to speed orbiting particles, collide them

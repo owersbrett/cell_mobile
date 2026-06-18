@@ -9,11 +9,11 @@
                 "deviceId": "macos"
             },
             {
-                "name": "ios",
+                "name": "iOS Mobile",
                 "type": "dart",
                 "request": "launch",
                 "program": "lib/main_dev.dart",
-                "deviceId": "37F2FB16-EF0A-4760-BAC3-60FBD35F740F"
+                "deviceId": "00008150-0005350922E1401C"
             },
             {
                 "name": "chrome",

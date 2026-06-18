@@ -48,6 +48,16 @@ const double _kMtNewsChance     = 0.08;   // probability per trend-flip of news 
 const double _kMtNewsAmplitude  = 14.0;   // extra price impulse from news
 const double _kMtStartingPrice  = 100.0;  // initial asset price
 
+// --- Player market-event tuning ---
+const double _kMtEventImpulse   = 22.0;   // impulse amplitude per tick while event active
+const double _kMtEventDuration  = 2.5;    // seconds the price impulse is sustained
+const double _kMtEventCooldown  = 14.0;   // per-button cooldown (must exceed duration)
+
+// --- Debt / credit tuning ---
+const double _kMtLoanSize       = 120.0;  // cash added per "Take Credit" tap
+const double _kMtInterestRate   = 0.04;   // fraction of outstanding debt lost per second
+const double _kMtMinPayment     = 30.0;   // "Minimum Payment" chunk size
+
 // --- Market price sample (chart) ---
 class _MtPriceSample {
   final double price;
@@ -80,6 +90,25 @@ class _MtNews {
   double ttl;           // seconds remaining
   _MtNews(this.headline, this.impulse, this.ttl);
 }
+
+// --- Player market-event button descriptor ---
+class _MtEventDef {
+  final String label;
+  final String emoji;
+  final double sign;    // +1 = price up, -1 = price down
+  const _MtEventDef(this.label, this.emoji, this.sign);
+}
+
+const List<_MtEventDef> _kMtEvents = [
+  // Price-UP (scarcity / supply shock)
+  _MtEventDef('Drought',   '☀️',  1.0),
+  _MtEventDef('Flooding',  '🌊',  1.0),
+  _MtEventDef('Tornado',   '🌪️',  1.0),
+  _MtEventDef('Quake',     '⚡',  1.0),
+  // Price-DOWN (crash / glut)
+  _MtEventDef('Recession', '📉', -1.0),
+  _MtEventDef('Abundance', '🌾', -1.0),
+];
 
 class FinancialTradingGame extends StatefulWidget {
   const FinancialTradingGame({Key? key}) : super(key: key);
@@ -126,6 +155,13 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   bool   _newHighScore = false;
   double _newHsTimer   = 0.0;
 
+  // --- Player market events ---
+  // Parallel array indexed by _kMtEvents position; 0 = ready, >0 = cooldown remaining
+  late final List<double> _eventCooldowns;
+
+  // --- Debt / credit ---
+  double _debt = 0.0;  // total outstanding loan balance
+
   // --- Flash tint (green/red on trade close) ---
   Color  _flashColor = Colors.transparent;
   double _flashAlpha = 0.0;
@@ -141,12 +177,16 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   }
   double get _unrealizedPnl =>
       _inPosition ? (_price - _entryPrice) * _shares : 0.0;
+  // Gross portfolio value (cash + open position) — used for display
   double get _totalNetWorth =>
       _cash + (_inPosition ? _price * _shares : 0.0);
+  // Score = net worth minus any outstanding debt
+  double get _finalScore => _totalNetWorth - _debt;
 
   @override
   void initState() {
     super.initState();
+    _eventCooldowns = List.filled(_kMtEvents.length, 0.0);
     _chart.add(_MtPriceSample(_price));
     _ctrl = AnimationController(
         vsync: this, duration: const Duration(hours: 1))
@@ -188,13 +228,13 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   }
 
   void _checkAndSaveHighScore() {
-    final nw = _totalNetWorth;
+    final score = _finalScore;
     final qualifies = _highScores.length < 5 ||
-        nw > (_highScores.last['score'] as num).toDouble();
+        score > (_highScores.last['score'] as num).toDouble();
     if (qualifies) {
       _newHighScore = true;
       _newHsTimer   = 3.0;
-      _saveHighScore(nw);
+      _saveHighScore(score);
     }
   }
 
@@ -248,6 +288,20 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           _chart.length < (_elapsed * _kMtBaseTickHz / 3).round() + 1) {
         _chart.add(_MtPriceSample(_price));
         if (_chart.length > _kChartMax) _chart.removeAt(0);
+      }
+
+      // Debt interest accrual (bleeds cash each tick)
+      if (_debt > 0) {
+        final interest = _debt * _kMtInterestRate * dt;
+        _debt += interest;
+        _cash  = (_cash - interest).clamp(0.0, double.infinity);
+      }
+
+      // Event cooldown countdown
+      for (int i = 0; i < _eventCooldowns.length; i++) {
+        if (_eventCooldowns[i] > 0) {
+          _eventCooldowns[i] = (_eventCooldowns[i] - dt).clamp(0.0, _kMtEventCooldown);
+        }
       }
 
       // Flash decay
@@ -311,7 +365,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     });
   }
 
-  void _sell({bool silent = false}) {
+  void _sell({bool silent = false, Size screenSize = Size.zero}) {
     if (!_inPosition) return;
     final proceeds  = _price * _shares;
     final pnl       = proceeds - _entryPrice * _shares;
@@ -325,14 +379,17 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     final col    = profit ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
     _flashColor  = col;
     _flashAlpha  = 0.28;
-    _pops.add(_MtPop(
-      const Offset(160, 260),
-      '${profit ? "+" : ""}\$${pnlInt.abs()}',
-      col,
-    ));
+    // P&L pop: centre of screen, just above mid-height so it floats upward
+    final popPos = screenSize == Size.zero
+        ? const Offset(160, 260)
+        : Offset(screenSize.width * 0.5, screenSize.height * 0.42);
+    _pops.add(_MtPop(popPos, '${profit ? "+" : ""}\$${pnlInt.abs()}', col));
     if (profit && pnl > 5) {
+      final burstOrigin = screenSize == Size.zero
+          ? const Offset(180, 270)
+          : Offset(screenSize.width * 0.5, screenSize.height * 0.44);
       _fxParticles.addAll(FxBurst.spawn(
-        const Offset(180, 270), Potatuhs.gold,
+        burstOrigin, Potatuhs.gold,
         count: pnl > 20 ? 22 : 14, speed: pnl > 20 ? 160 : 110,
       ));
     }
@@ -353,6 +410,10 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       _inPosition  = false;
       _entryPrice  = 0.0;
       _shares      = 0.0;
+      _debt        = 0.0;
+      for (int i = 0; i < _eventCooldowns.length; i++) {
+        _eventCooldowns[i] = 0.0;
+      }
       _chart.clear();
       _chart.add(_MtPriceSample(_price));
       _fxParticles.clear();
@@ -361,6 +422,50 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       _flashAlpha  = 0.0;
       _newHighScore = false;
       _newHsTimer  = 0.0;
+    });
+  }
+
+  // --- Player market event trigger ---
+  void _triggerEvent(int idx) {
+    if (_gameOver) return;
+    if (_eventCooldowns[idx] > 0) return;
+    setState(() {
+      final ev = _kMtEvents[idx];
+      final impulse = ev.sign * _kMtEventImpulse;
+      _news      = _MtNews(ev.label.toUpperCase(), impulse, _kMtEventDuration);
+      _newsTimer  = _kMtEventDuration;
+      _trend      = ev.sign * 0.95;
+      _trendTimer = _kMtEventDuration;
+      _eventCooldowns[idx] = _kMtEventCooldown;
+    });
+  }
+
+  // --- Debt / credit actions ---
+  void _takeCredit() {
+    if (_gameOver) return;
+    setState(() {
+      _cash += _kMtLoanSize;
+      _debt += _kMtLoanSize;
+    });
+  }
+
+  void _payDebt() {
+    if (_gameOver || _debt <= 0) return;
+    setState(() {
+      final payment = min(_cash, _debt);
+      _cash -= payment;
+      _debt -= payment;
+      if (_debt < 0.01) _debt = 0.0;
+    });
+  }
+
+  void _minPayment() {
+    if (_gameOver || _debt <= 0) return;
+    setState(() {
+      final payment = min(_cash, min(_kMtMinPayment, _debt));
+      _cash -= payment;
+      _debt -= payment;
+      if (_debt < 0.01) _debt = 0.0;
     });
   }
 
@@ -441,6 +546,12 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
             const Spacer(),
 
+            // Market events + debt controls (between BUY/SELL and position row)
+            if (!_gameOver) ...[
+              _buildEventButtons(),
+              _buildDebtControls(),
+            ],
+
             // BUY / SELL controls
             if (!_gameOver)
               _buildTradeButtons(screenSize),
@@ -449,7 +560,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
             // Game-over panel
             if (_gameOver)
-              _buildGameOver(pnl),
+              _buildGameOver(),
           ]),
         ),
 
@@ -754,7 +865,9 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         // SELL
         Expanded(
           child: GestureDetector(
-            onTap: _inPosition ? () => setState(() => _sell()) : null,
+            onTap: _inPosition
+                ? () => setState(() => _sell(screenSize: screenSize))
+                : null,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 120),
               height: 62,
@@ -804,8 +917,193 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     );
   }
 
-  Widget _buildGameOver(double pnl) {
-    final won = pnl >= 0;
+  // --- Market-event buttons (6 buttons with cooldown ring) ---
+  Widget _buildEventButtons() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 2),
+      child: Row(
+        children: List.generate(_kMtEvents.length, (i) {
+          final ev       = _kMtEvents[i];
+          final cd       = _eventCooldowns[i];
+          final ready    = cd <= 0;
+          final progress = ready ? 1.0 : 1.0 - (cd / _kMtEventCooldown);
+          final isUp     = ev.sign > 0;
+          final accentCol = isUp
+              ? const Color(0xFF66BB6A)
+              : const Color(0xFFEF5350);
+          return Expanded(
+            child: GestureDetector(
+              onTap: ready ? () => _triggerEvent(i) : null,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Stack(alignment: Alignment.center, children: [
+                  // Background chip
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 100),
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: ready
+                          ? accentCol.withValues(alpha: 0.18)
+                          : Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: ready
+                            ? accentCol.withValues(alpha: 0.55)
+                            : Colors.white.withValues(alpha: 0.1),
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          ev.emoji,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: ready
+                                ? Colors.white
+                                : Colors.white.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        Text(
+                          ev.label,
+                          style: Potatuhs.label(
+                            size: 7,
+                            color: ready
+                                ? accentCol
+                                : Potatuhs.textFaint.withValues(alpha: 0.4),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Cooldown arc overlay
+                  if (!ready)
+                    SizedBox(
+                      width: 44,
+                      height: 44,
+                      child: CustomPaint(
+                        painter: _MtCooldownRingPainter(
+                            progress, accentCol),
+                      ),
+                    ),
+                  // Cooldown timer text
+                  if (!ready)
+                    Positioned(
+                      bottom: 2,
+                      right: 3,
+                      child: Text(
+                        '${cd.ceil()}',
+                        style: Potatuhs.label(
+                            size: 7,
+                            color:
+                                Colors.white.withValues(alpha: 0.55)),
+                      ),
+                    ),
+                ]),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  // --- Debt / credit controls + readout ---
+  Widget _buildDebtControls() {
+    final hasDebt = _debt > 0.01;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: hasDebt
+              ? const Color(0xFF7F0000).withValues(alpha: 0.22)
+              : Potatuhs.inkPanel.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: hasDebt
+                ? const Color(0xFFEF5350).withValues(alpha: 0.45)
+                : Colors.white.withValues(alpha: 0.1),
+            width: 1.0,
+          ),
+        ),
+        child: Row(children: [
+          // Debt readout
+          if (hasDebt) ...[
+            const Text('💳', style: TextStyle(fontSize: 13)),
+            const SizedBox(width: 4),
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(
+                'DEBT  \$${_debt.toStringAsFixed(0)}',
+                style: Potatuhs.label(
+                    size: 9,
+                    color: const Color(0xFFEF5350)),
+              ),
+              Text(
+                '${(_kMtInterestRate * 100).toStringAsFixed(0)}%/s bleeding',
+                style: Potatuhs.label(
+                    size: 7,
+                    color: Potatuhs.textFaint),
+              ),
+            ]),
+            const SizedBox(width: 6),
+          ] else ...[
+            Text(
+              'Credit available',
+              style: Potatuhs.label(size: 9, color: Potatuhs.textFaint),
+            ),
+          ],
+          const Spacer(),
+          // Take Credit button
+          _debtBtn(
+            label: '+\$${_kMtLoanSize.toInt()} Credit',
+            color: Potatuhs.airForce,
+            onTap: _takeCredit,
+          ),
+          if (hasDebt) ...[
+            const SizedBox(width: 6),
+            _debtBtn(
+              label: 'Min \$${_kMtMinPayment.toInt()}',
+              color: const Color(0xFFEF9A00),
+              onTap: _minPayment,
+            ),
+            const SizedBox(width: 6),
+            _debtBtn(
+              label: 'Pay All',
+              color: const Color(0xFF66BB6A),
+              onTap: _payDebt,
+            ),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  Widget _debtBtn({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.55), width: 1.0),
+        ),
+        child: Text(label,
+            style: Potatuhs.label(size: 9, color: color)),
+      ),
+    );
+  }
+
+  Widget _buildGameOver() {
+    final score  = _finalScore;
+    final won    = score >= 0;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Container(
@@ -830,9 +1128,16 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           ),
           const SizedBox(height: 4),
           Text(
-            'Final: \$${_totalNetWorth.toStringAsFixed(0)}  (${won ? "+" : ""}\$${pnl.toStringAsFixed(0)})',
+            'Score: \$${score.toStringAsFixed(0)}  (${won ? "+" : ""}\$${(score - _kMtStartingCash).toStringAsFixed(0)})',
             style: Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
           ),
+          if (_debt > 0.01)
+            Text(
+              'Debt penalty: −\$${_debt.toStringAsFixed(0)}',
+              style: Potatuhs.label(
+                  size: 11,
+                  color: const Color(0xFFEF5350)),
+            ),
           if (_highScores.isNotEmpty) ...[
             const SizedBox(height: 10),
             Text('TOP SCORES',
@@ -1056,6 +1361,40 @@ class _MtFxPainter extends CustomPainter {
   bool shouldRepaint(covariant _MtFxPainter old) => true;
 }
 
+
+// --- Cooldown ring painter for market-event buttons ---
+class _MtCooldownRingPainter extends CustomPainter {
+  final double progress; // 0.0 = just triggered, 1.0 = ready
+  final Color  color;
+  _MtCooldownRingPainter(this.progress, this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.shortestSide / 2) - 3;
+    // Dark overlay to dim the button
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(10)),
+      Paint()..color = Colors.black.withValues(alpha: 0.45),
+    );
+    // Arc filling in as cooldown expires
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -pi / 2,            // start at top
+      progress * 2 * pi,  // sweeps clockwise
+      false,
+      Paint()
+        ..color       = color.withValues(alpha: 0.65)
+        ..strokeWidth = 2.5
+        ..style       = PaintingStyle.stroke
+        ..strokeCap   = StrokeCap.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _MtCooldownRingPainter old) =>
+      old.progress != progress;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. GlobalFeedGame — "Feed the World"
@@ -3719,33 +4058,93 @@ class _GravityPuzzlePainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. SolarSortGame — "Solar Architect" (Tower of Hanoi with Planets)
-// Move all planets from the leftmost tower to the rightmost tower.
-// Tap a tower to pick up its top planet, tap another to place it.
-// A larger planet can never be placed on a smaller one.
-// Progressive stages: each win adds a tower or a planet, alternating.
+// 4. SolarSortGame — "Scale the System"
+// Draw two circles at the right relative size to compare solar system neighbors.
+// Score by how close your drawn radius ratio matches the true ratio.
+// Finish with a spiral-spam protoplanetary disk finale.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ── SolarSortGame — "Orbital Mechanic" ────────────────────────────────────────
-// REPLACED: spiral-drawing game. Draw a continuous spiral; score = total
-// full revolutions (2π accumulated angle) across attempts. 60-second session.
+// ── SolarSortGame — "Scale the System" ────────────────────────────────────────
+// Relative-size drawing challenge: each round names two bodies; player draws
+// two freehand circles. Score = accuracy of the radius ratio on a log scale.
+// Spiral finale (original mechanic) closes the game as the protoplanetary disk.
 // ──────────────────────────────────────────────────────────────────────────────
 
-// ── Feel constants ────────────────────────────────────────────────────────────
-// Minimum number of points already in the path before intersection checks
-// start (skip the first N segments — they can't cross anything meaningful yet).
-const int _kSpiralSkipHeadSegments = 6;
+// ── Constants ─────────────────────────────────────────────────────────────────
+const int _kStsBasePoints = 500;   // max points per size-ratio round
+const int _kStsFinaleBasePoints = 100; // per revolution in finale
+const double _kStsFinaleDecay = 0.85;  // per-attempt decay in finale
+const int _kStsFinaleSeconds = 20;     // duration of the spiral finale
+// Intersection skip + tolerance (reused for finale spiral)
+const int _kStsSkipHead = 6;
+const double _kStsTol = 0.01;
 
-// Segment-segment intersection tolerance: two segments are only flagged as
-// crossing when the crossing parameter t/u are strictly inside (tol, 1-tol).
-// Keeping this small avoids false positives from adjacent/near-touching segs
-// while still catching genuine crossings.
-const double _kIntersectTol = 0.01;
+// ── Body data ──────────────────────────────────────────────────────────────────
+class _StsBody {
+  final String name;
+  final double radiusKm;
+  final Color color;
+  const _StsBody(this.name, this.radiusKm, this.color);
+}
 
-// Points awarded per completed revolution on attempt 1.
-// Each subsequent attempt reduces the reward by this factor (escalation).
-const int _kBasePointsPerRev = 100;
-const double _kAttemptDecayFactor = 0.85;
+const _kStsBodies = <_StsBody>[
+  _StsBody('Sun',     696340, Color(0xFFFFD700)),
+  _StsBody('Mercury',   2440, Color(0xFFB0A090)),
+  _StsBody('Venus',     6052, Color(0xFFE8C56A)),
+  _StsBody('Earth',     6371, Color(0xFF4A9EEB)),
+  _StsBody('Mars',      3390, Color(0xFFCF6030)),
+  _StsBody('Jupiter',  69911, Color(0xFFD4A96A)),
+  _StsBody('Saturn',   58232, Color(0xFFC8B870)),
+  _StsBody('Uranus',   25362, Color(0xFF7DE8E8)),
+  _StsBody('Neptune',  24622, Color(0xFF4060E0)),
+];
+
+// Round pairs: adjacent neighbors Sun→Mercury … Uranus→Neptune
+const _kStsRoundPairs = <List<int>>[
+  [0, 1], // Sun, Mercury
+  [1, 2], // Mercury, Venus
+  [2, 3], // Venus, Earth
+  [3, 4], // Earth, Mars
+  [4, 5], // Mars, Jupiter
+  [5, 6], // Jupiter, Saturn
+  [6, 7], // Saturn, Uranus
+  [7, 8], // Uranus, Neptune
+];
+
+// One fact per round (index matches _kStsRoundPairs)
+const _kStsFacts = <String>[
+  '~285 Mercurys would span the Sun — you literally cannot draw this to scale.',
+  'Mercury is the smallest planet, smaller than some moons.',
+  'Venus is Earth\'s near-twin — almost the same size.',
+  'Mars is about half Earth\'s width — smaller than it looks in the night sky.',
+  'Jupiter is over 11 Earths wide — a monster.',
+  'Saturn\'s rings span wider than the gap between Earth and the Moon.',
+  'Uranus rotates on its side — its axis is tilted 98°.',
+  'Neptune and Uranus are almost twins — just 740 km apart in radius.',
+];
+
+// ── Utility: fit a circle to a list of offsets ────────────────────────────────
+// Returns (centroid, meanRadius). Returns null if fewer than 3 points.
+(Offset, double)? _fitCircle(List<Offset> pts) {
+  if (pts.length < 3) return null;
+  double cx = 0, cy = 0;
+  for (final p in pts) { cx += p.dx; cy += p.dy; }
+  cx /= pts.length;
+  cy /= pts.length;
+  double r = 0;
+  for (final p in pts) {
+    final d = sqrt((p.dx - cx) * (p.dx - cx) + (p.dy - cy) * (p.dy - cy));
+    r += d;
+  }
+  r /= pts.length;
+  return (Offset(cx, cy), r);
+}
+
+// ── Draw phase enum ───────────────────────────────────────────────────────────
+enum _StsDrawPhase { drawA, drawB }
+
+// ── Game phase enum ───────────────────────────────────────────────────────────
+enum _StsGamePhase { start, round, reveal, finale, gameOver }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3755,56 +4154,54 @@ class SolarSortGame extends StatefulWidget {
   State<SolarSortGame> createState() => _SolarSortGameState();
 }
 
-class _SpiralPoint {
-  final double x, y;
-  const _SpiralPoint(this.x, this.y);
-  Offset get offset => Offset(x, y);
-}
-
 class _SolarSortGameState extends State<SolarSortGame>
     with SingleTickerProviderStateMixin {
-  // ── game state ──────────────────────────────────────────────────────────────
-  static const int _gameDuration = 60; // seconds
 
-  bool _running = false;
-  bool _gameOver = false;
-  int _secondsLeft = _gameDuration;
+  // ── phase / round ──────────────────────────────────────────────────────────
+  _StsGamePhase _phase = _StsGamePhase.start;
+  int _roundIndex = 0;          // 0..7 for the 8 size rounds
   int _totalScore = 0;
-  int _attemptScore = 0;   // score for current live attempt
-  int _attemptNumber = 0;  // 1-based; increments on each break/restart
-  double _bestRevs = 0;    // best single-attempt revolution count (display)
 
-  // Current drawn path for this attempt.
-  final List<_SpiralPoint> _path = [];
+  // ── current round drawing ──────────────────────────────────────────────────
+  _StsDrawPhase _drawPhase = _StsDrawPhase.drawA;
+  final List<Offset> _currentPath = [];
 
-  // Accumulated angle (radians) around the running centroid — used for
-  // revolution counting.  Resets to 0 on each new attempt.
-  double _accumulatedAngle = 0;
+  // Committed circles for this round
+  Offset? _circleACenter;
+  double _circleARadius = 0;
+  Offset? _circleBCenter;
+  double _circleBRadius = 0;
 
-  // Previous angle relative to current centroid, needed to compute delta.
-  double? _prevAngle;
+  // Reveal state
+  int _lastRoundScore = 0;
+  bool _lastWasPerfect = false;
+  String _lastRatioText = '';
+  String _lastFact = '';
 
-  // Running centroid of the drawn path (updated incrementally).
-  double _centroidX = 0;
-  double _centroidY = 0;
+  // ── finale (spiral) state ─────────────────────────────────────────────────
+  int _finaleSecondsLeft = _kStsFinaleSeconds;
+  bool _finaleTimerActive = false;
+  DateTime? _finaleStart;
+  int _finaleScore = 0;
+  int _finaleAttempt = 0;        // 1-based; for decay
+  bool _finaleFlash = false;
 
-  // Flash-break animation state.
-  bool _flashBreak = false;
+  final List<Offset> _spiralPath = [];
+  double _spiralAccAngle = 0;
+  double? _spiralPrevAngle = 0;
+  double _spiralCX = 0, _spiralCY = 0;
 
+  // ── animation ─────────────────────────────────────────────────────────────
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
-
-  // Timer handle.
-  DateTime? _startTime;
-  bool _timerActive = false;
 
   @override
   void initState() {
     super.initState();
     _pulseCtrl = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 600),
+      vsync: this, duration: const Duration(milliseconds: 650),
     )..repeat(reverse: true);
-    _pulseAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
+    _pulseAnim = Tween<double>(begin: 0.5, end: 1.0).animate(
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
   }
@@ -3815,192 +4212,245 @@ class _SolarSortGameState extends State<SolarSortGame>
     super.dispose();
   }
 
-  // ── timer ───────────────────────────────────────────────────────────────────
+  // ── game flow ──────────────────────────────────────────────────────────────
+
   void _startGame() {
     setState(() {
-      _running = true;
-      _gameOver = false;
-      _secondsLeft = _gameDuration;
+      _phase = _StsGamePhase.round;
+      _roundIndex = 0;
       _totalScore = 0;
-      _attemptScore = 0;
-      _attemptNumber = 0;
-      _bestRevs = 0;
-      _timerActive = true;
-      _startTime = DateTime.now();
+      _drawPhase = _StsDrawPhase.drawA;
+      _currentPath.clear();
+      _circleACenter = null;
+      _circleBCenter = null;
     });
-    _resetAttempt(bankScore: false);
-    _tick();
   }
 
-  void _tick() {
-    if (!mounted || !_timerActive) return;
-    final elapsed = DateTime.now().difference(_startTime!).inSeconds;
-    final left = _gameDuration - elapsed;
+  void _restartGame() => _startGame();
+
+  void _advanceRound() {
+    if (_roundIndex + 1 >= _kStsRoundPairs.length) {
+      // All rounds done — enter finale
+      _enterFinale();
+    } else {
+      setState(() {
+        _roundIndex++;
+        _phase = _StsGamePhase.round;
+        _drawPhase = _StsDrawPhase.drawA;
+        _currentPath.clear();
+        _circleACenter = null;
+        _circleBCenter = null;
+      });
+    }
+  }
+
+  void _enterFinale() {
+    setState(() {
+      _phase = _StsGamePhase.finale;
+      _finaleSecondsLeft = _kStsFinaleSeconds;
+      _finaleTimerActive = true;
+      _finaleStart = DateTime.now();
+      _finaleScore = 0;
+      _finaleAttempt = 0;
+      _finaleFlash = false;
+      _spiralPath.clear();
+      _spiralAccAngle = 0;
+      _spiralPrevAngle = null;
+    });
+    _finaleTick();
+  }
+
+  void _finaleTick() {
+    if (!mounted || !_finaleTimerActive) return;
+    final elapsed = DateTime.now().difference(_finaleStart!).inSeconds;
+    final left = _kStsFinaleSeconds - elapsed;
     if (left <= 0) {
       setState(() {
-        _secondsLeft = 0;
-        _running = false;
-        _gameOver = true;
-        _timerActive = false;
-        // Bank any partial score from current attempt.
-        _bankCurrentAttempt();
+        _finaleSecondsLeft = 0;
+        _finaleTimerActive = false;
+        _totalScore += _finaleScore;
+        _phase = _StsGamePhase.gameOver;
       });
       return;
     }
-    setState(() => _secondsLeft = left);
-    Future.delayed(const Duration(seconds: 1), _tick);
+    setState(() => _finaleSecondsLeft = left);
+    Future.delayed(const Duration(seconds: 1), _finaleTick);
   }
 
-  // ── attempt helpers ─────────────────────────────────────────────────────────
+  // ── scoring ────────────────────────────────────────────────────────────────
 
-  /// How many full revolutions (integer) the current path has completed.
-  int get _currentRevolutions => (_accumulatedAngle.abs() / (2 * pi)).floor();
+  int _scoreRound(double drawnA, double drawnB) {
+    final pair = _kStsRoundPairs[_roundIndex];
+    final trueA = _kStsBodies[pair[0]].radiusKm;
+    final trueB = _kStsBodies[pair[1]].radiusKm;
+    final trueRatio = trueB / trueA;   // B relative to A
+    final drawnRatio = drawnB / drawnA;
 
-  /// Score value for the current attempt's completed revolutions.
-  int _scoreForRevs(int revs) {
-    if (revs <= 0) return 0;
-    final multiplier = pow(_kAttemptDecayFactor, _attemptNumber - 1).toDouble();
-    return (revs * _kBasePointsPerRev * multiplier).round();
+    // Log-scale accuracy: log(drawn/true) — 0 is perfect.
+    // Tolerance window: ±1 natural-log unit gives ~37%–273% of correct; clamp.
+    final logError = (log(drawnRatio) - log(trueRatio)).abs();
+    // accuracy: 1 at logError=0, falls to 0 at logError≥1.5
+    final accuracy = (1.0 - (logError / 1.5)).clamp(0.0, 1.0);
+    return (_kStsBasePoints * accuracy).round();
   }
 
-  void _bankCurrentAttempt() {
-    final revs = _currentRevolutions;
-    final score = _scoreForRevs(revs);
-    _totalScore += score;
-    if (revs > _bestRevs) _bestRevs = revs.toDouble();
+  bool _isPerfect(double drawnA, double drawnB) {
+    final pair = _kStsRoundPairs[_roundIndex];
+    final trueA = _kStsBodies[pair[0]].radiusKm;
+    final trueB = _kStsBodies[pair[1]].radiusKm;
+    final trueRatio = trueB / trueA;
+    final drawnRatio = drawnB / drawnA;
+    final logError = (log(drawnRatio) - log(trueRatio)).abs();
+    return logError < 0.12; // within ~12% log-error → "PERFECT SCALE"
   }
 
-  void _resetAttempt({required bool bankScore}) {
-    if (bankScore) _bankCurrentAttempt();
-    _attemptNumber++;
-    _path.clear();
-    _accumulatedAngle = 0;
-    _prevAngle = null;
-    _centroidX = 0;
-    _centroidY = 0;
-    _attemptScore = 0;
+  // ── drawing handlers (size rounds) ────────────────────────────────────────
+
+  void _onSizePanStart(DragStartDetails d) {
+    if (_phase != _StsGamePhase.round) return;
+    setState(() {
+      _currentPath.clear();
+      _currentPath.add(d.localPosition);
+    });
   }
 
-  // ── drawing logic ────────────────────────────────────────────────────────────
+  void _onSizePanUpdate(DragUpdateDetails d) {
+    if (_phase != _StsGamePhase.round) return;
+    setState(() => _currentPath.add(d.localPosition));
+  }
 
-  void _onPanStart(DragStartDetails d) {
-    if (!_running) return;
-    _resetAttempt(bankScore: false);
+  void _onSizePanEnd(DragEndDetails _) {
+    if (_phase != _StsGamePhase.round) return;
+    final fit = _fitCircle(List.of(_currentPath));
+    if (fit == null) {
+      setState(() => _currentPath.clear());
+      return;
+    }
+    final (center, radius) = fit;
+    if (_drawPhase == _StsDrawPhase.drawA) {
+      setState(() {
+        _circleACenter = center;
+        _circleARadius = radius;
+        _drawPhase = _StsDrawPhase.drawB;
+        _currentPath.clear();
+      });
+    } else {
+      // Both circles drawn — score and reveal
+      _circleBCenter = center;
+      _circleBRadius = radius;
+      final score = _scoreRound(_circleARadius, _circleBRadius);
+      final perfect = _isPerfect(_circleARadius, _circleBRadius);
+      final pair = _kStsRoundPairs[_roundIndex];
+      final trueA = _kStsBodies[pair[0]].radiusKm;
+      final trueB = _kStsBodies[pair[1]].radiusKm;
+      final ratio = trueB / trueA;
+      final ratioText = ratio >= 1
+          ? '1 : ${ratio.toStringAsFixed(1)}'
+          : '${(1 / ratio).toStringAsFixed(1)} : 1';
+      setState(() {
+        _lastRoundScore = score;
+        _lastWasPerfect = perfect;
+        _lastRatioText = ratioText;
+        _lastFact = _kStsFacts[_roundIndex];
+        _totalScore += score;
+        _phase = _StsGamePhase.reveal;
+        _currentPath.clear();
+      });
+    }
+  }
+
+  // ── drawing handlers (finale spiral) ──────────────────────────────────────
+
+  void _onSpiralPanStart(DragStartDetails d) {
+    if (_phase != _StsGamePhase.finale || !_finaleTimerActive) return;
+    _finaleAttempt++;
+    setState(() {
+      _spiralPath.clear();
+      _spiralAccAngle = 0;
+      _spiralPrevAngle = null;
+      _spiralCX = d.localPosition.dx;
+      _spiralCY = d.localPosition.dy;
+      _spiralPath.add(d.localPosition);
+    });
+  }
+
+  void _onSpiralPanUpdate(DragUpdateDetails d) {
+    if (_phase != _StsGamePhase.finale || !_finaleTimerActive) return;
     final pt = d.localPosition;
-    _path.add(_SpiralPoint(pt.dx, pt.dy));
-    _centroidX = pt.dx;
-    _centroidY = pt.dy;
-    _prevAngle = null;
-  }
-
-  void _onPanUpdate(DragUpdateDetails d) {
-    if (!_running) return;
-    final pt = d.localPosition;
-    final newPt = _SpiralPoint(pt.dx, pt.dy);
-
-    // ── check self-intersection BEFORE committing the new point ──────────────
-    if (_path.length >= _kSpiralSkipHeadSegments + 1) {
-      if (_checkIntersection(newPt)) {
-        // Break! Flash and restart this attempt.
-        _triggerBreak();
+    if (_spiralPath.length >= _kStsSkipHead + 1) {
+      if (_spiralCheckIntersection(pt)) {
+        _triggerFinaleBreak();
         return;
       }
     }
-
-    // Commit point.
-    _path.add(newPt);
-
-    // ── update running centroid ───────────────────────────────────────────────
-    final n = _path.length.toDouble();
-    _centroidX = (_centroidX * (n - 1) + pt.dx) / n;
-    _centroidY = (_centroidY * (n - 1) + pt.dy) / n;
-
-    // ── accumulate angle for revolution counting ──────────────────────────────
-    final dx = pt.dx - _centroidX;
-    final dy = pt.dy - _centroidY;
+    _spiralPath.add(pt);
+    final n = _spiralPath.length.toDouble();
+    _spiralCX = (_spiralCX * (n - 1) + pt.dx) / n;
+    _spiralCY = (_spiralCY * (n - 1) + pt.dy) / n;
+    final dx = pt.dx - _spiralCX;
+    final dy = pt.dy - _spiralCY;
     final ang = atan2(dy, dx);
-    if (_prevAngle != null) {
-      double delta = ang - _prevAngle!;
-      // Wrap delta into (-π, π] — handles the ±π discontinuity.
+    if (_spiralPrevAngle != null) {
+      double delta = ang - _spiralPrevAngle!;
       if (delta > pi) delta -= 2 * pi;
       if (delta <= -pi) delta += 2 * pi;
-      _accumulatedAngle += delta;
+      _spiralAccAngle += delta;
     }
-    _prevAngle = ang;
-
-    // Update live attempt score display.
+    _spiralPrevAngle = ang;
     setState(() {
-      _attemptScore = _scoreForRevs(_currentRevolutions);
+      _finaleScore = _spiralFinaleScore();
     });
   }
 
-  void _onPanEnd(DragEndDetails d) {
-    // Finger lifted: bank what was drawn, start fresh on next touch.
-    if (!_running) return;
-    setState(() { _bankCurrentAttempt(); _resetAttempt(bankScore: false); });
+  void _onSpiralPanEnd(DragEndDetails _) {
+    if (_phase != _StsGamePhase.finale) return;
+    setState(() {
+      _spiralPath.clear();
+      _spiralAccAngle = 0;
+      _spiralPrevAngle = null;
+    });
   }
 
-  void _triggerBreak() {
+  void _triggerFinaleBreak() {
     setState(() {
-      _flashBreak = true;
-      _bankCurrentAttempt();
-      _resetAttempt(bankScore: false);
+      _finaleFlash = true;
+      _spiralPath.clear();
+      _spiralAccAngle = 0;
+      _spiralPrevAngle = null;
     });
     Future.delayed(const Duration(milliseconds: 300), () {
-      if (mounted) setState(() => _flashBreak = false);
+      if (mounted) setState(() => _finaleFlash = false);
     });
   }
 
-  // ── self-intersection ─────────────────────────────────────────────────────
-  //
-  // Test the prospective new segment (last path point → newPt) against all
-  // earlier non-adjacent segments.  Uses standard parametric segment-segment
-  // intersection with tolerance guards to avoid false positives.
-  //
-  // Two segments AB and CD intersect when:
-  //   t = ((C-A)×(D-C)) / ((B-A)×(D-C))
-  //   u = ((C-A)×(B-A)) / ((B-A)×(D-C))
-  // and both t, u ∈ (tol, 1-tol).
-  //
-  // We skip the last _kSpiralSkipHeadSegments segments (adjacent + near
-  // neighbours) because a tight-but-valid spiral will always come close to
-  // itself; only a genuine crossing (both params strictly interior) fires.
-  bool _checkIntersection(_SpiralPoint newPt) {
-    if (_path.length < 2) return false;
-    final ax = _path[_path.length - 1].x;
-    final ay = _path[_path.length - 1].y;
-    final bx = newPt.x;
-    final by = newPt.y;
+  int get _spiralRevolutions => (_spiralAccAngle.abs() / (2 * pi)).floor();
 
-    // Check against all segments [i, i+1] except the last
-    // _kSpiralSkipHeadSegments ones (including the one we're extending).
-    final lastSafe = _path.length - 1 - _kSpiralSkipHeadSegments;
+  int _spiralFinaleScore() {
+    final revs = _spiralRevolutions;
+    if (revs <= 0) return 0;
+    final multiplier = pow(_kStsFinaleDecay, _finaleAttempt - 1).toDouble();
+    return (revs * _kStsFinaleBasePoints * multiplier).round();
+  }
+
+  bool _spiralCheckIntersection(Offset newPt) {
+    if (_spiralPath.length < 2) return false;
+    final ax = _spiralPath[_spiralPath.length - 1].dx;
+    final ay = _spiralPath[_spiralPath.length - 1].dy;
+    final bx = newPt.dx, by = newPt.dy;
+    final lastSafe = _spiralPath.length - 1 - _kStsSkipHead;
     if (lastSafe < 1) return false;
-
     for (int i = 0; i < lastSafe - 1; i++) {
-      final cx2 = _path[i].x;
-      final cy2 = _path[i].y;
-      final dx2 = _path[i + 1].x;
-      final dy2 = _path[i + 1].y;
-
-      // (B-A)
+      final cx2 = _spiralPath[i].dx, cy2 = _spiralPath[i].dy;
+      final dx2 = _spiralPath[i + 1].dx, dy2 = _spiralPath[i + 1].dy;
       final rX = bx - ax, rY = by - ay;
-      // (D-C)
       final sX = dx2 - cx2, sY = dy2 - cy2;
-
-      final denom = rX * sY - rY * sX; // cross(r, s)
-      if (denom.abs() < 1e-10) continue; // parallel
-
-      // (C-A)
+      final denom = rX * sY - rY * sX;
+      if (denom.abs() < 1e-10) continue;
       final qX = cx2 - ax, qY = cy2 - ay;
-
       final t = (qX * sY - qY * sX) / denom;
       final u = (qX * rY - qY * rX) / denom;
-
-      if (t > _kIntersectTol && t < 1.0 - _kIntersectTol &&
-          u > _kIntersectTol && u < 1.0 - _kIntersectTol) {
-        return true; // genuine crossing
-      }
+      if (t > _kStsTol && t < 1.0 - _kStsTol &&
+          u > _kStsTol && u < 1.0 - _kStsTol) return true;
     }
     return false;
   }
@@ -4009,10 +4459,16 @@ class _SolarSortGameState extends State<SolarSortGame>
 
   @override
   Widget build(BuildContext context) {
-    if (_gameOver) return _buildGameOver();
-    if (!_running) return _buildStart();
-    return _buildGame();
+    switch (_phase) {
+      case _StsGamePhase.start:    return _buildStart();
+      case _StsGamePhase.round:    return _buildRound();
+      case _StsGamePhase.reveal:   return _buildReveal();
+      case _StsGamePhase.finale:   return _buildFinale();
+      case _StsGamePhase.gameOver: return _buildGameOver();
+    }
   }
+
+  // ── start screen ──────────────────────────────────────────────────────────
 
   Widget _buildStart() {
     return Container(
@@ -4022,16 +4478,16 @@ class _SolarSortGameState extends State<SolarSortGame>
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Text('Orbital Mechanic',
+              const Text('Scale the System',
                 style: TextStyle(fontFamily: 'Avenir', fontSize: 26,
                   fontWeight: FontWeight.bold, color: Colors.amberAccent)),
               const SizedBox(height: 16),
               const Text(
-                'Draw a continuous spiral with your finger.\n'
-                'Score points for every full loop you complete.\n\n'
-                'Cross your own path and it resets — '
-                'your best loops are banked.\n\n'
-                '60 seconds. Go.',
+                'Each round names two solar system bodies.\n'
+                'Draw a circle for each — get the SIZE RATIO right.\n\n'
+                'Score by how close your ratio matches reality.\n'
+                'Finish with a spinning protoplanetary disk.\n\n'
+                'Prepare to be humbled.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontFamily: 'Avenir', fontSize: 14,
                   color: Colors.white60, height: 1.6),
@@ -4058,22 +4514,238 @@ class _SolarSortGameState extends State<SolarSortGame>
     );
   }
 
-  Widget _buildGame() {
+  // ── round screen ─────────────────────────────────────────────────────────
+
+  Widget _buildRound() {
+    final pair = _kStsRoundPairs[_roundIndex];
+    final bodyA = _kStsBodies[pair[0]];
+    final bodyB = _kStsBodies[pair[1]];
+    final isDrawingA = _drawPhase == _StsDrawPhase.drawA;
+    final activeBody = isDrawingA ? bodyA : bodyB;
+
     return GestureDetector(
-      onPanStart: _onPanStart,
-      onPanUpdate: _onPanUpdate,
-      onPanEnd: _onPanEnd,
+      onPanStart: _onSizePanStart,
+      onPanUpdate: _onSizePanUpdate,
+      onPanEnd: _onSizePanEnd,
       child: Container(
-        color: _flashBreak ? const Color(0x33FF4444) : const Color(0xFF050515),
+        color: const Color(0xFF050515),
         child: Stack(children: [
-          // Canvas for the spiral.
+          // Canvas: committed circles + live stroke
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _pulseAnim,
+              builder: (_, __) => CustomPaint(
+                painter: _StsRoundPainter(
+                  circleACenter: _circleACenter,
+                  circleARadius: _circleARadius,
+                  colorA: bodyA.color,
+                  circleBCenter: _circleBCenter,
+                  circleBRadius: _circleBRadius,
+                  colorB: bodyB.color,
+                  livePath: List.unmodifiable(_currentPath),
+                  activeColor: activeBody.color,
+                  pulseValue: _pulseAnim.value,
+                  showA: true,
+                ),
+              ),
+            ),
+          ),
+
+          // Top HUD
+          Positioned(
+            top: 0, left: 0, right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    _StsHudChip(
+                      label: 'ROUND',
+                      value: '${_roundIndex + 1} / ${_kStsRoundPairs.length}',
+                      urgent: false,
+                    ),
+                    _StsHudChip(
+                      label: 'SCORE',
+                      value: '$_totalScore',
+                      urgent: false,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // Prompt
+          Positioned(
+            bottom: 60, left: 24, right: 24,
+            child: AnimatedBuilder(
+              animation: _pulseAnim,
+              builder: (_, __) => Opacity(
+                opacity: isDrawingA ? 1.0 : _pulseAnim.value,
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text(
+                    isDrawingA
+                        ? 'Draw the ${bodyA.name}'
+                        : 'Now draw the ${bodyB.name}',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontFamily: 'Avenir', fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: activeBody.color,
+                    ),
+                  ),
+                  if (!isDrawingA) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'vs ${bodyA.name} (circle already drawn)',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontFamily: 'Avenir', fontSize: 13, color: Colors.white38),
+                    ),
+                  ],
+                ]),
+              ),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  // ── reveal screen ─────────────────────────────────────────────────────────
+
+  Widget _buildReveal() {
+    final pair = _kStsRoundPairs[_roundIndex];
+    final bodyA = _kStsBodies[pair[0]];
+    final bodyB = _kStsBodies[pair[1]];
+    final isLastRound = _roundIndex + 1 >= _kStsRoundPairs.length;
+
+    return Container(
+      color: const Color(0xFF050515),
+      child: SafeArea(
+        child: Stack(children: [
+          // Show the two drawn circles dimmed in background
           Positioned.fill(
             child: CustomPaint(
-              painter: _SpiralPainter(
-                points: List.unmodifiable(_path),
-                revolutions: _currentRevolutions,
-                flashBreak: _flashBreak,
-                pulseValue: _pulseAnim.value,
+              painter: _StsRoundPainter(
+                circleACenter: _circleACenter,
+                circleARadius: _circleARadius,
+                colorA: bodyA.color.withValues(alpha: 0.3),
+                circleBCenter: _circleBCenter,
+                circleBRadius: _circleBRadius,
+                colorB: bodyB.color.withValues(alpha: 0.3),
+                livePath: const [],
+                activeColor: Colors.transparent,
+                pulseValue: 0.5,
+                showA: true,
+              ),
+            ),
+          ),
+
+          // Reveal card
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (_lastWasPerfect) ...[
+                  Text('PERFECT SCALE',
+                    style: TextStyle(
+                      fontFamily: 'Avenir', fontSize: 22, fontWeight: FontWeight.bold,
+                      color: Colors.amberAccent,
+                      shadows: [Shadow(color: Colors.amberAccent.withValues(alpha: 0.7), blurRadius: 12)],
+                    )),
+                  const SizedBox(height: 8),
+                ] else ...[
+                  Text('+$_lastRoundScore',
+                    style: const TextStyle(fontFamily: 'Avenir', fontSize: 36,
+                      fontWeight: FontWeight.bold, color: Colors.white)),
+                  const SizedBox(height: 8),
+                ],
+                if (_lastWasPerfect)
+                  Text('+$_lastRoundScore pts',
+                    style: const TextStyle(fontFamily: 'Avenir', fontSize: 22,
+                      fontWeight: FontWeight.bold, color: Colors.white)),
+                const SizedBox(height: 16),
+                // True ratio
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    color: Colors.white.withValues(alpha: 0.07),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Text(
+                      '${bodyA.name} : ${bodyB.name}',
+                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 13,
+                        color: Colors.white54, letterSpacing: 1),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'True ratio  $_lastRatioText',
+                      style: const TextStyle(fontFamily: 'Avenir', fontSize: 17,
+                        fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                  ]),
+                ),
+                const SizedBox(height: 14),
+                // Fact
+                Text(
+                  _lastFact,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontFamily: 'Avenir', fontSize: 13,
+                    color: Colors.white60, height: 1.5),
+                ),
+                const SizedBox(height: 28),
+                GestureDetector(
+                  onTap: _advanceRound,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 14),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      color: Colors.amber.withValues(alpha: 0.15),
+                      border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.6)),
+                    ),
+                    child: Text(
+                      isLastRound ? 'FINALE' : 'NEXT ROUND',
+                      style: const TextStyle(
+                        fontFamily: 'Avenir', fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.amberAccent, letterSpacing: 2),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  // ── finale screen ─────────────────────────────────────────────────────────
+
+  Widget _buildFinale() {
+    return GestureDetector(
+      onPanStart: _onSpiralPanStart,
+      onPanUpdate: _onSpiralPanUpdate,
+      onPanEnd: _onSpiralPanEnd,
+      child: Container(
+        color: _finaleFlash ? const Color(0x22FF4444) : const Color(0xFF050515),
+        child: Stack(children: [
+          // Spiral canvas
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _pulseAnim,
+              builder: (_, __) => CustomPaint(
+                painter: _StsSpiralPainter(
+                  points: List.unmodifiable(_spiralPath),
+                  revolutions: _spiralRevolutions,
+                  flashBreak: _finaleFlash,
+                  pulseValue: _pulseAnim.value,
+                ),
               ),
             ),
           ),
@@ -4087,22 +4759,19 @@ class _SolarSortGameState extends State<SolarSortGame>
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // Timer
-                    _HudChip(
+                    _StsHudChip(
                       label: 'TIME',
-                      value: '$_secondsLeft s',
-                      urgent: _secondsLeft <= 10,
+                      value: '$_finaleSecondsLeft s',
+                      urgent: _finaleSecondsLeft <= 8,
                     ),
-                    // Current attempt loops
-                    _HudChip(
+                    _StsHudChip(
                       label: 'LOOPS',
-                      value: '$_currentRevolutions',
+                      value: '$_spiralRevolutions',
                       urgent: false,
                     ),
-                    // Total score
-                    _HudChip(
-                      label: 'SCORE',
-                      value: '${_totalScore + _attemptScore}',
+                    _StsHudChip(
+                      label: 'BONUS',
+                      value: '+$_finaleScore',
                       urgent: false,
                     ),
                   ],
@@ -4111,19 +4780,43 @@ class _SolarSortGameState extends State<SolarSortGame>
             ),
           ),
 
-          // Break flash label
-          if (_flashBreak)
+          // Finale label
+          Positioned(
+            bottom: 60, left: 24, right: 24,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              AnimatedBuilder(
+                animation: _pulseAnim,
+                builder: (_, __) => Opacity(
+                  opacity: _pulseAnim.value,
+                  child: const Text(
+                    'PROTOPLANETARY DISK',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontFamily: 'Avenir', fontSize: 18,
+                      fontWeight: FontWeight.bold, color: Colors.amberAccent,
+                      letterSpacing: 2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Spin as many spirals as you can!\nCross your path and it resets.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 13,
+                  color: Colors.white38, height: 1.5),
+              ),
+            ]),
+          ),
+
+          if (_finaleFlash)
             Center(
               child: Text('CROSSED!',
                 style: TextStyle(
                   fontFamily: 'Avenir', fontSize: 32, fontWeight: FontWeight.bold,
                   color: Colors.redAccent.withValues(alpha: 0.9),
-                  letterSpacing: 3,
-                )),
+                  letterSpacing: 3)),
             ),
 
-          // Instruction hint when no path yet
-          if (_path.isEmpty)
+          if (_spiralPath.isEmpty)
             Center(
               child: AnimatedBuilder(
                 animation: _pulseAnim,
@@ -4140,6 +4833,8 @@ class _SolarSortGameState extends State<SolarSortGame>
     );
   }
 
+  // ── game-over screen ──────────────────────────────────────────────────────
+
   Widget _buildGameOver() {
     return Container(
       color: const Color(0xFF050515),
@@ -4148,18 +4843,33 @@ class _SolarSortGameState extends State<SolarSortGame>
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 32),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Text('Time\'s Up!',
-                style: TextStyle(fontFamily: 'Avenir', fontSize: 28,
+              const Text('Scale the System',
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 22,
                   fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-              const SizedBox(height: 20),
-              _ScoreLine(label: 'Final Score', value: '$_totalScore'),
               const SizedBox(height: 6),
-              _ScoreLine(label: 'Best Attempt', value: '${_bestRevs.floor()} loops'),
-              const SizedBox(height: 6),
-              _ScoreLine(label: 'Attempts', value: '$_attemptNumber'),
-              const SizedBox(height: 32),
+              const Text('COMPLETE',
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 14,
+                  color: Colors.white38, letterSpacing: 3)),
+              const SizedBox(height: 24),
+              _StsScoreLine(label: 'Final Score', value: '$_totalScore'),
+              const SizedBox(height: 4),
+              _StsScoreLine(
+                label: 'Rounds',
+                value: '${_kStsRoundPairs.length}',
+              ),
+              const SizedBox(height: 4),
+              _StsScoreLine(label: 'Spiral Bonus', value: '+$_finaleScore'),
+              const SizedBox(height: 12),
+              const Text(
+                'The Sun is 285× Mercury.\nVenus and Earth are near-twins.\n'
+                'Jupiter is over 11 Earths wide.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontFamily: 'Avenir', fontSize: 12,
+                  color: Colors.white38, height: 1.6),
+              ),
+              const SizedBox(height: 28),
               GestureDetector(
-                onTap: _startGame,
+                onTap: _restartGame,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 14),
                   decoration: BoxDecoration(
@@ -4180,12 +4890,12 @@ class _SolarSortGameState extends State<SolarSortGame>
   }
 }
 
-// ── Small HUD chip ─────────────────────────────────────────────────────────
-class _HudChip extends StatelessWidget {
+// ── HUD chip ──────────────────────────────────────────────────────────────────
+class _StsHudChip extends StatelessWidget {
   final String label;
   final String value;
   final bool urgent;
-  const _HudChip({required this.label, required this.value, required this.urgent});
+  const _StsHudChip({required this.label, required this.value, required this.urgent});
 
   @override
   Widget build(BuildContext context) {
@@ -4211,29 +4921,123 @@ class _HudChip extends StatelessWidget {
   }
 }
 
-// ── Score line for game-over screen ────────────────────────────────────────
-class _ScoreLine extends StatelessWidget {
+// ── Score line ────────────────────────────────────────────────────────────────
+class _StsScoreLine extends StatelessWidget {
   final String label;
   final String value;
-  const _ScoreLine({required this.label, required this.value});
+  const _StsScoreLine({required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
     return Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-      Text(label, style: const TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
-      Text(value, style: const TextStyle(fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+      Text(label, style: const TextStyle(
+        fontFamily: 'Avenir', fontSize: 14, color: Colors.white54)),
+      Text(value, style: const TextStyle(
+        fontFamily: 'Avenir', fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
     ]);
   }
 }
 
-// ── Spiral painter ─────────────────────────────────────────────────────────
-class _SpiralPainter extends CustomPainter {
-  final List<_SpiralPoint> points;
+// ── Round painter: draws committed circles A and B + live stroke ─────────────
+class _StsRoundPainter extends CustomPainter {
+  final Offset? circleACenter;
+  final double circleARadius;
+  final Color colorA;
+  final Offset? circleBCenter;
+  final double circleBRadius;
+  final Color colorB;
+  final List<Offset> livePath;
+  final Color activeColor;
+  final double pulseValue;
+  final bool showA;
+
+  const _StsRoundPainter({
+    required this.circleACenter,
+    required this.circleARadius,
+    required this.colorA,
+    required this.circleBCenter,
+    required this.circleBRadius,
+    required this.colorB,
+    required this.livePath,
+    required this.activeColor,
+    required this.pulseValue,
+    required this.showA,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Draw committed circle A
+    if (showA && circleACenter != null && circleARadius > 0) {
+      final fillPaint = Paint()
+        ..color = colorA.withValues(alpha: 0.12)
+        ..style = PaintingStyle.fill;
+      final strokePaint = Paint()
+        ..color = colorA.withValues(alpha: 0.8)
+        ..strokeWidth = 2.0
+        ..style = PaintingStyle.stroke;
+      canvas.drawCircle(circleACenter!, circleARadius, fillPaint);
+      canvas.drawCircle(circleACenter!, circleARadius, strokePaint);
+      // Label
+      _drawLabel(canvas, circleACenter!, 'A', colorA);
+    }
+
+    // Draw committed circle B
+    if (circleBCenter != null && circleBRadius > 0) {
+      final fillPaint = Paint()
+        ..color = colorB.withValues(alpha: 0.12)
+        ..style = PaintingStyle.fill;
+      final strokePaint = Paint()
+        ..color = colorB.withValues(alpha: 0.8)
+        ..strokeWidth = 2.0
+        ..style = PaintingStyle.stroke;
+      canvas.drawCircle(circleBCenter!, circleBRadius, fillPaint);
+      canvas.drawCircle(circleBCenter!, circleBRadius, strokePaint);
+      _drawLabel(canvas, circleBCenter!, 'B', colorB);
+    }
+
+    // Draw live stroke
+    if (livePath.length >= 2) {
+      final livePaint = Paint()
+        ..color = activeColor.withValues(alpha: 0.55 * pulseValue)
+        ..strokeWidth = 2.2
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke;
+      final path = Path();
+      path.moveTo(livePath[0].dx, livePath[0].dy);
+      for (int i = 1; i < livePath.length; i++) {
+        path.lineTo(livePath[i].dx, livePath[i].dy);
+      }
+      canvas.drawPath(path, livePaint);
+    }
+  }
+
+  void _drawLabel(Canvas canvas, Offset center, String text, Color color) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: color.withValues(alpha: 0.7),
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, center.translate(-tp.width / 2, -tp.height / 2));
+  }
+
+  @override
+  bool shouldRepaint(covariant _StsRoundPainter old) => true;
+}
+
+// ── Spiral painter (finale) ───────────────────────────────────────────────────
+class _StsSpiralPainter extends CustomPainter {
+  final List<Offset> points;
   final int revolutions;
   final bool flashBreak;
   final double pulseValue;
 
-  const _SpiralPainter({
+  const _StsSpiralPainter({
     required this.points,
     required this.revolutions,
     required this.flashBreak,
@@ -4243,8 +5047,6 @@ class _SpiralPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (points.length < 2) return;
-
-    // Color cycles gently through revolutions for visual feedback.
     final hue = (revolutions * 30.0) % 360;
     final strokeColor = flashBreak
         ? Colors.redAccent
@@ -4266,25 +5068,21 @@ class _SpiralPainter extends CustomPainter {
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
 
     final path = Path();
-    path.moveTo(points[0].x, points[0].y);
+    path.moveTo(points[0].dx, points[0].dy);
     for (int i = 1; i < points.length; i++) {
-      path.lineTo(points[i].x, points[i].y);
+      path.lineTo(points[i].dx, points[i].dy);
     }
-
     canvas.drawPath(path, glowPaint);
     canvas.drawPath(path, paint);
 
-    // Draw a small dot at the current tip.
-    if (points.isNotEmpty) {
-      canvas.drawCircle(
-        points.last.offset, 4,
-        Paint()..color = strokeColor.withValues(alpha: 0.9),
-      );
-    }
+    canvas.drawCircle(
+      points.last, 4,
+      Paint()..color = strokeColor.withValues(alpha: 0.9),
+    );
   }
 
   @override
-  bool shouldRepaint(covariant _SpiralPainter old) =>
+  bool shouldRepaint(covariant _StsSpiralPainter old) =>
       old.points.length != points.length ||
       old.revolutions != revolutions ||
       old.flashBreak != flashBreak ||

@@ -2,6 +2,9 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
+import '../../../../games/fx.dart';
+import '../../../../theme/potatuhs.dart';
+
 // ---------------------------------------------------------------------------
 // Potato Rush — WarioWare-style rapid microgames, potato farm theme
 // ---------------------------------------------------------------------------
@@ -10,85 +13,76 @@ import 'package:flutter/material.dart';
 // Edit these to adjust feel without touching logic.
 
 // Total session length in seconds. Game ends at this mark regardless of lives.
-// Perfect play still can't beat the clock — scores cluster at peak skill.
-const double kSessionDuration = 60.0;
+const double kSessionDuration = 30.0; // was 60 — half the length, same density
 
 // Round timer: starts at kRoundTimeStart, decelerates toward kRoundTimeMin.
 // Each round subtracts kRoundTimeDrop (clamped at kRoundTimeMin).
-const double kRoundTimeStart = 3.8; // was 4.5 — already tighter at round 0
-const double kRoundTimeMin = 1.6; // was 2.5 — floor is brutal late game
-const double kRoundTimeDrop = 0.18; // was 0.12 — ramps faster
+const double kRoundTimeStart = 3.2; // snappy from round 0
+const double kRoundTimeMin = 1.4; // brutal late game
+const double kRoundTimeDrop = 0.20; // ramps hard
 
 // Instruction card duration: how long the hint flashes before game starts.
-const double kInstructionTimeStart = 0.9; // was 1.2
-const double kInstructionTimeMin = 0.35; // was 0.6
+const double kInstructionTimeStart = 0.7; // fast flash
+const double kInstructionTimeMin = 0.28; // near-subliminal at late game
 
-// Difficulty scalar reaches 1.0 at this round (was round 20 — too slow).
-const double kDifficultyCapRound = 12.0; // harder earlier
+// Difficulty scalar reaches 1.0 at this round.
+const double kDifficultyCapRound = 10.0; // compressed difficulty arc
 
 // HARVEST sub-game
-const int kHarvestCountBase = 4; // was 3
-const int kHarvestCountPerDiff = 4; // was 2 (adds up to 8 at max diff)
-// Swipe threshold is compared against the raw per-frame pixel delta on each
-// onPointerMove event. At 60 fps a brisk swipe produces ~3-6 px/frame, so
-// this must stay well below that range. Values ≥ 4 silently drop most frames.
-const double kHarvestSwipeThreshold = 1.5; // per-frame px; was 6.0 (broke controls)
-const double kHarvestHitZoneY = 35.0; // ±px vertical window; was 26.0 (too tight)
+const int kHarvestCountBase = 3;
+const int kHarvestCountPerDiff = 4; // 3..7 targets
+const double kHarvestSwipeThreshold = 1.5;
+const double kHarvestHitZoneY = 38.0;
 
 // WATER sub-game
-// kWaterTapsBase + kWaterTapsPerDiff * 1.0 = max taps needed.
-// Must be achievable in kRoundTimeMin seconds (~1.6 s) at ~10 taps/s max.
-const int kWaterTapsBase = 8; // was 14 (unreachable early)
-const int kWaterTapsPerDiff = 8; // was 18 (32 taps in 1.6 s = impossible)
+const int kWaterTapsBase = 7;
+const int kWaterTapsPerDiff = 7; // 7..14 taps
 
 // PLANT sub-game
-const int kPlantCountBase = 4; // was 3
-const int kPlantCountPerDiff = 5; // was 3 (up to 9 at max diff)
-const double kPlantHitRadius = 30.0; // tap radius in px; was 22.0 (too tight)
+const int kPlantCountBase = 3;
+const int kPlantCountPerDiff = 5;
+const double kPlantHitRadius = 32.0;
 
 // SPRAY sub-game
-const int kSprayBugBase = 6; // was 4
-const int kSprayBugPerDiff = 7; // was 4 (up to 13 at max diff)
-const double kSprayBugSpeedBase = 40.0; // was 10 — bugs move meaningfully
-const double kSprayBugSpeedVar = 60.0; // was 20
-const double kSprayHitRadius = 28.0; // spray radius in px; was 22.0 (too tight)
+const int kSprayBugBase = 5;
+const int kSprayBugPerDiff = 6; // 5..11 bugs
+const double kSprayBugSpeedBase = 50.0;
+const double kSprayBugSpeedVar = 70.0;
+const double kSprayHitRadius = 30.0;
 
 // CHASE sub-game
-const int kChaseSwipesBase = 6; // was 8 (scaled back; direction-flip counts corrected)
-const int kChaseSwipesPerDiff = 8; // was 10 (up to 14 at max diff)
-// Same per-frame delta caveat as HARVEST. Must be < typical frame delta.
-const double kChaseSwipeThreshold = 1.5; // per-frame px; was 5.0 (broke controls)
+const int kChaseSwipesBase = 5;
+const int kChaseSwipesPerDiff = 7;
+const double kChaseSwipeThreshold = 1.5;
 
 // CATCH sub-game
-const int kCatchNeededBase = 6; // was 4
-const int kCatchNeededPerDiff = 7; // was 4 (up to 13 at max diff)
-const double kCatchSpeedBase = 160.0; // was 100
-const double kCatchSpeedVar = 140.0; // was 80
-const double kCatchSpawnIntervalBase = 0.22; // was 0.35 — faster spawns
-const double kCatchSpawnIntervalVar = 0.12; // was 0.20
-const double kCatchHitRadius = 28.0; // tap radius in px; was 22.0 (too tight)
+const int kCatchNeededBase = 5;
+const int kCatchNeededPerDiff = 6;
+const double kCatchSpeedBase = 170.0;
+const double kCatchSpeedVar = 150.0;
+const double kCatchSpawnIntervalBase = 0.18;
+const double kCatchSpawnIntervalVar = 0.10;
+const double kCatchHitRadius = 30.0;
 
 // MIX (Shake) sub-game
-const int kMixShakesBase = 6; // was 8 (direction-flip counts corrected)
-const int kMixShakesPerDiff = 8; // was 10 (up to 14 at max diff)
-// Same per-frame delta caveat. Must be < typical frame delta for a swipe.
-const double kMixSwipeThreshold = 1.5; // per-frame px; was 5.0 (broke controls)
+const int kMixShakesBase = 5;
+const int kMixShakesPerDiff = 7;
+const double kMixSwipeThreshold = 1.5;
 
-// UI — speed-up flash duration
-const double kSpeedUpDuration = 0.65; // was 0.8
-// Result (win/lose flash) duration
-const double kResultDuration = 0.4; // was 0.5
+// UI flash durations
+const double kSpeedUpDuration = 0.55;
+const double kResultDuration = 0.32; // fast win/lose flash
 
 // ---- colour palette ---------------------------------------------------------
 
-const Color _kBg = Color(0xFF1A0E0A);
 const Color _kSoil = Color(0xFF5D4037);
 const Color _kPlant = Color(0xFF66BB6A);
-const Color _kPotato = Color(0xFFD4A056);
-const Color _kPotatoDark = Color(0xFFC08840);
+const Color _kPotato = Color(0xFFE1C916); // Potatuhs.gold
+const Color _kPotatoDark = Color(0xFFB86F4B); // Potatuhs.copper
 const Color _kWater = Color(0xFF42A5F5);
 const Color _kBug = Color(0xFFFF5722);
 const Color _kCrow = Color(0xFF1A1A2E);
+const Color _kAccent = Color(0xFFE16416); // Potatuhs.orange
 
 // ---- abstract microgame ---------------------------------------------------
 
@@ -97,7 +91,12 @@ abstract class _MicroGame {
   String get hint;
   Color get tint;
 
-  void init(Size size, Random rng, double difficulty);
+  Size _sz = Size.zero;
+
+  void init(Size size, Random rng, double difficulty) {
+    _sz = size;
+  }
+
   void update(double dt);
   void paint(Canvas canvas, Size size);
   bool get isComplete;
@@ -106,6 +105,11 @@ abstract class _MicroGame {
   void onMove(Offset pos, Offset delta) {}
   void onUp(Offset pos) {}
 }
+
+// ---- shared particle helpers (per-game burst list) ------------------------
+
+List<FxParticle> _burst(Offset at, Color color, {int count = 14}) =>
+    FxBurst.spawn(at, color, count: count, speed: 140);
 
 // ---- HARVEST: swipe right across potato plants ----------------------------
 
@@ -122,20 +126,22 @@ class _HarvestGame extends _MicroGame {
   @override
   String get hint => 'swipe right →';
   @override
-  Color get tint => const Color(0xFF795548);
+  Color get tint => Potatuhs.copper;
 
   final List<_HarvestTarget> _targets = [];
+  final List<FxParticle> _particles = [];
 
   @override
   void init(Size size, Random rng, double diff) {
+    super.init(size, rng, diff);
     _targets.clear();
-    final count =
-        kHarvestCountBase + (diff * kHarvestCountPerDiff).toInt();
-    final spacing = size.height * 0.6 / count;
+    _particles.clear();
+    final count = kHarvestCountBase + (diff * kHarvestCountPerDiff).toInt();
+    final spacing = size.height * 0.55 / max(count - 1, 1);
     for (int i = 0; i < count; i++) {
       _targets.add(_HarvestTarget(
-        size.width * 0.25 + rng.nextDouble() * size.width * 0.3,
-        size.height * 0.18 + i * spacing,
+        size.width * 0.28 + rng.nextDouble() * size.width * 0.28,
+        size.height * 0.22 + i * spacing,
       ));
     }
   }
@@ -146,8 +152,10 @@ class _HarvestGame extends _MicroGame {
     for (final t in _targets) {
       if (!t.harvested &&
           (pos.dy - t.y).abs() < kHarvestHitZoneY &&
-          pos.dx > t.x - 40) {
+          pos.dx > t.x - 44) {
         t.harvested = true;
+        _particles
+            .addAll(_burst(Offset(t.x, t.y), _kPotato, count: 12));
       }
     }
   }
@@ -157,6 +165,7 @@ class _HarvestGame extends _MicroGame {
     for (final t in _targets) {
       if (t.harvested) t.flyAge += dt;
     }
+    _particles.removeWhere((p) => !p.step(dt));
   }
 
   @override
@@ -164,66 +173,101 @@ class _HarvestGame extends _MicroGame {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Subtle soil band
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height * 0.18, size.width, size.height * 0.65),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(0, size.height * 0.18),
+          Offset(0, size.height * 0.83),
+          [_kSoil.withValues(alpha: 0.18), _kSoil.withValues(alpha: 0.32)],
+        ),
+    );
+
     for (final t in _targets) {
+      // Soil row
       canvas.drawRect(
         Rect.fromCenter(
             center: Offset(size.width / 2, t.y),
-            width: size.width * 0.7,
-            height: 12),
-        Paint()..color = _kSoil.withValues(alpha: 0.4),
+            width: size.width * 0.75,
+            height: 10),
+        Paint()..color = _kSoil.withValues(alpha: 0.35),
       );
 
       if (!t.harvested) {
+        // Stem
         canvas.drawLine(
           Offset(t.x, t.y),
-          Offset(t.x, t.y - 30),
+          Offset(t.x, t.y - 34),
           Paint()
             ..color = _kPlant
-            ..strokeWidth = 3
+            ..strokeWidth = 3.5
             ..strokeCap = StrokeCap.round,
         );
+        // Left leaf
         canvas.drawLine(
-          Offset(t.x, t.y - 20),
-          Offset(t.x - 12, t.y - 28),
+          Offset(t.x, t.y - 22),
+          Offset(t.x - 14, t.y - 32),
           Paint()
-            ..color = _kPlant
-            ..strokeWidth = 2
+            ..color = _kPlant.withValues(alpha: 0.85)
+            ..strokeWidth = 2.5
             ..strokeCap = StrokeCap.round,
         );
+        // Right leaf
         canvas.drawLine(
           Offset(t.x, t.y - 14),
-          Offset(t.x + 12, t.y - 22),
+          Offset(t.x + 14, t.y - 24),
           Paint()
-            ..color = _kPlant
-            ..strokeWidth = 2
+            ..color = _kPlant.withValues(alpha: 0.85)
+            ..strokeWidth = 2.5
             ..strokeCap = StrokeCap.round,
         );
-        _drawPotato(canvas, t.x, t.y + 8, 18);
+        // Potato orb (underground)
+        GameFx.orb(canvas, Offset(t.x, t.y + 9), 12, _kPotato, glow: 0.6);
 
-        // Arrow hint (subtle)
-        final ax = t.x + 50;
-        canvas.drawLine(
-          Offset(ax, t.y),
-          Offset(ax + 20, t.y),
-          Paint()
-            ..color = Colors.white.withValues(alpha: 0.15)
-            ..strokeWidth = 2
-            ..strokeCap = StrokeCap.round,
-        );
-      } else {
-        final lift = t.flyAge * 80;
-        final alpha = (1.0 - t.flyAge * 2).clamp(0.0, 1.0);
-        if (alpha > 0) {
-          _drawPotato(canvas, t.x + t.flyAge * 60, t.y - lift, 18,
-              alpha: alpha);
+        // Directional arrow hint
+        final ax = t.x + 56;
+        if (ax < size.width - 10) {
+          canvas.drawLine(
+            Offset(ax, t.y),
+            Offset(ax + 18, t.y),
+            Paint()
+              ..color = Colors.white.withValues(alpha: 0.18)
+              ..strokeWidth = 2
+              ..strokeCap = StrokeCap.round,
+          );
+          canvas.drawLine(
+            Offset(ax + 18, t.y),
+            Offset(ax + 12, t.y - 5),
+            Paint()
+              ..color = Colors.white.withValues(alpha: 0.18)
+              ..strokeWidth = 2
+              ..strokeCap = StrokeCap.round,
+          );
         }
+      } else {
+        // Fly-away potato arc
+        final lift = t.flyAge * 90;
+        final alpha = (1.0 - t.flyAge * 2.2).clamp(0.0, 1.0);
+        if (alpha > 0) {
+          GameFx.orb(
+            canvas,
+            Offset(t.x + t.flyAge * 70, t.y - lift),
+            10 * alpha,
+            _kPotato,
+            glow: 0.5 * alpha,
+          );
+        }
+        // Shadow in soil
         canvas.drawOval(
           Rect.fromCenter(
-              center: Offset(t.x, t.y + 5), width: 24, height: 10),
-          Paint()..color = _kSoil.withValues(alpha: 0.6),
+              center: Offset(t.x, t.y + 6), width: 22, height: 9),
+          Paint()..color = _kSoil.withValues(alpha: 0.5),
         );
       }
     }
+
+    FxBurst.paint(canvas, _particles);
   }
 }
 
@@ -242,28 +286,31 @@ class _WaterGame extends _MicroGame {
   @override
   Color get tint => const Color(0xFF1565C0);
 
-  int _needed = 14;
+  int _needed = 7;
   int _taps = 0;
   final List<_RainDrop> _drops = [];
+  final List<FxParticle> _particles = [];
   final Random _rng = Random();
-  Size _sz = Size.zero;
 
   @override
   void init(Size size, Random rng, double diff) {
-    _sz = size;
+    super.init(size, rng, diff);
     _needed = kWaterTapsBase + (diff * kWaterTapsPerDiff).toInt();
     _taps = 0;
     _drops.clear();
+    _particles.clear();
   }
 
   @override
   void onDown(Offset pos) {
     _taps++;
-    for (int i = 0; i < 3; i++) {
+    // Splash particle at tap position
+    _particles.addAll(_burst(pos, _kWater, count: 8));
+    for (int i = 0; i < 4; i++) {
       _drops.add(_RainDrop(
         _rng.nextDouble() * _sz.width,
-        -_rng.nextDouble() * 30,
-        200 + _rng.nextDouble() * 150,
+        -_rng.nextDouble() * 40,
+        220 + _rng.nextDouble() * 160,
       ));
     }
   }
@@ -274,6 +321,7 @@ class _WaterGame extends _MicroGame {
       d.y += d.speed * dt;
     }
     _drops.removeWhere((d) => d.y > _sz.height);
+    _particles.removeWhere((p) => !p.step(dt));
   }
 
   @override
@@ -283,69 +331,74 @@ class _WaterGame extends _MicroGame {
   void paint(Canvas canvas, Size size) {
     final progress = (_taps / _needed).clamp(0.0, 1.0);
 
+    // Soil strip
     canvas.drawRect(
-      Rect.fromLTWH(0, size.height * 0.75, size.width, size.height * 0.25),
-      Paint()..color = _kSoil.withValues(alpha: 0.5),
+      Rect.fromLTWH(0, size.height * 0.72, size.width, size.height * 0.28),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(0, size.height * 0.72),
+          Offset(0, size.height),
+          [_kSoil.withValues(alpha: 0.45), _kSoil.withValues(alpha: 0.6)],
+        ),
     );
 
-    const cropCount = 5;
+    // Growing crops
+    const cropCount = 6;
     for (int i = 0; i < cropCount; i++) {
-      final cx = size.width * (0.15 + i * 0.7 / (cropCount - 1));
-      final cropH = 15 + progress * 40;
-      final baseY = size.height * 0.75;
+      final cx = size.width * (0.12 + i * 0.76 / (cropCount - 1));
+      final cropH = 18 + progress * 48;
+      final baseY = size.height * 0.72;
+      final greenAmt = Curves.easeIn.transform(progress);
+      final stalkColor = Color.lerp(
+          const Color(0xFF8D6E63), _kPlant, greenAmt)!;
       canvas.drawLine(
         Offset(cx, baseY),
         Offset(cx, baseY - cropH),
         Paint()
-          ..color = Color.lerp(
-              const Color(0xFF8D6E63), _kPlant, progress)!
+          ..color = stalkColor
           ..strokeWidth = 3
           ..strokeCap = StrokeCap.round,
       );
-      if (progress > 0.3) {
+      if (progress > 0.25) {
         canvas.drawLine(
           Offset(cx, baseY - cropH * 0.6),
-          Offset(cx - 8, baseY - cropH * 0.8),
+          Offset(cx - 9, baseY - cropH * 0.8),
           Paint()
-            ..color = _kPlant.withValues(alpha: progress)
-            ..strokeWidth = 2,
+            ..color = _kPlant.withValues(alpha: greenAmt * 0.9)
+            ..strokeWidth = 2
+            ..strokeCap = StrokeCap.round,
         );
         canvas.drawLine(
-          Offset(cx, baseY - cropH * 0.4),
-          Offset(cx + 8, baseY - cropH * 0.6),
+          Offset(cx, baseY - cropH * 0.38),
+          Offset(cx + 9, baseY - cropH * 0.58),
           Paint()
-            ..color = _kPlant.withValues(alpha: progress)
-            ..strokeWidth = 2,
+            ..color = _kPlant.withValues(alpha: greenAmt * 0.9)
+            ..strokeWidth = 2
+            ..strokeCap = StrokeCap.round,
         );
+      }
+      // Ripe glow at tip when near complete
+      if (progress > 0.7) {
+        GameFx.orb(canvas, Offset(cx, baseY - cropH), 5 * progress, _kPotato,
+            glow: 0.5 * progress);
       }
     }
 
+    // Raindrops — teardrop shape
     for (final d in _drops) {
-      canvas.drawLine(
-        Offset(d.x, d.y),
-        Offset(d.x - 1, d.y + 8),
-        Paint()
-          ..color = _kWater.withValues(alpha: 0.5)
-          ..strokeWidth = 1.5
-          ..strokeCap = StrokeCap.round,
+      canvas.drawOval(
+        Rect.fromCenter(center: Offset(d.x, d.y + 4), width: 4, height: 8),
+        Paint()..color = _kWater.withValues(alpha: 0.65),
       );
     }
 
-    // Progress meter
-    final barW = size.width * 0.4;
+    FxBurst.paint(canvas, _particles);
+
+    // Progress bar
+    final barW = size.width * 0.5;
     final barX = (size.width - barW) / 2;
-    final barY = size.height * 0.12;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW, 6), const Radius.circular(3)),
-      Paint()..color = Colors.white.withValues(alpha: 0.08),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW * progress, 6),
-          const Radius.circular(3)),
-      Paint()..color = _kWater.withValues(alpha: 0.6),
-    );
+    final barY = size.height * 0.10;
+    _drawProgressBar(canvas, barX, barY, barW, 8, progress, _kWater);
   }
 }
 
@@ -367,15 +420,18 @@ class _PlantGame extends _MicroGame {
   Color get tint => const Color(0xFF33691E);
 
   final List<_Hole> _holes = [];
+  final List<FxParticle> _particles = [];
 
   @override
   void init(Size size, Random rng, double diff) {
+    super.init(size, rng, diff);
     _holes.clear();
+    _particles.clear();
     final count = kPlantCountBase + (diff * kPlantCountPerDiff).toInt();
     for (int i = 0; i < count; i++) {
       _holes.add(_Hole(
-        size.width * (0.12 + rng.nextDouble() * 0.76),
-        size.height * (0.22 + rng.nextDouble() * 0.52),
+        size.width * (0.14 + rng.nextDouble() * 0.72),
+        size.height * (0.24 + rng.nextDouble() * 0.48),
       ));
     }
   }
@@ -386,6 +442,7 @@ class _PlantGame extends _MicroGame {
       if (!h.planted &&
           (Offset(h.x, h.y) - pos).distance < kPlantHitRadius) {
         h.planted = true;
+        _particles.addAll(_burst(Offset(h.x, h.y), _kPlant, count: 10));
         break;
       }
     }
@@ -396,6 +453,7 @@ class _PlantGame extends _MicroGame {
     for (final h in _holes) {
       if (h.planted) h.popAge += dt;
     }
+    _particles.removeWhere((p) => !p.step(dt));
   }
 
   @override
@@ -403,50 +461,72 @@ class _PlantGame extends _MicroGame {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Soil zone
     canvas.drawRect(
-      Rect.fromLTWH(0, size.height * 0.2, size.width, size.height * 0.65),
-      Paint()..color = _kSoil.withValues(alpha: 0.25),
+      Rect.fromLTWH(0, size.height * 0.18, size.width, size.height * 0.68),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(0, size.height * 0.18),
+          Offset(0, size.height * 0.86),
+          [_kSoil.withValues(alpha: 0.20), _kSoil.withValues(alpha: 0.35)],
+        ),
     );
 
     for (final h in _holes) {
       if (!h.planted) {
+        // Hole shadow
         canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(h.x, h.y), width: 30, height: 16),
-          Paint()..color = _kSoil.withValues(alpha: 0.7),
+          Rect.fromCenter(center: Offset(h.x, h.y), width: 36, height: 18),
+          Paint()..color = _kSoil.withValues(alpha: 0.65),
         );
+        // Ring glow (tap target hint)
         canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(h.x, h.y), width: 34, height: 20),
+          Rect.fromCenter(center: Offset(h.x, h.y), width: 42, height: 24),
           Paint()
-            ..color = Colors.white.withValues(alpha: 0.2)
+            ..color = _kPotato.withValues(alpha: 0.25)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5,
+            ..strokeWidth = 2,
+        );
+        // Seed dot inside
+        canvas.drawCircle(
+          Offset(h.x, h.y),
+          4,
+          Paint()..color = _kPotatoDark.withValues(alpha: 0.6),
         );
       } else {
-        final sproutH = min(h.popAge * 40, 20.0);
+        // Filled hole
         canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(h.x, h.y), width: 26, height: 14),
+          Rect.fromCenter(center: Offset(h.x, h.y), width: 30, height: 15),
           Paint()..color = _kSoil.withValues(alpha: 0.5),
         );
-        if (sproutH > 2) {
+        // Sprout
+        final sproutH = min(h.popAge * 55, 28.0);
+        if (sproutH > 3) {
           canvas.drawLine(
             Offset(h.x, h.y - 2),
             Offset(h.x, h.y - 2 - sproutH),
             Paint()
               ..color = _kPlant
-              ..strokeWidth = 2
+              ..strokeWidth = 2.5
               ..strokeCap = StrokeCap.round,
           );
+          if (sproutH > 12) {
+            canvas.drawLine(
+              Offset(h.x, h.y - sproutH * 0.55),
+              Offset(h.x - 8, h.y - sproutH * 0.8),
+              Paint()
+                ..color = _kPlant.withValues(alpha: 0.75)
+                ..strokeWidth = 1.5
+                ..strokeCap = StrokeCap.round,
+            );
+          }
         }
-        canvas.drawCircle(
-          Offset(h.x, h.y),
-          3,
-          Paint()..color = _kPotatoDark,
-        );
+        // Tiny planted orb
+        GameFx.orb(canvas, Offset(h.x, h.y), 4, _kPotato, glow: 0.4);
       }
     }
+
+    FxBurst.paint(canvas, _particles);
   }
 }
 
@@ -455,9 +535,12 @@ class _PlantGame extends _MicroGame {
 class _Bug {
   double x, y;
   bool dead = false;
+  bool deadFlash = false;
+  double deadAge = 0;
   double angle;
   double speed;
-  _Bug(this.x, this.y, this.angle, this.speed);
+  double wobble;
+  _Bug(this.x, this.y, this.angle, this.speed, this.wobble);
 }
 
 class _SprayGame extends _MicroGame {
@@ -472,20 +555,24 @@ class _SprayGame extends _MicroGame {
   bool _holding = false;
   Offset? _sprayPos;
   final List<Offset> _trail = [];
+  final List<FxParticle> _particles = [];
 
   @override
   void init(Size size, Random rng, double diff) {
+    super.init(size, rng, diff);
     _bugs.clear();
     _trail.clear();
+    _particles.clear();
     _holding = false;
     _sprayPos = null;
     final count = kSprayBugBase + (diff * kSprayBugPerDiff).toInt();
     for (int i = 0; i < count; i++) {
       _bugs.add(_Bug(
-        size.width * (0.1 + rng.nextDouble() * 0.8),
-        size.height * (0.2 + rng.nextDouble() * 0.55),
+        size.width * (0.12 + rng.nextDouble() * 0.76),
+        size.height * (0.22 + rng.nextDouble() * 0.52),
         rng.nextDouble() * 2 * pi,
         kSprayBugSpeedBase + rng.nextDouble() * kSprayBugSpeedVar,
+        rng.nextDouble() * 2 * pi,
       ));
     }
   }
@@ -503,7 +590,7 @@ class _SprayGame extends _MicroGame {
     if (!_holding) return;
     _sprayPos = pos;
     _trail.add(pos);
-    if (_trail.length > 30) _trail.removeAt(0);
+    if (_trail.length > 32) _trail.removeAt(0);
     _checkSpray(pos);
   }
 
@@ -517,6 +604,8 @@ class _SprayGame extends _MicroGame {
     for (final b in _bugs) {
       if (!b.dead && (Offset(b.x, b.y) - pos).distance < kSprayHitRadius) {
         b.dead = true;
+        b.deadFlash = true;
+        _particles.addAll(_burst(Offset(b.x, b.y), _kBug, count: 10));
       }
     }
   }
@@ -524,13 +613,20 @@ class _SprayGame extends _MicroGame {
   @override
   void update(double dt) {
     for (final b in _bugs) {
-      if (b.dead) continue;
+      if (b.dead) {
+        b.deadAge += dt;
+        continue;
+      }
+      b.wobble += dt * 12;
       b.x += cos(b.angle) * b.speed * dt;
       b.y += sin(b.angle) * b.speed * dt;
-      // Bounce off screen edges
-      if (b.x < 10 || b.x > 370) b.angle = pi - b.angle;
-      if (b.y < 60 || b.y > 550) b.angle = -b.angle;
+      // Bounce off actual play-area bounds (uses _sz set in init)
+      if (b.x < 8 || b.x > _sz.width - 8) b.angle = pi - b.angle;
+      if (b.y < _sz.height * 0.12 || b.y > _sz.height * 0.88) {
+        b.angle = -b.angle;
+      }
     }
+    _particles.removeWhere((p) => !p.step(dt));
   }
 
   @override
@@ -538,71 +634,113 @@ class _SprayGame extends _MicroGame {
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (int i = 0; i < 6; i++) {
-      final px = size.width * (0.1 + i * 0.15);
-      final py = size.height * 0.8;
+    // Background crop stalks
+    for (int i = 0; i < 7; i++) {
+      final px = size.width * (0.08 + i * 0.13);
+      final py = size.height * 0.84;
       canvas.drawLine(
         Offset(px, py),
-        Offset(px, py - 40),
+        Offset(px + sin(i * 1.3) * 4, py - 44),
         Paint()
-          ..color = _kPlant.withValues(alpha: 0.3)
-          ..strokeWidth = 3,
+          ..color = _kPlant.withValues(alpha: 0.22)
+          ..strokeWidth = 2.5
+          ..strokeCap = StrokeCap.round,
       );
     }
 
+    // Spray trail
     if (_trail.length > 1) {
       for (int i = 1; i < _trail.length; i++) {
-        final alpha = (i / _trail.length) * 0.3;
+        final frac = i / _trail.length;
         canvas.drawLine(
           _trail[i - 1],
           _trail[i],
           Paint()
-            ..color = const Color(0xFF81C784).withValues(alpha: alpha)
-            ..strokeWidth = 8
-            ..strokeCap = StrokeCap.round,
+            ..color = const Color(0xFF81C784).withValues(alpha: frac * 0.35)
+            ..strokeWidth = 10 * frac
+            ..strokeCap = StrokeCap.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
         );
       }
     }
 
+    // Spray nozzle glow
     if (_holding && _sprayPos != null) {
       canvas.drawCircle(
         _sprayPos!,
-        kSprayHitRadius,
-        Paint()..color = const Color(0xFF81C784).withValues(alpha: 0.15),
+        kSprayHitRadius + 4,
+        Paint()
+          ..color = const Color(0xFF81C784).withValues(alpha: 0.12)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
       );
       canvas.drawCircle(
         _sprayPos!,
         kSprayHitRadius,
         Paint()
-          ..color = const Color(0xFF81C784).withValues(alpha: 0.3)
+          ..color = const Color(0xFF81C784).withValues(alpha: 0.35)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
+          ..strokeWidth = 2.5,
       );
     }
 
+    // Bugs
     for (final b in _bugs) {
-      if (b.dead) continue;
+      if (b.dead) {
+        // Death burst shrink
+        final t = (b.deadAge / 0.35).clamp(0.0, 1.0);
+        if (t < 1.0) {
+          canvas.drawOval(
+            Rect.fromCenter(
+                center: Offset(b.x, b.y),
+                width: 14 * (1 - t),
+                height: 10 * (1 - t)),
+            Paint()..color = _kBug.withValues(alpha: (1 - t) * 0.6),
+          );
+        }
+        continue;
+      }
+      final wobX = sin(b.wobble) * 1.8;
+      // Body with radial gradient for depth
+      final bodyRect =
+          Rect.fromCenter(center: Offset(b.x + wobX, b.y), width: 16, height: 11);
       canvas.drawOval(
-        Rect.fromCenter(center: Offset(b.x, b.y), width: 12, height: 8),
-        Paint()..color = _kBug,
+        bodyRect,
+        Paint()
+          ..shader = RadialGradient(
+            center: const Alignment(-0.3, -0.4),
+            colors: [
+              Color.lerp(_kBug, Colors.white, 0.35)!,
+              _kBug,
+              Color.lerp(_kBug, Colors.black, 0.4)!,
+            ],
+            stops: const [0.0, 0.5, 1.0],
+          ).createShader(bodyRect),
       );
+      // Legs
       for (int leg = -1; leg <= 1; leg++) {
         canvas.drawLine(
-          Offset(b.x + leg * 4, b.y),
-          Offset(b.x + leg * 4 - 3, b.y + 5),
+          Offset(b.x + wobX + leg * 5, b.y + 3),
+          Offset(b.x + wobX + leg * 5 - 4, b.y + 9),
           Paint()
-            ..color = _kBug.withValues(alpha: 0.6)
-            ..strokeWidth = 0.8,
-        );
-        canvas.drawLine(
-          Offset(b.x + leg * 4, b.y),
-          Offset(b.x + leg * 4 + 3, b.y - 5),
-          Paint()
-            ..color = _kBug.withValues(alpha: 0.6)
-            ..strokeWidth = 0.8,
+            ..color = _kBug.withValues(alpha: 0.55)
+            ..strokeWidth = 1.2,
         );
       }
+      // Antennae
+      canvas.drawLine(Offset(b.x + wobX - 4, b.y - 3),
+          Offset(b.x + wobX - 8, b.y - 9),
+          Paint()..color = _kBug.withValues(alpha: 0.5)..strokeWidth = 0.9);
+      canvas.drawLine(Offset(b.x + wobX + 4, b.y - 3),
+          Offset(b.x + wobX + 8, b.y - 9),
+          Paint()..color = _kBug.withValues(alpha: 0.5)..strokeWidth = 0.9);
+      // Eyes
+      canvas.drawCircle(Offset(b.x + wobX - 3, b.y - 2), 2,
+          Paint()..color = Colors.red.withValues(alpha: 0.9));
+      canvas.drawCircle(Offset(b.x + wobX + 3, b.y - 2), 2,
+          Paint()..color = Colors.red.withValues(alpha: 0.9));
     }
+
+    FxBurst.paint(canvas, _particles);
   }
 }
 
@@ -622,24 +760,27 @@ class _ChaseGame extends _MicroGame {
   @override
   Color get tint => const Color(0xFF263238);
 
-  int _needed = 8;
+  int _needed = 5;
   int _swipes = 0;
   double _lastDir = 0;
   double _scareMeter = 0;
   final List<_Crow> _crows = [];
+  final List<FxParticle> _particles = [];
 
   @override
   void init(Size size, Random rng, double diff) {
+    super.init(size, rng, diff);
     _needed = kChaseSwipesBase + (diff * kChaseSwipesPerDiff).toInt();
     _swipes = 0;
     _lastDir = 0;
     _scareMeter = 0;
     _crows.clear();
-    final crowCount = 3 + (diff * 3).toInt();
+    _particles.clear();
+    final crowCount = 2 + (diff * 3).toInt();
     for (int i = 0; i < crowCount; i++) {
       _crows.add(_Crow(
-        size.width * (0.2 + rng.nextDouble() * 0.6),
-        size.height * (0.3 + rng.nextDouble() * 0.3),
+        size.width * (0.18 + rng.nextDouble() * 0.64),
+        size.height * (0.28 + rng.nextDouble() * 0.28),
         rng.nextDouble() * pi * 2,
       ));
     }
@@ -649,12 +790,17 @@ class _ChaseGame extends _MicroGame {
   void onMove(Offset pos, Offset delta) {
     if (delta.dx.abs() < kChaseSwipeThreshold) return;
     final dir = delta.dx > 0 ? 1.0 : -1.0;
-    // Count every direction change, including the very first swipe (removed
-    // the `&& _lastDir != 0` guard that was silently discarding the first
-    // directional input and requiring one extra reversal throughout).
     if (dir != _lastDir) {
       _swipes++;
       _scareMeter = (_scareMeter + 1.0 / _needed).clamp(0.0, 1.0);
+      if (_scareMeter > 0.45) {
+        for (final c in _crows) {
+          if (c.fleeProgress < 0.1) {
+            _particles
+                .addAll(_burst(Offset(c.x, c.y), _kCrow, count: 6));
+          }
+        }
+      }
     }
     _lastDir = dir;
   }
@@ -662,11 +808,12 @@ class _ChaseGame extends _MicroGame {
   @override
   void update(double dt) {
     for (final c in _crows) {
-      c.wingPhase += dt * 8;
-      if (_scareMeter > 0.3) {
-        c.fleeProgress += dt * _scareMeter * 1.5;
+      c.wingPhase += dt * 9;
+      if (_scareMeter > 0.25) {
+        c.fleeProgress += dt * _scareMeter * 1.8;
       }
     }
+    _particles.removeWhere((p) => !p.step(dt));
   }
 
   @override
@@ -674,93 +821,138 @@ class _ChaseGame extends _MicroGame {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Sky gradient
     canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height * 0.75),
+      Rect.fromLTWH(0, 0, size.width, size.height * 0.72),
       Paint()
         ..shader = ui.Gradient.linear(
           const Offset(0, 0),
-          Offset(0, size.height * 0.75),
-          [
-            const Color(0xFF1A2035),
-            const Color(0xFF2E3B50),
-          ],
+          Offset(0, size.height * 0.72),
+          [const Color(0xFF1A2035), const Color(0xFF2E3B50)],
+        ),
+    );
+    // Ground
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height * 0.68, size.width, size.height * 0.32),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(0, size.height * 0.68),
+          Offset(0, size.height),
+          [_kSoil.withValues(alpha: 0.35), _kSoil.withValues(alpha: 0.5)],
         ),
     );
 
-    canvas.drawRect(
-      Rect.fromLTWH(
-          0, size.height * 0.7, size.width, size.height * 0.3),
-      Paint()..color = _kSoil.withValues(alpha: 0.4),
-    );
-
-    // Scarecrow
-    final scX = size.width / 2;
-    final scY = size.height * 0.55;
-    canvas.drawLine(
-      Offset(scX, scY),
-      Offset(scX, scY + 50),
-      Paint()
-        ..color = _kPotatoDark
-        ..strokeWidth = 3,
-    );
-    canvas.drawLine(
-      Offset(scX - 20, scY + 15),
-      Offset(scX + 20, scY + 15),
-      Paint()
-        ..color = _kPotatoDark
-        ..strokeWidth = 3,
-    );
-    canvas.drawCircle(
-      Offset(scX, scY - 8),
-      10,
-      Paint()..color = _kPotato,
-    );
-
-    for (final c in _crows) {
-      final fleeY = c.fleeProgress * -120;
-      final cx = c.x + sin(c.fleeProgress * 3) * 15;
-      final cy = c.y + fleeY;
-      final wingSpread = 12 + sin(c.wingPhase) * 6;
-      final alpha = (1.0 - c.fleeProgress).clamp(0.0, 1.0);
-
-      canvas.drawCircle(
-        Offset(cx, cy),
-        5,
-        Paint()..color = _kCrow.withValues(alpha: alpha),
-      );
+    // Crops in foreground
+    for (int i = 0; i < 8; i++) {
+      final cx = size.width * (0.06 + i * 0.12);
+      final cy = size.height * 0.68;
       canvas.drawLine(
-        Offset(cx - wingSpread, cy - 4),
         Offset(cx, cy),
+        Offset(cx + sin(i * 1.7) * 3, cy - 36),
         Paint()
-          ..color = _kCrow.withValues(alpha: alpha)
-          ..strokeWidth = 2.5
-          ..strokeCap = StrokeCap.round,
-      );
-      canvas.drawLine(
-        Offset(cx + wingSpread, cy - 4),
-        Offset(cx, cy),
-        Paint()
-          ..color = _kCrow.withValues(alpha: alpha)
+          ..color = _kPlant.withValues(alpha: 0.28)
           ..strokeWidth = 2.5
           ..strokeCap = StrokeCap.round,
       );
     }
 
-    // Scare meter
-    final barW = size.width * 0.35;
+    // Scarecrow
+    final scX = size.width / 2;
+    final scY = size.height * 0.52;
+    canvas.drawLine(
+      Offset(scX, scY),
+      Offset(scX, scY + 55),
+      Paint()
+        ..color = _kPotatoDark
+        ..strokeWidth = 3.5,
+    );
+    canvas.drawLine(
+      Offset(scX - 22, scY + 16),
+      Offset(scX + 22, scY + 16),
+      Paint()
+        ..color = _kPotatoDark
+        ..strokeWidth = 3,
+    );
+    // Hat
+    canvas.drawRect(
+      Rect.fromLTWH(scX - 8, scY - 22, 16, 14),
+      Paint()..color = _kPotatoDark.withValues(alpha: 0.8),
+    );
+    canvas.drawRect(
+      Rect.fromLTWH(scX - 12, scY - 9, 24, 3),
+      Paint()..color = _kPotatoDark.withValues(alpha: 0.6),
+    );
+    // Head
+    GameFx.orb(canvas, Offset(scX, scY - 4), 11, _kPotato, glow: 0.4);
+
+    // Scare meter glow around scarecrow
+    if (_scareMeter > 0.2) {
+      canvas.drawCircle(
+        Offset(scX, scY + 20),
+        35 * _scareMeter,
+        Paint()
+          ..color = _kAccent.withValues(alpha: 0.12 * _scareMeter)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+      );
+    }
+
+    // Crows
+    for (final c in _crows) {
+      final fleeY = c.fleeProgress * -140;
+      final cx = c.x + sin(c.fleeProgress * 3.5) * 18;
+      final cy = c.y + fleeY;
+      final wingSpread = 14 + sin(c.wingPhase) * 7;
+      final alpha = (1.0 - c.fleeProgress * 1.1).clamp(0.0, 1.0);
+      if (alpha <= 0) continue;
+
+      // Crow glow
+      canvas.drawCircle(
+        Offset(cx, cy),
+        10,
+        Paint()
+          ..color = Colors.white.withValues(alpha: alpha * 0.06)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+      );
+      // Body
+      canvas.drawOval(
+        Rect.fromCenter(center: Offset(cx, cy), width: 13, height: 9),
+        Paint()..color = _kCrow.withValues(alpha: alpha),
+      );
+      // Wings
+      canvas.drawLine(
+        Offset(cx - wingSpread, cy - 5),
+        Offset(cx, cy),
+        Paint()
+          ..color = _kCrow.withValues(alpha: alpha)
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round,
+      );
+      canvas.drawLine(
+        Offset(cx + wingSpread, cy - 5),
+        Offset(cx, cy),
+        Paint()
+          ..color = _kCrow.withValues(alpha: alpha)
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round,
+      );
+      // Beak
+      canvas.drawLine(
+        Offset(cx + 6, cy),
+        Offset(cx + 11, cy + 2),
+        Paint()
+          ..color = _kPotato.withValues(alpha: alpha * 0.8)
+          ..strokeWidth = 1.5,
+      );
+    }
+
+    FxBurst.paint(canvas, _particles);
+
+    // Scare meter bar
+    final barW = size.width * 0.4;
     final barX = (size.width - barW) / 2;
-    final barY = size.height * 0.12;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW, 6), const Radius.circular(3)),
-      Paint()..color = Colors.white.withValues(alpha: 0.08),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW * _scareMeter, 6),
-          const Radius.circular(3)),
-      Paint()..color = Colors.white.withValues(alpha: 0.5),
-    );
+    final barY = size.height * 0.10;
+    _drawProgressBar(canvas, barX, barY, barW, 7, _scareMeter,
+        Color.lerp(_kWater, _kAccent, _scareMeter)!);
   }
 }
 
@@ -780,22 +972,23 @@ class _CatchGame extends _MicroGame {
   @override
   Color get tint => const Color(0xFF4E342E);
 
-  int _needed = 6;
+  int _needed = 5;
   int _caught = 0;
   int _spawned = 0;
   double _spawnTimer = 0;
   final List<_FallingPotato> _potatoes = [];
+  final List<FxParticle> _particles = [];
   final Random _rng = Random();
-  Size _sz = Size.zero;
 
   @override
   void init(Size size, Random rng, double diff) {
-    _sz = size;
+    super.init(size, rng, diff);
     _needed = kCatchNeededBase + (diff * kCatchNeededPerDiff).toInt();
     _caught = 0;
     _spawned = 0;
-    _spawnTimer = 0.05;
+    _spawnTimer = 0.04;
     _potatoes.clear();
+    _particles.clear();
   }
 
   @override
@@ -804,6 +997,7 @@ class _CatchGame extends _MicroGame {
       if (!p.caught && (Offset(p.x, p.y) - pos).distance < kCatchHitRadius) {
         p.caught = true;
         _caught++;
+        _particles.addAll(_burst(Offset(p.x, p.y), _kPotato, count: 12));
         break;
       }
     }
@@ -812,13 +1006,13 @@ class _CatchGame extends _MicroGame {
   @override
   void update(double dt) {
     _spawnTimer -= dt;
-    if (_spawnTimer <= 0 && _spawned < _needed + 4) {
+    if (_spawnTimer <= 0 && _spawned < _needed + 5) {
       _spawnTimer = kCatchSpawnIntervalBase +
           _rng.nextDouble() * kCatchSpawnIntervalVar;
       _spawned++;
       _potatoes.add(_FallingPotato(
         _sz.width * (0.08 + _rng.nextDouble() * 0.84),
-        -20,
+        -22,
         kCatchSpeedBase + _rng.nextDouble() * kCatchSpeedVar,
         _rng.nextDouble() * 2 * pi,
       ));
@@ -827,9 +1021,10 @@ class _CatchGame extends _MicroGame {
     for (final p in _potatoes) {
       if (p.caught) continue;
       p.y += p.speed * dt;
-      p.rot += dt * 3;
+      p.rot += dt * 3.5;
     }
-    _potatoes.removeWhere((p) => p.caught || p.y > _sz.height + 30);
+    _potatoes.removeWhere((p) => p.caught || p.y > _sz.height + 35);
+    _particles.removeWhere((p) => !p.step(dt));
   }
 
   @override
@@ -837,43 +1032,69 @@ class _CatchGame extends _MicroGame {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Basket at bottom
+    // Basket at bottom with depth
     final bx = size.width / 2;
-    final by = size.height * 0.85;
+    final by = size.height * 0.84;
+    // Basket shadow
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(bx, by + 8), width: 78, height: 14),
+      Paint()..color = Colors.black.withValues(alpha: 0.25),
+    );
+    // Basket body
     canvas.drawArc(
-      Rect.fromCenter(center: Offset(bx, by), width: 70, height: 40),
+      Rect.fromCenter(center: Offset(bx, by), width: 80, height: 48),
       0,
       pi,
       false,
       Paint()
-        ..color = _kPotatoDark.withValues(alpha: 0.5)
+        ..color = _kPotatoDark.withValues(alpha: 0.6)
         ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round,
+    );
+    // Basket rim
+    canvas.drawLine(
+      Offset(bx - 40, by),
+      Offset(bx + 40, by),
+      Paint()
+        ..color = _kPotatoDark.withValues(alpha: 0.4)
         ..strokeWidth = 3,
     );
+    // Weave lines
+    for (int i = -2; i <= 2; i++) {
+      canvas.drawLine(
+        Offset(bx + i * 16, by),
+        Offset(bx + i * 16 - 4, by + 18),
+        Paint()
+          ..color = _kPotatoDark.withValues(alpha: 0.2)
+          ..strokeWidth = 1.5,
+      );
+    }
 
-    final countTp = TextPainter(
-      text: TextSpan(
-          text: '$_caught/$_needed',
-          style: TextStyle(
-              fontFamily: 'Avenir',
-              fontSize: 14,
-              color: Colors.white.withValues(alpha: 0.4))),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    countTp.paint(canvas, Offset(bx - countTp.width / 2, by + 8));
+    // Count label
+    GameFx.text(
+      canvas,
+      '$_caught/$_needed',
+      Offset(bx, by + 22),
+      13,
+      Colors.white.withValues(alpha: 0.4),
+    );
 
+    // Falling potatoes
     for (final p in _potatoes) {
       if (p.caught) continue;
       canvas.save();
       canvas.translate(p.x, p.y);
       canvas.rotate(p.rot);
-      _drawPotatoAt(canvas, 0, 0, 16);
+      GameFx.orb(canvas, Offset.zero, 14, _kPotato, glow: 0.5);
       canvas.restore();
     }
+
+    FxBurst.paint(canvas, _particles);
   }
 }
 
-// ---- SHAKE: tilt back and forth to mix compost ----------------------------
+// ---- SHAKE: swipe back and forth to mix compost ----------------------------
 
 class _ShakeGame extends _MicroGame {
   @override
@@ -883,33 +1104,42 @@ class _ShakeGame extends _MicroGame {
   @override
   Color get tint => const Color(0xFF3E2723);
 
-  int _needed = 8;
+  int _needed = 5;
   int _shakes = 0;
   double _lastDir = 0;
   double _mixLevel = 0;
   double _wobble = 0;
   double _elapsed = 0;
+  final List<FxParticle> _particles = [];
 
   @override
   void init(Size size, Random rng, double diff) {
+    super.init(size, rng, diff);
     _needed = kMixShakesBase + (diff * kMixShakesPerDiff).toInt();
     _shakes = 0;
     _lastDir = 0;
     _mixLevel = 0;
     _wobble = 0;
     _elapsed = 0;
+    _particles.clear();
   }
 
   @override
   void onMove(Offset pos, Offset delta) {
     if (delta.dx.abs() < kMixSwipeThreshold) return;
     final dir = delta.dx > 0 ? 1.0 : -1.0;
-    _wobble = delta.dx.clamp(-15.0, 15.0);
-    // Count every direction change, including the first swipe (removed the
-    // `&& _lastDir != 0` guard — same fix as _ChaseGame).
+    _wobble = delta.dx.clamp(-18.0, 18.0);
     if (dir != _lastDir) {
       _shakes++;
       _mixLevel = (_shakes / _needed).clamp(0.0, 1.0);
+      // Compost spray particles
+      _particles.addAll(FxBurst.spawn(
+        Offset(_sz.width / 2 + _wobble, _sz.height * 0.38),
+        _kSoil,
+        count: 6,
+        speed: 80,
+        size: 2.5,
+      ));
     }
     _lastDir = dir;
   }
@@ -917,7 +1147,8 @@ class _ShakeGame extends _MicroGame {
   @override
   void update(double dt) {
     _elapsed += dt;
-    _wobble *= (1 - dt * 8);
+    _wobble *= (1 - dt * 9);
+    _particles.removeWhere((p) => !p.step(dt));
   }
 
   @override
@@ -925,96 +1156,116 @@ class _ShakeGame extends _MicroGame {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cx = size.width / 2 + _wobble * 2;
-    final cy = size.height * 0.5;
+    final cx = size.width / 2 + _wobble * 2.2;
+    final cy = size.height * 0.48;
 
-    const binW = 80.0;
-    const binH = 100.0;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromCenter(
-              center: Offset(cx, cy), width: binW, height: binH),
-          const Radius.circular(6)),
-      Paint()..color = const Color(0xFF5D4037).withValues(alpha: 0.6),
+    const binW = 90.0;
+    const binH = 110.0;
+
+    // Bin shadow
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx, cy + binH / 2 + 8), width: 70, height: 14),
+      Paint()..color = Colors.black.withValues(alpha: 0.2),
     );
+
+    // Bin body with gradient
+    final binRect = Rect.fromCenter(
+        center: Offset(cx, cy), width: binW, height: binH);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromCenter(
-              center: Offset(cx, cy), width: binW, height: binH),
-          const Radius.circular(6)),
+      RRect.fromRectAndRadius(binRect, const Radius.circular(8)),
       Paint()
-        ..color = Colors.white.withValues(alpha: 0.15)
+        ..shader = ui.Gradient.linear(
+          Offset(cx - binW / 2, cy),
+          Offset(cx + binW / 2, cy),
+          [
+            const Color(0xFF5D4037).withValues(alpha: 0.7),
+            const Color(0xFF4E342E).withValues(alpha: 0.85),
+          ],
+        ),
+    );
+    // Bin rim highlight
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(binRect, const Radius.circular(8)),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.12)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
 
-    const fillH = binH * 0.8;
-    final baseY = cy + binH / 2 - 8;
-    const layers = 4;
+    // Fill layers — animate mix progression
+    const fillH = binH * 0.78;
+    final baseY = cy + binH / 2 - 10;
+    const layers = 5;
     for (int i = 0; i < layers; i++) {
       final ly = baseY - i * fillH / layers;
+      final t = (i / (layers - 1));
       final layerColor = Color.lerp(
         const Color(0xFF8D6E63),
-        const Color(0xFF4E342E),
-        _mixLevel,
+        const Color(0xFF4CAF50),
+        _mixLevel * t,
       )!;
+      final layerWobble = sin(_elapsed * 12 + i * 1.8) * _wobble.abs() * 0.05;
       canvas.drawRect(
         Rect.fromLTWH(
-            cx - binW / 2 + 4, ly - fillH / layers, binW - 8, fillH / layers),
+            cx - binW / 2 + 5,
+            ly - fillH / layers + layerWobble,
+            binW - 10,
+            fillH / layers),
         Paint()
-          ..color = layerColor.withValues(
-              alpha: 0.5 + (i % 2) * 0.15 * (1 - _mixLevel)),
+          ..color = layerColor.withValues(alpha: 0.55 + (i.isEven ? 0.1 : 0)),
       );
     }
 
-    if (_wobble.abs() > 2) {
-      const pCount = 4;
-      for (int i = 0; i < pCount; i++) {
-        final px = cx + _wobble * 1.5 + sin(_elapsed * 20 + i * 1.5) * 15;
-        final py =
-            cy - binH / 2 + sin(_elapsed * 15 + i * 2) * 10 - 10;
-        canvas.drawCircle(
-          Offset(px, py),
-          2,
-          Paint()..color = _kSoil.withValues(alpha: 0.4),
-        );
-      }
+    // Bin band (horizontal stripe for texture)
+    canvas.drawRect(
+      Rect.fromLTWH(cx - binW / 2 + 5, cy - 4, binW - 10, 6),
+      Paint()..color = Colors.black.withValues(alpha: 0.12),
+    );
+
+    // Mix level badge
+    if (_mixLevel > 0.05) {
+      GameFx.orb(
+        canvas,
+        Offset(cx + binW / 2 + 14, cy - binH / 2 + 10),
+        10,
+        Color.lerp(_kSoil, _kPlant, _mixLevel)!,
+        glow: 0.5 * _mixLevel,
+      );
     }
 
-    final barW = size.width * 0.35;
+    FxBurst.paint(canvas, _particles);
+
+    // Progress bar
+    final barW = size.width * 0.42;
     final barX = (size.width - barW) / 2;
-    final barY = size.height * 0.12;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW, 6), const Radius.circular(3)),
-      Paint()..color = Colors.white.withValues(alpha: 0.08),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW * _mixLevel, 6),
-          const Radius.circular(3)),
-      Paint()..color = _kPotato.withValues(alpha: 0.6),
-    );
+    final barY = size.height * 0.10;
+    _drawProgressBar(canvas, barX, barY, barW, 7, _mixLevel,
+        Color.lerp(_kPotatoDark, _kPlant, _mixLevel)!);
   }
 }
 
 // ---- shared draw helpers --------------------------------------------------
 
-void _drawPotato(Canvas canvas, double x, double y, double size,
-    {double alpha = 1.0}) {
-  canvas.drawOval(
-    Rect.fromCenter(
-        center: Offset(x, y), width: size * 1.3, height: size),
-    Paint()..color = _kPotato.withValues(alpha: alpha),
+// Progress bar utility (reused by Water, Chase, Mix)
+void _drawProgressBar(
+    Canvas canvas, double x, double y, double w, double h, double progress,
+    Color fill) {
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(x, y, w, h), Radius.circular(h / 2)),
+    Paint()..color = Colors.white.withValues(alpha: 0.08),
   );
-  canvas.drawCircle(Offset(x - size * 0.2, y - size * 0.1), size * 0.08,
-      Paint()..color = _kPotatoDark.withValues(alpha: alpha * 0.6));
-  canvas.drawCircle(Offset(x + size * 0.15, y + size * 0.12), size * 0.06,
-      Paint()..color = _kPotatoDark.withValues(alpha: alpha * 0.6));
-}
-
-void _drawPotatoAt(Canvas canvas, double x, double y, double size) {
-  _drawPotato(canvas, x, y, size);
+  if (progress > 0) {
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, y, w * progress, h), Radius.circular(h / 2)),
+      Paint()
+        ..color = fill.withValues(alpha: 0.75)
+        ..maskFilter = progress > 0.7
+            ? const MaskFilter.blur(BlurStyle.normal, 2)
+            : null,
+    );
+  }
 }
 
 // ---- phase enum -----------------------------------------------------------
@@ -1042,25 +1293,28 @@ class _PotatoRushGameState extends State<PotatoRushGame>
   bool _lastWin = false;
   double _elapsed = 0;
 
-  // 60-second session clock — counts down from kSessionDuration.
+  // 30-second session clock — counts down from kSessionDuration.
   double _sessionClock = kSessionDuration;
   bool _sessionStarted = false;
 
   _MicroGame? _currentGame;
   final List<_MicroGame> _gamePool = [];
 
+  // Global particle list for result screen bursts
+  final List<FxParticle> _resultParticles = [];
+
   Size _size = Size.zero;
   double _lastTime = 0;
 
-  // Round time shrinks with each round, harder floor than before.
+  // Round time shrinks with each round.
   double get _roundTime =>
       max(kRoundTimeMin, kRoundTimeStart - _round * kRoundTimeDrop);
 
   // Instruction card shrinks faster with rounds.
   double get _instructionTime =>
-      max(kInstructionTimeMin, kInstructionTimeStart - _round * 0.03);
+      max(kInstructionTimeMin, kInstructionTimeStart - _round * 0.028);
 
-  // Difficulty scalar: reaches 1.0 at kDifficultyCapRound instead of 20.
+  // Difficulty scalar: reaches 1.0 at kDifficultyCapRound.
   double get _difficulty => (_round / kDifficultyCapRound).clamp(0.0, 1.0);
 
   @override
@@ -1096,6 +1350,7 @@ class _PotatoRushGameState extends State<PotatoRushGame>
     _round = 0;
     _sessionClock = kSessionDuration;
     _sessionStarted = true;
+    _resultParticles.clear();
     _phase = _Phase.instruction;
     _pickNextGame();
   }
@@ -1118,7 +1373,7 @@ class _PotatoRushGameState extends State<PotatoRushGame>
     setState(() {
       _elapsed += dt;
 
-      // Tick the 60-second session clock while a game is in progress.
+      // Tick session clock while game is in progress.
       if (_sessionStarted &&
           _phase != _Phase.preGame &&
           _phase != _Phase.gameOver) {
@@ -1130,6 +1385,8 @@ class _PotatoRushGameState extends State<PotatoRushGame>
           return;
         }
       }
+
+      _resultParticles.removeWhere((p) => !p.step(dt));
 
       switch (_phase) {
         case _Phase.preGame:
@@ -1154,6 +1411,10 @@ class _PotatoRushGameState extends State<PotatoRushGame>
             _round++;
             _phase = _Phase.result;
             _phaseTimer = kResultDuration;
+            // Win burst at center
+            _resultParticles
+                .addAll(_burst(Offset(_size.width / 2, _size.height / 2),
+                    _kPotato, count: 20));
           } else if (_phaseTimer <= 0) {
             _lastWin = false;
             _lives--;
@@ -1237,6 +1498,7 @@ class _PotatoRushGameState extends State<PotatoRushGame>
               currentGame: _currentGame,
               roundTime: _roundTime,
               sessionClock: _sessionClock,
+              resultParticles: _resultParticles,
             ),
             size: Size.infinite,
           ),
@@ -1257,6 +1519,7 @@ class _PotatoRushPainter extends CustomPainter {
   final _MicroGame? currentGame;
   final double roundTime;
   final double sessionClock;
+  final List<FxParticle> resultParticles;
 
   _PotatoRushPainter({
     required this.phase,
@@ -1269,11 +1532,13 @@ class _PotatoRushPainter extends CustomPainter {
     required this.currentGame,
     required this.roundTime,
     required this.sessionClock,
+    required this.resultParticles,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+    // Atmospheric base: dark with potato-gold accent
+    GameFx.atmosphere(canvas, size, _kPotato, elapsed, motes: 18);
 
     switch (phase) {
       case _Phase.preGame:
@@ -1298,30 +1563,69 @@ class _PotatoRushPainter extends CustomPainter {
   }
 
   void _drawPreGame(Canvas canvas, Size size) {
-    _drawPotato(canvas, size.width / 2, size.height * 0.35, 40);
-    _drawCentered(canvas, size, 'Potato Rush', 30,
-        Colors.white.withValues(alpha: 0.6), -20);
-    _drawCentered(canvas, size, 'Do what it says. Fast.', 14,
-        Colors.white.withValues(alpha: 0.25), 15);
-    _drawCentered(canvas, size, '${kSessionDuration.toInt()}s — GO!', 14,
-        Colors.white.withValues(alpha: 0.2), 40);
-    _drawCentered(canvas, size, 'Tap to start', 14,
-        Colors.white.withValues(alpha: 0.2), 60);
+    // Hero potato orb
+    GameFx.orb(canvas, Offset(size.width / 2, size.height * 0.33), 38,
+        _kPotato, glow: 1.0, specular: true);
+
+    GameFx.text(canvas, 'POTATO RUSH',
+        Offset(size.width / 2, size.height * 0.48), 32,
+        Colors.white.withValues(alpha: 0.92),
+        display: true, glow: 0.45);
+
+    GameFx.text(canvas, 'Do what it says. Fast.',
+        Offset(size.width / 2, size.height * 0.55), 13,
+        Potatuhs.textSecondary.withValues(alpha: 0.65));
+
+    GameFx.text(canvas, '${kSessionDuration.toInt()}s — GO!',
+        Offset(size.width / 2, size.height * 0.61), 13,
+        _kPotato.withValues(alpha: 0.5),
+        glow: 0.3);
+
+    GameFx.text(canvas, 'Tap to start',
+        Offset(size.width / 2, size.height * 0.70), 14,
+        Colors.white.withValues(alpha: 0.28));
   }
 
   void _drawInstruction(Canvas canvas, Size size) {
     if (currentGame == null) return;
 
     final tint = currentGame!.tint;
-    canvas.drawRect(
-      Rect.fromLTWH(0, size.height * 0.3, size.width, size.height * 0.4),
-      Paint()..color = tint.withValues(alpha: 0.3),
+
+    // Frosted card
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(18, size.height * 0.28, size.width - 36,
+              size.height * 0.42),
+          const Radius.circular(18)),
+      Paint()..color = tint.withValues(alpha: 0.22),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(18, size.height * 0.28, size.width - 36,
+              size.height * 0.42),
+          const Radius.circular(18)),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.1)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
     );
 
-    _drawCentered(canvas, size, currentGame!.title, 42,
-        Colors.white.withValues(alpha: 0.85), -15);
-    _drawCentered(canvas, size, currentGame!.hint, 16,
-        Colors.white.withValues(alpha: 0.4), 25);
+    GameFx.text(
+        canvas,
+        currentGame!.title,
+        Offset(size.width / 2, size.height * 0.46),
+        44,
+        Colors.white.withValues(alpha: 0.95),
+        display: true,
+        glow: 0.55);
+
+    GameFx.text(
+        canvas,
+        currentGame!.hint,
+        Offset(size.width / 2, size.height * 0.56),
+        16,
+        tint.withValues(alpha: 0.85),
+        glow: 0.2);
 
     _drawLives(canvas, size);
     _drawScore(canvas, size);
@@ -1331,14 +1635,30 @@ class _PotatoRushPainter extends CustomPainter {
   void _drawPlaying(Canvas canvas, Size size) {
     currentGame?.paint(canvas, size);
 
-    // Per-round timer bar at bottom
+    // Per-round timer bar — thicker, more visible
     final progress = (phaseTimer / roundTime).clamp(0.0, 1.0);
-    final barY = size.height - 14;
-    final barColor =
-        progress > 0.3 ? _kPotato : const Color(0xFFFF5252);
-    canvas.drawRect(
-      Rect.fromLTWH(0, barY, size.width * progress, 6),
-      Paint()..color = barColor.withValues(alpha: 0.5),
+    final barY = size.height - 16;
+    const barH = 8.0;
+    // Track
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(0, barY, size.width, barH),
+          const Radius.circular(4)),
+      Paint()..color = Colors.white.withValues(alpha: 0.07),
+    );
+    // Fill
+    final barColor = progress > 0.35
+        ? _kPotato
+        : Color.lerp(const Color(0xFFFF5252), _kPotato, progress / 0.35)!;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(0, barY, size.width * progress, barH),
+          const Radius.circular(4)),
+      Paint()
+        ..color = barColor.withValues(alpha: 0.7)
+        ..maskFilter = progress < 0.2
+            ? const MaskFilter.blur(BlurStyle.normal, 3)
+            : null,
     );
 
     _drawLives(canvas, size);
@@ -1349,23 +1669,38 @@ class _PotatoRushPainter extends CustomPainter {
   void _drawResult(Canvas canvas, Size size) {
     if (lastWin) {
       final alpha = (phaseTimer / kResultDuration).clamp(0.0, 1.0);
+      // Green flash
       canvas.drawRect(
           Offset.zero & size,
           Paint()
             ..color =
-                const Color(0xFF4CAF50).withValues(alpha: alpha * 0.15));
-      _drawCentered(canvas, size, '✓', 60,
-          const Color(0xFF4CAF50).withValues(alpha: alpha * 0.7), 0);
+                const Color(0xFF4CAF50).withValues(alpha: alpha * 0.20));
+      // Big tick
+      GameFx.text(
+          canvas,
+          '✓',
+          Offset(size.width / 2, size.height / 2),
+          72,
+          const Color(0xFF4CAF50).withValues(alpha: alpha * 0.9),
+          glow: alpha * 0.8);
     } else {
       final alpha = (phaseTimer / kResultDuration).clamp(0.0, 1.0);
+      // Red flash
       canvas.drawRect(
           Offset.zero & size,
           Paint()
             ..color =
-                const Color(0xFFE53935).withValues(alpha: alpha * 0.15));
-      _drawCentered(canvas, size, '✗', 60,
-          const Color(0xFFE53935).withValues(alpha: alpha * 0.7), 0);
+                const Color(0xFFE53935).withValues(alpha: alpha * 0.20));
+      GameFx.text(
+          canvas,
+          '✗',
+          Offset(size.width / 2, size.height / 2),
+          72,
+          const Color(0xFFE53935).withValues(alpha: alpha * 0.9),
+          glow: alpha * 0.8);
     }
+
+    FxBurst.paint(canvas, resultParticles);
 
     _drawLives(canvas, size);
     _drawScore(canvas, size);
@@ -1373,9 +1708,23 @@ class _PotatoRushPainter extends CustomPainter {
   }
 
   void _drawSpeedUp(Canvas canvas, Size size) {
-    final pulse = 0.6 + 0.4 * sin(elapsed * 12);
-    _drawCentered(canvas, size, 'SPEED UP!', 36,
-        _kPotato.withValues(alpha: pulse), 0);
+    final pulse = 0.55 + 0.45 * sin(elapsed * 14);
+    // Radial glow
+    canvas.drawCircle(
+      Offset(size.width / 2, size.height / 2),
+      size.shortestSide * 0.55,
+      Paint()
+        ..color = _kAccent.withValues(alpha: 0.08 * pulse)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20),
+    );
+    GameFx.text(
+        canvas,
+        'SPEED UP!',
+        Offset(size.width / 2, size.height / 2),
+        40,
+        _kPotato.withValues(alpha: pulse),
+        display: true,
+        glow: pulse * 0.7);
     _drawLives(canvas, size);
     _drawScore(canvas, size);
     _drawSessionClock(canvas, size);
@@ -1384,90 +1733,79 @@ class _PotatoRushPainter extends CustomPainter {
   void _drawGameOver(Canvas canvas, Size size) {
     canvas.drawRect(
         Offset.zero & size,
-        Paint()..color = Colors.black.withValues(alpha: 0.7));
+        Paint()..color = Colors.black.withValues(alpha: 0.78));
 
-    _drawPotato(canvas, size.width / 2, size.height * 0.32, 30);
-    _drawCentered(canvas, size, 'Game Over', 30,
-        Colors.white.withValues(alpha: 0.54), -30);
-    _drawCentered(canvas, size, '$score', 52,
-        _kPotato.withValues(alpha: 0.7), 15);
-    _drawCentered(canvas, size, '$round rounds survived', 14,
-        Colors.white.withValues(alpha: 0.3), 55);
-    _drawCentered(canvas, size, 'Tap to restart', 14,
-        Colors.white.withValues(alpha: 0.2), 85);
+    GameFx.orb(canvas, Offset(size.width / 2, size.height * 0.30), 28,
+        _kPotato, glow: 0.8);
+
+    GameFx.text(canvas, 'GAME OVER',
+        Offset(size.width / 2, size.height * 0.44), 28,
+        Colors.white.withValues(alpha: 0.60),
+        display: true);
+
+    GameFx.text(canvas, '$score',
+        Offset(size.width / 2, size.height * 0.55), 56,
+        _kPotato.withValues(alpha: 0.9),
+        display: true, glow: 0.65);
+
+    GameFx.text(canvas, '$round rounds survived',
+        Offset(size.width / 2, size.height * 0.64), 14,
+        Potatuhs.textSecondary.withValues(alpha: 0.5));
+
+    GameFx.text(canvas, 'Tap to restart',
+        Offset(size.width / 2, size.height * 0.73), 14,
+        Colors.white.withValues(alpha: 0.28));
   }
 
   void _drawLives(Canvas canvas, Size size) {
     for (int i = 0; i < 3; i++) {
-      final cx = 18.0 + i * 20.0;
-      const cy = 18.0;
+      final cx = 20.0 + i * 22.0;
+      const cy = 20.0;
       if (i < lives) {
-        _drawPotato(canvas, cx, cy, 8);
+        GameFx.orb(canvas, Offset(cx, cy), 8, _kPotato,
+            glow: 0.6, specular: false);
       } else {
-        canvas.drawOval(
-          Rect.fromCenter(center: Offset(cx, cy), width: 10, height: 8),
+        canvas.drawCircle(
+          Offset(cx, cy),
+          8,
           Paint()
             ..color = Colors.white.withValues(alpha: 0.1)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 1,
+            ..strokeWidth = 1.2,
         );
       }
     }
   }
 
   void _drawScore(Canvas canvas, Size size) {
-    final tp = TextPainter(
-      text: TextSpan(
-          text: '$score',
-          style: TextStyle(
-              fontFamily: 'Avenir',
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: _kPotato.withValues(alpha: 0.6))),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas, Offset(size.width - tp.width - 16, 10));
+    GameFx.text(
+      canvas,
+      '$score',
+      Offset(size.width - 28, 20),
+      20,
+      _kPotato.withValues(alpha: 0.8),
+      display: true,
+      glow: 0.4,
+    );
   }
 
-  // Session clock shown top-centre, turns red in final 10 seconds.
+  // Session clock — top-centre, turns red/urgent in final 8s.
   void _drawSessionClock(Canvas canvas, Size size) {
     final secs = sessionClock.ceil();
-    final urgent = sessionClock < 10;
+    final urgent = sessionClock < 8;
     final clockColor = urgent
         ? Color.lerp(const Color(0xFFFF5252), _kPotato,
-            (sessionClock / 10).clamp(0.0, 1.0))!
-        : Colors.white.withValues(alpha: 0.35);
-    final tp = TextPainter(
-      text: TextSpan(
-          text: '$secs',
-          style: TextStyle(
-              fontFamily: 'Avenir',
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              color: clockColor)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas,
-        Offset((size.width - tp.width) / 2, 10));
-  }
-
-  void _drawCentered(Canvas canvas, Size size, String text, double sz,
-      Color color, double yOff) {
-    final tp = TextPainter(
-      text: TextSpan(
-          text: text,
-          style: TextStyle(
-              fontFamily: 'Avenir',
-              fontSize: sz,
-              fontWeight: FontWeight.w600,
-              color: color)),
-      textAlign: TextAlign.center,
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(
-        canvas,
-        Offset((size.width - tp.width) / 2,
-            (size.height - tp.height) / 2 + yOff));
+            (sessionClock / 8).clamp(0.0, 1.0))!
+        : Colors.white.withValues(alpha: 0.40);
+    final pulse = urgent ? (0.7 + 0.3 * sin(elapsed * 12)) : 1.0;
+    GameFx.text(
+      canvas,
+      '$secs',
+      Offset(size.width / 2, 20),
+      urgent ? 16 : 14,
+      clockColor.withValues(alpha: clockColor.a * pulse),
+      glow: urgent ? 0.5 * pulse : 0.0,
+    );
   }
 
   @override

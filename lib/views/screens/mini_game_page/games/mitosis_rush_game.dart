@@ -3,70 +3,103 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 // ---------------------------------------------------------------------------
-// Mitosis Rush — WarioWare-style 6-phase mitosis micro-game sequence (~60s)
+// Mitosis Rush — spec 2026-06-17
+// One continuous cell object through G1 → S → G2 (~90% of playtime) →
+// Prophase → Metaphase → Anaphase → Telophase → Cytokinesis (5 quick gestures).
+// The pacing IS the lesson: interphase takes the longest.
 // ---------------------------------------------------------------------------
 // CONTRACT: const MitosisRushGame() — no args, no callbacks, fully self-contained.
-// Scores accumulate across phases and are displayed at the end.
 // ---------------------------------------------------------------------------
 
-// ── FEEL CONSTANTS (tune here) ───────────────────────────────────────────────
+// ── TUNABLE CONSTANTS ────────────────────────────────────────────────────────
 
-// INTERPHASE — tap-to-collect DNA blobs
-const int    _kDnaTarget        = 20;    // taps needed to fill meter
-const double _kDnaPhaseTime     = 10.0;  // seconds
+// Time budget (seconds)
+const double _kG1Time          = 30.0;
+const double _kSTime           = 28.0;  // base-pair matching
+const double _kG2Time          = 22.0;
+const double _kProphaseTime    =  8.0;
+const double _kMetaphaseTime   =  9.0;
+const double _kAnaphaseTime    =  9.0;
+const double _kTelophaseTime   =  8.0;
+const double _kCytokinesisTime =  8.0;
 
-// PROPHASE — tap chromatin pairs to condense them
-const int    _kChromatinCount   = 12;    // number of floating chromatin bits
-const double _kPropPhaseTime    = 10.0;
+// G1 / G2 reverse-pinch QTE — LENIENT
+const double _kReversePinchMinGrow  = 22.0;  // px distance growth (was 55)
+const double _kAxisToleranceDeg     = 50.0;  // ±° axis tolerance (was 25)
+// Single-finger fallback for reverse-pinch: a long-enough outward drag
+const double _kSingleFingerMinDrag  = 60.0;  // px (single-finger outward drag)
+const int    _kG1BasePoints         = 10;
+const double _kG1CellGrowPerHit     = 0.04;
 
-// METAPHASE — drag chromosomes onto the center plate
-const double _kPlateSnapDist    = 32.0;  // px snap radius to center line (generous)
-const int    _kChromosomeCount  = 4;     // pairs to align
-const double _kMetaPhaseTime    = 12.0;
+// S phase — base-pair matching
+const int    _kSBasesTotal          = 12;    // bases to match to complete phase
+const int    _kSBasePoints          = 8;     // points per correct match
+const int    _kSStreakBonus         = 4;     // extra pts per streak level above 2
 
-// ANAPHASE — swipe/drag chromatid pairs apart (UP for top pole, DOWN for bottom)
-// BUG WAS: threshold checked pos.dx (horizontal). Poles are top/bottom so the
-// natural gesture is VERTICAL. Fixed: now checks vertical delta (pos.dy).
-const double _kSwipeThreshold   = 55.0;  // px vertical delta to count a pull (forgiving)
-const double _kSwipeHitRadius   = 52.0;  // generous hit-test radius on each pair
-const int    _kChromatidPairs   = 4;
-const double _kAnaPhaseTime     = 12.0;  // extra time now that gesture is correct
+// Prophase — pinch to condense — LENIENT
+const double _kPinchMinShrink       = 18.0;  // px distance shrink (new — was missing)
+const double _kPinchCondensePerHit  = 0.22;  // condensation per counted pinch
+const int    _kProphasePoints       = 10;    // per valid pinch
 
-// TELOPHASE — tap each nucleus outline to "seal" it
-const int    _kNuclei           = 2;
-const int    _kTapsPerNucleus   = 5;     // taps needed per nucleus
-const double _kTeloPhaseTime    = 8.0;
+// Metaphase — lock/key
+const double _kLockKeySnapDist      = 55.0;  // px snap distance (was 28)
+const int    _kMetaphasePoints      = 60;
 
-// CYTOKINESIS — drag the cleavage furrow across the cell to cleave it
-const double _kFurrowTarget     = 0.80;  // fraction of cell width furrow must cross
-const double _kCytoPhaseTime    = 10.0;
+// Anaphase — horizontal reverse-pinch — LENIENT
+const double _kAnaphaseMinGrow      = 28.0;  // px growth (was 65)
+const double _kAnaphaseAxisTol      = 55.0;  // ±° from horizontal (was 25)
+// Single-finger fallback for anaphase: left-to-right drag
+const double _kAnaphaseSingleMinDx  = 70.0;  // px horizontal drag
+const int    _kAnaphasePoints       = 50;
 
-// SCORING
-const int _kPerfectBonus  = 100; // bonus per phase for finishing early
-const int _kPhaseBaseScore = 50; // awarded for completing phase at all
+// Telophase — scrub — LENIENT
+const int    _kScrubReversals       = 4;     // reversals needed (was 8)
+const double _kScrubReverseMinDx    = 12.0;  // px per segment (was 18)
+const int    _kTelophasePoints      = 50;
 
-// VISUALS
-const Color _kBg        = Color(0xFF05050F);  // deep space black
-const Color _kAccent    = Color(0xFF4FC3F7);  // cyan
-const Color _kDanger    = Color(0xFFFF5252);  // red
-const Color _kGreen     = Color(0xFF66BB6A);  // green
-const Color _kGold      = Color(0xFFFFD700);  // gold
-const Color _kPurple    = Color(0xFFCE93D8);  // purple
+// Cytokinesis — vertical slice
+const double _kSliceMinVelocity     = 180.0; // px/s (was 300)
+const double _kSliceMinDy           = 55.0;  // px vertical travel (was 80)
+const int    _kCytokinesisPoints    = 60;
 
-// Visual feel
-const double _kCellWobbleAmt   = 0.014;  // membrane wobble amplitude
-const double _kCellWobbleFreq  = 5.0;   // membrane wobble frequency (angular)
-const double _kGlowBlur        = 8.0;   // MaskFilter blur for glows
-const double _kBannerFadeIn    = 0.20;  // seconds for banner fade-in
-const double _kBannerHold      = 1.10;  // seconds banner stays solid
-const double _kBannerFadeOut   = 0.70;  // seconds to fade out
-const double _kPhaseDoneDelay  = 1.1;   // seconds before advancing after completion
+// Cytokinesis split animation — wait for split to be visually complete
+const double _kSplitAnimDuration    = 1.2;   // seconds for split to animate
 
-// ── Phase enum ──────────────────────────────────────────────────────────────
+// Scoring bonuses
+const int _kPhaseCompleteBase   = 30;
+const int _kPerfectBonusMax     = 80;
+
+// Animation / feel
+const double _kCellWobbleAmt   = 0.013;
+const double _kCellWobbleFreq  = 5.2;
+const double _kGlowBlur        = 8.0;
+const double _kBannerFadeIn    = 0.18;
+const double _kBannerHold      = 1.0;
+const double _kBannerFadeOut   = 0.55;
+const double _kPhaseDoneDelay  = 1.1;
+
+// ── Colours ──────────────────────────────────────────────────────────────────
+const Color _kBg     = Color(0xFF04040F);
+const Color _kCyan   = Color(0xFF4FC3F7);
+const Color _kGreen  = Color(0xFF66BB6A);
+const Color _kGold   = Color(0xFFFFD700);
+const Color _kDanger = Color(0xFFFF5252);
+const Color _kPurple = Color(0xFFCE93D8);
+const Color _kOrange = Color(0xFFFF9800);
+
+// DNA base complement pairs: A↔T, G↔C
+const Map<String, String> _kBaseComplement = {
+  'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
+};
+const List<String> _kAllBases = ['A', 'T', 'G', 'C'];
+
+// ── Phase enum ────────────────────────────────────────────────────────────────
 
 enum _Phase {
   intro,
-  interphase,
+  g1,
+  s,
+  g2,
   prophase,
   metaphase,
   anaphase,
@@ -78,7 +111,9 @@ enum _Phase {
 String _phaseName(_Phase p) {
   switch (p) {
     case _Phase.intro:        return 'MITOSIS RUSH';
-    case _Phase.interphase:   return 'INTERPHASE';
+    case _Phase.g1:           return 'G1 — GROW';
+    case _Phase.s:            return 'S — SYNTHESIS';
+    case _Phase.g2:           return 'G2 — GROW AGAIN';
     case _Phase.prophase:     return 'PROPHASE';
     case _Phase.metaphase:    return 'METAPHASE';
     case _Phase.anaphase:     return 'ANAPHASE';
@@ -90,161 +125,184 @@ String _phaseName(_Phase p) {
 
 String _phaseInstruction(_Phase p) {
   switch (p) {
-    case _Phase.interphase:   return 'TAP the cell to copy DNA!';
-    case _Phase.prophase:     return 'TAP chromatin to condense!';
-    case _Phase.metaphase:    return 'DRAG chromosomes to the plate!';
-    case _Phase.anaphase:     return 'SWIPE pairs UP or DOWN to poles!';
-    case _Phase.telophase:    return 'TAP each nucleus to seal it!';
-    case _Phase.cytokinesis:  return 'DRAG the furrow to split the cell!';
-    default:                  return '';
+    case _Phase.g1:
+      return 'SPREAD two fingers (or drag out) along the arrow!';
+    case _Phase.s:
+      return 'TAP the complement base (A↔T, G↔C)!';
+    case _Phase.g2:
+      return 'SPREAD two fingers (or drag out) along the arrow!';
+    case _Phase.prophase:
+      return 'PINCH (squeeze fingers together) to condense!';
+    case _Phase.metaphase:
+      return 'SLIDE the two halves together to align!';
+    case _Phase.anaphase:
+      return 'SPREAD fingers left↔right (or drag right) to pull apart!';
+    case _Phase.telophase:
+      return 'SCRUB back-and-forth to dissolve the spindle!';
+    case _Phase.cytokinesis:
+      return 'SLICE up or down to split the cell!';
+    default:
+      return '';
   }
 }
 
 Color _phaseColor(_Phase p) {
   switch (p) {
-    case _Phase.interphase:   return _kGreen;
-    case _Phase.prophase:     return _kAccent;
+    case _Phase.g1:           return _kGreen;
+    case _Phase.s:            return _kCyan;
+    case _Phase.g2:           return _kGreen;
+    case _Phase.prophase:     return _kCyan;
     case _Phase.metaphase:    return _kGold;
     case _Phase.anaphase:     return _kDanger;
     case _Phase.telophase:    return _kPurple;
-    case _Phase.cytokinesis:  return const Color(0xFFFF9800);
+    case _Phase.cytokinesis:  return _kOrange;
     default:                  return Colors.white;
   }
 }
 
-double _phaseTime(_Phase p) {
+double _phaseMaxTime(_Phase p) {
   switch (p) {
-    case _Phase.interphase:   return _kDnaPhaseTime;
-    case _Phase.prophase:     return _kPropPhaseTime;
-    case _Phase.metaphase:    return _kMetaPhaseTime;
-    case _Phase.anaphase:     return _kAnaPhaseTime;
-    case _Phase.telophase:    return _kTeloPhaseTime;
-    case _Phase.cytokinesis:  return _kCytoPhaseTime;
+    case _Phase.g1:           return _kG1Time;
+    case _Phase.s:            return _kSTime;
+    case _Phase.g2:           return _kG2Time;
+    case _Phase.prophase:     return _kProphaseTime;
+    case _Phase.metaphase:    return _kMetaphaseTime;
+    case _Phase.anaphase:     return _kAnaphaseTime;
+    case _Phase.telophase:    return _kTelophaseTime;
+    case _Phase.cytokinesis:  return _kCytokinesisTime;
     default:                  return 3.0;
   }
 }
 
-// ── Data classes ────────────────────────────────────────────────────────────
+bool _isInterphase(_Phase p) =>
+    p == _Phase.g1 || p == _Phase.s || p == _Phase.g2;
 
-class _FloatParticle {
-  double x, y, vx, vy, life, radius;
-  Color color;
-  _FloatParticle({
-    required this.x, required this.y,
-    required this.vx, required this.vy,
-    required this.life, required this.radius,
-    required this.color,
-  });
+// The four axis labels + their angles in radians
+const List<String> _kAxisLabels = ['↕', '↔', '↗↙', '↖↘'];
+// Angles for each axis: vertical, horizontal, 45°, 135°
+const List<double> _kAxisAngles = [pi / 2, 0, pi / 4, 3 * pi / 4];
+
+// ── One persistent cell model ─────────────────────────────────────────────────
+
+class _CellModel {
+  double baseRadius = 80.0;
+  double radius = 80.0;
+  double stretchX = 1.0;
+  double stretchY = 1.0;
+  double condensation = 0.0;
+  double separation = 0.0;
+  double splitProgress = 0.0;
+  double dnaFill = 0.0;
+  int growHits = 0;
 }
 
-class _FloatLabel {
+// ── Particle & float-label effects ───────────────────────────────────────────
+
+class _FxParticle {
+  double x, y, vx, vy, life, r;
+  Color color;
+  _FxParticle(this.x, this.y, this.vx, this.vy, this.life, this.r, this.color);
+}
+
+class _FxLabel {
   double x, y, age;
   String text;
   Color color;
-  _FloatLabel({required this.x, required this.y, required this.text, required this.color})
-      : age = 0;
+  _FxLabel(this.x, this.y, this.text, this.color) : age = 0;
 }
 
-// Prophase chromatin blob
-class _ChromatinBlob {
-  double x, y, vx, vy, radius;
-  bool tapped = false;
-  int pairId;
-  _ChromatinBlob({
-    required this.x, required this.y,
-    required this.vx, required this.vy,
-    required this.radius,
-    required this.pairId,
-  });
-}
-
-// Metaphase chromosome drag target
-class _Chromosome {
-  double x, y;
-  bool aligned;
-  int id;
-  _Chromosome({required this.x, required this.y, required this.id})
-      : aligned = false;
-}
-
-// Anaphase chromatid pair
-// separation: 0 = joined, 1 = fully split. toTop tracks which pole was chosen.
-class _ChromatidPair {
-  double x, y;          // center position
-  double separation;    // 0..1 — animated pull progress
-  bool split;
-  bool toTop;           // true → top pole, false → bottom pole
-  int id;
-  _ChromatidPair({required this.x, required this.y, required this.id})
-      : separation = 0, split = false, toTop = false;
-}
-
-// Telophase nucleus
-class _Nucleus {
-  double x, y, radius;
-  int tapCount;
-  bool sealed;
-  int id;
-  _Nucleus({required this.x, required this.y, required this.radius, required this.id})
-      : tapCount = 0, sealed = false;
-}
-
-// ── Widget ───────────────────────────────────────────────────────────────────
+// ── Widget ────────────────────────────────────────────────────────────────────
 
 class MitosisRushGame extends StatefulWidget {
   const MitosisRushGame({Key? key}) : super(key: key);
   @override
-  State<MitosisRushGame> createState() => _MitosisRushGameState();
+  State<MitosisRushGame> createState() => _MRState();
 }
 
-class _MitosisRushGameState extends State<MitosisRushGame>
+class _MRState extends State<MitosisRushGame>
     with SingleTickerProviderStateMixin {
   late AnimationController _ticker;
   final Random _rng = Random();
+  double _lastTime = 0;
 
+  // ── Persistent cell ─────────────────────────────────────────────────────────
+  final _CellModel _cell = _CellModel();
+
+  // ── Phase state ─────────────────────────────────────────────────────────────
   _Phase _phase = _Phase.intro;
   double _phaseTimer = 3.0;
   double _bannerAge = 0;
   bool _phaseDone = false;
   double _phaseDoneAge = 0;
-
-  // Score
-  int _totalScore = 0;
-  final List<int> _phaseScores = [];
-
-  // Per-phase state
-  int _dnaCollected = 0;
-
-  List<_ChromatinBlob> _chromatinBlobs = [];
-  int _chromatinCondensed = 0;
-
-  List<_Chromosome> _chromosomes = [];
-  int? _draggingChromoId;
-  Offset _dragOffset = Offset.zero;
-
-  List<_ChromatidPair> _chromatids = [];
-  int? _swipingChromatidId;
-  Offset _swipeStart = Offset.zero;
-
-  List<_Nucleus> _nuclei = [];
-
-  double _furrowX = 0;
-  bool _draggingFurrow = false;
-
-  // Effects
-  final List<_FloatParticle> _particles = [];
-  final List<_FloatLabel> _labels = [];
-
-  // Screen shake / wobble
-  double _shake = 0;
   double _wobble = 0;
-
-  // Layout
+  double _shake = 0;
   Size _size = Size.zero;
-  double _lastTime = 0;
+
+  // ── Score ────────────────────────────────────────────────────────────────────
+  int _totalScore = 0;
+  final List<_PhaseResult> _phaseResults = [];
+  int _interphaseBonus = 0;
+
+  // ── Pointer tracking ─────────────────────────────────────────────────────────
+  final Map<int, Offset> _pointers = {};
+  double _pinchStartDist = 0;
+  bool _pinchActive = false;
+
+  // ── G1 / G2 state ────────────────────────────────────────────────────────────
+  int _currentAxisIdx = 0;
+  int _g1Hits = 0;
+  bool _pinchCounted = false;
+  // Single-finger fallback tracking for G1/G2
+  Offset? _sfStart;    // single-finger drag start position
+  bool _sfCounted = false;
+
+  // ── S phase — base-pair matching ──────────────────────────────────────────────
+  List<String> _baseQueue = [];
+  int _baseQueueIdx = 0;      // index of current base to match
+  int _sStreak = 0;
+  int _sMatched = 0;
+  // 4 tap buttons (A, T, G, C) rects, computed from size
+  final Map<String, Rect> _baseBtnRects = {};
+
+  // ── Prophase — pinch to condense ─────────────────────────────────────────────
+  bool _pinchCondenseCounted = false;
+
+  // ── Metaphase lock/key ────────────────────────────────────────────────────────
+  double _lockX = 0;
+  double _keyX  = 0;
+  bool _draggingLock = false;
+  int? _lockPointerId;
+  Offset _lockDragStart = Offset.zero;
+  double _lockDragStartVal = 0;
+  bool _metaphaseLocked = false;
+
+  // ── Anaphase ──────────────────────────────────────────────────────────────────
+  bool _anaphaseRegistered = false;
+  // Single-finger fallback for anaphase
+  Offset? _anaSfStart;
+  bool _anaSfCounted = false;
+
+  // ── Telophase scrub ───────────────────────────────────────────────────────────
+  double? _scrubLastX;
+  double _scrubSegStart = 0; // x where current direction segment started
+  int _scrubReverseCount = 0;
+  int _scrubDir = 0;
+
+  // ── Cytokinesis slice ─────────────────────────────────────────────────────────
+  Offset? _sliceStart;
+  double _sliceStartTime = 0;
+  bool _sliceRegistered = false;
+  // Split animation is complete when splitProgress >= 1
+  bool _splitAnimDone = false;
+
+  // ── Effects ───────────────────────────────────────────────────────────────────
+  final List<_FxParticle> _particles = [];
+  final List<_FxLabel> _labels = [];
 
   static const List<_Phase> _sequence = [
-    _Phase.interphase,
+    _Phase.g1,
+    _Phase.s,
+    _Phase.g2,
     _Phase.prophase,
     _Phase.metaphase,
     _Phase.anaphase,
@@ -252,12 +310,13 @@ class _MitosisRushGameState extends State<MitosisRushGame>
     _Phase.cytokinesis,
   ];
 
-  // ── Lifecycle ──────────────────────────────────────────────────────────────
+  // ── Lifecycle ────────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
-    _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
+    _ticker = AnimationController(
+        vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick);
     _ticker.forward();
     _lastTime = _now();
@@ -271,96 +330,81 @@ class _MitosisRushGameState extends State<MitosisRushGame>
     super.dispose();
   }
 
-  // ── Phase transitions ──────────────────────────────────────────────────────
+  // ── Phase management ─────────────────────────────────────────────────────────
 
   void _startPhase(_Phase p) {
     _phase = p;
-    _phaseTimer = _phaseTime(p);
+    _phaseTimer = _phaseMaxTime(p);
     _bannerAge = 0;
     _phaseDone = false;
     _phaseDoneAge = 0;
     _particles.clear();
     _labels.clear();
     _shake = 0;
+    _pointers.clear();
+    _pinchActive = false;
+    _sfStart = null;
+    _sfCounted = false;
 
     final cx = _size.width / 2;
-    final cy = _size.height / 2;
 
     switch (p) {
-      case _Phase.interphase:
-        _dnaCollected = 0;
+      case _Phase.g1:
+      case _Phase.g2:
+        _g1Hits = 0;
+        _pinchCounted = false;
+        _sfCounted = false;
+        _sfStart = null;
+        _currentAxisIdx = _rng.nextInt(4);
+        break;
+
+      case _Phase.s:
+        // Build base queue
+        _baseQueue = [];
+        for (int i = 0; i < _kSBasesTotal; i++) {
+          _baseQueue.add(_kAllBases[_rng.nextInt(4)]);
+        }
+        _baseQueueIdx = 0;
+        _sStreak = 0;
+        _sMatched = 0;
+        _cell.dnaFill = 0;
+        _baseBtnRects.clear();
         break;
 
       case _Phase.prophase:
-        _chromatinCondensed = 0;
-        _chromatinBlobs = [];
-        final pairsNeeded = _kChromatinCount ~/ 2;
-        for (int pair = 0; pair < pairsNeeded; pair++) {
-          for (int k = 0; k < 2; k++) {
-            final angle = _rng.nextDouble() * 2 * pi;
-            final maxDist = _cellRadiusFor(_size) * 0.75;
-            final dist = 40 + _rng.nextDouble() * maxDist;
-            _chromatinBlobs.add(_ChromatinBlob(
-              x: (cx + cos(angle) * dist).clamp(20, _size.width - 20),
-              y: (cy + sin(angle) * dist).clamp(60, _size.height - 60),
-              vx: (_rng.nextDouble() - 0.5) * 24,
-              vy: (_rng.nextDouble() - 0.5) * 24,
-              radius: 13 + _rng.nextDouble() * 8,
-              pairId: pair,
-            ));
-          }
-        }
+        _pinchCondenseCounted = false;
+        _cell.condensation = 0;
         break;
 
       case _Phase.metaphase:
-        _chromosomes = [];
-        _draggingChromoId = null;
-        for (int i = 0; i < _kChromosomeCount; i++) {
-          final angle = _rng.nextDouble() * 2 * pi;
-          final maxDist = _cellRadiusFor(_size) * 0.65;
-          final dist = 55 + _rng.nextDouble() * maxDist;
-          _chromosomes.add(_Chromosome(
-            x: (cx + cos(angle) * dist).clamp(30, _size.width - 30),
-            y: (cy + sin(angle) * dist).clamp(80, _size.height - 80),
-            id: i,
-          ));
-        }
+        _lockX = -_cell.radius * 0.45;
+        _keyX  =  _cell.radius * 0.45;
+        _lockDragStart = Offset(cx, 0);
+        _lockDragStartVal = _lockX;
+        _draggingLock = false;
+        _lockPointerId = null;
+        _metaphaseLocked = false;
         break;
 
       case _Phase.anaphase:
-        // Place pairs evenly along center horizontal strip
-        _chromatids = [];
-        _swipingChromatidId = null;
-        final r = _cellRadiusFor(_size);
-        for (int i = 0; i < _kChromatidPairs; i++) {
-          final t = (i + 0.5) / _kChromatidPairs;
-          // Spread across ~60% of cell width, centered
-          final xPos = cx + (t - 0.5) * r * 1.2;
-          final yOff = (_rng.nextDouble() - 0.5) * r * 0.25;
-          _chromatids.add(_ChromatidPair(
-            x: xPos.clamp(30, _size.width - 30),
-            y: (cy + yOff).clamp(80, _size.height - 80),
-            id: i,
-          ));
-        }
+        _anaphaseRegistered = false;
+        _anaSfStart = null;
+        _anaSfCounted = false;
+        _cell.separation = 0;
         break;
 
       case _Phase.telophase:
-        _nuclei = [];
-        final spread = _cellRadiusFor(_size) * 0.38;
-        for (int i = 0; i < _kNuclei; i++) {
-          _nuclei.add(_Nucleus(
-            x: cx + (i == 0 ? -spread : spread),
-            y: cy,
-            radius: 54,
-            id: i,
-          ));
-        }
+        _scrubLastX = null;
+        _scrubSegStart = 0;
+        _scrubReverseCount = 0;
+        _scrubDir = 0;
         break;
 
       case _Phase.cytokinesis:
-        _furrowX = 0;
-        _draggingFurrow = false;
+        _sliceStart = null;
+        _sliceRegistered = false;
+        _splitAnimDone = false;
+        _cell.splitProgress = 0;
         break;
 
       default:
@@ -368,7 +412,28 @@ class _MitosisRushGameState extends State<MitosisRushGame>
     }
   }
 
-  double _cellRadiusFor(Size s) => min(s.width, s.height) * 0.30;
+  void _completePhaseSoon({int extraPoints = 0}) {
+    if (_phaseDone) return;
+    _phaseDone = true;
+    _phaseDoneAge = 0;
+    _shake = 4;
+    _totalScore += extraPoints;
+  }
+
+  void _scoreAndAdvance() {
+    final timeBonus =
+        (_kPerfectBonusMax * _phaseTimer / _phaseMaxTime(_phase)).toInt();
+    final base = _kPhaseCompleteBase;
+    final earned = base + timeBonus;
+    _phaseResults.add(_PhaseResult(phase: _phase, score: earned));
+    _totalScore += earned;
+
+    if (_isInterphase(_phase)) {
+      _interphaseBonus += (earned ~/ 20).clamp(0, 5);
+    }
+
+    _advancePhase();
+  }
 
   void _advancePhase() {
     final idx = _sequence.indexOf(_phase);
@@ -379,15 +444,37 @@ class _MitosisRushGameState extends State<MitosisRushGame>
     }
   }
 
-  void _scorePhase(double timeRemaining) {
-    final pTime = _phaseTime(_phase);
-    final bonus = (_phaseDone ? (_kPerfectBonus * timeRemaining / pTime) : 0).toInt();
-    final earned = _kPhaseBaseScore + bonus;
-    _phaseScores.add(earned);
-    _totalScore += earned;
+  void _timeOut() {
+    _phaseResults.add(_PhaseResult(phase: _phase, score: _kPhaseCompleteBase ~/ 2));
+    _totalScore += _kPhaseCompleteBase ~/ 2;
+    _shake = 5;
+    _advancePhase();
   }
 
-  // ── Game tick ──────────────────────────────────────────────────────────────
+  void _restart() {
+    setState(() {
+      _phase = _Phase.intro;
+      _phaseTimer = 3.0;
+      _bannerAge = 0;
+      _phaseDone = false;
+      _totalScore = 0;
+      _phaseResults.clear();
+      _interphaseBonus = 0;
+      _particles.clear();
+      _labels.clear();
+      _cell.radius = _cellBaseRadius(_size);
+      _cell.baseRadius = _cell.radius;
+      _cell.stretchX = 1;
+      _cell.stretchY = 1;
+      _cell.condensation = 0;
+      _cell.separation = 0;
+      _cell.splitProgress = 0;
+      _cell.dnaFill = 0;
+      _cell.growHits = 0;
+    });
+  }
+
+  // ── Game tick ─────────────────────────────────────────────────────────────────
 
   void _onTick() {
     final now = _now();
@@ -397,29 +484,47 @@ class _MitosisRushGameState extends State<MitosisRushGame>
     if (_size == Size.zero) return;
 
     setState(() {
-      _wobble += dt * 2.0;
+      _wobble += dt * 1.9;
       if (_shake > 0) {
-        _shake -= dt * 6;
-        if (_shake < 0) _shake = 0;
+        _shake = (_shake - dt * 5).clamp(0.0, 8.0);
       }
 
-      _updateParticles(dt);
+      _tickParticles(dt);
 
       if (_phase == _Phase.intro) {
         _phaseTimer -= dt;
-        if (_phaseTimer <= 0) _startPhase(_Phase.interphase);
+        if (_phaseTimer <= 0) {
+          _cell.baseRadius = _cellBaseRadius(_size);
+          _cell.radius = _cell.baseRadius;
+          _startPhase(_Phase.g1);
+        }
         return;
       }
-
       if (_phase == _Phase.results) return;
 
       _bannerAge += dt;
 
       if (_phaseDone) {
         _phaseDoneAge += dt;
-        if (_phaseDoneAge > _kPhaseDoneDelay) {
-          _scorePhase(_phaseTimer);
-          _advancePhase();
+
+        // For cytokinesis, wait for split animation to visually complete
+        if (_phase == _Phase.cytokinesis) {
+          if (_cell.splitProgress < 1.0) {
+            _cell.splitProgress =
+                (_cell.splitProgress + dt / _kSplitAnimDuration).clamp(0.0, 1.0);
+          }
+          if (_cell.splitProgress >= 1.0 && !_splitAnimDone) {
+            _splitAnimDone = true;
+          }
+          // Only advance after animation AND min delay
+          if (_splitAnimDone && _phaseDoneAge >= _kPhaseDoneDelay) {
+            _scoreAndAdvance();
+          }
+          return;
+        }
+
+        if (_phaseDoneAge >= _kPhaseDoneDelay) {
+          _scoreAndAdvance();
         }
         return;
       }
@@ -427,11 +532,17 @@ class _MitosisRushGameState extends State<MitosisRushGame>
       _phaseTimer -= dt;
 
       switch (_phase) {
-        case _Phase.prophase:
-          _tickProphase(dt);
-          break;
         case _Phase.anaphase:
-          _tickAnaphase(dt);
+          if (_anaphaseRegistered && _cell.separation < 1.0) {
+            _cell.separation =
+                (_cell.separation + dt * 2.2).clamp(0.0, 1.0);
+          }
+          break;
+        case _Phase.cytokinesis:
+          if (_sliceRegistered && _cell.splitProgress < 1.0) {
+            _cell.splitProgress =
+                (_cell.splitProgress + dt / _kSplitAnimDuration).clamp(0.0, 1.0);
+          }
           break;
         default:
           break;
@@ -439,452 +550,707 @@ class _MitosisRushGameState extends State<MitosisRushGame>
 
       if (_phaseTimer <= 0) {
         _phaseTimer = 0;
-        _scorePhase(0);
-        _shake = 5;
-        final idx = _sequence.indexOf(_phase);
-        if (idx < 0 || idx >= _sequence.length - 1) {
-          _phase = _Phase.results;
-        } else {
-          _startPhase(_sequence[idx + 1]);
-        }
+        _timeOut();
       }
     });
   }
 
-  void _tickProphase(double dt) {
-    for (final b in _chromatinBlobs) {
-      if (b.tapped) continue;
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-      b.vx *= (1 - dt * 0.9);
-      b.vy *= (1 - dt * 0.9);
-      if (b.x < b.radius || b.x > _size.width - b.radius) b.vx = -b.vx;
-      if (b.y < b.radius || b.y > _size.height - b.radius) b.vy = -b.vy;
-      b.x = b.x.clamp(b.radius, _size.width - b.radius);
-      b.y = b.y.clamp(b.radius, _size.height - b.radius);
-    }
-  }
-
-  // Animate separation progress toward poles on each frame
-  void _tickAnaphase(double dt) {
-    for (final ct in _chromatids) {
-      if (ct.split && ct.separation < 1.0) {
-        ct.separation = (ct.separation + dt * 2.5).clamp(0.0, 1.0);
-      }
-    }
-  }
-
-  void _updateParticles(double dt) {
+  void _tickParticles(double dt) {
     for (final p in _particles) {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      p.vx *= (1 - 1.5 * dt);
-      p.vy *= (1 - 1.5 * dt);
+      p.vx *= (1 - 1.6 * dt);
+      p.vy *= (1 - 1.6 * dt);
       p.life -= dt;
     }
     _particles.removeWhere((p) => p.life <= 0);
 
     for (final l in _labels) {
       l.age += dt;
-      l.y -= 35 * dt;
+      l.y -= 32 * dt;
     }
-    _labels.removeWhere((l) => l.age > 0.9);
+    _labels.removeWhere((l) => l.age > 0.95);
   }
 
-  void _spawnBurst(double x, double y, Color color, {int count = 10}) {
-    for (int i = 0; i < count; i++) {
+  void _burst(double x, double y, Color c, {int n = 10}) {
+    for (int i = 0; i < n; i++) {
       final a = _rng.nextDouble() * 2 * pi;
-      final spd = 60 + _rng.nextDouble() * 160;
-      _particles.add(_FloatParticle(
-        x: x, y: y,
-        vx: cos(a) * spd, vy: sin(a) * spd,
-        life: 0.5 + _rng.nextDouble() * 0.5,
-        radius: 2.5 + _rng.nextDouble() * 3.5,
-        color: color,
-      ));
+      final spd = 60 + _rng.nextDouble() * 150;
+      _particles.add(
+          _FxParticle(x, y, cos(a) * spd, sin(a) * spd,
+              0.45 + _rng.nextDouble() * 0.5,
+              2.5 + _rng.nextDouble() * 3.0, c));
     }
   }
 
-  // Directional burst — biased toward a direction (for pole pulls)
-  void _spawnDirectedBurst(double x, double y, Color color, double dirAngle, {int count = 14}) {
-    for (int i = 0; i < count; i++) {
-      final spread = (_rng.nextDouble() - 0.5) * pi * 0.8;
-      final a = dirAngle + spread;
-      final spd = 80 + _rng.nextDouble() * 180;
-      _particles.add(_FloatParticle(
-        x: x, y: y,
-        vx: cos(a) * spd, vy: sin(a) * spd,
-        life: 0.4 + _rng.nextDouble() * 0.5,
-        radius: 2 + _rng.nextDouble() * 4,
-        color: color,
-      ));
+  void _label(double x, double y, String t, Color c) {
+    _labels.add(_FxLabel(x, y, t, c));
+  }
+
+  // ── Pointer helpers ───────────────────────────────────────────────────────────
+
+  void _onPointerCountChange() {
+    if (_pointers.length == 2) {
+      final pts = _pointers.values.toList();
+      final delta = pts[1] - pts[0];
+      _pinchStartDist = delta.distance;
+      _pinchActive = true;
+      // Reset per-gesture flags when a new 2-finger gesture starts
+      _pinchCounted = false;
+      _pinchCondenseCounted = false;
+    } else {
+      _pinchActive = false;
+      if (_phase == _Phase.telophase) {
+        _scrubLastX = null;
+      }
     }
   }
 
-  void _addLabel(double x, double y, String text, Color color) {
-    _labels.add(_FloatLabel(x: x, y: y, text: text, color: color));
-  }
-
-  void _completePhaseSoon() {
-    _phaseDone = true;
-    _phaseDoneAge = 0;
-    _shake = 4;
-  }
-
-  // ── Input ──────────────────────────────────────────────────────────────────
-
-  void _onTapDown(TapDownDetails d) {
-    final pos = d.localPosition;
-
-    if (_phase == _Phase.intro) return;
-    if (_phase == _Phase.results) {
-      setState(() {
-        _phase = _Phase.intro;
-        _phaseTimer = 3.0;
-        _bannerAge = 0;
-        _phaseDone = false;
-        _totalScore = 0;
-        _phaseScores.clear();
-        _particles.clear();
-        _labels.clear();
-      });
-      return;
-    }
-    if (_phaseDone) return;
+  void _handlePointerMove(PointerMoveEvent e) {
+    final cx = _size.width / 2;
+    final cy = _size.height / 2;
 
     switch (_phase) {
-      case _Phase.interphase:
-        _handleInterphase(pos);
+      case _Phase.g1:
+      case _Phase.g2:
+        _handleG1Move(e);
         break;
+
       case _Phase.prophase:
-        _handleProphase(pos);
+        _handleProphaseMove();
         break;
+
+      case _Phase.metaphase:
+        _handleMetaphaseMove(e, cx, cy);
+        break;
+
+      case _Phase.anaphase:
+        _handleAnaphaseMove(e);
+        break;
+
       case _Phase.telophase:
-        _handleTelophase(pos);
+        _handleScrubMove(e, cx, cy);
         break;
+
+      case _Phase.cytokinesis:
+        _handleSliceMove(e, cx, cy);
+        break;
+
       default:
         break;
     }
   }
 
-  void _handleInterphase(Offset pos) {
-    final cx = _size.width / 2;
-    final cy = _size.height / 2;
-    final r = _cellRadius;
-    if ((pos - Offset(cx, cy)).distance < r) {
-      setState(() {
-        _dnaCollected++;
-        _spawnBurst(pos.dx, pos.dy, _kGreen, count: 6);
-        _addLabel(pos.dx, pos.dy, '+DNA', _kGreen);
-        if (_dnaCollected >= _kDnaTarget) _completePhaseSoon();
-      });
-    }
-  }
+  // ── G1 / G2 — reverse-pinch along axis (with single-finger fallback) ──────────
+  void _handleG1Move(PointerMoveEvent e) {
+    // ── Two-finger reverse-pinch ──────────────────────────────────────────────
+    if (_pinchActive && _pointers.length == 2) {
+      if (_pinchCounted) return;
 
-  void _handleProphase(Offset pos) {
-    int bestIdx = -1;
-    double bestDist = double.infinity;
-    for (int i = 0; i < _chromatinBlobs.length; i++) {
-      final b = _chromatinBlobs[i];
-      if (b.tapped) continue;
-      final dist = (pos - Offset(b.x, b.y)).distance;
-      if (dist < b.radius + 18 && dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i;
+      final pts = _pointers.values.toList();
+      final delta = pts[1] - pts[0];
+      final dist = delta.distance;
+      final angle = atan2(delta.dy, delta.dx);
+      final growth = dist - _pinchStartDist;
+
+      if (growth < _kReversePinchMinGrow) return;
+
+      // Axis check — lenient: ±50°.  Axis angle and its 180° flip both valid.
+      final tolRad = _kAxisToleranceDeg * pi / 180;
+      final promptAngle = _kAxisAngles[_currentAxisIdx];
+      double _angleDiff(double a, double b) {
+        final d = (a - b).abs() % (2 * pi);
+        return d > pi ? 2 * pi - d : d;
       }
-    }
-    if (bestIdx < 0) return;
-    setState(() {
-      final tapped = _chromatinBlobs[bestIdx];
-      tapped.tapped = true;
-      _spawnBurst(tapped.x, tapped.y, _kAccent, count: 8);
-      _addLabel(tapped.x, tapped.y, 'CONDENSED', _kAccent);
+      final diff1 = _angleDiff(angle, promptAngle);
+      final diff2 = _angleDiff(angle, promptAngle + pi);
+      final axisDiff = min(diff1, diff2);
 
-      final pairId = tapped.pairId;
-      final bothDone = _chromatinBlobs
-          .where((b) => b.pairId == pairId)
-          .every((b) => b.tapped);
-      if (bothDone) _chromatinCondensed++;
-
-      final totalPairs = _kChromatinCount ~/ 2;
-      if (_chromatinCondensed >= totalPairs) _completePhaseSoon();
-    });
-  }
-
-  void _handleTelophase(Offset pos) {
-    for (final n in _nuclei) {
-      if (n.sealed) continue;
-      if ((pos - Offset(n.x, n.y)).distance < n.radius + 18) {
-        setState(() {
-          n.tapCount++;
-          _spawnBurst(pos.dx, pos.dy, _kPurple, count: 5);
-          _addLabel(pos.dx, pos.dy, '${n.tapCount}/$_kTapsPerNucleus', _kPurple);
-          if (n.tapCount >= _kTapsPerNucleus) {
-            n.sealed = true;
-            _spawnBurst(n.x, n.y, _kPurple, count: 22);
-          }
-        });
-        if (_nuclei.every((n) => n.sealed)) _completePhaseSoon();
+      _pinchCounted = true;
+      if (axisDiff > tolRad) {
+        // Wrong axis — still reset so next spread attempt is fresh
+        _label(_size.width / 2, _size.height / 2 + _cell.radius + 28,
+            'WRONG AXIS!', _kDanger.withValues(alpha: 0.8));
+        _currentAxisIdx = _rng.nextInt(4);
         return;
       }
+
+      _registerG1Hit();
+      return;
+    }
+
+    // ── Single-finger fallback ────────────────────────────────────────────────
+    if (_pointers.length != 1) return;
+    if (_sfCounted) return;
+
+    if (_sfStart == null) {
+      _sfStart = e.localPosition;
+      return;
+    }
+
+    final drag = e.localPosition - _sfStart!;
+    if (drag.distance < _kSingleFingerMinDrag) return;
+
+    // Accept any direction as a "spread" — axis matching is soft here
+    _sfCounted = true;
+    _sfStart = null;
+
+    // Loose axis check (±70° for single finger)
+    final angle = atan2(drag.dy, drag.dx);
+    double _angleDiff2(double a, double b) {
+      final d = (a - b).abs() % (2 * pi);
+      return d > pi ? 2 * pi - d : d;
+    }
+    final promptAngle = _kAxisAngles[_currentAxisIdx];
+    final diff1 = _angleDiff2(angle, promptAngle);
+    final diff2 = _angleDiff2(angle, promptAngle + pi);
+    final axisDiff = min(diff1, diff2);
+    final tolRad = 70.0 * pi / 180;
+
+    if (axisDiff > tolRad) {
+      _label(_size.width / 2, _size.height / 2 + _cell.radius + 28,
+          'WRONG AXIS!', _kDanger.withValues(alpha: 0.8));
+      _currentAxisIdx = _rng.nextInt(4);
+      return;
+    }
+
+    _registerG1Hit();
+  }
+
+  void _registerG1Hit() {
+    _g1Hits++;
+    _cell.growHits++;
+    _cell.radius = (_cell.radius + _cell.baseRadius * _kG1CellGrowPerHit)
+        .clamp(_cell.baseRadius, _cell.baseRadius * 1.55);
+
+    final mid = _pointers.length == 2
+        ? Offset(
+            (_pointers.values.first.dx + _pointers.values.last.dx) / 2,
+            (_pointers.values.first.dy + _pointers.values.last.dy) / 2)
+        : Offset(_size.width / 2, _size.height / 2);
+
+    _burst(mid.dx, mid.dy, _kGreen, n: 12);
+    _label(mid.dx, mid.dy, '+$_kG1BasePoints', _kGreen);
+    _totalScore += _kG1BasePoints;
+    _currentAxisIdx = _rng.nextInt(4);
+
+    final maxHits = _phase == _Phase.g1 ? 20 : 15;
+    if (_g1Hits >= maxHits) {
+      _completePhaseSoon();
     }
   }
 
-  // ── Drag handling ──────────────────────────────────────────────────────────
-
-  void _onPanStart(DragStartDetails d) {
+  // ── S phase — base-pair tap ─────────────────────────────────────────────────
+  // Handled entirely in _onTap for reliability; see _handleSTap.
+  void _handleSTap(Offset pos) {
     if (_phaseDone) return;
-    final pos = d.localPosition;
+    if (_baseQueueIdx >= _baseQueue.length) return;
 
-    if (_phase == _Phase.metaphase) {
-      for (final c in _chromosomes) {
-        if (c.aligned) continue;
-        if ((pos - Offset(c.x, c.y)).distance < 34) {
-          setState(() {
-            _draggingChromoId = c.id;
-            _dragOffset = Offset(c.x - pos.dx, c.y - pos.dy);
-          });
-          return;
-        }
+    // Find which button was tapped
+    String? tapped;
+    for (final entry in _baseBtnRects.entries) {
+      if (entry.value.contains(pos)) {
+        tapped = entry.key;
+        break;
       }
     }
+    if (tapped == null) return;
 
-    if (_phase == _Phase.anaphase) {
-      // Find the closest unsplit pair using the generous hit radius
-      int bestId = -1;
-      double bestDist = double.infinity;
-      for (final ct in _chromatids) {
-        if (ct.split) continue;
-        final dist = (pos - Offset(ct.x, ct.y)).distance;
-        if (dist < _kSwipeHitRadius && dist < bestDist) {
-          bestDist = dist;
-          bestId = ct.id;
-        }
-      }
-      if (bestId >= 0) {
-        setState(() {
-          _swipingChromatidId = bestId;
-          _swipeStart = pos;
-        });
-      }
-      return;
+    final current = _baseQueue[_baseQueueIdx];
+    final correct = _kBaseComplement[current]!;
+    final cx = _size.width / 2;
+    final cy = _size.height / 2;
+
+    if (tapped == correct) {
+      _sStreak++;
+      _sMatched++;
+      final bonus = _sStreak > 2 ? (_sStreak - 2) * _kSStreakBonus : 0;
+      final pts = _kSBasePoints + bonus;
+      _totalScore += pts;
+      _label(cx, cy - 30, '+$pts${_sStreak > 2 ? " ×$_sStreak" : ""}', _kCyan);
+      _burst(cx, cy, _kCyan, n: 6);
+      _cell.dnaFill = _sMatched / _kSBasesTotal;
+    } else {
+      _sStreak = 0;
+      _label(cx, cy - 30, '✗', _kDanger);
+      _shake = 3;
     }
 
-    if (_phase == _Phase.cytokinesis) {
-      final cx = _size.width / 2;
-      final cy = _size.height / 2;
-      final r = _cellRadius;
-      if ((pos - Offset(cx, cy)).distance < r) {
-        setState(() { _draggingFurrow = true; });
-      }
+    _baseQueueIdx++;
+    if (_baseQueueIdx >= _baseQueue.length) {
+      _burst(cx, cy, _kCyan, n: 20);
+      _label(cx, cy - 60, 'DNA COPIED!', _kCyan);
+      _completePhaseSoon();
     }
   }
 
-  void _onPanUpdate(DragUpdateDetails d) {
-    if (_phaseDone) return;
-    final pos = d.localPosition;
+  // ── Prophase — pinch to condense ──────────────────────────────────────────────
+  void _handleProphaseMove() {
+    if (!_pinchActive || _pointers.length != 2) return;
+    if (_pinchCondenseCounted) return;
 
-    if (_phase == _Phase.metaphase && _draggingChromoId != null) {
-      setState(() {
-        final c = _chromosomes.firstWhere((c) => c.id == _draggingChromoId);
-        c.x = (pos.dx + _dragOffset.dx).clamp(20, _size.width - 20);
-        c.y = (pos.dy + _dragOffset.dy).clamp(20, _size.height - 20);
+    final pts = _pointers.values.toList();
+    final delta = pts[1] - pts[0];
+    final dist = delta.distance;
+    final shrink = _pinchStartDist - dist; // positive = fingers moving together
 
-        final cy = _size.height / 2;
-        if ((c.y - cy).abs() < _kPlateSnapDist) {
-          c.y = cy;
-          c.aligned = true;
-          _draggingChromoId = null;
-          _spawnBurst(c.x, c.y, _kGold, count: 12);
-          _addLabel(c.x, c.y, 'ALIGNED!', _kGold);
-          if (_chromosomes.every((c) => c.aligned)) _completePhaseSoon();
-        }
-      });
-      return;
+    if (shrink < _kPinchMinShrink) return;
+
+    _pinchCondenseCounted = true;
+    _cell.condensation =
+        (_cell.condensation + _kPinchCondensePerHit).clamp(0.0, 1.0);
+
+    final mid = Offset(
+        (pts[0].dx + pts[1].dx) / 2, (pts[0].dy + pts[1].dy) / 2);
+    _burst(mid.dx, mid.dy, _kCyan, n: 8);
+    _label(mid.dx, mid.dy, '+$_kProphasePoints', _kCyan);
+    _totalScore += _kProphasePoints;
+
+    if (_cell.condensation >= 1.0) {
+      _label(_size.width / 2, _size.height / 2 - 30, 'CONDENSED!', _kCyan);
+      _completePhaseSoon();
+    }
+  }
+
+  // ── Metaphase — lock/key ─────────────────────────────────────────────────────
+  void _handleMetaphaseMove(PointerMoveEvent e, double cx, double cy) {
+    if (_metaphaseLocked) return;
+
+    if (_lockPointerId == null || _lockPointerId != e.pointer) {
+      // Assign or re-assign pointer to nearest half
+      final pos = e.localPosition;
+      final leftCenter = Offset(cx + _lockX, cy);
+      final rightCenter = Offset(cx + _keyX, cy);
+      final dLeft = (pos - leftCenter).distance;
+      final dRight = (pos - rightCenter).distance;
+      _lockPointerId = e.pointer;
+      _draggingLock = (dLeft <= dRight);
+      _lockDragStart = pos;
+      _lockDragStartVal = _draggingLock ? _lockX : _keyX;
+      // Don't return — process the first move event too
     }
 
-    // ── ANAPHASE (BUG FIX) ────────────────────────────────────────────────────
-    // The original code checked `pos.dx - _swipeStart.dx` (horizontal delta).
-    // The poles are at top and bottom, so the natural gesture is VERTICAL.
-    // Fix: measure vertical delta (pos.dy - _swipeStart.dy) and determine
-    // direction: negative dy → swiped UP → top pole; positive dy → bottom pole.
-    if (_phase == _Phase.anaphase && _swipingChromatidId != null) {
-      final vertDelta = pos.dy - _swipeStart.dy;
-      if (vertDelta.abs() > _kSwipeThreshold) {
-        setState(() {
-          final ct = _chromatids.firstWhere((c) => c.id == _swipingChromatidId!);
-          ct.split = true;
-          ct.toTop = vertDelta < 0; // swiped upward → top pole
-          ct.separation = 0.0;     // animate from 0→1 in _tickAnaphase
-          _swipingChromatidId = null;
+    if (e.pointer != _lockPointerId) return;
 
-          // Directed burst toward the pole the player swiped
-          final dirAngle = ct.toTop ? -pi / 2 : pi / 2;
-          _spawnDirectedBurst(ct.x, ct.y, _kDanger, dirAngle);
-          _addLabel(ct.x, ct.y, 'SPLIT!', _kDanger);
+    final dx = e.localPosition.dx - _lockDragStart.dx;
+    if (_draggingLock) {
+      // Left half: drag rightward to close gap (increase lockX toward 0)
+      _lockX = (_lockDragStartVal + dx).clamp(-_cell.radius * 0.55, 0.0);
+    } else {
+      // Right half: drag leftward to close gap (decrease keyX toward 0)
+      _keyX = (_lockDragStartVal - dx).clamp(0.0, _cell.radius * 0.55);
+    }
 
-          if (_chromatids.every((c) => c.split)) _completePhaseSoon();
-        });
+    // Gap = keyX - |lockX| (both start positive distance from center)
+    final gapBetween = _keyX + _lockX; // lockX is negative, so this is keyX - |lockX|
+    if (gapBetween < _kLockKeySnapDist) {
+      _lockX = 0;
+      _keyX = 0;
+      _metaphaseLocked = true;
+      _burst(cx, cy, _kGold, n: 22);
+      _label(cx, cy - 20, 'ALIGNED!', _kGold);
+      _completePhaseSoon(extraPoints: _kMetaphasePoints);
+    }
+  }
+
+  // ── Anaphase — horizontal reverse-pinch with single-finger fallback ───────────
+  void _handleAnaphaseMove(PointerMoveEvent e) {
+    if (_anaphaseRegistered) return;
+
+    // ── Two-finger reverse-pinch ──────────────────────────────────────────────
+    if (_pinchActive && _pointers.length == 2) {
+      final pts = _pointers.values.toList();
+      final delta = pts[1] - pts[0];
+      final dist = delta.distance;
+      final angle = atan2(delta.dy, delta.dx);
+      final growth = dist - _pinchStartDist;
+
+      if (growth < _kAnaphaseMinGrow) return;
+
+      // Horizontal check — ±55° from 0° or 180°
+      final tolRad = _kAnaphaseAxisTol * pi / 180;
+      final absAngle = angle.abs();
+      final isHorizontal = absAngle < tolRad || absAngle > (pi - tolRad);
+
+      if (!isHorizontal) {
+        _label(_size.width / 2, _size.height / 2 + _cell.radius + 28,
+            'PULL LEFT↔RIGHT!', _kDanger.withValues(alpha: 0.8));
+        return;
       }
+
+      _triggerAnaphase();
       return;
     }
 
-    if (_phase == _Phase.cytokinesis && _draggingFurrow) {
-      setState(() {
-        final cx = _size.width / 2;
-        final progress = ((pos.dx - (cx - _cellRadius)) / (2 * _cellRadius)).clamp(0.0, 1.0);
-        if (progress > _furrowX) _furrowX = progress;
-        if (_furrowX >= _kFurrowTarget) {
-          _draggingFurrow = false;
-          _completePhaseSoon();
-          _spawnBurst(cx, _size.height / 2, const Color(0xFFFF9800), count: 28);
-          _addLabel(cx, _size.height / 2, 'CLEAVED!', const Color(0xFFFF9800));
+    // ── Single-finger left-to-right drag fallback ─────────────────────────────
+    if (_pointers.length != 1 || _anaSfCounted) return;
+
+    if (_anaSfStart == null) {
+      _anaSfStart = e.localPosition;
+      return;
+    }
+
+    final dx = e.localPosition.dx - _anaSfStart!.dx;
+    final dy = e.localPosition.dy - _anaSfStart!.dy;
+    // Require mostly horizontal and rightward (or any horizontal >= threshold)
+    if (dx.abs() < _kAnaphaseSingleMinDx) return;
+    if (dy.abs() > dx.abs() * 0.9) return; // too vertical
+
+    _anaSfCounted = true;
+    _triggerAnaphase();
+  }
+
+  void _triggerAnaphase() {
+    _anaphaseRegistered = true;
+    _cell.separation = 0;
+
+    final cx = _size.width / 2;
+    final cy = _size.height / 2;
+    final mid = _pointers.length == 2
+        ? Offset(
+            (_pointers.values.first.dx + _pointers.values.last.dx) / 2,
+            (_pointers.values.first.dy + _pointers.values.last.dy) / 2)
+        : Offset(cx, cy);
+
+    _burst(mid.dx, mid.dy, _kDanger, n: 18);
+    _label(mid.dx, mid.dy, 'PULLING APART!', _kDanger);
+    _completePhaseSoon(
+        extraPoints: _kAnaphasePoints * (1 + _interphaseBonus ~/ 3));
+  }
+
+  // ── Telophase — scrub ─────────────────────────────────────────────────────────
+  void _handleScrubMove(PointerMoveEvent e, double cx, double cy) {
+    if (_pointers.length != 1) return;
+    final x = e.localPosition.dx;
+
+    if (_scrubLastX == null) {
+      _scrubLastX = x;
+      _scrubSegStart = x;
+      _scrubDir = 0;
+      return;
+    }
+
+    final dx = x - _scrubLastX!;
+    if (dx.abs() < 2) return; // ignore micro jitter
+
+    final dir = dx > 0 ? 1 : -1;
+
+    if (_scrubDir == 0) {
+      _scrubDir = dir;
+      _scrubSegStart = x;
+    } else if (dir != _scrubDir) {
+      // Direction changed — check if the segment was long enough to count
+      final segLen = (x - _scrubSegStart).abs();
+      if (segLen >= _kScrubReverseMinDx) {
+        _scrubReverseCount++;
+        _burst(x, e.localPosition.dy, _kPurple, n: 4);
+
+        if (_scrubReverseCount >= _kScrubReversals) {
+          _label(cx, cy - 30, 'SPINDLE GONE!', _kPurple);
+          _completePhaseSoon(
+              extraPoints: _kTelophasePoints * (1 + _interphaseBonus ~/ 3));
         }
-      });
+      }
+      _scrubDir = dir;
+      _scrubSegStart = x;
+    }
+
+    _scrubLastX = x;
+  }
+
+  // ── Cytokinesis — fast vertical slice ─────────────────────────────────────────
+  void _handleSliceMove(PointerMoveEvent e, double cx, double cy) {
+    if (_pointers.length != 1) return;
+    if (_sliceRegistered) return;
+
+    final pos = e.localPosition;
+
+    if (_sliceStart == null) {
+      _sliceStart = pos;
+      _sliceStartTime = _now();
+      return;
+    }
+
+    final dy = pos.dy - _sliceStart!.dy;
+    final elapsed = _now() - _sliceStartTime;
+    if (elapsed < 0.01) return;
+    final velocity = dy.abs() / elapsed;
+
+    if (dy.abs() >= _kSliceMinDy && velocity >= _kSliceMinVelocity) {
+      _sliceRegistered = true;
+      _burst(cx, cy, _kOrange, n: 24);
+      _label(cx, cy - 30, 'CLEAVED!', _kOrange);
+      // Don't award points yet — wait for animation; extraPoints given in _scoreAndAdvance
+      _completePhaseSoon(
+          extraPoints: _kCytokinesisPoints * (1 + _interphaseBonus ~/ 3));
     }
   }
 
-  void _onPanEnd(DragEndDetails d) {
-    setState(() {
-      _draggingChromoId = null;
-      _swipingChromatidId = null;
-      _draggingFurrow = false;
-    });
+  // ── Tap handler ──────────────────────────────────────────────────────────────
+
+  void _onTapDown(TapDownDetails d) {
+    if (_phase == _Phase.results) {
+      _restart();
+      return;
+    }
+    if (_phase == _Phase.s && !_phaseDone) {
+      setState(() { _handleSTap(d.localPosition); });
+    }
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────────
 
-  double get _cellRadius => _cellRadiusFor(_size);
+  double _cellBaseRadius(Size s) => min(s.width, s.height) * 0.28;
 
-  // ── Build ──────────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, box) {
-      _size = Size(box.maxWidth, box.maxHeight);
+    return LayoutBuilder(builder: (ctx, box) {
+      final newSize = Size(box.maxWidth, box.maxHeight);
+      if (_size == Size.zero && newSize != Size.zero) {
+        _size = newSize;
+        _cell.baseRadius = _cellBaseRadius(_size);
+        _cell.radius = _cell.baseRadius;
+      } else {
+        _size = newSize;
+      }
+
+      // Pre-compute S-phase button rects for tap-hit-testing
+      if (_phase == _Phase.s && _size != Size.zero) {
+        _computeBaseBtnRects(_size);
+      }
+
       return GestureDetector(
         onTapDown: _onTapDown,
-        onPanStart: _onPanStart,
-        onPanUpdate: _onPanUpdate,
-        onPanEnd: _onPanEnd,
-        child: ClipRect(
-          child: CustomPaint(
-            painter: _MRPainter(
-              phase: _phase,
-              phaseTimer: _phaseTimer,
-              phaseTime: _phase == _Phase.intro ? 3.0 : _phaseTime(_phase),
-              bannerAge: _bannerAge,
-              phaseDone: _phaseDone,
-              phaseDoneAge: _phaseDoneAge,
-              totalScore: _totalScore,
-              phaseScores: _phaseScores,
-              dnaCollected: _dnaCollected,
-              dnaTarget: _kDnaTarget,
-              chromatinBlobs: _chromatinBlobs,
-              chromosomes: _chromosomes,
-              draggingChromoId: _draggingChromoId,
-              chromatids: _chromatids,
-              nuclei: _nuclei,
-              tapsPerNucleus: _kTapsPerNucleus,
-              furrowX: _furrowX,
-              furrowTarget: _kFurrowTarget,
-              particles: _particles,
-              labels: _labels,
-              shake: _shake,
-              wobble: _wobble,
-              cellRadius: _cellRadius,
+        child: Listener(
+          onPointerDown: (e) {
+            if (_phaseDone ||
+                _phase == _Phase.results ||
+                _phase == _Phase.intro) return;
+            setState(() {
+              _pointers[e.pointer] = e.localPosition;
+              _onPointerCountChange();
+              if (_phase == _Phase.cytokinesis && !_sliceRegistered) {
+                _sliceStart = e.localPosition;
+                _sliceStartTime = _now();
+              }
+              // Reset single-finger gesture start on new touch
+              if ((_phase == _Phase.g1 || _phase == _Phase.g2) &&
+                  _pointers.length == 1) {
+                _sfStart = e.localPosition;
+                _sfCounted = false;
+              }
+              if (_phase == _Phase.anaphase && _pointers.length == 1) {
+                _anaSfStart = e.localPosition;
+                _anaSfCounted = false;
+              }
+            });
+          },
+          onPointerMove: (e) {
+            if (_phaseDone ||
+                _phase == _Phase.results ||
+                _phase == _Phase.intro) return;
+            setState(() {
+              _pointers[e.pointer] = e.localPosition;
+              _handlePointerMove(e);
+            });
+          },
+          onPointerUp: (e) {
+            setState(() {
+              _pointers.remove(e.pointer);
+              _onPointerCountChange();
+
+              if (_phase == _Phase.metaphase &&
+                  e.pointer == _lockPointerId) {
+                _lockPointerId = null;
+                _draggingLock = false;
+              }
+
+              if (_phase == _Phase.cytokinesis) {
+                _sliceStart = null;
+              }
+
+              // Reset single-finger tracking on lift
+              if (_phase == _Phase.g1 || _phase == _Phase.g2) {
+                _sfStart = null;
+                _sfCounted = false;
+              }
+              if (_phase == _Phase.anaphase) {
+                _anaSfStart = null;
+                _anaSfCounted = false;
+              }
+            });
+          },
+          onPointerCancel: (e) {
+            setState(() {
+              _pointers.remove(e.pointer);
+              _onPointerCountChange();
+            });
+          },
+          child: ClipRect(
+            child: CustomPaint(
+              painter: _MRPainter(
+                phase: _phase,
+                cell: _cell,
+                phaseTimer: _phaseTimer,
+                phaseMaxTime: _phase == _Phase.intro
+                    ? 3.0
+                    : _phaseMaxTime(_phase),
+                bannerAge: _bannerAge,
+                phaseDone: _phaseDone,
+                phaseDoneAge: _phaseDoneAge,
+                totalScore: _totalScore,
+                phaseResults: List.unmodifiable(_phaseResults),
+                // G1/G2
+                axisIdx: _currentAxisIdx,
+                g1Hits: _g1Hits,
+                // S phase
+                baseQueue: List.unmodifiable(_baseQueue),
+                baseQueueIdx: _baseQueueIdx,
+                sStreak: _sStreak,
+                baseBtnRects: Map.unmodifiable(_baseBtnRects),
+                // Prophase
+                // Metaphase
+                lockX: _lockX,
+                keyX: _keyX,
+                metaphaseLocked: _metaphaseLocked,
+                // Telophase
+                scrubCount: _scrubReverseCount,
+                scrubTarget: _kScrubReversals,
+                // Cytokinesis
+                splitProgress: _cell.splitProgress,
+                // Effects
+                particles: List.unmodifiable(_particles),
+                labels: List.unmodifiable(_labels),
+                shake: _shake,
+                wobble: _wobble,
+              ),
+              size: Size.infinite,
             ),
-            size: Size.infinite,
           ),
         ),
       );
     });
   }
+
+  // Compute the four base-tap button rects from size
+  void _computeBaseBtnRects(Size s) {
+    if (_baseBtnRects.isNotEmpty) return; // already computed
+    const btnW = 64.0;
+    const btnH = 52.0;
+    const gap = 12.0;
+    final totalW = 4 * btnW + 3 * gap;
+    final startX = (s.width - totalW) / 2;
+    final btnY = s.height * 0.72;
+    for (int i = 0; i < 4; i++) {
+      final base = _kAllBases[i];
+      final left = startX + i * (btnW + gap);
+      _baseBtnRects[base] = Rect.fromLTWH(left, btnY, btnW, btnH);
+    }
+  }
+}
+
+// ── Phase result record ───────────────────────────────────────────────────────
+
+class _PhaseResult {
+  final _Phase phase;
+  final int score;
+  const _PhaseResult({required this.phase, required this.score});
 }
 
 // ── Painter ───────────────────────────────────────────────────────────────────
 
 class _MRPainter extends CustomPainter {
   final _Phase phase;
+  final _CellModel cell;
   final double phaseTimer;
-  final double phaseTime;
+  final double phaseMaxTime;
   final double bannerAge;
   final bool phaseDone;
   final double phaseDoneAge;
   final int totalScore;
-  final List<int> phaseScores;
+  final List<_PhaseResult> phaseResults;
 
-  final int dnaCollected;
-  final int dnaTarget;
-  final List<_ChromatinBlob> chromatinBlobs;
-  final List<_Chromosome> chromosomes;
-  final int? draggingChromoId;
-  final List<_ChromatidPair> chromatids;
-  final List<_Nucleus> nuclei;
-  final int tapsPerNucleus;
-  final double furrowX;
-  final double furrowTarget;
+  final int axisIdx;
+  final int g1Hits;
 
-  final List<_FloatParticle> particles;
-  final List<_FloatLabel> labels;
+  // S phase
+  final List<String> baseQueue;
+  final int baseQueueIdx;
+  final int sStreak;
+  final Map<String, Rect> baseBtnRects;
+
+  final double lockX;
+  final double keyX;
+  final bool metaphaseLocked;
+  final int scrubCount;
+  final int scrubTarget;
+  final double splitProgress;
+
+  final List<_FxParticle> particles;
+  final List<_FxLabel> labels;
   final double shake;
   final double wobble;
-  final double cellRadius;
 
   const _MRPainter({
     required this.phase,
+    required this.cell,
     required this.phaseTimer,
-    required this.phaseTime,
+    required this.phaseMaxTime,
     required this.bannerAge,
     required this.phaseDone,
     required this.phaseDoneAge,
     required this.totalScore,
-    required this.phaseScores,
-    required this.dnaCollected,
-    required this.dnaTarget,
-    required this.chromatinBlobs,
-    required this.chromosomes,
-    required this.draggingChromoId,
-    required this.chromatids,
-    required this.nuclei,
-    required this.tapsPerNucleus,
-    required this.furrowX,
-    required this.furrowTarget,
+    required this.phaseResults,
+    required this.axisIdx,
+    required this.g1Hits,
+    required this.baseQueue,
+    required this.baseQueueIdx,
+    required this.sStreak,
+    required this.baseBtnRects,
+    required this.lockX,
+    required this.keyX,
+    required this.metaphaseLocked,
+    required this.scrubCount,
+    required this.scrubTarget,
+    required this.splitProgress,
     required this.particles,
     required this.labels,
     required this.shake,
     required this.wobble,
-    required this.cellRadius,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Background — subtle radial gradient for depth
-    final bgPaint = Paint()
-      ..shader = ui.Gradient.radial(
-        Offset(size.width / 2, size.height / 2),
-        size.longestSide * 0.7,
-        [const Color(0xFF0A0A1E), _kBg],
-      );
-    canvas.drawRect(Offset.zero & size, bgPaint);
-
-    if (shake > 0) {
-      canvas.save();
-      canvas.translate(
-        sin(wobble * 40) * shake,
-        cos(wobble * 30) * shake,
-      );
-    }
+    // Background
+    canvas.drawRect(
+        Offset.zero & size,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            Offset(size.width / 2, size.height / 2),
+            size.longestSide * 0.72,
+            [const Color(0xFF0A0A1E), _kBg],
+          ));
 
     final cx = size.width / 2;
     final cy = size.height / 2;
+
+    if (shake > 0) {
+      canvas.save();
+      canvas.translate(sin(wobble * 41) * shake, cos(wobble * 31) * shake);
+    }
 
     switch (phase) {
       case _Phase.intro:
         _drawIntro(canvas, size, cx, cy);
         break;
-      case _Phase.interphase:
-        _drawInterphase(canvas, size, cx, cy);
+      case _Phase.g1:
+      case _Phase.g2:
+        _drawG1G2(canvas, size, cx, cy);
+        break;
+      case _Phase.s:
+        _drawS(canvas, size, cx, cy);
         break;
       case _Phase.prophase:
         _drawProphase(canvas, size, cx, cy);
@@ -914,627 +1280,612 @@ class _MRPainter extends CustomPainter {
       if (bannerAge < _kBannerFadeIn + _kBannerHold + _kBannerFadeOut) {
         _drawBanner(canvas, size, cx, cy);
       }
-      if (phaseDone) _drawPhaseDoneOverlay(canvas, size, cx, cy);
+      if (phaseDone) _drawPhaseDone(canvas, size, cx, cy);
     }
 
     if (shake > 0) canvas.restore();
   }
 
-  // ── Intro ────────────────────────────────────────────────────────────────
+  // ── Shared cell drawing ───────────────────────────────────────────────────────
 
-  void _drawIntro(Canvas canvas, Size size, double cx, double cy) {
-    // Glowing cell preview
-    canvas.drawCircle(Offset(cx, cy), cellRadius * 1.4,
-        Paint()..shader = ui.Gradient.radial(Offset(cx, cy), cellRadius * 1.4, [
-          _kAccent.withValues(alpha: 0.04),
-          Colors.transparent,
-        ]));
-    _drawCellOutline(canvas, cx, cy, cellRadius,
-        Colors.white.withValues(alpha: 0.14), wobble: wobble);
+  void _drawCellBody(Canvas canvas, double cx, double cy,
+      {Color memColor = Colors.white,
+      double alpha = 0.22,
+      bool nucleus = true,
+      double condensation = 0,
+      bool dna = false,
+      double dnaFill = 0}) {
+    final r = cell.radius;
+    final sx = cell.stretchX;
+    final sy = cell.stretchY;
 
-    _drawCenteredText(canvas, size, 'MITOSIS RUSH', 34,
-        Colors.white.withValues(alpha: 0.85), -90);
-    _drawCenteredText(canvas, size, 'Survive all 6 phases of cell division', 13,
-        Colors.white.withValues(alpha: 0.4), -50);
-    _drawCenteredText(canvas, size,
-        'INTERPHASE  ›  PROPHASE  ›  METAPHASE', 11,
-        Colors.white.withValues(alpha: 0.22), -22);
-    _drawCenteredText(canvas, size,
-        'ANAPHASE  ›  TELOPHASE  ›  CYTOKINESIS', 11,
-        Colors.white.withValues(alpha: 0.22), -4);
-    _drawCenteredText(canvas, size, 'Get ready...', 15,
-        _kAccent.withValues(alpha: 0.5), 60);
-  }
-
-  // ── INTERPHASE ────────────────────────────────────────────────────────────
-  // Tap cell to duplicate DNA. Cell glows and swells as DNA fills.
-
-  void _drawInterphase(Canvas canvas, Size size, double cx, double cy) {
-    final prog = (dnaCollected / dnaTarget).clamp(0.0, 1.0);
-    final growFactor = 0.84 + 0.16 * prog;
-    final r = cellRadius * growFactor;
-
-    // Ambient outer glow — intensifies with progress
-    canvas.drawCircle(Offset(cx, cy), r * 1.45,
-        Paint()..shader = ui.Gradient.radial(Offset(cx, cy), r * 1.45, [
-          _kGreen.withValues(alpha: 0.05 + 0.09 * prog),
-          Colors.transparent,
-        ]));
-
-    // Cell membrane — wobbles more as it fills
-    final memColor = Color.lerp(
-        Colors.white.withValues(alpha: 0.22),
-        _kGreen.withValues(alpha: 0.70),
-        prog)!;
-    _drawCellOutline(canvas, cx, cy, r, memColor,
-        wobble: wobble * (1.0 + prog * 0.6));
-
-    // Nuclear envelope
-    final nRad = r * (0.36 + 0.14 * prog);
-    canvas.drawCircle(Offset(cx, cy), nRad,
-        Paint()..color = _kGreen.withValues(alpha: 0.10 + 0.06 * prog));
-    canvas.drawCircle(Offset(cx, cy), nRad,
+    // Outer glow
+    canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(cx, cy),
+            width: r * sx * 2.2,
+            height: r * sy * 2.2),
         Paint()
-          ..color = _kGreen.withValues(alpha: 0.28 + 0.15 * prog)
+          ..color = memColor.withValues(alpha: alpha * 0.18)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur * 1.5));
+
+    // Wobbling membrane path
+    const segs = 80;
+    final path = Path();
+    for (int i = 0; i <= segs; i++) {
+      final angle = i / segs * 2 * pi;
+      final wave = 1.0
+          + sin(angle * _kCellWobbleFreq + wobble) * _kCellWobbleAmt
+          + sin(angle * 8.5 + wobble * 1.4) * (_kCellWobbleAmt * 0.4);
+      final px = cx + cos(angle) * r * sx * wave;
+      final py = cy + sin(angle) * r * sy * wave;
+      if (i == 0) {
+        path.moveTo(px, py);
+      } else {
+        path.lineTo(px, py);
+      }
+    }
+    path.close();
+    canvas.drawPath(path, Paint()..color = memColor.withValues(alpha: alpha * 0.12));
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = memColor.withValues(alpha: alpha)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.8);
 
-    // Nuclear pores hint (dots on envelope)
-    for (int i = 0; i < 8; i++) {
-      final a = i / 8 * 2 * pi;
-      canvas.drawCircle(
-        Offset(cx + cos(a) * nRad, cy + sin(a) * nRad), 2.5,
-        Paint()..color = _kGreen.withValues(alpha: 0.25 + 0.1 * prog),
-      );
-    }
+    if (!nucleus) return;
 
-    // DNA dots orbiting inside nucleus
-    for (int i = 0; i < dnaCollected; i++) {
-      final angle = i * (2 * pi / dnaTarget) + wobble * 0.08;
-      final dr = nRad * 0.5;
-      canvas.drawCircle(
-        Offset(cx + cos(angle) * dr, cy + sin(angle) * dr), 3.5,
-        Paint()..color = _kGreen.withValues(alpha: 0.7),
-      );
-    }
-
-    // Tap hint (fades once half filled)
-    if (prog < 0.5) {
-      _drawCenteredText(canvas, size, 'TAP!', 18,
-          _kGreen.withValues(alpha: 0.28 * (1 - prog * 2)), 0);
-    }
-
-    _drawProgressMeter(canvas, size, prog, _kGreen, 'DNA COPIED');
-  }
-
-  // ── PROPHASE ─────────────────────────────────────────────────────────────
-  // Tap chromatin blobs — they condense into solid chromosomes.
-
-  void _drawProphase(Canvas canvas, Size size, double cx, double cy) {
-    // Cell outline fading (nuclear envelope breaking down)
-    _drawCellOutline(canvas, cx, cy, cellRadius,
-        Colors.white.withValues(alpha: 0.07), wobble: wobble * 0.5);
-
-    // Faint spindle apparatus beginning to form
-    final poleY1 = cy - cellRadius * 0.82;
-    final poleY2 = cy + cellRadius * 0.82;
-    canvas.drawLine(Offset(cx, poleY1), Offset(cx, poleY2),
+    final nRad = r * (0.34 + 0.1 * (1 - condensation));
+    final nucAlpha = (1 - condensation * 0.85).clamp(0.0, 1.0);
+    canvas.drawCircle(
+        Offset(cx, cy),
+        nRad,
+        Paint()..color = memColor.withValues(alpha: 0.08 * nucAlpha));
+    canvas.drawCircle(
+        Offset(cx, cy),
+        nRad,
         Paint()
-          ..color = _kAccent.withValues(alpha: 0.06)
-          ..strokeWidth = 1);
-
-    // Chromatin blobs
-    for (final b in chromatinBlobs) {
-      if (b.tapped) {
-        // Condensed chromosome — solid X shape
-        final hw = b.radius * 0.9;
-        final hh = b.radius * 1.3;
-        // Glow
-        canvas.drawOval(
-          Rect.fromCenter(center: Offset(b.x, b.y), width: hw * 2 + 8, height: hh * 2 + 8),
-          Paint()
-            ..color = _kAccent.withValues(alpha: 0.08)
-            ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur),
-        );
-        canvas.drawOval(
-          Rect.fromCenter(center: Offset(b.x, b.y), width: hw * 2, height: hh * 2),
-          Paint()..color = _kAccent.withValues(alpha: 0.45),
-        );
-        canvas.drawOval(
-          Rect.fromCenter(center: Offset(b.x, b.y), width: hw * 2, height: hh * 2),
-          Paint()
-            ..color = _kAccent
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.8,
-        );
-        // Centromere notch
-        canvas.drawCircle(Offset(b.x, b.y), 3,
-            Paint()..color = Colors.white.withValues(alpha: 0.6));
-      } else {
-        // Loose chromatin cloud
-        canvas.drawCircle(Offset(b.x, b.y), b.radius * 1.5,
-            Paint()..color = Colors.white.withValues(alpha: 0.03));
-        canvas.drawCircle(Offset(b.x, b.y), b.radius,
-            Paint()..color = Colors.white.withValues(alpha: 0.15));
-        canvas.drawCircle(Offset(b.x, b.y), b.radius,
-            Paint()
-              ..color = Colors.white.withValues(alpha: 0.30)
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.2);
-        // Inner chromatin strands
-        for (int s = 0; s < 3; s++) {
-          final sa = s * pi / 3 + wobble * 0.4;
-          final d = b.radius * 0.35;
-          canvas.drawCircle(
-            Offset(b.x + cos(sa) * d, b.y + sin(sa) * d), 2,
-            Paint()..color = Colors.white.withValues(alpha: 0.35),
-          );
-        }
-      }
-    }
-
-    // Faint pair connection lines for un-tapped pairs
-    final pairs = <int, List<_ChromatinBlob>>{};
-    for (final b in chromatinBlobs) {
-      pairs.putIfAbsent(b.pairId, () => []).add(b);
-    }
-    for (final pair in pairs.values) {
-      if (pair.length == 2 && !pair[0].tapped && !pair[1].tapped) {
-        canvas.drawLine(
-          Offset(pair[0].x, pair[0].y), Offset(pair[1].x, pair[1].y),
-          Paint()..color = Colors.white.withValues(alpha: 0.05)..strokeWidth = 0.8,
-        );
-      }
-    }
-
-    _drawProgressMeter(canvas, size,
-        chromatinBlobs.where((b) => b.tapped).length / chromatinBlobs.length,
-        _kAccent, 'CONDENSED');
-  }
-
-  // ── METAPHASE ────────────────────────────────────────────────────────────
-  // Drag chromosomes to the metaphase plate (horizontal center line).
-
-  void _drawMetaphase(Canvas canvas, Size size, double cx, double cy) {
-    _drawCellOutline(canvas, cx, cy, cellRadius,
-        Colors.white.withValues(alpha: 0.07), wobble: wobble * 0.3);
-
-    final poleY1 = cy - cellRadius * 0.88;
-    final poleY2 = cy + cellRadius * 0.88;
-
-    // Spindle pole bodies
-    _drawGlowCircle(canvas, Offset(cx, poleY1), 8, _kGold.withValues(alpha: 0.55));
-    _drawGlowCircle(canvas, Offset(cx, poleY2), 8, _kGold.withValues(alpha: 0.55));
-
-    // Metaphase plate glow
-    final plateAlpha = 0.28 + 0.14 * sin(wobble * 1.6);
-    canvas.drawLine(
-      Offset(cx - cellRadius * 0.88, cy), Offset(cx + cellRadius * 0.88, cy),
-      Paint()
-        ..color = _kGold.withValues(alpha: 0.12)
-        ..strokeWidth = 14
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur),
-    );
-    canvas.drawLine(
-      Offset(cx - cellRadius * 0.88, cy), Offset(cx + cellRadius * 0.88, cy),
-      Paint()
-        ..color = _kGold.withValues(alpha: plateAlpha)
-        ..strokeWidth = 2.5
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Spindle fibers to aligned chromosomes
-    for (final c in chromosomes) {
-      if (c.aligned) {
-        canvas.drawLine(Offset(c.x, c.y), Offset(cx, poleY1),
-            Paint()..color = _kGold.withValues(alpha: 0.18)..strokeWidth = 0.8);
-        canvas.drawLine(Offset(c.x, c.y), Offset(cx, poleY2),
-            Paint()..color = _kGold.withValues(alpha: 0.18)..strokeWidth = 0.8);
-      }
-    }
-
-    // Chromosomes
-    for (final c in chromosomes) {
-      final isDragging = draggingChromoId == c.id;
-      final col = c.aligned ? _kGold : (isDragging ? Colors.white : _kAccent);
-      final scale = isDragging ? 1.18 : 1.0;
-      final hw = 14.0 * scale;
-      final hh = 20.0 * scale;
-
-      if (isDragging || c.aligned) {
-        canvas.drawOval(
-          Rect.fromCenter(center: Offset(c.x, c.y), width: (hw + 10) * 2, height: (hh + 10) * 2),
-          Paint()
-            ..color = col.withValues(alpha: 0.08)
-            ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur),
-        );
-      }
-
-      // X-chromosome body
-      canvas.drawOval(
-        Rect.fromCenter(center: Offset(c.x - hw * 0.28, c.y), width: hw * 0.9, height: hh * 1.6),
-        Paint()..color = col.withValues(alpha: 0.50),
-      );
-      canvas.drawOval(
-        Rect.fromCenter(center: Offset(c.x + hw * 0.28, c.y), width: hw * 0.9, height: hh * 1.6),
-        Paint()..color = col.withValues(alpha: 0.50),
-      );
-      canvas.drawOval(
-        Rect.fromCenter(center: Offset(c.x - hw * 0.28, c.y), width: hw * 0.9, height: hh * 1.6),
-        Paint()
-          ..color = col
+          ..color = memColor.withValues(alpha: 0.25 * nucAlpha)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5,
-      );
-      canvas.drawOval(
-        Rect.fromCenter(center: Offset(c.x + hw * 0.28, c.y), width: hw * 0.9, height: hh * 1.6),
-        Paint()
-          ..color = col
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5,
-      );
-      // Centromere
-      canvas.drawCircle(Offset(c.x, c.y), 3.8 * scale,
-          Paint()..color = col.withValues(alpha: 0.9));
-    }
+          ..strokeWidth = 1.6);
 
-    final aligned = chromosomes.where((c) => c.aligned).length;
-    _drawProgressMeter(canvas, size, aligned / chromosomes.length, _kGold, 'ALIGNED');
-  }
-
-  // ── ANAPHASE ─────────────────────────────────────────────────────────────
-  // Swipe pairs UP (to top pole) or DOWN (to bottom pole).
-  // Poles are drawn at top and bottom — matching the vertical gesture.
-
-  void _drawAnaphase(Canvas canvas, Size size, double cx, double cy) {
-    final poleY1 = cy - cellRadius * 0.78;  // top pole
-    final poleY2 = cy + cellRadius * 0.78;  // bottom pole
-
-    // Elongated cell outline (cell stretches during anaphase)
-    final splitProg = chromatids.isEmpty
-        ? 0.0
-        : chromatids.where((c) => c.split).length / chromatids.length;
-    final cellW = cellRadius * (1.0 + splitProg * 0.18);
-    final cellH = cellRadius * (1.0 + splitProg * 0.28);
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset(cx, cy), width: cellW * 2, height: cellH * 2),
-      Paint()..color = Colors.white.withValues(alpha: 0.04),
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset(cx, cy), width: cellW * 2, height: cellH * 2),
-      Paint()
-        ..color = Colors.white.withValues(alpha: 0.12)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
-    );
-
-    // Pole glow zones
-    _drawGlowCircle(canvas, Offset(cx, poleY1), cellRadius * 0.32,
-        _kDanger.withValues(alpha: 0.18));
-    _drawGlowCircle(canvas, Offset(cx, poleY2), cellRadius * 0.32,
-        _kDanger.withValues(alpha: 0.18));
-
-    // Pole labels
-    _drawTextAt(canvas, '▲ POLE', 13, _kDanger.withValues(alpha: 0.45),
-        Offset(cx, poleY1 - cellRadius * 0.18));
-    _drawTextAt(canvas, 'POLE ▼', 13, _kDanger.withValues(alpha: 0.45),
-        Offset(cx, poleY2 + cellRadius * 0.18));
-
-    // Spindle fibers between poles
-    canvas.drawLine(Offset(cx - 4, poleY1), Offset(cx - 4, poleY2),
-        Paint()..color = _kDanger.withValues(alpha: 0.06)..strokeWidth = 1);
-    canvas.drawLine(Offset(cx + 4, poleY1), Offset(cx + 4, poleY2),
-        Paint()..color = _kDanger.withValues(alpha: 0.06)..strokeWidth = 1);
-
-    // Chromatid pairs
-    for (final ct in chromatids) {
-      if (ct.split) {
-        // Animate toward poles
-        final t = ct.separation; // 0→1 eased out
-        final eased = 1 - (1 - t) * (1 - t);
-        final pullDist = cellRadius * 0.55 * eased;
-        final topY = ct.y - pullDist;
-        final botY = ct.y + pullDist;
-        final chromRad = 14.0;
-
-        // Top chromatid
-        canvas.drawCircle(Offset(ct.x, topY), chromRad,
-            Paint()..color = _kDanger.withValues(alpha: 0.08 + 0.1 * eased)
-              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4));
-        canvas.drawCircle(Offset(ct.x, topY), chromRad,
-            Paint()..color = _kDanger.withValues(alpha: 0.5));
-        canvas.drawCircle(Offset(ct.x, topY), chromRad,
-            Paint()
-              ..color = _kDanger
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.5);
-
-        // Bottom chromatid
-        canvas.drawCircle(Offset(ct.x, botY), chromRad,
-            Paint()..color = _kDanger.withValues(alpha: 0.08 + 0.1 * eased)
-              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4));
-        canvas.drawCircle(Offset(ct.x, botY), chromRad,
-            Paint()..color = _kDanger.withValues(alpha: 0.5));
-        canvas.drawCircle(Offset(ct.x, botY), chromRad,
-            Paint()
-              ..color = _kDanger
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.5);
-
-        // Fading spindle cord
-        if (eased < 0.85) {
-          canvas.drawLine(
-            Offset(ct.x, topY + chromRad), Offset(ct.x, botY - chromRad),
-            Paint()
-              ..color = _kDanger.withValues(alpha: 0.18 * (1 - eased))
-              ..strokeWidth = 1,
-          );
-        }
-      } else {
-        // Unsplit sister chromatids — X shape with centromere
-        const chromRad = 16.0;
-        const halfGap = 11.0;
-
-        // Glow hint on hit zone
-        canvas.drawCircle(Offset(ct.x, ct.y), _kSwipeHitRadius * 0.7,
-            Paint()
-              ..color = Colors.white.withValues(alpha: 0.03)
-              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 12));
-
-        // Top chromatid
-        canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(ct.x, ct.y - halfGap),
-              width: chromRad * 1.0, height: chromRad * 1.6),
-          Paint()..color = Colors.white.withValues(alpha: 0.18),
-        );
-        canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(ct.x, ct.y - halfGap),
-              width: chromRad * 1.0, height: chromRad * 1.6),
-          Paint()
-            ..color = Colors.white.withValues(alpha: 0.55)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.8,
-        );
-
-        // Bottom chromatid
-        canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(ct.x, ct.y + halfGap),
-              width: chromRad * 1.0, height: chromRad * 1.6),
-          Paint()..color = Colors.white.withValues(alpha: 0.18),
-        );
-        canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(ct.x, ct.y + halfGap),
-              width: chromRad * 1.0, height: chromRad * 1.6),
-          Paint()
-            ..color = Colors.white.withValues(alpha: 0.55)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.8,
-        );
-
-        // Centromere bar
-        canvas.drawLine(
-          Offset(ct.x - 6, ct.y), Offset(ct.x + 6, ct.y),
-          Paint()..color = Colors.white.withValues(alpha: 0.7)..strokeWidth = 3,
-        );
-
-        // Gesture cue arrows (↑ and ↓ beside the pair)
-        _drawTextAt(canvas, '↑', 18, _kDanger.withValues(alpha: 0.45),
-            Offset(ct.x, ct.y - chromRad - halfGap - 10));
-        _drawTextAt(canvas, '↓', 18, _kDanger.withValues(alpha: 0.45),
-            Offset(ct.x, ct.y + chromRad + halfGap + 10));
-      }
-    }
-
-    final split = chromatids.where((c) => c.split).length;
-    _drawProgressMeter(canvas, size, split / chromatids.length, _kDanger, 'SPLIT');
-  }
-
-  // ── TELOPHASE ────────────────────────────────────────────────────────────
-  // Tap each nucleus outline to reform the nuclear envelope.
-
-  void _drawTelophase(Canvas canvas, Size size, double cx, double cy) {
-    // Cell outline begins to re-round
-    _drawCellOutline(canvas, cx, cy, cellRadius * 0.95,
-        Colors.white.withValues(alpha: 0.06), wobble: wobble * 0.2);
-
-    for (final n in nuclei) {
-      final progress = (n.tapCount / tapsPerNucleus).clamp(0.0, 1.0);
-      final col = Color.lerp(
-          Colors.white.withValues(alpha: 0.20), _kPurple, progress)!;
-
-      // Outer glow — grows as it seals
-      if (progress > 0.1) {
-        canvas.drawCircle(Offset(n.x, n.y), n.radius + 14,
-            Paint()
-              ..color = _kPurple.withValues(alpha: 0.06 + 0.12 * progress)
-              ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur));
-      }
-
-      // Forming nuclear envelope (dashes become solid)
-      _drawDashedCircle(canvas, Offset(n.x, n.y), n.radius, col,
-          fillFraction: progress, strokeWidth: 2.2);
-
-      // Interior chromatin condensing
-      canvas.drawCircle(Offset(n.x, n.y), n.radius * 0.55,
-          Paint()..color = _kPurple.withValues(alpha: 0.07 + progress * 0.14));
+    if (condensation < 0.95) {
       for (int i = 0; i < 6; i++) {
-        final a = i * pi / 3 + wobble * 0.25;
-        final dr = n.radius * 0.28;
-        canvas.drawOval(
-          Rect.fromCenter(
-              center: Offset(n.x + cos(a) * dr, n.y + sin(a) * dr),
-              width: 11, height: 6.5),
-          Paint()..color = _kPurple.withValues(alpha: 0.25 + progress * 0.25),
-        );
+        final a = i / 6 * 2 * pi + wobble * 0.12;
+        final d = nRad * 0.38;
+        canvas.drawCircle(
+            Offset(cx + cos(a) * d, cy + sin(a) * d),
+            3.5 + 2 * (1 - condensation),
+            Paint()..color = memColor.withValues(alpha: 0.22 * (1 - condensation * 0.6)));
       }
-
-      // Nuclear pores forming (appear as progress increases)
-      if (progress > 0.4) {
-        final poreAlpha = ((progress - 0.4) / 0.6).clamp(0.0, 1.0);
-        for (int i = 0; i < 8; i++) {
-          final a = i / 8 * 2 * pi;
-          canvas.drawCircle(
-            Offset(n.x + cos(a) * n.radius, n.y + sin(a) * n.radius), 2.5,
-            Paint()..color = _kPurple.withValues(alpha: 0.35 * poreAlpha),
-          );
-        }
-      }
-
-      if (n.sealed) {
-        canvas.drawCircle(Offset(n.x, n.y), n.radius + 6,
-            Paint()
-              ..color = _kPurple.withValues(alpha: 0.25)
-              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 10));
-      }
-
-      _drawTextAt(canvas, '${n.tapCount}/$tapsPerNucleus', 13,
-          _kPurple.withValues(alpha: 0.55),
-          Offset(n.x, n.y + n.radius + 18));
     }
 
-    final sealed = nuclei.where((n) => n.sealed).length;
-    _drawProgressMeter(canvas, size, sealed / nuclei.length, _kPurple, 'SEALED');
+    if (dna && dnaFill > 0) {
+      for (int i = 0; i < (dnaFill * 8).ceil(); i++) {
+        final a = i / 8 * 2 * pi + wobble * 0.05;
+        canvas.drawCircle(
+            Offset(cx + cos(a) * nRad * 0.45, cy + sin(a) * nRad * 0.45),
+            3.5,
+            Paint()..color = _kCyan.withValues(alpha: 0.65));
+      }
+    }
   }
 
-  // ── CYTOKINESIS ──────────────────────────────────────────────────────────
-  // Drag the cleavage furrow from left to right to pinch the cell in two.
+  // ── Intro ─────────────────────────────────────────────────────────────────────
 
-  void _drawCytokinesis(Canvas canvas, Size size, double cx, double cy) {
-    const furrowColor = Color(0xFFFF9800);
+  void _drawIntro(Canvas canvas, Size size, double cx, double cy) {
+    _drawCellBody(canvas, cx, cy,
+        memColor: _kCyan.withValues(alpha: 1),
+        alpha: 0.15,
+        nucleus: true,
+        condensation: 0);
 
-    // Cell outline — pinches as furrow advances
-    final pinch = furrowX / furrowTarget;
-    _drawCellOutline(canvas, cx, cy, cellRadius * (1.0 - pinch * 0.1),
-        Colors.white.withValues(alpha: 0.12 + pinch * 0.06), wobble: wobble * 0.2);
+    _drawCenteredText(canvas, size, 'MITOSIS RUSH', 34,
+        Colors.white.withValues(alpha: 0.88), -100);
+    _drawCenteredText(canvas, size,
+        'Interphase: ~90% of your time', 13,
+        Colors.white.withValues(alpha: 0.45), -60);
+    _drawCenteredText(canvas, size,
+        'G1 › S › G2 › then 5 fast mitosis steps', 12,
+        Colors.white.withValues(alpha: 0.28), -38);
+    _drawCenteredText(canvas, size, 'Get ready...', 15,
+        _kCyan.withValues(alpha: 0.55), 70);
+  }
 
-    // Left/right highlight tint behind furrow
-    if (furrowX > 0.02) {
-      final leftEdge = cx - cellRadius;
-      final furrowPx = leftEdge + furrowX * 2 * cellRadius;
-      canvas.save();
-      final clipPath = Path()
-        ..addOval(Rect.fromCircle(center: Offset(cx, cy), radius: cellRadius));
-      canvas.clipPath(clipPath);
-      canvas.drawRect(
-        Rect.fromLTRB(leftEdge, cy - cellRadius, furrowPx, cy + cellRadius),
-        Paint()..color = furrowColor.withValues(alpha: 0.06),
-      );
-      canvas.restore();
-    }
+  // ── G1 / G2 — reverse-pinch QTE ──────────────────────────────────────────────
 
-    // Two daughter nuclei
-    final nSpread = cellRadius * 0.36;
-    for (int i = 0; i < 2; i++) {
-      final nx = cx + (i == 0 ? -nSpread : nSpread);
-      canvas.drawCircle(Offset(nx, cy), cellRadius * 0.27,
-          Paint()..color = _kPurple.withValues(alpha: 0.10));
-      canvas.drawCircle(Offset(nx, cy), cellRadius * 0.27,
-          Paint()
-            ..color = _kPurple.withValues(alpha: 0.28)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.2);
-    }
+  void _drawG1G2(Canvas canvas, Size size, double cx, double cy) {
+    final isG2 = phase == _Phase.g2;
+    final prog = (g1Hits / (isG2 ? 15 : 20)).clamp(0.0, 1.0);
 
-    // Furrow line + glow
-    if (furrowX > 0) {
-      final furrowPx = cx - cellRadius + furrowX * 2 * cellRadius;
-      // Height narrows as it passes (contractile ring)
-      final halfH = cellRadius * (1.0 - furrowX * 0.72);
+    _drawCellBody(canvas, cx, cy,
+        memColor: _kGreen,
+        alpha: 0.25 + 0.15 * prog,
+        nucleus: true,
+        condensation: 0);
+
+    _drawAxisArrow(canvas, cx, cy, axisIdx);
+
+    _drawCenteredText(canvas, size,
+        'SPREAD along  ${_kAxisLabels[axisIdx]}  (or drag out)',
+        15, _kGreen.withValues(alpha: 0.75), -cell.radius - 38);
+
+    _drawCenteredText(canvas, size,
+        '${isG2 ? "G2" : "G1"}  $g1Hits hits',
+        13, _kGreen.withValues(alpha: 0.45), cell.radius + 18);
+
+    _drawProgressMeter(canvas, size, prog, _kGreen,
+        isG2 ? 'FINAL GROWTH' : 'GROWING');
+  }
+
+  void _drawAxisArrow(Canvas canvas, double cx, double cy, int idx) {
+    final angle = _kAxisAngles[idx];
+    final r = cell.radius * 0.6;
+    final pulse = 0.5 + 0.5 * sin(wobble * 3.0);
+
+    final paint = Paint()
+      ..color = _kGreen.withValues(alpha: 0.55 + 0.25 * pulse)
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+
+    for (final sign in [-1.0, 1.0]) {
+      final endX = cx + cos(angle) * r * sign;
+      final endY = cy + sin(angle) * r * sign;
+      canvas.drawLine(Offset(cx, cy), Offset(endX, endY), paint);
+
+      const headLen = 12.0;
+      const headSpread = 0.4;
+      final backAngle = angle + pi * sign;
+      final a1 = backAngle + headSpread;
+      final a2 = backAngle - headSpread;
       canvas.drawLine(
-        Offset(furrowPx, cy - halfH), Offset(furrowPx, cy + halfH),
-        Paint()
-          ..color = furrowColor.withValues(alpha: 0.22)
-          ..strokeWidth = 12
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6),
-      );
+          Offset(endX, endY),
+          Offset(endX + cos(a1) * headLen, endY + sin(a1) * headLen),
+          paint);
       canvas.drawLine(
-        Offset(furrowPx, cy - halfH), Offset(furrowPx, cy + halfH),
-        Paint()
-          ..color = furrowColor
-          ..strokeWidth = 3
-          ..strokeCap = StrokeCap.round,
-      );
+          Offset(endX, endY),
+          Offset(endX + cos(a2) * headLen, endY + sin(a2) * headLen),
+          paint);
+    }
+  }
 
-      if (furrowX < 0.6) {
-        _drawTextAt(canvas, '→', 22, furrowColor.withValues(alpha: 0.55),
-            Offset(furrowPx + 22, cy));
+  // ── S phase — base-pair matching ──────────────────────────────────────────────
+
+  void _drawS(Canvas canvas, Size size, double cx, double cy) {
+    final prog = baseQueue.isEmpty
+        ? 0.0
+        : (baseQueueIdx / baseQueue.length).clamp(0.0, 1.0);
+
+    _drawCellBody(canvas, cx, cy,
+        memColor: _kCyan,
+        alpha: 0.22 + 0.12 * prog,
+        nucleus: true,
+        condensation: 0,
+        dna: true,
+        dnaFill: prog);
+
+    // ── Current base prompt ───────────────────────────────────────────────────
+    if (baseQueueIdx < baseQueue.length) {
+      final current = baseQueue[baseQueueIdx];
+      final remaining = baseQueue.length - baseQueueIdx;
+
+      // Show next 4 bases in queue
+      for (int qi = 0; qi < min(4, remaining); qi++) {
+        final base = baseQueue[baseQueueIdx + qi];
+        final opacity = qi == 0 ? 1.0 : (0.45 - qi * 0.10).clamp(0.1, 0.45);
+        final scale = qi == 0 ? 32.0 : (22.0 - qi * 3.0);
+        final baseX = cx + (qi - 1.5) * 42.0;
+        _drawTextAt(canvas, base, scale,
+            _kCyan.withValues(alpha: opacity),
+            Offset(baseX, cy - cell.radius - 60));
+      }
+
+      // "→ ?" prompt
+      _drawCenteredText(canvas, size,
+          'Complement of  $current  =  ?',
+          18, Colors.white.withValues(alpha: 0.75), -cell.radius - 20);
+
+      if (sStreak > 1) {
+        _drawCenteredText(canvas, size,
+            '🔥 ×$sStreak streak', 14,
+            _kGold.withValues(alpha: 0.80), -cell.radius + 10);
       }
     } else {
-      _drawTextAt(canvas, '← DRAG →', 14, furrowColor.withValues(alpha: 0.40),
-          Offset(cx, cy + cellRadius * 0.72));
+      _drawCenteredText(canvas, size,
+          'DNA COPIED!', 22, _kCyan.withValues(alpha: 0.85), -cell.radius - 20);
     }
 
-    _drawProgressMeter(canvas, size, furrowX / furrowTarget, furrowColor, 'FURROW');
+    // ── 4 tap buttons ─────────────────────────────────────────────────────────
+    if (baseBtnRects.isNotEmpty) {
+      for (final base in _kAllBases) {
+        final rect = baseBtnRects[base];
+        if (rect == null) continue;
+        final isCorrect = baseQueueIdx < baseQueue.length &&
+            _kBaseComplement[baseQueue[baseQueueIdx]] == base;
+        final btnColor = isCorrect ? _kGreen : _kCyan;
+
+        // Button background
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(rect, const Radius.circular(10)),
+            Paint()
+              ..color = btnColor.withValues(alpha: isCorrect ? 0.18 : 0.08)
+              ..maskFilter = isCorrect
+                  ? MaskFilter.blur(BlurStyle.normal, _kGlowBlur)
+                  : null);
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(rect, const Radius.circular(10)),
+            Paint()
+              ..color = btnColor.withValues(alpha: isCorrect ? 0.65 : 0.28)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = isCorrect ? 2.2 : 1.4);
+
+        _drawTextAt(canvas, base, 26,
+            btnColor.withValues(alpha: isCorrect ? 1.0 : 0.65),
+            rect.center);
+      }
+    }
+
+    _drawProgressMeter(canvas, size, prog, _kCyan, 'DNA REPLICATED');
   }
 
-  // ── RESULTS ───────────────────────────────────────────────────────────────
+  // ── Prophase — pinch to condense ──────────────────────────────────────────────
+
+  void _drawProphase(Canvas canvas, Size size, double cx, double cy) {
+    _drawCellBody(canvas, cx, cy,
+        memColor: _kCyan,
+        alpha: 0.18,
+        nucleus: true,
+        condensation: cell.condensation);
+
+    final poleH = cell.radius * 0.82;
+    canvas.drawLine(
+        Offset(cx, cy - poleH),
+        Offset(cx, cy + poleH),
+        Paint()
+          ..color = _kCyan.withValues(alpha: 0.06)
+          ..strokeWidth = 1);
+
+    final pulse = 0.5 + 0.5 * sin(wobble * 3.2);
+    for (final sign in [-1.0, 1.0]) {
+      final arrowX = cx + sign * cell.radius * 0.65;
+      _drawTextAt(canvas, sign < 0 ? '→' : '←', 28,
+          _kCyan.withValues(alpha: 0.45 + 0.25 * pulse),
+          Offset(arrowX, cy));
+    }
+
+    _drawCenteredText(canvas, size,
+        'PINCH (squeeze fingers together)!', 14,
+        _kCyan.withValues(alpha: 0.65), -cell.radius - 30);
+
+    _drawProgressMeter(canvas, size, cell.condensation, _kCyan, 'CONDENSING');
+  }
+
+  // ── Metaphase — lock/key ──────────────────────────────────────────────────────
+
+  void _drawMetaphase(Canvas canvas, Size size, double cx, double cy) {
+    _drawCellBody(canvas, cx, cy,
+        memColor: _kGold,
+        alpha: 0.20,
+        nucleus: false,
+        condensation: 1.0);
+
+    canvas.drawLine(
+        Offset(cx, cy - cell.radius * 0.82),
+        Offset(cx, cy + cell.radius * 0.82),
+        Paint()
+          ..color = _kGold.withValues(alpha: 0.28 + 0.12 * sin(wobble * 1.8))
+          ..strokeWidth = 2.2
+          ..strokeCap = StrokeCap.round);
+
+    _drawLockHalf(canvas, cx + lockX, cy, cell.radius * 0.30, true, _kGold);
+    _drawLockHalf(canvas, cx + keyX, cy, cell.radius * 0.30, false, _kGold);
+
+    final gap = (keyX + lockX).clamp(0.0, cell.radius);
+    final gapProg = 1 - (gap / (cell.radius * 0.9)).clamp(0.0, 1.0);
+
+    _drawCenteredText(canvas, size,
+        metaphaseLocked ? 'ALIGNED!' : 'SLIDE halves together!', 14,
+        _kGold.withValues(alpha: 0.65), -cell.radius - 30);
+
+    _drawProgressMeter(canvas, size, gapProg, _kGold, 'ALIGNMENT');
+  }
+
+  void _drawLockHalf(Canvas canvas, double x, double y, double r,
+      bool isLeft, Color col) {
+    final paint = Paint()..color = col.withValues(alpha: 0.55);
+    final stroke = Paint()
+      ..color = col
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2;
+    final glow = Paint()
+      ..color = col.withValues(alpha: 0.12)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur);
+
+    final rect =
+        Rect.fromCenter(center: Offset(x, y), width: r * 2, height: r * 2.2);
+    final startAngle = isLeft ? pi / 2 : -pi / 2;
+    const sweepAngle = pi;
+
+    final path = Path()
+      ..arcTo(rect, startAngle, sweepAngle, false)
+      ..lineTo(x, y + r * 1.1)
+      ..close();
+
+    canvas.drawPath(path, glow);
+    canvas.drawPath(path, paint);
+    canvas.drawPath(path, stroke);
+
+    for (int i = 0; i < 3; i++) {
+      final ty = y - r * 0.6 + i * r * 0.6;
+      final tx = x + (isLeft ? r * 0.05 : -r * 0.05);
+      canvas.drawCircle(Offset(tx, ty), 4,
+          Paint()..color = col.withValues(alpha: 0.7));
+    }
+  }
+
+  // ── Anaphase — horizontal reverse-pinch ──────────────────────────────────────
+
+  void _drawAnaphase(Canvas canvas, Size size, double cx, double cy) {
+    final sep = cell.separation;
+    final ease = 1 - (1 - sep) * (1 - sep);
+
+    final spread = cell.radius * 0.6 * ease;
+
+    for (final sign in [-1.0, 1.0]) {
+      final nx = cx + sign * (cell.radius * 0.55 + spread);
+      _drawCellBody(canvas, nx, cy,
+          memColor: _kDanger,
+          alpha: 0.18 + 0.10 * ease,
+          nucleus: true,
+          condensation: 0.8);
+    }
+
+    if (sep < 0.5) {
+      canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset(cx, cy),
+              width: cell.radius * 2 * (1 - ease * 0.7),
+              height: cell.radius * 2),
+          Paint()..color = _kDanger.withValues(alpha: 0.08 * (1 - ease)));
+    }
+
+    for (final sign in [-1.0, 1.0]) {
+      final ax = cx + sign * (cell.radius + 20);
+      _drawTextAt(
+          canvas,
+          sign < 0 ? '◀ POLE' : 'POLE ▶',
+          13,
+          _kDanger.withValues(alpha: 0.45),
+          Offset(ax, cy));
+    }
+
+    if (!phaseDone) {
+      final pulse = 0.5 + 0.5 * sin(wobble * 3.0);
+      for (final sign in [-1.0, 1.0]) {
+        _drawTextAt(canvas, sign < 0 ? '←' : '→', 26,
+            _kDanger.withValues(alpha: 0.50 + 0.25 * pulse),
+            Offset(cx + sign * cell.radius * 0.50, cy));
+      }
+      _drawCenteredText(canvas, size,
+          'SPREAD left↔right  (or drag right)', 14,
+          _kDanger.withValues(alpha: 0.65), -cell.radius - 30);
+    }
+
+    _drawProgressMeter(canvas, size, sep, _kDanger, 'SEPARATING');
+  }
+
+  // ── Telophase — scrub ─────────────────────────────────────────────────────────
+
+  void _drawTelophase(Canvas canvas, Size size, double cx, double cy) {
+    final prog = (scrubCount / scrubTarget).clamp(0.0, 1.0);
+
+    final spread = cell.radius * 0.42;
+    for (int i = 0; i < 2; i++) {
+      final nx = cx + (i == 0 ? -spread : spread);
+      _drawDashedCircle(canvas, Offset(nx, cy), cell.radius * 0.45,
+          _kPurple, fillFraction: prog, strokeWidth: 2.2);
+      canvas.drawCircle(Offset(nx, cy), cell.radius * 0.45,
+          Paint()..color = _kPurple.withValues(alpha: 0.06 + 0.08 * prog));
+    }
+
+    final fiberAlpha = (1 - prog) * 0.25;
+    for (int i = -2; i <= 2; i++) {
+      canvas.drawLine(
+          Offset(cx - spread + i * 8.0, cy - cell.radius * 0.4),
+          Offset(cx + spread + i * 8.0, cy + cell.radius * 0.4),
+          Paint()
+            ..color = _kCyan.withValues(alpha: fiberAlpha)
+            ..strokeWidth = 0.8);
+    }
+
+    final pulse = 0.5 + 0.5 * sin(wobble * 4.0);
+    _drawCenteredText(canvas, size, '↔ SCRUB FAST ↔', 18,
+        _kPurple.withValues(alpha: 0.45 + 0.25 * pulse), -cell.radius - 30);
+    _drawCenteredText(canvas, size,
+        '$scrubCount / $scrubTarget reversals', 12,
+        _kPurple.withValues(alpha: 0.45), cell.radius + 18);
+
+    _drawProgressMeter(canvas, size, prog, _kPurple, 'SPINDLE DISSOLVING');
+  }
+
+  // ── Cytokinesis — slice + split animation ─────────────────────────────────────
+
+  void _drawCytokinesis(Canvas canvas, Size size, double cx, double cy) {
+    final sp = splitProgress;
+    final ease = 1 - (1 - sp) * (1 - sp); // ease-out
+
+    if (sp < 0.35) {
+      // ── Phase 1: whole cell with deepening cleavage furrow ────────────────
+      // The cell stays whole but grows a visible pinch groove at the equator
+      final neckDepth = ease / 0.35; // 0→1 as sp 0→0.35
+
+      // Outer membrane — hourglass shape built from two arcs
+      _drawHourglassCell(canvas, cx, cy, cell.radius, neckDepth, _kOrange);
+
+      // Cleavage furrow line — brightens as it deepens
+      canvas.drawLine(
+          Offset(cx, cy - cell.radius * (1.0 - neckDepth * 0.5)),
+          Offset(cx, cy + cell.radius * (1.0 - neckDepth * 0.5)),
+          Paint()
+            ..color = _kOrange.withValues(alpha: 0.20 + 0.60 * neckDepth)
+            ..strokeWidth = 3.5 + neckDepth * 2
+            ..strokeCap = StrokeCap.round);
+    } else if (sp < 0.65) {
+      // ── Phase 2: cell necking and about to split ───────────────────────────
+      final neckT = (sp - 0.35) / 0.30; // 0→1
+      _drawNeckingCell(canvas, cx, cy, cell.radius, neckT, _kOrange);
+    } else {
+      // ── Phase 3: two daughter cells drifting apart ────────────────────────
+      final driftT = (sp - 0.65) / 0.35; // 0→1
+      final driftEase = 1 - (1 - driftT) * (1 - driftT);
+      final spread = cell.radius * 0.80 * driftEase + cell.radius * 0.22;
+
+      for (final sign in [-1.0, 1.0]) {
+        _drawCellBody(canvas, cx + sign * spread, cy,
+            memColor: _kOrange,
+            alpha: 0.25 + 0.10 * driftEase,
+            nucleus: true,
+            condensation: 0);
+      }
+
+      if (driftT > 0.3) {
+        _drawCenteredText(canvas, size,
+            'TWO DAUGHTER CELLS!', 18,
+            _kOrange.withValues(alpha: driftT * 0.80), cell.radius + 20);
+      }
+    }
+
+    // Slice cue before gesture registers
+    if (sp < 0.05 && !phaseDone) {
+      final pulse = 0.5 + 0.5 * sin(wobble * 3.5);
+      _drawCenteredText(canvas, size,
+          'SLICE  ↑ or ↓  fast!', 18,
+          _kOrange.withValues(alpha: 0.55 + 0.28 * pulse),
+          -cell.radius - 30);
+    }
+
+    _drawProgressMeter(canvas, size, sp, _kOrange, 'CLEAVING');
+  }
+
+  /// Draws the cell as a slightly pinched oval (early furrow stage).
+  void _drawHourglassCell(Canvas canvas, double cx, double cy,
+      double r, double pinch, Color col) {
+    // Simple approach: draw the cell as an oval + a darker band at the equator
+    canvas.drawOval(
+        Rect.fromCenter(center: Offset(cx, cy), width: r * 2, height: r * 2),
+        Paint()..color = col.withValues(alpha: 0.07));
+    canvas.drawOval(
+        Rect.fromCenter(center: Offset(cx, cy), width: r * 2, height: r * 2),
+        Paint()
+          ..color = col.withValues(alpha: 0.30)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.8);
+
+    // Equatorial constriction bands
+    final bandH = r * 0.18 * pinch;
+    if (bandH > 1) {
+      canvas.drawRect(
+          Rect.fromCenter(center: Offset(cx, cy), width: r * 2.4, height: bandH),
+          Paint()..color = _kBg.withValues(alpha: 0.60 * pinch));
+    }
+
+    // Outer glow
+    canvas.drawOval(
+        Rect.fromCenter(center: Offset(cx, cy), width: r * 2.3, height: r * 2.3),
+        Paint()
+          ..color = col.withValues(alpha: 0.08 * pinch)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur));
+  }
+
+  /// Draws the cell necking into two distinct lobes before full separation.
+  void _drawNeckingCell(Canvas canvas, double cx, double cy,
+      double r, double t, Color col) {
+    // Two lobes moving apart with a narrowing neck
+    final lx = r * 0.30 * t;
+    for (final sign in [-1.0, 1.0]) {
+      final ox = cx + sign * lx;
+      final lobeR = r * (0.88 + t * 0.05);
+      canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset(ox, cy), width: lobeR * 2, height: lobeR * 2),
+          Paint()..color = col.withValues(alpha: 0.08));
+      canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset(ox, cy), width: lobeR * 2, height: lobeR * 2),
+          Paint()
+            ..color = col.withValues(alpha: 0.32)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.8);
+    }
+
+    // Neck bridge — shrinks to nothing
+    final neckW = r * 0.60 * (1 - t);
+    if (neckW > 2) {
+      canvas.drawOval(
+          Rect.fromCenter(center: Offset(cx, cy),
+              width: neckW, height: r * 0.40),
+          Paint()..color = col.withValues(alpha: 0.14 * (1 - t)));
+    }
+  }
+
+  // ── Results ───────────────────────────────────────────────────────────────────
 
   void _drawResults(Canvas canvas, Size size, double cx, double cy) {
     canvas.drawRect(Offset.zero & size,
         Paint()..color = Colors.black.withValues(alpha: 0.90));
 
-    // Title
     _drawCenteredText(canvas, size, 'MITOSIS COMPLETE', 28,
-        Colors.white.withValues(alpha: 0.80), -155);
+        Colors.white.withValues(alpha: 0.80), -165);
 
-    // Divider under title
     canvas.drawLine(
-      Offset(cx - 90, size.height / 2 - 138), Offset(cx + 90, size.height / 2 - 138),
-      Paint()..color = Colors.white.withValues(alpha: 0.10)..strokeWidth = 1,
-    );
+        Offset(cx - 100, cy - 148), Offset(cx + 100, cy - 148),
+        Paint()..color = Colors.white.withValues(alpha: 0.10)..strokeWidth = 1);
 
-    final phases = [
-      _Phase.interphase, _Phase.prophase, _Phase.metaphase,
-      _Phase.anaphase, _Phase.telophase, _Phase.cytokinesis,
+    const allPhases = [
+      _Phase.g1, _Phase.s, _Phase.g2,
+      _Phase.prophase, _Phase.metaphase, _Phase.anaphase,
+      _Phase.telophase, _Phase.cytokinesis,
     ];
-    for (int i = 0; i < phases.length; i++) {
-      final sc = i < phaseScores.length ? phaseScores[i] : 0;
-      final goldThreshold = _kPhaseBaseScore + 40;
-      final col = sc >= goldThreshold
+
+    for (int i = 0; i < allPhases.length; i++) {
+      final p = allPhases[i];
+      final sc = i < phaseResults.length ? phaseResults[i].score : 0;
+      final col = sc >= _kPhaseCompleteBase + 40
           ? _kGold
           : sc > 0
               ? Colors.white.withValues(alpha: 0.55)
               : _kDanger.withValues(alpha: 0.5);
       _drawCenteredText(canvas, size,
-          '${_phaseName(phases[i])}   $sc pts', 13, col, -108.0 + i * 27.0);
+          '${_phaseName(p)}   $sc pts', 12, col, -118.0 + i * 26.0);
     }
 
-    // Total divider
     canvas.drawLine(
-      Offset(cx - 90, size.height / 2 + 68), Offset(cx + 90, size.height / 2 + 68),
-      Paint()..color = Colors.white.withValues(alpha: 0.12)..strokeWidth = 1,
-    );
+        Offset(cx - 100, cy + 80), Offset(cx + 100, cy + 80),
+        Paint()..color = Colors.white.withValues(alpha: 0.12)..strokeWidth = 1);
 
     _drawCenteredText(canvas, size, 'TOTAL  $totalScore', 24,
-        _kGold.withValues(alpha: 0.90), 90);
-
+        _kGold.withValues(alpha: 0.90), 100);
     _drawCenteredText(canvas, size, 'Tap to play again', 13,
-        Colors.white.withValues(alpha: 0.30), 138);
+        Colors.white.withValues(alpha: 0.30), 145);
   }
 
-  // ── HUD & Banner ──────────────────────────────────────────────────────────
+  // ── HUD ───────────────────────────────────────────────────────────────────────
 
   void _drawHUD(Canvas canvas, Size size) {
-    if (phase == _Phase.results) return;
+    final remaining = (phaseTimer / phaseMaxTime).clamp(0.0, 1.0);
+    final tCol = remaining < 0.25
+        ? _kDanger
+        : Colors.white.withValues(alpha: 0.40);
 
-    final remaining = (phaseTimer / phaseTime).clamp(0.0, 1.0);
-    final tColor = remaining < 0.25 ? _kDanger : Colors.white.withValues(alpha: 0.40);
-
-    // Timer bar at bottom
     const barH = 4.0;
     final barY = size.height - barH;
     canvas.drawRect(Rect.fromLTWH(0, barY, size.width, barH),
         Paint()..color = Colors.white.withValues(alpha: 0.04));
     canvas.drawRect(
         Rect.fromLTWH(0, barY, size.width * remaining, barH),
-        Paint()..color = tColor.withValues(alpha: 0.65));
+        Paint()..color = tCol.withValues(alpha: 0.65));
 
-    // Pulse glow when low time
     if (remaining < 0.25) {
       canvas.drawRect(
           Rect.fromLTWH(0, barY - 1, size.width * remaining, barH + 2),
@@ -1543,25 +1894,23 @@ class _MRPainter extends CustomPainter {
             ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
     }
 
-    // Timer text
     final secsStr = '${phaseTimer.ceil()}s';
     final timerTp = TextPainter(
       text: TextSpan(
           text: secsStr,
           style: TextStyle(
-              fontFamily: 'Avenir', fontSize: 14,
-              fontWeight: FontWeight.w500, color: tColor)),
+              fontFamily: 'Avenir',
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: tCol)),
       textDirection: TextDirection.ltr,
     )..layout();
     timerTp.paint(canvas, Offset(size.width - timerTp.width - 14, 10));
 
-    // Phase name top-left
     _drawText(canvas, _phaseName(phase), 13,
         _phaseColor(phase).withValues(alpha: 0.55), const Offset(14, 10));
-
-    // Score
     _drawText(canvas, 'Score: $totalScore', 11,
-        _kGold.withValues(alpha: 0.38), Offset(size.width - 84, 28));
+        _kGold.withValues(alpha: 0.38), Offset(size.width - 90, 28));
   }
 
   void _drawBanner(Canvas canvas, Size size, double cx, double cy) {
@@ -1577,100 +1926,37 @@ class _MRPainter extends CustomPainter {
     if (alpha <= 0) return;
 
     final col = _phaseColor(phase);
-
-    // Banner background band
     canvas.drawRect(
-      Rect.fromLTWH(0, cy - 62, size.width, 58),
-      Paint()..color = Colors.black.withValues(alpha: alpha * 0.60),
-    );
-
-    // Accent line top of band
+        Rect.fromLTWH(0, cy - 66, size.width, 60),
+        Paint()..color = Colors.black.withValues(alpha: alpha * 0.60));
     canvas.drawLine(
-      Offset(0, cy - 62), Offset(size.width, cy - 62),
-      Paint()..color = col.withValues(alpha: alpha * 0.35)..strokeWidth = 1.5,
-    );
+        Offset(0, cy - 66),
+        Offset(size.width, cy - 66),
+        Paint()
+          ..color = col.withValues(alpha: alpha * 0.35)
+          ..strokeWidth = 1.5);
 
-    // Phase name — scaled pop-in
-    final scaleIn = alpha < 0.5 ? (0.9 + 0.1 * alpha / 0.5) : 1.0;
-    _drawCenteredText(canvas, size, _phaseName(phase), 30 * scaleIn,
-        col.withValues(alpha: alpha * 0.95), -46);
-    _drawCenteredText(canvas, size, _phaseInstruction(phase), 14,
-        Colors.white.withValues(alpha: alpha * 0.60), -12);
+    final scaleIn = alpha < 0.5 ? (0.88 + 0.12 * alpha / 0.5) : 1.0;
+    _drawCenteredText(canvas, size, _phaseName(phase), 29 * scaleIn,
+        col.withValues(alpha: alpha * 0.95), -50);
+    _drawCenteredText(canvas, size, _phaseInstruction(phase), 13,
+        Colors.white.withValues(alpha: alpha * 0.58), -14);
   }
 
-  void _drawPhaseDoneOverlay(Canvas canvas, Size size, double cx, double cy) {
+  void _drawPhaseDone(Canvas canvas, Size size, double cx, double cy) {
     final t = phaseDoneAge;
-    // Flash
-    canvas.drawRect(Offset.zero & size,
+    canvas.drawRect(
+        Offset.zero & size,
         Paint()..color = Colors.white.withValues(
-            alpha: (0.18 * (1 - t / _kPhaseDoneDelay)).clamp(0.0, 1.0)));
-
-    if (t > 0.22) {
-      final ta = ((t - 0.22) / 0.25).clamp(0.0, 1.0);
-      _drawCenteredText(canvas, size, 'PHASE COMPLETE!', 32,
-          _kGreen.withValues(alpha: ta * 0.90), -20);
+            alpha: (0.15 * (1 - t / _kPhaseDoneDelay)).clamp(0.0, 1.0)));
+    if (t > 0.20) {
+      final ta = ((t - 0.20) / 0.22).clamp(0.0, 1.0);
+      _drawCenteredText(canvas, size, 'PHASE COMPLETE!', 31,
+          _kGreen.withValues(alpha: ta * 0.88), -22);
     }
   }
 
-  // ── Shared drawing helpers ────────────────────────────────────────────────
-
-  void _drawCellOutline(Canvas canvas, double cx, double cy, double r,
-      Color color, {double wobble = 0}) {
-    if (wobble == 0) {
-      canvas.drawCircle(Offset(cx, cy), r,
-          Paint()..color = color.withValues(alpha: 0.04));
-      canvas.drawCircle(Offset(cx, cy), r,
-          Paint()
-            ..color = color
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.6);
-      return;
-    }
-    const segments = 90;
-    final path = Path();
-    for (int i = 0; i <= segments; i++) {
-      final angle = i / segments * 2 * pi;
-      final wave = 1.0
-          + sin(angle * _kCellWobbleFreq + wobble) * _kCellWobbleAmt
-          + sin(angle * 9.0 + wobble * 1.3) * (_kCellWobbleAmt * 0.45);
-      final px = cx + cos(angle) * r * wave;
-      final py = cy + sin(angle) * r * wave;
-      if (i == 0) path.moveTo(px, py); else path.lineTo(px, py);
-    }
-    path.close();
-    canvas.drawPath(path, Paint()..color = color.withValues(alpha: 0.04));
-    canvas.drawPath(path,
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.6);
-  }
-
-  void _drawGlowCircle(Canvas canvas, Offset center, double r, Color color) {
-    canvas.drawCircle(center, r * 1.8,
-        Paint()
-          ..color = color.withValues(alpha: 0.35)
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, _kGlowBlur));
-    canvas.drawCircle(center, r, Paint()..color = color);
-  }
-
-  void _drawDashedCircle(Canvas canvas, Offset center, double radius,
-      Color color, {double fillFraction = 1.0, double strokeWidth = 2.0}) {
-    const segments = 64;
-    final filled = (fillFraction * segments).toInt();
-    for (int i = 0; i < segments; i++) {
-      final a1 = i / segments * 2 * pi;
-      final a2 = (i + 0.72) / segments * 2 * pi;
-      final p1 = Offset(center.dx + cos(a1) * radius, center.dy + sin(a1) * radius);
-      final p2 = Offset(center.dx + cos(a2) * radius, center.dy + sin(a2) * radius);
-      final a = i < filled ? 1.0 : 0.15;
-      canvas.drawLine(p1, p2,
-          Paint()
-            ..color = color.withValues(alpha: a)
-            ..strokeWidth = strokeWidth
-            ..strokeCap = StrokeCap.round);
-    }
-  }
+  // ── Shared drawing helpers ────────────────────────────────────────────────────
 
   void _drawProgressMeter(Canvas canvas, Size size, double progress,
       Color color, String label) {
@@ -1680,46 +1966,66 @@ class _MRPainter extends CustomPainter {
     final barW = size.width - 48;
 
     canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW, barH), const Radius.circular(3)),
-      Paint()..color = Colors.white.withValues(alpha: 0.05),
-    );
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(barX, barY, barW, barH), const Radius.circular(3)),
+        Paint()..color = Colors.white.withValues(alpha: 0.05));
+
     final fill = progress.clamp(0.0, 1.0);
     if (fill > 0) {
-      // Glow behind fill
       canvas.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(barX, barY - 1, barW * fill, barH + 2),
-            const Radius.circular(3)),
-        Paint()
-          ..color = color.withValues(alpha: 0.20)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
-      );
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(barX, barY - 1, barW * fill, barH + 2),
+              const Radius.circular(3)),
+          Paint()
+            ..color = color.withValues(alpha: 0.20)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
       canvas.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromLTWH(barX, barY, barW * fill, barH),
-            const Radius.circular(3)),
-        Paint()..color = color.withValues(alpha: 0.68),
-      );
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(barX, barY, barW * fill, barH),
+              const Radius.circular(3)),
+          Paint()..color = color.withValues(alpha: 0.68));
     }
-    final pct = (fill * 100).toInt();
-    _drawText(canvas, '$label  $pct%', 11,
+    _drawText(canvas, '$label  ${(fill * 100).toInt()}%', 11,
         color.withValues(alpha: 0.42), Offset(barX, barY + barH + 5));
+  }
+
+  void _drawDashedCircle(Canvas canvas, Offset center, double radius,
+      Color color,
+      {double fillFraction = 1.0, double strokeWidth = 2.0}) {
+    const segments = 64;
+    final filled = (fillFraction * segments).toInt();
+    for (int i = 0; i < segments; i++) {
+      final a1 = i / segments * 2 * pi;
+      final a2 = (i + 0.72) / segments * 2 * pi;
+      final p1 = Offset(
+          center.dx + cos(a1) * radius, center.dy + sin(a1) * radius);
+      final p2 = Offset(
+          center.dx + cos(a2) * radius, center.dy + sin(a2) * radius);
+      canvas.drawLine(
+          p1,
+          p2,
+          Paint()
+            ..color = color.withValues(alpha: i < filled ? 1.0 : 0.14)
+            ..strokeWidth = strokeWidth
+            ..strokeCap = StrokeCap.round);
+    }
   }
 
   void _drawParticles(Canvas canvas) {
     for (final p in particles) {
-      final alpha = p.life.clamp(0.0, 1.0);
-      canvas.drawCircle(Offset(p.x, p.y), p.radius * alpha,
-          Paint()..color = p.color.withValues(alpha: alpha * 0.80));
+      final a = p.life.clamp(0.0, 1.0);
+      canvas.drawCircle(
+          Offset(p.x, p.y),
+          p.r * a,
+          Paint()..color = p.color.withValues(alpha: a * 0.80));
     }
   }
 
   void _drawLabels(Canvas canvas) {
     for (final l in labels) {
-      final alpha = (1.0 - l.age / 0.9).clamp(0.0, 1.0);
-      _drawTextAt(canvas, l.text, 13, l.color.withValues(alpha: alpha * 0.88),
-          Offset(l.x, l.y));
+      final a = (1.0 - l.age / 0.95).clamp(0.0, 1.0);
+      _drawTextAt(canvas, l.text, 13,
+          l.color.withValues(alpha: a * 0.88), Offset(l.x, l.y));
     }
   }
 
@@ -1728,8 +2034,10 @@ class _MRPainter extends CustomPainter {
       text: TextSpan(
           text: text,
           style: TextStyle(
-              fontFamily: 'Avenir', fontSize: sz,
-              fontWeight: FontWeight.w400, color: color)),
+              fontFamily: 'Avenir',
+              fontSize: sz,
+              fontWeight: FontWeight.w400,
+              color: color)),
       textDirection: TextDirection.ltr,
     )..layout();
     tp.paint(canvas, pos);
@@ -1741,25 +2049,32 @@ class _MRPainter extends CustomPainter {
       text: TextSpan(
           text: text,
           style: TextStyle(
-              fontFamily: 'Avenir', fontSize: sz,
-              fontWeight: FontWeight.w300, color: color)),
+              fontFamily: 'Avenir',
+              fontSize: sz,
+              fontWeight: FontWeight.w300,
+              color: color)),
       textAlign: TextAlign.center,
       textDirection: TextDirection.ltr,
     )..layout(maxWidth: size.width - 32);
-    tp.paint(canvas, Offset((size.width - tp.width) / 2, size.height / 2 + yOff));
+    tp.paint(canvas,
+        Offset((size.width - tp.width) / 2, size.height / 2 + yOff));
   }
 
-  void _drawTextAt(Canvas canvas, String text, double sz, Color color, Offset center) {
+  void _drawTextAt(Canvas canvas, String text, double sz, Color color,
+      Offset center) {
     final tp = TextPainter(
       text: TextSpan(
           text: text,
           style: TextStyle(
-              fontFamily: 'Avenir', fontSize: sz,
-              fontWeight: FontWeight.w300, color: color)),
+              fontFamily: 'Avenir',
+              fontSize: sz,
+              fontWeight: FontWeight.w300,
+              color: color)),
       textAlign: TextAlign.center,
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
+    tp.paint(canvas,
+        Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
   }
 
   @override

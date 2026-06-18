@@ -104,46 +104,24 @@ class ScaleCard extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Row(
                       children: [
-                        // Enter button (organelles only)
-                        if (hasInteractive && onInteractiveTap != null)
-                          GestureDetector(
-                            onTap: onInteractiveTap,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              margin: const EdgeInsets.only(right: 6),
-                              decoration: BoxDecoration(
-                                color: color.withValues(alpha: 0.25),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: color.withValues(alpha: 0.4)),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.visibility, color: color, size: 12),
-                                  const SizedBox(width: 3),
-                                  Text('Enter', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: color, fontWeight: FontWeight.w600)),
-                                ],
-                              ),
-                            ),
-                          ),
                         // Explore button (all scales) — solo play of this
                         // scale's game, outside the party board loop
                         if (onPlayTap != null)
                           GestureDetector(
                             onTap: onPlayTap,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                               decoration: BoxDecoration(
-                                color: const Color(0xFFAADD44).withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: const Color(0xFFAADD44).withValues(alpha: 0.3)),
+                                color: const Color(0xFFAADD44).withValues(alpha: 0.18),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: const Color(0xFFAADD44).withValues(alpha: 0.4)),
                               ),
                               child: const Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.explore, color: Color(0xFFAADD44), size: 12),
-                                  SizedBox(width: 3),
-                                  Text('Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 10, color: Color(0xFFAADD44), fontWeight: FontWeight.w600)),
+                                  Icon(Icons.explore, color: Color(0xFFAADD44), size: 18),
+                                  SizedBox(width: 5),
+                                  Text('Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Color(0xFFAADD44), fontWeight: FontWeight.w700)),
                                 ],
                               ),
                             ),

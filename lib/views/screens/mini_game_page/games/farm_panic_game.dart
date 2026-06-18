@@ -15,7 +15,7 @@ import '../../../../theme/potatuhs.dart';
 
 // ---- FEEL CONSTANTS --------------------------------------------------------
 
-const double _kGameDuration = 60.0;
+const double _kGameDuration = 30.0;
 
 // Underground zone
 const int _kChannelCount = 4;
@@ -549,10 +549,10 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _bugTimer -= dt;
     if (_bugTimer <= 0) {
       _bugTimer = _bugInterval(_elapsed) + _rng.nextDouble() * 0.4;
-      // Escalate bug tier over time
+      // Escalate bug tier over time (compressed for the 30s round)
       int tier = 0;
-      if (_elapsed > 30 && _rng.nextDouble() < 0.35) tier = 1; // fast
-      if (_elapsed > 45 && _rng.nextDouble() < 0.2) tier = 2; // armored
+      if (_elapsed > 15 && _rng.nextDouble() < 0.35) tier = 1; // fast
+      if (_elapsed > 22 && _rng.nextDouble() < 0.2) tier = 2; // armored
       _bugs.add(_Bug(
         x: 20 + _rng.nextDouble() * (_size.width - 40),
         y: -12,

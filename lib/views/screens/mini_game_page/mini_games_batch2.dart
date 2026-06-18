@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import '../../../games/fx.dart';
 import '../../../theme/potatuhs.dart';
+import '../../../games/organism/organism_facts.dart';
 
 // ---------------------------------------------------------------------------
 // Helper: tiny particle for visual feedback across multiple games
@@ -903,6 +904,26 @@ class _ScorePop {
   });
 }
 
+// ---------------------------------------------------------------------------
+// _FactCard — a floating fact card that drifts upward and wiggles
+// ---------------------------------------------------------------------------
+class _FactCard {
+  final String text;
+  final int id;
+  double x; // center x in logical pixels
+  double y; // center y (decreases as it floats up)
+  double life; // 1.0 → 0.0; auto-dismissed when <= 0
+  bool dismissed = false;
+
+  _FactCard({
+    required this.text,
+    required this.id,
+    required this.x,
+    required this.y,
+    this.life = 1.0,
+  });
+}
+
 class OrganismHarvestGame extends StatefulWidget {
   const OrganismHarvestGame({Key? key}) : super(key: key);
   @override
@@ -954,6 +975,37 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
   /// Seconds within which two harvests count as a combo continuation.
   static const double _comboWindow = 1.8;
 
+  // ── Fact bombardment tunable consts ───────────────────────────────────────
+  /// How many fact cards spawn per harvest (1 normally, 2 on a combo ≥ 3).
+  static const int _factSpawnPerHarvest = 1;
+
+  /// Extra fact spawned when combo reaches this threshold.
+  static const int _factExtraComboThreshold = 3;
+
+  /// Seconds a fact card lives before auto-dismissing (fades in last 0.5s).
+  static const double _factLifetime = 5.0;
+
+  /// Upward drift speed in logical pixels per second.
+  static const double _factDriftSpeed = 55.0;
+
+  /// Amplitude of the horizontal sine wiggle in logical pixels.
+  static const double _factWiggleAmp = 14.0;
+
+  /// Frequency of the sine wiggle in Hz.
+  static const double _factWiggleFreq = 1.8;
+
+  /// Coins awarded for tapping (manually closing) a fact card.
+  static const int _factTapCoins = 2;
+
+  /// Reduced coins awarded when Auto-Close is active and auto-dismisses a card.
+  static const int _factAutoCloseCoins = 1;
+
+  /// Cost in coins to activate Auto-Close.
+  static const int _autoCloseCost = 5;
+
+  /// Duration of Auto-Close power-up in seconds.
+  static const double _autoCloseDuration = 6.0;
+
   // ── Runtime state ─────────────────────────────────────────────────────────
   late AnimationController _ticker;
   final Random _rng = Random();
@@ -986,6 +1038,20 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
   // Water powerup
   bool _waterActive = false;
   double _waterTimer = 0;
+
+  // Fact bombardment
+  final List<_FactCard> _facts = [];
+  int _nextFactId = 0;
+  int _lastFactIndex = -1; // prevents immediate repeat
+  double _factElapsed = 0.0; // monotonic clock used for wiggle phase
+
+  // Auto-Close power-up
+  bool _autoCloseActive = false;
+  double _autoCloseTimer = 0;
+
+  // Instructions overlay — shown until player dismisses or harvests twice
+  bool _showInstructions = true;
+  int _instructionDismissHarvests = 0; // auto-dismiss after 2 harvests
 
   @override
   void initState() {
@@ -1061,6 +1127,33 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
           _waterTimer = 0;
         }
       }
+
+      // ── Auto-Close timer ────────────────────────────────────────────────
+      if (_autoCloseActive) {
+        _autoCloseTimer -= dt;
+        if (_autoCloseTimer <= 0) {
+          _autoCloseActive = false;
+          _autoCloseTimer = 0;
+        }
+      }
+
+      // ── Fact cards: drift, wiggle, fade, auto-close ──────────────────────
+      _factElapsed += dt;
+      for (final f in _facts) {
+        if (f.dismissed) continue;
+        f.y -= _factDriftSpeed * dt;
+        f.life -= dt / _factLifetime;
+        if (f.life <= 0) f.life = 0;
+
+        // Auto-Close: snap-dismiss cards the moment they hit the fade zone
+        if (_autoCloseActive && f.life < 0.5 / _factLifetime + dt) {
+          if (!f.dismissed) {
+            f.dismissed = true;
+            _coins += _factAutoCloseCoins;
+          }
+        }
+      }
+      _facts.removeWhere((f) => f.dismissed || f.life <= 0);
 
       // ── Helper cooldown ─────────────────────────────────────────────────
       if (_helperHired && _helperCooldown > 0) {
@@ -1154,6 +1247,14 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     _score += totalPoints;
     _coins += coinEarned;
 
+    // ── Instructions auto-dismiss after 2 player harvests ────────────────
+    if (!fromHelper && _showInstructions) {
+      _instructionDismissHarvests++;
+      if (_instructionDismissHarvests >= 2) {
+        _showInstructions = false;
+      }
+    }
+
     // Auto-replant
     Future.delayed(Duration(milliseconds: _replantDelayMs), () {
       if (!mounted) return;
@@ -1195,6 +1296,41 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     _pops.add(_ScorePop(x: px, y: py - 12, label: label, color: labelColor));
   }
 
+  // ── Fact bombardment ──────────────────────────────────────────────────────
+
+  /// Pick a fact index that is not the same as the last one spawned.
+  int _nextFactIndex() {
+    if (kOrganismFacts.length <= 1) return 0;
+    int idx;
+    do {
+      idx = _rng.nextInt(kOrganismFacts.length);
+    } while (idx == _lastFactIndex);
+    _lastFactIndex = idx;
+    return idx;
+  }
+
+  /// Spawn fact card(s) at a screen position (roughly above the harvest cell).
+  void _spawnFacts(double originX, double originY) {
+    final int count = (_combo >= _factExtraComboThreshold)
+        ? _factSpawnPerHarvest + 1
+        : _factSpawnPerHarvest;
+
+    for (int i = 0; i < count; i++) {
+      final idx = _nextFactIndex();
+      // Scatter horizontally so stacked cards don't overlap completely
+      final double xJitter = (_rng.nextDouble() - 0.5) * 60.0;
+      // Stagger starting y so multiple cards don't spawn on the exact same row
+      final double yJitter = i * -30.0;
+      _facts.add(_FactCard(
+        text: kOrganismFacts[idx],
+        id: _nextFactId++,
+        x: originX + xJitter,
+        y: originY - 40.0 + yJitter,
+        life: 1.0,
+      ));
+    }
+  }
+
   void _harvest(int r, int c, double px, double py) {
     if (_gameOver) return;
     final patch = _grid[r][c];
@@ -1216,6 +1352,8 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
       // Will be re-calculated in _doHarvest, but we need combo state for FX
       _doHarvest(r, c);
       _spawnHarvestFx(px, py, patch, points + (_combo > 1 ? (_combo - 1) * 3 : 0));
+      // Spawn fact card(s) on every player harvest
+      _spawnFacts(px, py);
     });
   }
 
@@ -1242,6 +1380,16 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     }
   }
 
+  void _activateAutoClose() {
+    if (_coins >= _autoCloseCost && !_autoCloseActive) {
+      setState(() {
+        _coins -= _autoCloseCost;
+        _autoCloseActive = true;
+        _autoCloseTimer = _autoCloseDuration;
+      });
+    }
+  }
+
   void _restart() {
     setState(() {
       _score = 0;
@@ -1260,6 +1408,14 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
       _comboTimer = 0;
       _fx.clear();
       _pops.clear();
+      _facts.clear();
+      _nextFactId = 0;
+      _lastFactIndex = -1;
+      _factElapsed = 0;
+      _autoCloseActive = false;
+      _autoCloseTimer = 0;
+      _showInstructions = true;
+      _instructionDismissHarvests = 0;
       _initGrid();
     });
   }
@@ -1495,6 +1651,34 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
                 ),
               ),
 
+            // ── Auto-Close active badge ────────────────────────────────────
+            if (_autoCloseActive)
+              Positioned(
+                top: _waterActive ? 74 : 52,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFCE93D8).withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                          color: const Color(0xFFCE93D8).withValues(alpha: 0.5)),
+                    ),
+                    child: Text(
+                      '✦ Auto-Close  ${_autoCloseTimer.toStringAsFixed(1)}s',
+                      style: const TextStyle(
+                        fontFamily: 'Avenir',
+                        fontSize: 11,
+                        color: Color(0xFFCE93D8),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
             // ── Grid ──────────────────────────────────────────────────────
             Positioned(
               top: hudHeight,
@@ -1640,15 +1824,184 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
                       activeBg: const Color(0xFF1A3A4A),
                       onTap: _activateWater,
                     ),
-                    const Text(
-                      'Tap to harvest!',
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 10,
-                        color: Colors.white24,
+                    _buildActionButton(
+                      label: 'Auto-Close',
+                      cost: _autoCloseCost,
+                      iconWidget: Icon(
+                        Icons.auto_awesome,
+                        size: 14,
+                        color: _coins >= _autoCloseCost && !_autoCloseActive
+                            ? const Color(0xFFCE93D8)
+                            : Colors.white24,
                       ),
+                      enabled: _coins >= _autoCloseCost && !_autoCloseActive,
+                      activeColor: const Color(0xFFCE93D8),
+                      activeBg: const Color(0xFF2A1A3A),
+                      onTap: _activateAutoClose,
                     ),
                   ],
+                ),
+              ),
+
+            // ── Floating fact cards ───────────────────────────────────────
+            ..._facts.map((f) {
+              final double alpha = f.life.clamp(0.0, 1.0);
+              // Sine wiggle offset based on monotonic time + card ID for phase variety
+              final double wiggleX = sin(
+                    _factElapsed * _factWiggleFreq * 2 * pi + f.id * 1.3,
+                  ) *
+                  _factWiggleAmp;
+              const double cardW = 180.0;
+              const double cardH = 64.0;
+              final double left = (f.x + wiggleX - cardW / 2).clamp(4.0, w - cardW - 4.0);
+              final double top = f.y - cardH / 2;
+              if (top + cardH < 0) return const SizedBox.shrink();
+              return Positioned(
+                left: left,
+                top: top,
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      f.dismissed = true;
+                      _coins += _factTapCoins;
+                      // Mini coin pop at card center
+                      _pops.add(_ScorePop(
+                        x: f.x,
+                        y: f.y,
+                        label: '+$_factTapCoins',
+                        color: const Color(0xFFFFD700),
+                      ));
+                    });
+                  },
+                  child: Opacity(
+                    opacity: alpha,
+                    child: Container(
+                      width: cardW,
+                      height: cardH,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1B2E1B).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: const Color(0xFF4CAF50).withValues(alpha: 0.55),
+                          width: 1.0,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF000000).withValues(alpha: 0.45),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              f.text,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontFamily: 'Avenir',
+                                fontSize: 9.5,
+                                color: Color(0xFFCCE8CC),
+                                height: 1.3,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              const Icon(Icons.monetization_on,
+                                  size: 9, color: Color(0xFFFFD700)),
+                              const SizedBox(width: 2),
+                              Text(
+                                'Tap +$_factTapCoins',
+                                style: const TextStyle(
+                                  fontFamily: 'Avenir',
+                                  fontSize: 8.5,
+                                  color: Color(0xFFFFD700),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }),
+
+            // ── Instructions overlay ──────────────────────────────────────
+            if (_showInstructions && !_gameOver)
+              Positioned(
+                top: 80,
+                left: 16,
+                right: 16,
+                child: GestureDetector(
+                  onTap: () => setState(() => _showInstructions = false),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A2A1A).withValues(alpha: 0.96),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: const Color(0xFF4CAF50).withValues(alpha: 0.6),
+                        width: 1.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'How to Score Big',
+                              style: TextStyle(
+                                fontFamily: 'Avenir',
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF81C784),
+                              ),
+                            ),
+                            const Text(
+                              'tap to close',
+                              style: TextStyle(
+                                fontFamily: 'Avenir',
+                                fontSize: 9,
+                                color: Colors.white24,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        _instructionRow(Icons.circle, const Color(0xFF4CAF50),
+                            'Harvest when the ring is GREEN/FULL for max points — too early or rotten scores low.'),
+                        _instructionRow(Icons.bolt, const Color(0xFFFF9800),
+                            'Chain harvests fast for a COMBO multiplier.'),
+                        _instructionRow(Icons.monetization_on,
+                            const Color(0xFFFFD700),
+                            'Spend coins on Water (faster growth) and Helper (auto-rescue).'),
+                        _instructionRow(Icons.article, const Color(0xFFCCE8CC),
+                            'Swat the fact cards that pop up — tap them to earn coins!'),
+                      ],
+                    ),
+                  ),
                 ),
               ),
 
@@ -1754,6 +2107,30 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
   }
 
   // ── Sub-builders ──────────────────────────────────────────────────────────
+
+  Widget _instructionRow(IconData icon, Color color, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 10, color: color),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 10,
+                color: Colors.white70,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildPatchContent(_PotatoPatch p, double patchSize) {
     if (p.rotten) {

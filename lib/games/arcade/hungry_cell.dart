@@ -214,6 +214,10 @@ class _HungryCellGameState extends State<HungryCellGame>
 
   double _organelleRespawn = 0;
 
+  // ─── Eat multiplier (Feature 2) ─────────────────────────────────────────────
+  int _organellesCollected = 0;
+  double _eatMultFlash = 0; // countdown timer for the badge flash
+
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
   @override
@@ -395,13 +399,17 @@ class _HungryCellGameState extends State<HungryCellGame>
     if (_invuln > 0) _invuln = math.max(0, _invuln - dt);
     if (_flinch > 0) _flinch = math.max(0, _flinch - dt);
 
+    // ── Derived eat multiplier ────────────────────────────────────────────────
+    final eatMult = 1.0 + 0.35 * _organellesCollected;
+
     // ── Nutrients ────────────────────────────────────────────────────────────
     for (final n in _nutrients) {
       n.phase += dt * 3;
       if ((n.pos - _playerPos).distance < r + _kNutrientRadius) {
-        session.addScore(2);
+        final gain = (2 * eatMult).round();
+        session.addScore(gain);
         _slurp(n.pos, _kNutrientColor, count: 6);
-        _popups.add(_Popup(pos: n.pos, text: '+2', color: _kNutrientColor));
+        _popups.add(_Popup(pos: n.pos, text: '+$gain', color: _kNutrientColor));
         _ripples.add(_Ripple(n.pos));
         n.pos = _randomWorldPoint(awayFrom: _playerPos, minDist: 80);
         n.phase = _rng.nextDouble() * math.pi * 2;
@@ -413,10 +421,13 @@ class _HungryCellGameState extends State<HungryCellGame>
       o.phase += dt * 2.4;
       if ((o.pos - _playerPos).distance < r + 16) {
         session.addScore(20);
+        _organellesCollected++;
+        _eatMultFlash = 0.9; // trigger badge flash
         _slurp(o.pos, o.kind.color, count: 22, burst: true);
+        final newMult = 1.0 + 0.35 * _organellesCollected;
         _popups.add(_Popup(
             pos: o.pos,
-            text: '${o.kind.label} +20',
+            text: '${o.kind.label} +20  EAT ×${newMult.toStringAsFixed(1)}',
             color: o.kind.color,
             big: true));
         _ripples.add(_Ripple(o.pos));
@@ -492,10 +503,11 @@ class _HungryCellGameState extends State<HungryCellGame>
       final contactDist = (v.pos - _playerPos).distance;
       // Player eats smaller predators
       if (contactDist < r + v.radius - 8 && r > v.radius * 1.05) {
-        session.addScore(30);
+        final gain = (30 * eatMult).round();
+        session.addScore(gain);
         _slurp(v.pos, v.color, count: 18, burst: true);
         _popups.add(
-            _Popup(pos: v.pos, text: '+30', color: v.color, big: true));
+            _Popup(pos: v.pos, text: '+$gain', color: v.color, big: true));
         _ripples.add(_Ripple(v.pos));
         return true; // remove this predator
       }
@@ -517,6 +529,9 @@ class _HungryCellGameState extends State<HungryCellGame>
       }
       return false;
     });
+
+    // ── Badge flash timer ────────────────────────────────────────────────────
+    if (_eatMultFlash > 0) _eatMultFlash = math.max(0, _eatMultFlash - dt);
 
     // ── Particles, popups, ripples, specks ───────────────────────────────────
     _particles.removeWhere((p) {
@@ -654,6 +669,8 @@ class _HungryCellPainter extends CustomPainter {
     // UI elements drawn in screen-space (popups follow world→screen conversion)
     _paintPopups(canvas, origin);
     _paintTarget(canvas, t);
+    _paintMinimap(canvas, size);
+    _paintEatMultBadge(canvas, size, t);
   }
 
   // ── Background: drifting specks tiled across the visible world area ─────────
@@ -973,6 +990,134 @@ class _HungryCellPainter extends CustomPainter {
           canvas,
           screenPos.translate(-tp.width / 2, -tp.height / 2 - 18 - rise));
     }
+  }
+
+  // ── Minimap ─────────────────────────────────────────────────────────────────
+  void _paintMinimap(Canvas canvas, Size screenSize) {
+    const mapSize = 110.0;
+    const pad = 14.0; // margin from screen edge
+    const cornerR = 10.0;
+
+    // Anchor: bottom-right corner
+    final left = screenSize.width - mapSize - pad;
+    final top = screenSize.height - mapSize - pad;
+    final mapRect = Rect.fromLTWH(left, top, mapSize, mapSize);
+
+    // Panel background
+    final panelPaint = Paint()..color = const Color(0xCC0A0010);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(mapRect, const Radius.circular(cornerR)),
+        panelPaint);
+
+    // Border
+    final borderPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = _kAccent.withValues(alpha: 0.45);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(mapRect, const Radius.circular(cornerR)),
+        borderPaint);
+
+    // Clip dots to the panel bounds
+    canvas.save();
+    canvas.clipRRect(
+        RRect.fromRectAndRadius(mapRect, const Radius.circular(cornerR)));
+
+    // Helper: world-space → minimap screen-space
+    Offset worldToMap(Offset worldPt) {
+      return Offset(
+        left + (worldPt.dx / _kWorldW) * mapSize,
+        top + (worldPt.dy / _kWorldH) * mapSize,
+      );
+    }
+
+    final dotPaint = Paint();
+
+    // Organelle pickups — bright accent colors, larger dots so they pop
+    for (final o in state._organelles) {
+      dotPaint.color = o.kind.color.withValues(alpha: 0.95);
+      canvas.drawCircle(worldToMap(o.pos), 3.5, dotPaint);
+      // small outer glow ring
+      dotPaint.color = o.kind.color.withValues(alpha: 0.35);
+      final glowPaint = Paint()
+        ..color = o.kind.color.withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+      canvas.drawCircle(worldToMap(o.pos), 5.0, glowPaint);
+    }
+
+    // Predators — danger red
+    for (final v in state._predators) {
+      dotPaint
+        ..color = _kPredatorColor.withValues(alpha: 0.90)
+        ..maskFilter = null;
+      canvas.drawCircle(worldToMap(v.pos), 2.8, dotPaint);
+    }
+
+    // Player — bright white, slightly larger
+    dotPaint
+      ..color = Colors.white.withValues(alpha: 0.95)
+      ..maskFilter = null;
+    canvas.drawCircle(worldToMap(state._playerPos), 4.0, dotPaint);
+
+    canvas.restore();
+  }
+
+  // ── Eat-multiplier HUD badge ─────────────────────────────────────────────────
+  void _paintEatMultBadge(Canvas canvas, Size screenSize, double t) {
+    if (state._organellesCollected == 0) return;
+
+    final mult = 1.0 + 0.35 * state._organellesCollected;
+    final label = 'EAT ×${mult.toStringAsFixed(1)}';
+
+    // Flash pulse when a new organelle was just collected
+    final flash = state._eatMultFlash;
+    final flashPulse = flash > 0 ? (flash / 0.9) : 0.0; // 0→1 while flashing
+    final scale = 1.0 + 0.35 * flashPulse;
+    final badgeAlpha = (0.82 + 0.18 * flashPulse).clamp(0.0, 1.0);
+
+    // Position: top-left, below any system status text area
+    const badgeLeft = 14.0;
+    const badgeTop = 14.0;
+
+    final tp = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          fontFamily: _kFont,
+          fontSize: 13 * scale,
+          fontWeight: FontWeight.bold,
+          color: _kAccent.withValues(alpha: badgeAlpha),
+          shadows: flash > 0
+              ? [
+                  Shadow(
+                    color: _kAccent.withValues(alpha: 0.85 * flashPulse),
+                    blurRadius: 14 * flashPulse,
+                  )
+                ]
+              : null,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    // Pill background
+    final pillW = tp.width + 16;
+    final pillH = tp.height + 10;
+    final pillRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(badgeLeft, badgeTop, pillW, pillH),
+        const Radius.circular(7));
+    final bgPaint = Paint()
+      ..color = const Color(0xCC0A0010).withValues(
+          alpha: (0.75 + 0.25 * flashPulse).clamp(0.0, 1.0));
+    canvas.drawRRect(pillRect, bgPaint);
+
+    final rimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = _kAccent.withValues(alpha: (0.50 + 0.50 * flashPulse).clamp(0.0, 1.0));
+    canvas.drawRRect(pillRect, rimPaint);
+
+    tp.paint(canvas, Offset(badgeLeft + 8, badgeTop + 5));
   }
 
   @override

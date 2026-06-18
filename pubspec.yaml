@@ -31,6 +31,9 @@ dependencies:
   firebase_auth:
   firebase_database:
 
+  # Accelerometer access — used for shake-to-boost in arcade games.
+  sensors_plus: ^6.0.0
+
 
 
 

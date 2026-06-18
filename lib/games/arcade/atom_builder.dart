@@ -6,6 +6,8 @@ import 'package:flutter/scheduler.dart';
 import '../mini_game.dart';
 
 import '../../theme/potatuhs.dart' show Potatuhs;
+import '../../games/atoms/atom_provenance.dart'
+    show AtomProvenance, provenanceForZ;
 
 const _kFont = Potatuhs.bodyFont; // Outfit
 const Color _kAccent = Color(0xFF5C6BC0);
@@ -238,6 +240,20 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
   final Set<String> _bankedNutrients = {};
   // ──────────────────────────────────────────────────────────────────────────
 
+  // ── Cosmic provenance flare ──────────────────────────────────────────────
+  /// Z values whose provenance card has already been shown this session.
+  final Set<int> _seenProvenance = {};
+
+  /// Age of the currently-showing provenance card (seconds). -1 = hidden.
+  double _provAge = -1;
+
+  /// The provenance entry currently displayed (null when hidden).
+  AtomProvenance? _provEntry;
+
+  /// Total display window for the provenance card (seconds).
+  static const double _kProvDuration = 3.2;
+  // ────────────────────────────────────────────────────────────────────────
+
   Size _fieldSize = Size.zero;
 
   _Noble get _target => _kNobles[_nobleIndex];
@@ -345,6 +361,13 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     if (_bannerAge >= 0) {
       _bannerAge += dt;
       if (_bannerAge > 1.4) _bannerAge = -1;
+    }
+    if (_provAge >= 0) {
+      _provAge += dt;
+      if (_provAge > _kProvDuration) {
+        _provAge = -1;
+        _provEntry = null;
+      }
     }
 
     _simulateStability(dt);
@@ -555,6 +578,7 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
         case _ParticleKind.proton:
           _gotP++;
           _checkFertilizerCrossing(_gotP, Offset(hit.x, hit.y));
+          _checkProvenance(_gotP);
           break;
         case _ParticleKind.neutron:
           _gotN++;
@@ -604,6 +628,19 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     });
   }
 
+  /// Called the first time the player's proton count reaches a Z value that has
+  /// a provenance entry. Starts a brief, non-scoring, auto-fading card overlay
+  /// that shows where the element was forged and its potato role.
+  /// Each Z fires at most once per session (_seenProvenance guards re-trigger).
+  void _checkProvenance(int z) {
+    if (_seenProvenance.contains(z)) return;
+    final entry = provenanceForZ(z);
+    if (entry == null) return;
+    _seenProvenance.add(z);
+    _provEntry = entry;
+    _provAge = 0;
+  }
+
   void _checkComplete() {
     // A noble checkpoint is reached only when the whole shell is perfectly
     // balanced — equal protons, neutrons and electrons at the cap.
@@ -648,6 +685,7 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
                   gotP: _gotP,
                   gotN: _gotN,
                   gotE: _gotE,
+                  shellCap: _cap,
                   falling: _particles,
                   fliers: _fliers,
                   popups: _popups,
@@ -678,6 +716,8 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
               left: 12,
               child: _FertilizerIndicator(banked: _bankedNutrients),
             ),
+            // Cosmic provenance flare — HUD ribbon above the fertilizer bar.
+            if (_provAge >= 0 && _provEntry != null) _buildProvenanceCard(),
           ],
         ),
       );
@@ -726,6 +766,76 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
                   ),
                 ),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A fading two-line ribbon that shows the cosmic origin of the newly-reached
+  /// element and its potato role. Non-scoring; never blocks input (IgnorePointer);
+  /// fades in over 0.25 s, holds, then fades out over the last 0.6 s.
+  Widget _buildProvenanceCard() {
+    final entry = _provEntry!;
+    final t = _provAge;
+    const fadeIn = 0.25;
+    final fadeOut = _kProvDuration - 0.6;
+    final opacity = t < fadeIn
+        ? (t / fadeIn).clamp(0.0, 1.0)
+        : t > fadeOut
+            ? (1.0 - (t - fadeOut) / 0.6).clamp(0.0, 1.0)
+            : 1.0;
+
+    final roleText = entry.potatoRole;
+
+    return Positioned(
+      bottom: 56, // sits just above the fertilizer bar
+      left: 12,
+      right: 12,
+      child: IgnorePointer(
+        child: Opacity(
+          opacity: opacity,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.68),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: _kElectronColor.withValues(alpha: 0.55)),
+              boxShadow: [
+                BoxShadow(
+                    color: _kElectronColor.withValues(alpha: 0.22),
+                    blurRadius: 18),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${entry.name.toUpperCase()} · ${entry.symbol}  —  forged in ${entry.forgedIn}',
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: _kElectronColor.withValues(alpha: 0.95),
+                    letterSpacing: 0.6,
+                  ),
+                ),
+                if (roleText != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    '🥔  $roleText',
+                    style: TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 11,
+                      fontWeight: FontWeight.normal,
+                      color: Colors.white.withValues(alpha: 0.80),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ),
@@ -955,6 +1065,7 @@ class _AtomFieldPainter extends CustomPainter {
   final int gotP;
   final int gotN;
   final int gotE;
+  final int shellCap; // current noble-gas checkpoint count (p=n=e target)
   final List<_FieldParticle> falling;
   final List<_Flier> fliers;
   final List<_Popup> popups;
@@ -969,6 +1080,7 @@ class _AtomFieldPainter extends CustomPainter {
     required this.gotP,
     required this.gotN,
     required this.gotE,
+    required this.shellCap,
     required this.falling,
     required this.fliers,
     required this.popups,
@@ -1076,15 +1188,18 @@ class _AtomFieldPainter extends CustomPainter {
     }
 
     // Electron shells fill in period order (2, 8, 8, 18, 18).
+    // ── Pass 1: draw filled (active) shells ──
     final shellPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2;
     int remaining = gotE;
+    int lastFilledShell = -1; // index of the last shell that has any electrons
     for (int s = 0; s < _kShellCaps.length && remaining >= 0; s++) {
       final radius = 40.0 + s * 21.0;
       final inShell = math.min(remaining, _kShellCaps[s]);
       remaining -= inShell;
       final active = inShell > 0;
+      if (active) lastFilledShell = s;
       shellPaint.color =
           _kElectronColor.withValues(alpha: active ? 0.35 : 0.12);
       canvas.drawCircle(c, radius, shellPaint);
@@ -1105,6 +1220,25 @@ class _AtomFieldPainter extends CustomPainter {
             pos, 1.8, Paint()..color = Colors.white.withValues(alpha: 0.9));
       }
       if (remaining <= 0 && s >= 1) break;
+    }
+
+    // ── Pass 2: faint rings for upcoming (not-yet-filled) shells ──
+    // Determine how many shells the current checkpoint requires in total.
+    int capAccum = 0;
+    int totalShellsNeeded = 0;
+    for (int s = 0; s < _kShellCaps.length; s++) {
+      capAccum += _kShellCaps[s];
+      totalShellsNeeded = s + 1;
+      if (capAccum >= shellCap) break;
+    }
+    final previewPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8;
+    for (int s = lastFilledShell + 1; s < totalShellsNeeded; s++) {
+      final radius = 40.0 + s * 21.0;
+      // Subtle dash-like stipple: draw a dashed circle via short arcs.
+      previewPaint.color = _kElectronColor.withValues(alpha: 0.10);
+      canvas.drawCircle(c, radius, previewPaint);
     }
 
     // Nucleus: protons + neutrons packed in a sunflower-spiral cluster.

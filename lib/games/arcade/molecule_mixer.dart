@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 
 import 'package:cell_mobile/games/mini_game.dart';
+import 'package:cell_mobile/games/molecular/molecule_facts.dart'
+    show MoleculeFact, factForFormula;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -258,6 +260,20 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
   /// peripheral before the backbone; decays to 0 over ~0.7 s.
   double _backbonePulse = 0;
 
+  // ── Molecule fun-fact flare ───────────────────────────────────────────────
+  /// Formula strings whose fact card has already been shown this session.
+  final Set<String> _seenFacts = {};
+
+  /// Age of the currently-showing fact card (seconds). -1 = hidden.
+  double _factAge = -1;
+
+  /// The fact entry currently displayed (null when hidden).
+  MoleculeFact? _factEntry;
+
+  /// Total display window for the fact card (seconds).
+  static const double _kFactDuration = 3.2;
+  // ─────────────────────────────────────────────────────────────────────────
+
   Size? _fieldSize;
   bool _seeded = false;
 
@@ -384,6 +400,15 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     if (_backbonePulse > 0) {
       _backbonePulse = math.max(0, _backbonePulse - dt / 0.7);
     }
+
+    // Fact-flare card age advance + auto-dismiss.
+    if (_factAge >= 0) {
+      _factAge += dt;
+      if (_factAge > _kFactDuration) {
+        _factAge = -1;
+        _factEntry = null;
+      }
+    }
   }
 
   void _arrive(_FlyingAtom f) {
@@ -404,7 +429,20 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
           const Color(0xFF69F0AE)));
       _burst(_buildCenter, _kAccent, count: 16, speed: 140);
       _celebT = 0;
+      _checkFact(_target.formula);
     }
+  }
+
+  /// Called once per molecule completion. Fires the fact card the first time
+  /// [formula] is completed in a session; subsequent completions of the same
+  /// molecule are skipped (_seenFacts guards re-trigger). Non-scoring.
+  void _checkFact(String formula) {
+    if (_seenFacts.contains(formula)) return;
+    final entry = factForFormula(formula);
+    if (entry == null) return;
+    _seenFacts.add(formula);
+    _factEntry = entry;
+    _factAge = 0;
   }
 
   void _nextTarget() {
@@ -598,6 +636,8 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
               child: IgnorePointer(child: _buildTargetPanel()),
             ),
             if (_celebT >= 0 && _celebT < 1.0) _buildBanner(),
+            // Molecule fun-fact flare — bottom ribbon, auto-fading, non-scoring.
+            if (_factAge >= 0 && _factEntry != null) _buildFactCard(),
           ],
         ),
       );
@@ -758,6 +798,72 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
             ),
           ),
       ],
+    );
+  }
+
+  /// A fading two-line ribbon that shows what the completed molecule is and
+  /// its role in potato biology. Non-scoring; never blocks input (IgnorePointer);
+  /// fades in over 0.25 s, holds, then fades out over the last 0.6 s.
+  Widget _buildFactCard() {
+    final entry = _factEntry!;
+    final t = _factAge;
+    const fadeIn = 0.25;
+    final fadeOut = _kFactDuration - 0.6;
+    final opacity = t < fadeIn
+        ? (t / fadeIn).clamp(0.0, 1.0)
+        : t > fadeOut
+            ? (1.0 - (t - fadeOut) / 0.6).clamp(0.0, 1.0)
+            : 1.0;
+
+    return Positioned(
+      bottom: 12,
+      left: 12,
+      right: 12,
+      child: IgnorePointer(
+        child: Opacity(
+          opacity: opacity,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.68),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: _kAccent.withValues(alpha: 0.55)),
+              boxShadow: [
+                BoxShadow(
+                    color: _kAccent.withValues(alpha: 0.22),
+                    blurRadius: 18),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${entry.name.toUpperCase()}  —  ${entry.whatItIs}',
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: _kAccent.withValues(alpha: 0.95),
+                    letterSpacing: 0.6,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '🥔  ${entry.potatoFact}',
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 11,
+                    fontWeight: FontWeight.normal,
+                    color: Colors.white.withValues(alpha: 0.80),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

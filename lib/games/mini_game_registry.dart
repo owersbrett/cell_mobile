@@ -6,8 +6,8 @@ import 'arcade/atom_builder.dart';
 import 'arcade/big_bang_arcade.dart';
 import 'arcade/collider.dart';
 import 'arcade/corners.dart';
-import 'arcade/grow_the_plant.dart';
 import 'arcade/hungry_cell.dart';
+import 'arcade/organ_quiz.dart';
 import 'arcade/molecule_mixer.dart';
 import 'mini_game.dart';
 
@@ -151,23 +151,23 @@ class MiniGameRegistry {
       builder: (context, session) => HungryCellGame(session: session),
     ),
     MiniGameSpec(
-      id: 'grow_the_plant',
-      name: 'Grow The Plant',
+      id: 'organ_rush',
+      name: 'Organ Rush',
       scale: BioScale.organ,
-      tagline: 'Master all four elements to grow the perfect crop',
+      tagline: 'Name the part — human or potato — before the clock',
       rules: [
-        'Five elemental phases cycle every ~10s — a banner tells you what\'s coming.',
-        'AIR: drag the gust over bugs (+10) or flick tornados away (+15) before they reach the plant.',
-        'FIRE: swipe toward the plant from the drifting sun (+5 per swipe); WATER: tap spread-out spots (+8) — same spot too many times = −12.',
-        'EARTH: drag to plow every grid cell (+6 each, +40 bonus for a full clear). Escalation is relentless.',
+        'A clue appears: "The part that ..." with four options.',
+        'Tap the right organ — the faster you answer, the more points.',
+        'Questions alternate between human organs and plant (potato) organs.',
+        'Build a streak for a multiplier; a fun fact drops after every answer.',
       ],
-      howToWin: 'Most growth points when time runs out wins.',
+      howToWin: 'Most points when time runs out wins.',
       durationSeconds: 60,
-      scoreUnit: 'growth',
+      scoreUnit: 'points',
       enabled: true,
       accent: const Color(0xFF8BC34A),
-      icon: Icons.eco,
-      builder: (context, session) => GrowThePlantGame(session: session),
+      icon: Icons.quiz,
+      builder: (context, session) => OrganQuizGame(session: session),
     ),
   ];
 
@@ -182,11 +182,18 @@ class MiniGameRegistry {
   }
 
   /// The party-ready spec for a scale, or null if that scale only has a
-  /// legacy explore game.
+  /// legacy explore game. (Returns the FIRST enabled spec — use
+  /// [gamesForScale] when you need every game on a scale.)
   static MiniGameSpec? forScale(BioScale scale) {
     for (final s in specs) {
       if (s.scale == scale && s.enabled) return s;
     }
     return null;
   }
+
+  /// Every enabled game on a scale, in registry order. A scale can have more
+  /// than one (e.g. particles → Collider + Accelerator); Explore shows a
+  /// picker when this returns more than one.
+  static List<MiniGameSpec> gamesForScale(BioScale scale) =>
+      specs.where((s) => s.scale == scale && s.enabled).toList();
 }

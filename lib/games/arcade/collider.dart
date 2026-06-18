@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 import '../mini_game.dart';
 
@@ -53,6 +55,23 @@ const int _kMissPenalty = 5;
 /// Slow-drift factor while the countdown overlay is covering the game.
 const double _kIdleFactor = 0.22;
 
+// --- Shake-to-boost --------------------------------------------------------
+// Shaking the device speeds the particles up: a vigorous shake can roughly
+// triple orbit speed (great for chaining hits, harder to time). The boost
+// decays on its own once you stop shaking.
+
+/// Gravity-removed accelerometer magnitude (m/s²) above which a shake registers.
+const double _kShakeThreshold = 12.0;
+
+/// How much each unit of shake (above threshold) adds to the boost per event.
+const double _kShakeGain = 0.06;
+
+/// Maximum extra speed multiplier from shaking (0 = none, 2.0 = ×3 total).
+const double _kMaxShakeBoost = 2.0;
+
+/// How fast the boost bleeds off once shaking stops (per second).
+const double _kShakeDecay = 1.6;
+
 // ---------------------------------------------------------------------------
 
 /// "Collider" — two counter-orbiting particles on a concentric ring ladder.
@@ -72,6 +91,10 @@ class _ColliderGameState extends State<ColliderGame>
   late final Ticker _ticker;
   Duration _lastElapsed = Duration.zero;
   final math.Random _rng = math.Random();
+
+  // Shake-to-boost state.
+  StreamSubscription<UserAccelerometerEvent>? _accelSub;
+  double _shakeBoost = 0.0; // extra speed multiplier, decays toward 0
 
   // Particle state.
   double _angle1 = 0.0;
@@ -96,10 +119,23 @@ class _ColliderGameState extends State<ColliderGame>
     _angle1 = _rng.nextDouble() * 2 * math.pi;
     _angle2 = _angle1 + math.pi * (0.7 + _rng.nextDouble() * 0.6);
     _ticker = createTicker(_onTick)..start();
+
+    // Shake the device → speed the particles up.
+    _accelSub = userAccelerometerEventStream().listen((e) {
+      if (!widget.session.isRunning) return;
+      final mag = math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
+      if (mag > _kShakeThreshold) {
+        _shakeBoost = math.min(
+          _kMaxShakeBoost,
+          _shakeBoost + (mag - _kShakeThreshold) * _kShakeGain,
+        );
+      }
+    });
   }
 
   @override
   void dispose() {
+    _accelSub?.cancel();
     _ticker.dispose();
     super.dispose();
   }
@@ -116,7 +152,12 @@ class _ColliderGameState extends State<ColliderGame>
     if (dt <= 0) return;
 
     final running = widget.session.isRunning;
-    final factor = running ? _speedFactor : _kIdleFactor;
+
+    // Shake boost bleeds off over time; only applies while actually playing.
+    _shakeBoost = math.max(0.0, _shakeBoost - dt * _kShakeDecay);
+    final boost = running ? (1.0 + _shakeBoost) : 1.0;
+
+    final factor = (running ? _speedFactor : _kIdleFactor) * boost;
 
     _angle1 = _wrap(_angle1 + _kBaseSpeed1 * factor * dt);
     _angle2 = _wrap(_angle2 - _kBaseSpeed2 * factor * dt);
@@ -305,6 +346,43 @@ class _ColliderGameState extends State<ColliderGame>
                     ),
                   ),
                 ),
+                // Shake-boost meter (only while a boost is active).
+                if (_shakeBoost > 0.02)
+                  Positioned(
+                    top: 10,
+                    left: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: _kMagenta.withValues(
+                                alpha: 0.4 +
+                                    0.5 * (_shakeBoost / _kMaxShakeBoost))),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.bolt,
+                              size: 13,
+                              color: _kMagenta.withValues(alpha: 0.95)),
+                          const SizedBox(width: 3),
+                          Text(
+                            '×${(1 + _shakeBoost).toStringAsFixed(1)}',
+                            style: TextStyle(
+                              fontFamily: _kFont,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.0,
+                              color: _kMagenta.withValues(alpha: 0.95),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

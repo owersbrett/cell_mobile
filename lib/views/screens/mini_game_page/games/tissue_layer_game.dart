@@ -20,15 +20,41 @@ import 'package:flutter/material.dart';
 // ---------------------------------------------------------------------------
 
 enum _Tissue {
+  // ---- Plant zones (original) ----
   pith,
   vascular,
   cortex,
   epidermis,
-  // Decoys
+  // ---- Plant zones (new) ----
+  periderm,       // Potato tuber outer skin
+  tuberCortex,    // Potato tuber cortex
+  vascularRing,   // Potato tuber vascular ring
+  tuberPith,      // Potato tuber pith
+  woodyXylem,     // Woody stem secondary xylem (core)
+  woodyBark,      // Woody stem bark (outermost)
+  woodyCambium,   // Woody stem cambium ring
+  woodyPhloem,    // Woody stem phloem (inner bark)
+  // ---- Animal zones ----
+  skinEpidermis,  // Skin: outermost
+  dermis,         // Skin: middle
+  hypodermis,     // Skin: innermost (subcutaneous fat)
+  mucosa,         // Gut: innermost lining
+  submucosa,      // Gut: connective tissue layer
+  muscularis,     // Gut: muscle layer
+  serosa,         // Gut: outermost serous coat
+  intima,         // Blood vessel: innermost (tunica interna)
+  media,          // Blood vessel: middle (tunica media)
+  adventitia,     // Blood vessel: outermost (tunica externa)
+  // ---- Decoys (plant) ----
   phloem,
   xylem,
   cambium,
   parenchyma,
+  // ---- Decoys (animal) ----
+  endothelium,
+  myelin,
+  periosteum,
+  epithelium,
 }
 
 class _TissueInfo {
@@ -41,8 +67,10 @@ class _TissueInfo {
       this.innerFrac, this.outerFrac, this.color, this.label, this.isReal);
 }
 
-// Real zones — only these four can be placed into rings
+// Real zones — all placeable ring zones across plant and animal organs.
+// innerFrac/outerFrac define the visual band position (0=centre, 1=edge).
 const _kRealZones = <_Tissue, _TissueInfo>{
+  // ---- Original plant zones ----
   _Tissue.pith: _TissueInfo(
       0.00, 0.24, Color(0xFFA5D6A7), 'Pith', true),
   _Tissue.vascular: _TissueInfo(
@@ -51,14 +79,67 @@ const _kRealZones = <_Tissue, _TissueInfo>{
       0.50, 0.78, Color(0xFF66BB6A), 'Cortex', true),
   _Tissue.epidermis: _TissueInfo(
       0.78, 1.00, Color(0xFF42A5F5), 'Epidermis', true),
+
+  // ---- Potato tuber (4 zones) ----
+  _Tissue.tuberPith: _TissueInfo(
+      0.00, 0.25, Color(0xFFFFF176), 'Pith', true),
+  _Tissue.vascularRing: _TissueInfo(
+      0.25, 0.52, Color(0xFFFF7043), 'Vasc. Ring', true),
+  _Tissue.tuberCortex: _TissueInfo(
+      0.52, 0.78, Color(0xFFA5D6A7), 'Cortex', true),
+  _Tissue.periderm: _TissueInfo(
+      0.78, 1.00, Color(0xFF8D6E63), 'Periderm', true),
+
+  // ---- Woody stem (4 zones) ----
+  _Tissue.woodyXylem: _TissueInfo(
+      0.00, 0.30, Color(0xFFD7CCC8), 'Sec. Xylem', true),
+  _Tissue.woodyCambium: _TissueInfo(
+      0.30, 0.52, Color(0xFF26C6DA), 'Cambium', true),
+  _Tissue.woodyPhloem: _TissueInfo(
+      0.52, 0.75, Color(0xFFAED581), 'Phloem', true),
+  _Tissue.woodyBark: _TissueInfo(
+      0.75, 1.00, Color(0xFF8D6E63), 'Bark', true),
+
+  // ---- Skin (3 zones) ----
+  _Tissue.hypodermis: _TissueInfo(
+      0.00, 0.30, Color(0xFFFFC107), 'Hypodermis', true),
+  _Tissue.dermis: _TissueInfo(
+      0.30, 0.68, Color(0xFFFF8A65), 'Dermis', true),
+  _Tissue.skinEpidermis: _TissueInfo(
+      0.68, 1.00, Color(0xFFFFCCBC), 'Epidermis', true),
+
+  // ---- Gut wall (4 zones, lumen innermost) ----
+  _Tissue.mucosa: _TissueInfo(
+      0.00, 0.26, Color(0xFFCE93D8), 'Mucosa', true),
+  _Tissue.submucosa: _TissueInfo(
+      0.26, 0.52, Color(0xFF9FA8DA), 'Submucosa', true),
+  _Tissue.muscularis: _TissueInfo(
+      0.52, 0.78, Color(0xFFEF9A9A), 'Muscularis', true),
+  _Tissue.serosa: _TissueInfo(
+      0.78, 1.00, Color(0xFFFFF59D), 'Serosa', true),
+
+  // ---- Blood vessel (3 zones, lumen innermost) ----
+  _Tissue.intima: _TissueInfo(
+      0.00, 0.28, Color(0xFFEF5350), 'Intima', true),
+  _Tissue.media: _TissueInfo(
+      0.28, 0.65, Color(0xFFFFB74D), 'Media', true),
+  _Tissue.adventitia: _TissueInfo(
+      0.65, 1.00, Color(0xFF80CBC4), 'Adventitia', true),
 };
 
-// Decoy chips — same visual style but wrong answer
+// Decoy chips — same visual style but wrong answer.
+// Pool mixes plant + animal terms so players must know the actual system.
 const _kDecoyColors = <_Tissue, Color>{
+  // Plant decoys
   _Tissue.phloem: Color(0xFFFFB74D),
   _Tissue.xylem: Color(0xFFCE93D8),
   _Tissue.cambium: Color(0xFF80DEEA),
   _Tissue.parenchyma: Color(0xFFFF8A65),
+  // Animal decoys
+  _Tissue.endothelium: Color(0xFFEF9A9A),
+  _Tissue.myelin: Color(0xFFF0F4C3),
+  _Tissue.periosteum: Color(0xFFBCAAA4),
+  _Tissue.epithelium: Color(0xFFB2DFDB),
 };
 
 const _kDecoyLabels = <_Tissue, String>{
@@ -66,40 +147,114 @@ const _kDecoyLabels = <_Tissue, String>{
   _Tissue.xylem: 'Xylem',
   _Tissue.cambium: 'Cambium',
   _Tissue.parenchyma: 'Parenchyma',
+  _Tissue.endothelium: 'Endothelium',
+  _Tissue.myelin: 'Myelin',
+  _Tissue.periosteum: 'Periosteum',
+  _Tissue.epithelium: 'Epithelium',
 };
 
-// Per-organ arrangements: which zones appear and in which order (outermost →
-// innermost) the study phase reveals them. Not every organ uses all 4 zones.
+// Full decoy pool split by kingdom — used to pick contextually mixed decoys.
+const _kPlantDecoys = <_Tissue>[
+  _Tissue.phloem,
+  _Tissue.xylem,
+  _Tissue.cambium,
+  _Tissue.parenchyma,
+];
+
+const _kAnimalDecoys = <_Tissue>[
+  _Tissue.endothelium,
+  _Tissue.myelin,
+  _Tissue.periosteum,
+  _Tissue.epithelium,
+];
+
+// Combined pool for cross-kingdom confusion challenges.
+const _kAllDecoys = <_Tissue>[
+  _Tissue.phloem,
+  _Tissue.xylem,
+  _Tissue.cambium,
+  _Tissue.parenchyma,
+  _Tissue.endothelium,
+  _Tissue.myelin,
+  _Tissue.periosteum,
+  _Tissue.epithelium,
+];
+
+// Per-organ arrangements: which zones appear and in which order the study
+// phase reveals them. Not every organ uses all zones. Zones are sorted
+// dynamically by outerFrac (outermost first) for rendering and pathogen logic.
+enum _Kingdom { plant, animal }
+
 class _OrganConfig {
   final String name;
   final List<_Tissue> zones; // real zones required for this organ
-  final int decoyCount;      // how many decoy chips to mix in
-  const _OrganConfig(this.name, this.zones, this.decoyCount);
+  final int baseDecoyCount;  // minimum decoys (escalation adds more)
+  final _Kingdom kingdom;    // drives decoy pool selection
+  const _OrganConfig(this.name, this.zones, this.baseDecoyCount, this.kingdom);
 }
 
 const _kOrgans = <_OrganConfig>[
+  // ---- Original plant organs ----
   _OrganConfig('Stem', [
     _Tissue.epidermis,
     _Tissue.cortex,
     _Tissue.vascular,
     _Tissue.pith,
-  ], 2),
+  ], 2, _Kingdom.plant),
   _OrganConfig('Root', [
     _Tissue.epidermis,
     _Tissue.cortex,
     _Tissue.vascular,
     _Tissue.pith,
-  ], 2),
+  ], 2, _Kingdom.plant),
   _OrganConfig('Leaf (vein)', [
     _Tissue.epidermis,
     _Tissue.cortex,
     _Tissue.vascular,
-  ], 3),
+  ], 2, _Kingdom.plant),
   _OrganConfig('Young Stem', [
     _Tissue.epidermis,
     _Tissue.cortex,
     _Tissue.pith,
-  ], 3),
+  ], 2, _Kingdom.plant),
+
+  // ---- Potato tuber (hero plant slice) ----
+  _OrganConfig('Potato Tuber', [
+    _Tissue.periderm,
+    _Tissue.tuberCortex,
+    _Tissue.vascularRing,
+    _Tissue.tuberPith,
+  ], 2, _Kingdom.plant),
+
+  // ---- Woody stem ----
+  _OrganConfig('Woody Stem', [
+    _Tissue.woodyBark,
+    _Tissue.woodyPhloem,
+    _Tissue.woodyCambium,
+    _Tissue.woodyXylem,
+  ], 2, _Kingdom.plant),
+
+  // ---- Animal: Skin ----
+  _OrganConfig('Skin', [
+    _Tissue.skinEpidermis,
+    _Tissue.dermis,
+    _Tissue.hypodermis,
+  ], 2, _Kingdom.animal),
+
+  // ---- Animal: Gut wall ----
+  _OrganConfig('Gut Wall', [
+    _Tissue.serosa,
+    _Tissue.muscularis,
+    _Tissue.submucosa,
+    _Tissue.mucosa,
+  ], 2, _Kingdom.animal),
+
+  // ---- Animal: Blood vessel ----
+  _OrganConfig('Blood Vessel', [
+    _Tissue.adventitia,
+    _Tissue.media,
+    _Tissue.intima,
+  ], 2, _Kingdom.animal),
 ];
 
 // ---------------------------------------------------------------------------
@@ -274,9 +429,13 @@ class _TissueLayerGameState extends State<TissueLayerGame>
           .add(_Tendril(angle, 0.0, 0.012 + _rng.nextDouble() * 0.008));
     }
 
-    // Round gets 2 seconds shorter each organ, min 12 s
-    _roundTimeLimit = (25.0 - _sectionsCompleted * 2.0).clamp(12.0, 25.0);
+    // ---- Escalation ramp (gentle, capped) ------------------------------------
+    // Round time: starts at 25 s, loses 1.5 s every 2 completions, min 10 s.
+    _roundTimeLimit = (25.0 - (_sectionsCompleted ~/ 2) * 1.5).clamp(10.0, 25.0);
     _roundTimeLeft = _roundTimeLimit;
+
+    // Study time: starts at 3.5 s, loses 0.3 s every 3 completions, min 1.8 s.
+    _studyDuration = (3.5 - (_sectionsCompleted ~/ 3) * 0.3).clamp(1.8, 3.5);
 
     // Study phase starts immediately (no separate countdown for simplicity)
     _phase = _Phase.study;
@@ -292,14 +451,25 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     // Real chips matching the organ's required zones
     final realTissues = List<_Tissue>.from(_organ.zones)..shuffle(_rng);
 
-    // Decoy tissues picked at random from the decoy pool
-    final decoyPool = [
-      _Tissue.phloem,
-      _Tissue.xylem,
-      _Tissue.cambium,
-      _Tissue.parenchyma,
-    ]..shuffle(_rng);
-    final decoys = decoyPool.take(_organ.decoyCount).toList();
+    // ---- Escalating decoy count ----------------------------------------------
+    // Starts at organ's baseDecoyCount; gains 1 extra every 4 completions,
+    // capped so total chips ≤ 8 (avoids chip tray overflow on small screens).
+    final extraDecoys = _sectionsCompleted ~/ 4;
+    final maxExtra = (8 - realTissues.length - _organ.baseDecoyCount).clamp(0, 3);
+    final decoyCount = (_organ.baseDecoyCount + extraDecoys).clamp(
+        _organ.baseDecoyCount, _organ.baseDecoyCount + maxExtra);
+
+    // Pick decoys: at higher difficulty mix cross-kingdom decoys for harder
+    // pattern-matching. Below section 6 use kingdom-homogenous pool.
+    final List<_Tissue> decoyPool;
+    if (_sectionsCompleted >= 6) {
+      decoyPool = List<_Tissue>.from(_kAllDecoys);
+    } else {
+      decoyPool = List<_Tissue>.from(
+          _organ.kingdom == _Kingdom.animal ? _kAnimalDecoys : _kPlantDecoys);
+    }
+    decoyPool.shuffle(_rng);
+    final decoys = decoyPool.take(decoyCount).toList();
 
     final all = [
       ...realTissues.map((t) => _Chip(t, false, 0, 0)),
@@ -446,15 +616,12 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   double get _pathogenOuterEdge => 1.0 - _pathogenFrac;
 
   void _checkPathogenConsumption() {
-    // Zones ordered from outermost to innermost
-    final order = [
-      _Tissue.epidermis,
-      _Tissue.cortex,
-      _Tissue.vascular,
-      _Tissue.pith,
-    ];
+    // Sort zones outermost → innermost (largest outerFrac first) so the
+    // pathogen eats them in the correct biological order regardless of kingdom.
+    final order = List<_Tissue>.from(_organ.zones)
+      ..sort((a, b) => _kRealZones[b]!.outerFrac
+          .compareTo(_kRealZones[a]!.outerFrac));
     for (final z in order) {
-      if (!_organ.zones.contains(z)) continue;
       if (_filled.contains(z)) continue;
       final info = _kRealZones[z]!;
       // Pathogen consumes a zone when its front passes the zone's inner edge
@@ -468,7 +635,7 @@ class _TissueLayerGameState extends State<TissueLayerGame>
         _pops.add(_Popup(
           _center.dx + (_rng.nextDouble() - 0.5) * _radius,
           _center.dy,
-          '✗ ${z.name[0].toUpperCase()}${z.name.substring(1)} consumed!',
+          '✗ ${info.label} consumed!',
           const Color(0xFFFF5252),
         ));
         _combo = 0;
@@ -883,16 +1050,13 @@ class _GamePainter extends CustomPainter {
         ..strokeWidth = 1.5,
     );
 
-    // Draw zones outermost → innermost
-    final order = [
-      _Tissue.epidermis,
-      _Tissue.cortex,
-      _Tissue.vascular,
-      _Tissue.pith,
-    ];
+    // Draw zones outermost → innermost (sorted by outerFrac descending) so
+    // inner rings are painted on top — works for any organ, plant or animal.
+    final order = List<_Tissue>.from(organZones)
+      ..sort((a, b) =>
+          _kRealZones[b]!.outerFrac.compareTo(_kRealZones[a]!.outerFrac));
 
     for (final zone in order) {
-      if (!organZones.contains(zone)) continue;
       final info = _kRealZones[zone]!;
       final outerR = radius * info.outerFrac;
       final innerR = radius * info.innerFrac;
@@ -1165,7 +1329,7 @@ class _GamePainter extends CustomPainter {
     canvas.drawRect(
         Offset.zero & size, Paint()..color = Colors.black.withValues(alpha: a * 0.5));
 
-    final label = lives <= 0 ? 'PLANT LOST' : 'NEXT ROUND';
+    final label = lives <= 0 ? 'SECTION LOST' : 'NEXT ROUND';
     _paintText(canvas, label, 22,
         (lives <= 0 ? const Color(0xFFFF5252) : const Color(0xFF80CBC4))
             .withValues(alpha: a),
@@ -1199,7 +1363,7 @@ class _GamePainter extends CustomPainter {
     canvas.drawRect(
         Offset.zero & size,
         Paint()..color = Colors.black.withValues(alpha: 0.82));
-    _paintText(canvas, 'PLANT LOST', 32, Colors.white.withValues(alpha: 0.6),
+    _paintText(canvas, 'OVERRUN', 32, Colors.white.withValues(alpha: 0.6),
         FontWeight.w300, size.width / 2, size.height / 2 - 52, true);
     _paintText(canvas, '$score', 52, Colors.white.withValues(alpha: 0.75),
         FontWeight.w200, size.width / 2, size.height / 2 + 2, true);
