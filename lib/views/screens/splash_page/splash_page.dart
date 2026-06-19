@@ -20,75 +20,134 @@ class SplashPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
+    final size = MediaQuery.of(context).size;
+    // Desktop / landscape form factor: animation left, menu right.
+    final isWide = size.width >= size.height && size.width >= 700;
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Live cell animation
-            SizedBox(
-              width: screenWidth * 0.35,
-              height: screenWidth * 0.35,
-              child: Stack(
-                alignment: Alignment.center,
-                children: _buildCellAnimation(),
+      body: SafeArea(
+        child: isWide ? _buildWide(context, size) : _buildTall(context, size),
+      ),
+    );
+  }
+
+  /// Portrait / phone: stacked column, scrollable so nothing clips.
+  Widget _buildTall(BuildContext context, Size size) {
+    final cellSize = size.width * 0.6;
+    return SingleChildScrollView(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: size.height),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _cellAnimation(cellSize),
+              const SizedBox(height: 36),
+              Text(
+                'EXPLORE THE CELL',
+                style: Potatuhs.display(size: 30, spacing: 3),
               ),
-            ),
-            SizedBox(height: 36),
-            Text(
-              'EXPLORE THE CELL',
-              style: Potatuhs.display(size: 30, spacing: 3),
-            ),
-            SizedBox(height: 28),
-            // The home itself: three doors, no extra step.
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 380),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Column(
-                  children: [
-                    _SplashDoor(
-                      title: 'ORIGINAL',
-                      subtitle: 'The original interactive cell',
-                      icon: Icons.cell_wifi,
-                      accent: Potatuhs.glaucous,
-                      onTap: () => context
-                          .read<NavigationBloc>()
-                          .add(NavigateToScreen(AppScreen.cellInteractive)),
-                    ),
-                    const SizedBox(height: 14),
-                    _SplashDoor(
-                      title: 'LEARN',
-                      subtitle: 'Explore the cell, scale by scale',
-                      icon: Icons.biotech,
-                      accent: Potatuhs.airForce,
-                      onTap: () {
-                        // Pre-select Cell so the LEARN carousel opens on Cells.
-                        context
-                            .read<ScaleExplorerBloc>()
-                            .add(SelectScale(BioScale.cell));
-                        context
-                            .read<NavigationBloc>()
-                            .add(NavigateToScreen(AppScreen.scaleOverview));
-                      },
-                    ),
-                    const SizedBox(height: 14),
-                    _SplashDoor(
-                      title: 'PLAY',
-                      subtitle: 'Party games — host or join a room',
-                      icon: Icons.sports_esports,
-                      accent: Potatuhs.orange,
-                      gradientFill: true,
-                      onTap: () => context
-                          .read<NavigationBloc>()
-                          .add(NavigateToScreen(AppScreen.play)),
-                    ),
-                  ],
+              const SizedBox(height: 28),
+              _menu(context),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Desktop / landscape: animation on the left, title + menu on the right.
+  Widget _buildWide(BuildContext context, Size size) {
+    // Size the cell off the available height so it never crowds the menu.
+    final cellSize =
+        (size.height * 0.78).clamp(0.0, size.width * 0.5).toDouble();
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Center(child: _cellAnimation(cellSize)),
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(left: 24),
+                  child: Text(
+                    'EXPLORE THE CELL',
+                    style: Potatuhs.display(size: 30, spacing: 3),
+                  ),
                 ),
-              ),
+                const SizedBox(height: 28),
+                _menu(context),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _cellAnimation(double dimension) {
+    return SizedBox(
+      width: dimension,
+      height: dimension,
+      child: Stack(
+        alignment: Alignment.center,
+        children: _buildCellAnimation(),
+      ),
+    );
+  }
+
+  // The home itself: three doors, no extra step.
+  Widget _menu(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 380),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          children: [
+            _SplashDoor(
+              title: 'ORIGINAL',
+              subtitle: 'The original interactive cell',
+              icon: Icons.cell_wifi,
+              accent: Potatuhs.glaucous,
+              onTap: () => context
+                  .read<NavigationBloc>()
+                  .add(NavigateToScreen(AppScreen.cellInteractive)),
+            ),
+            const SizedBox(height: 14),
+            _SplashDoor(
+              title: 'LEARN',
+              subtitle: 'Explore the cell, scale by scale',
+              icon: Icons.biotech,
+              accent: Potatuhs.airForce,
+              onTap: () {
+                // Pre-select Cell so the LEARN carousel opens on Cells.
+                context
+                    .read<ScaleExplorerBloc>()
+                    .add(SelectScale(BioScale.cell));
+                context
+                    .read<NavigationBloc>()
+                    .add(NavigateToScreen(AppScreen.scaleOverview));
+              },
+            ),
+            const SizedBox(height: 14),
+            _SplashDoor(
+              title: 'PLAY',
+              subtitle: 'Party games — host or join a room',
+              icon: Icons.sports_esports,
+              accent: Potatuhs.orange,
+              gradientFill: true,
+              onTap: () => context
+                  .read<NavigationBloc>()
+                  .add(NavigateToScreen(AppScreen.play)),
             ),
           ],
         ),

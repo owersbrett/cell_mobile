@@ -82,8 +82,128 @@ Future<List<PartyNet>> _playNetworkedGame({
   return nets;
 }
 
+/// Wraps a transport so the roster listener fires ASYNCHRONOUSLY, the way
+/// Firebase's `onValue` does (and unlike the synchronous in-memory fake). This
+/// reproduces the on-device condition that broke seat assignment: at join time
+/// the live roster hasn't been delivered yet, so a joiner that reads it
+/// synchronously sees an empty list. Everything else is delegated untouched.
+class _LaggyPlayers implements PartyTransport {
+  _LaggyPlayers(this._inner);
+  final PartyTransport _inner;
+
+  @override
+  void onPlayers(String id, void Function(List<NetPlayer>) cb) =>
+      _inner.onPlayers(id, (r) => Future(() => cb(r)));
+
+  @override
+  Future<void> createGame(String id, GameMeta meta, NetPlayer host) =>
+      _inner.createGame(id, meta, host);
+  @override
+  Future<GameMeta?> readMeta(String id) => _inner.readMeta(id);
+  @override
+  Future<List<NetPlayer>> readPlayers(String id) => _inner.readPlayers(id);
+  @override
+  Future<void> joinPlayer(String id, NetPlayer player) =>
+      _inner.joinPlayer(id, player);
+  @override
+  Future<void> setStatus(String id, String status) =>
+      _inner.setStatus(id, status);
+  @override
+  Future<void> appendRequest(String id, NetRequest req) =>
+      _inner.appendRequest(id, req);
+  @override
+  Future<void> publishCanonical(
+          String id, List<PartyInput> inputs, List<int> tape) =>
+      _inner.publishCanonical(id, inputs, tape);
+  @override
+  void onRequests(String id, void Function(List<NetRequest>) cb) =>
+      _inner.onRequests(id, cb);
+  @override
+  void onCanonical(String id, void Function(CanonicalSnapshot) cb) =>
+      _inner.onCanonical(id, cb);
+  @override
+  void onMeta(String id, void Function(GameMeta) cb) => _inner.onMeta(id, cb);
+  @override
+  void leave(String id) => _inner.leave(id);
+}
+
 void main() {
   group('PartyNet loopback', () {
+    test('a slow roster listener never seats the joiner on top of the host',
+        () async {
+      // Regression: with Firebase's async roster delivery, the joiner used to
+      // read an empty `players` list at join time and take slot 0 — colliding
+      // with the host. Both seats then mapped to one player and the turn loop
+      // deadlocked ("Waiting for <player 1>…") once play passed to the unowned
+      // seat.
+      final transport = _LaggyPlayers(InMemoryPartyTransport());
+      const code = 'RACE';
+      final host = await PartyNet.host(
+        transport: transport,
+        gameId: code,
+        uid: 'u0',
+        name: 'Alice',
+        mode: PartyMode.duel,
+        rounds: 2,
+        seed: 7,
+      );
+      final p2 = await PartyNet.join(
+          transport: transport, gameId: code, uid: 'u1', name: 'Bob');
+
+      // The joiner picked a distinct seat from a direct roster read, before any
+      // listener fired.
+      final roster = await transport.readPlayers(code);
+      final seats = {for (final p in roster) p.uid: p.slot};
+      expect(seats['u0'], isNot(seats['u1']));
+      expect(seats.values.toSet(), {0, 1});
+
+      // Once the deferred roster callbacks land, each device owns a distinct
+      // seat and the full duel runs to completion — no deadlock.
+      await pumpEventQueue();
+      expect(host.mySlot, 0);
+      expect(p2.mySlot, 1);
+      expect(host.players.length, 2);
+
+      await host.startGame();
+      final c = host.controller!;
+      final nets = [host, p2];
+      final rng = Random(3);
+      var guard = 0;
+      while (c.phase != PartyPhase.gameOver && guard++ < 200000) {
+        final cur = c.currentPlayerIndex;
+        switch (c.phase) {
+          case PartyPhase.turnStart:
+            nets[cur].act(PartyInputKind.roll);
+            break;
+          case PartyPhase.rollResult:
+            nets[cur].act(PartyInputKind.beginWalk);
+            break;
+          case PartyPhase.chooseBranch:
+            final opts = c.branchOptions;
+            nets[cur].act(PartyInputKind.choosePath,
+                value: opts[rng.nextInt(opts.length)]);
+            break;
+          case PartyPhase.shopOffer:
+            nets[cur].act(rng.nextBool()
+                ? PartyInputKind.buyPotato
+                : PartyInputKind.skipPotato);
+            break;
+          case PartyPhase.minigamePlaying:
+          case PartyPhase.passPhone:
+            var s = 0;
+            while (s < 2 && c.hasSubmittedMiniScore(s)) {
+              s++;
+            }
+            expect(s, lessThan(2), reason: 'someone must still owe a score');
+            nets[s].act(PartyInputKind.miniScore, value: rng.nextInt(1000));
+            break;
+          default:
+            fail('host settled on a non-decision phase: ${c.phase}');
+        }
+      }
+      expect(c.phase, PartyPhase.gameOver, reason: 'game must not deadlock');
+    });
+
     for (final mode in [PartyMode.duel, PartyMode.ffa4]) {
       test('host + clients converge to the same final match ($mode)', () async {
         final nets = await _playNetworkedGame(

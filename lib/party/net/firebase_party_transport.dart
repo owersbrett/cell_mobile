@@ -47,6 +47,15 @@ class FirebasePartyTransport implements PartyTransport {
   }
 
   @override
+  Future<List<NetPlayer>> readPlayers(String id) async {
+    final snap = await _game(id).child('players').get();
+    if (!snap.exists || snap.value == null) return const [];
+    return <NetPlayer>[
+      for (final child in snap.children) NetPlayer.fromJson(_asMap(child.value)),
+    ]..sort((a, b) => a.slot.compareTo(b.slot));
+  }
+
+  @override
   Future<void> joinPlayer(String id, NetPlayer player) {
     return _game(id).child('players/${player.uid}').set(player.toJson());
   }

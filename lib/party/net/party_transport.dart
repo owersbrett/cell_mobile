@@ -28,6 +28,11 @@ abstract class PartyTransport {
   /// Reads the current meta once (used by a joiner to learn mode/rounds/seed).
   Future<GameMeta?> readMeta(String id);
 
+  /// Reads the current roster once. A joiner uses this to pick a free seat
+  /// synchronously — the live [onPlayers] listener may not have delivered the
+  /// roster yet at join time.
+  Future<List<NetPlayer>> readPlayers(String id);
+
   /// Adds a player to the room (lobby join).
   Future<void> joinPlayer(String id, NetPlayer player);
 
@@ -180,6 +185,10 @@ class InMemoryPartyTransport implements PartyTransport {
 
   @override
   Future<GameMeta?> readMeta(String id) async => _games[id]?.meta;
+
+  @override
+  Future<List<NetPlayer>> readPlayers(String id) async =>
+      _games[id]?._playerList() ?? const [];
 
   @override
   Future<void> joinPlayer(String id, NetPlayer player) async {

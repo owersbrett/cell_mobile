@@ -48,10 +48,31 @@ class PartyNet extends ChangeNotifier {
   int _appliedInputs = 0;
   int _fedTape = 0;
 
+  // Last canonical snapshot seen before our replica existed, applied as soon
+  // as it's built (a client can finish building after the host has already
+  // published moves).
+  CanonicalSnapshot? _pendingSnap;
+
+  /// Players in canonical seat order. Seating is taken from this list's ORDER
+  /// (sorted by stored slot, then uid as a deterministic, peer-consistent
+  /// tiebreak) — NOT from the stored `slot` value. This is what makes the turn
+  /// loop deadlock-proof: even if two players were written to the same slot, or
+  /// a slot is missing, every peer still derives the same set of distinct seats
+  /// 0..n-1, so no seat is ever owned by two players or by nobody.
+  List<NetPlayer> get _seated {
+    final list = [...players]
+      ..sort((a, b) {
+        final s = a.slot.compareTo(b.slot);
+        return s != 0 ? s : a.uid.compareTo(b.uid);
+      });
+    return list;
+  }
+
   /// This device's seat, once the roster includes it.
   int? get mySlot {
-    for (final p in players) {
-      if (p.uid == myUid) return p.slot;
+    final seated = _seated;
+    for (var i = 0; i < seated.length; i++) {
+      if (seated[i].uid == myUid) return i;
     }
     return null;
   }
@@ -100,11 +121,19 @@ class PartyNet extends ChangeNotifier {
     if (existing == null) {
       throw StateError('no room "$gameId"');
     }
-    // Attach listeners first so the current roster is known, then take the next
-    // free seat. Good enough for friends-only rooms; the host owns the
-    // canonical order regardless.
+    // Pick the next free seat from the CURRENT roster, read directly. The live
+    // `onPlayers` listener (attached below) fires asynchronously on Firebase, so
+    // reading `net.players` here would see an empty list and hand every joiner
+    // slot 0 — colliding with the host. Seating itself is order-derived (see
+    // [_seated]) so a same-slot race still can't deadlock, but this keeps lobby
+    // seats/colours correct.
+    final roster = await transport.readPlayers(gameId);
+    final used = {for (final p in roster) p.slot};
+    var slot = 0;
+    while (used.contains(slot)) {
+      slot++;
+    }
     net._listen();
-    final slot = net.players.length;
     await transport.joinPlayer(
       gameId,
       NetPlayer(
@@ -143,10 +172,7 @@ class PartyNet extends ChangeNotifier {
     notifyListeners();
   }
 
-  List<String> _names() {
-    final sorted = [...players]..sort((a, b) => a.slot.compareTo(b.slot));
-    return [for (final p in sorted) p.name];
-  }
+  List<String> _names() => [for (final p in _seated) p.name];
 
   // ------------------------------------------------------------------ acting
 
@@ -253,8 +279,9 @@ class PartyNet extends ChangeNotifier {
   }
 
   int? _slotOf(String uid) {
-    for (final p in players) {
-      if (p.uid == uid) return p.slot;
+    final seated = _seated;
+    for (var i = 0; i < seated.length; i++) {
+      if (seated[i].uid == uid) return i;
     }
     return null;
   }
@@ -263,6 +290,17 @@ class PartyNet extends ChangeNotifier {
 
   void _onCanonical(CanonicalSnapshot snap) {
     if (isHost) return; // the host owns the controller directly
+    if (controller == null) {
+      // Our replica isn't built yet (still waiting on the full roster). Stash
+      // the latest canonical state and replay it the moment we're ready, so we
+      // never silently fall behind the host.
+      _pendingSnap = snap;
+      return;
+    }
+    _applyCanonical(snap);
+  }
+
+  void _applyCanonical(CanonicalSnapshot snap) {
     final c = controller;
     if (c == null) return;
     if (snap.tape.length > _fedTape) {
@@ -278,6 +316,7 @@ class PartyNet extends ChangeNotifier {
 
   void _onPlayers(List<NetPlayer> roster) {
     players = roster;
+    _maybeBuildClientController();
     notifyListeners();
   }
 
@@ -285,17 +324,32 @@ class PartyNet extends ChangeNotifier {
     meta = m;
     final wasStatus = status;
     status = m.status;
-    // A client builds its replica the moment the host starts the match.
-    if (!isHost && status == 'playing' && controller == null) {
-      controller = PartyController(
-        mode: PartyMode.values[m.mode],
-        totalRounds: m.rounds,
-        playerNames: _names(),
-        seed: m.seed,
-        randomMode: PartyRandomMode.client,
-      );
-    }
+    _maybeBuildClientController();
     if (wasStatus != status) notifyListeners();
+  }
+
+  /// A client builds its replica once the host has started AND the full roster
+  /// has arrived. Waiting for the complete roster matters: building from a
+  /// half-populated roster would seat the wrong names and desync the match.
+  void _maybeBuildClientController() {
+    if (isHost || controller != null) return;
+    final m = meta;
+    if (m == null || status != 'playing') return;
+    final expected = PartyMode.values[m.mode].playerCount;
+    if (players.length < expected) return; // wait for everyone to be seated
+    controller = PartyController(
+      mode: PartyMode.values[m.mode],
+      totalRounds: m.rounds,
+      playerNames: _names(),
+      seed: m.seed,
+      randomMode: PartyRandomMode.client,
+    );
+    // Catch up on anything the host published before we were ready.
+    final pending = _pendingSnap;
+    if (pending != null) {
+      _pendingSnap = null;
+      _applyCanonical(pending);
+    }
   }
 
   @override
