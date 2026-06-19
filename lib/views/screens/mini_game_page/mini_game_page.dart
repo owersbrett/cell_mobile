@@ -19,6 +19,10 @@ import 'games/tissue_layer_game.dart';
 import 'games/organ_system_game.dart';
 import 'mini_games_batch2.dart';
 import 'mini_games_batch3.dart';
+// Enhanced financial game (market events + debt/credit; fixes sold-early lockout).
+// Aliased to avoid the name clash with the legacy FinancialTradingGame in batch3.
+import 'package:cell_mobile/games/financial/market_trader/market_trader.dart'
+    as mt;
 
 /// Generic mini-game page — routes to the appropriate game(s) per scale.
 ///
@@ -158,7 +162,7 @@ class _MiniGamePageState extends State<MiniGamePage> {
       case BioScale.ecosystem: return const PotatoRushGame();
       case BioScale.farmSystem: return const FarmPanicGame();
       case BioScale.supplyChain: return const SupplyChainGame();
-      case BioScale.financial: return const FinancialTradingGame();
+      case BioScale.financial: return const mt.FinancialTradingGame();
       case BioScale.planets: return const PlanetCatchGame();
       case BioScale.solarSystems: return const SolarSortGame();
       case BioScale.galactic: return const GalaxyCollectorGame();
