@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../auth_profile.dart';
 import '../party_models.dart';
 
 const _kFont = 'Avenir';
@@ -26,6 +27,41 @@ class _PartySetupViewState extends State<PartySetupView> {
 
   static const _roundCounts = [3, 5, 8];
   static const _roundLabels = ['QUICK', 'STANDARD', 'MARATHON'];
+
+  /// Avatar for player [i]: the signed-in player (slot 0) uses their custom
+  /// VIPotato; others use their character sticker; initial as last resort.
+  Widget _avatar(int i, PartyCharacter character) {
+    if (i == 0 && AuthProfile.hasAvatar) {
+      return Image.network(
+        AuthProfile.avatarUrl!,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _sticker(i, character),
+      );
+    }
+    return _sticker(i, character);
+  }
+
+  Widget _sticker(int i, PartyCharacter character) {
+    if (character.asset != null) {
+      return Image.asset(
+        character.asset!,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _initial(i),
+      );
+    }
+    return _initial(i);
+  }
+
+  Widget _initial(int i) => Center(
+        child: Text(
+          _names[i].isEmpty ? '?' : _names[i][0].toUpperCase(),
+          style: const TextStyle(
+              fontFamily: _kFont,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+              color: Colors.white),
+        ),
+      );
 
   Future<void> _rename(int index) async {
     final controller = TextEditingController(text: _names[index]);
@@ -152,7 +188,8 @@ class _PartySetupViewState extends State<PartySetupView> {
                   itemCount: count,
                   separatorBuilder: (_, __) => const SizedBox(height: 6),
                   itemBuilder: (context, i) {
-                    final color = kCharacters[i].color;
+                    final character = kCharacters[i];
+                    final color = character.color;
                     final team = _mode.teamOf(i);
                     return GestureDetector(
                       onTap: () => _rename(i),
@@ -167,19 +204,21 @@ class _PartySetupViewState extends State<PartySetupView> {
                         ),
                         child: Row(
                           children: [
-                            CircleAvatar(
-                              radius: 14,
-                              backgroundColor: color,
-                              child: Text(
-                                _names[i].isEmpty
-                                    ? '?'
-                                    : _names[i][0].toUpperCase(),
-                                style: const TextStyle(
-                                    fontFamily: _kFont,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                    color: Colors.black),
+                            // Avatar: the signed-in player (slot 0) shows their
+                            // custom VIPotato; everyone else shows their
+                            // character sticker; initial as last-resort.
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: color.withValues(alpha: 0.25),
+                                border: Border.all(
+                                    color: color.withValues(alpha: 0.7),
+                                    width: 1.5),
                               ),
+                              clipBehavior: Clip.antiAlias,
+                              child: _avatar(i, character),
                             ),
                             const SizedBox(width: 10),
                             Expanded(

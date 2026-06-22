@@ -5,6 +5,8 @@ import 'dart:convert';
 // ignore: deprecated_member_use
 import 'dart:html' as html;
 
+import 'auth_profile.dart';
+
 /// Embedded SSO handshake. When the cell runs inside the hotpotatogames.com
 /// `<iframe>`, announce readiness to the parent and wait briefly for it to post
 /// back a Firebase custom token minted (via the `issueCustomToken` function)
@@ -31,6 +33,13 @@ Future<String?> requestParentAuthToken({
         if (msg is Map &&
             msg['type'] == 'hpg:auth' &&
             msg['customToken'] is String) {
+          // Capture the player's identity (name + custom VIPotato avatar) so
+          // an authenticated player plays as their own avatar.
+          AuthProfile.set(
+            name: msg['name'] is String ? msg['name'] as String : null,
+            avatarUrl:
+                msg['avatarUrl'] is String ? msg['avatarUrl'] as String : null,
+          );
           if (!completer.isCompleted) {
             completer.complete(msg['customToken'] as String);
           }

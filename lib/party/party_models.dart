@@ -327,22 +327,27 @@ List<BoardSpace> buildBoard() {
   return spaces;
 }
 
-/// Default roster — potato crew. Names/colors are editable in setup.
+/// Default roster — the playable Potatuhs cast, with sticker portraits from
+/// potatuhs-characters. [asset] is the portrait shown in the picker; [color] is
+/// the player's board-token tint (kept distinct per character for readability).
 class PartyCharacter {
   final String name;
   final Color color;
-  const PartyCharacter(this.name, this.color);
+  final String? asset; // portrait sticker path, null for a plain color token
+  const PartyCharacter(this.name, this.color, {this.asset});
 }
 
+const String _kCharDir = 'assets/characters';
+
 const List<PartyCharacter> kCharacters = [
-  PartyCharacter('Spud', Color(0xFFAADD44)),
-  PartyCharacter('Tater', Color(0xFFFF7043)),
-  PartyCharacter('Chip', Color(0xFF29B6F6)),
-  PartyCharacter('Mash', Color(0xFFFFD54F)),
-  PartyCharacter('Fry', Color(0xFFEC407A)),
-  PartyCharacter('Hash', Color(0xFF66BB6A)),
-  PartyCharacter('Gnocchi', Color(0xFFB39DDB)),
-  PartyCharacter('Latke', Color(0xFF26A69A)),
+  PartyCharacter('Russ', Color(0xFFE16416), asset: '$_kCharDir/russ.png'),
+  PartyCharacter('Butter', Color(0xFFF4D26E), asset: '$_kCharDir/butter.png'),
+  PartyCharacter('Curly', Color(0xFFFFB300), asset: '$_kCharDir/curly.png'),
+  PartyCharacter('Waffle', Color(0xFFFFA726), asset: '$_kCharDir/waffle-fry.png'),
+  PartyCharacter('French', Color(0xFFE1C916), asset: '$_kCharDir/french.png'),
+  PartyCharacter('Tater', Color(0xFFFF7043), asset: '$_kCharDir/tater.png'),
+  PartyCharacter('Pierogi', Color(0xFFB39DDB), asset: '$_kCharDir/pierogi.png'),
+  PartyCharacter('Baked', Color(0xFF8D6E63), asset: '$_kCharDir/baked-potato.png'),
 ];
 
 class PartyPlayer {

@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/games/game_catalog.dart';
+import 'package:cell_mobile/games/play_config.dart';
 import 'package:cell_mobile/games/rank_store.dart';
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
@@ -69,15 +70,15 @@ class _MiniGamePageState extends State<MiniGamePage> {
     final chosen = _chosen!;
     void backToPicker() => setState(() => _chosen = null);
 
-    // Registry game → shared host. Explore defaults to 1v1v1v1 vs AI bots so
-    // the post-game comparison is exercised; P2 will make the mode a choice.
+    // Registry game → shared host, vs the mode picked on the home page.
     if (chosen.specId != null) {
       final spec = MiniGameRegistry.byId(chosen.specId!);
       if (spec != null) {
         return MiniGameHost(
           spec: spec,
           onExit: backToPicker,
-          opponentCount: 3,
+          opponentCount: PlayConfig.opponentCount,
+          disruption: PlayConfig.disruptionActive,
         );
       }
     }
@@ -366,12 +367,10 @@ class _GameCard extends StatelessWidget {
                       color: Colors.white.withValues(alpha: 0.7),
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      _statusChip(game.status),
-                      if (hasNote) ...[
-                        const SizedBox(width: 6),
+                  if (hasNote) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
                         Icon(Icons.mode_comment,
                             size: 13, color: accent.withValues(alpha: 0.85)),
                         const SizedBox(width: 3),
@@ -386,8 +385,8 @@ class _GameCard extends StatelessWidget {
                           ),
                         ),
                       ],
-                    ],
-                  ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -433,27 +432,6 @@ class _GameCard extends StatelessWidget {
     );
   }
 
-  Widget _statusChip(GameStatus status) {
-    final color = status.color;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.5)),
-      ),
-      child: Text(
-        status.label,
-        style: TextStyle(
-          fontFamily: 'Avenir',
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.8,
-          color: color,
-        ),
-      ),
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -4,17 +4,29 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/games/game_catalog.dart';
 import 'package:cell_mobile/games/rank_store.dart';
+import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/mini_game_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+enum _Sort { rankWorst, rankBest, nameAsc, nameDesc }
+
+extension on _Sort {
+  String get label => switch (this) {
+        _Sort.rankWorst => 'F→S',
+        _Sort.rankBest => 'S→F',
+        _Sort.nameAsc => 'A–Z',
+        _Sort.nameDesc => 'Z–A',
+      };
+}
+
 /// Debug-only master list of EVERY game in the catalog, across all scales.
 ///
-/// Built for the triage loop: see every game with its rank + status + whether
-/// it has feedback comments, filter to the lowest-rated / work-needed ones,
-/// jump straight in to test, rate/comment in place, and copy all feedback out
-/// in one block to hand to the agent. Reached from the debug GAMES button.
+/// Built for the triage loop: search by name, sort by rank (worst- or best-
+/// first) or name, filter to games that have feedback, and group by scale.
+/// Jump straight in to test, rate/comment in place, and copy all feedback out
+/// in one block. Reached from the debug GAMES button.
 class GamesDebugPage extends StatefulWidget {
   const GamesDebugPage({super.key});
 
@@ -23,8 +35,10 @@ class GamesDebugPage extends StatefulWidget {
 }
 
 class _GamesDebugPageState extends State<GamesDebugPage> {
-  final Set<GameStatus> _statusFilter = {};
+  String _search = '';
+  _Sort _sort = _Sort.rankWorst;
   bool _onlyNoted = false;
+  bool _groupByScale = false;
 
   @override
   void initState() {
@@ -34,22 +48,36 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
     });
   }
 
-  /// Worst-first so the games that need attention surface at the top.
-  /// Unranked sinks to the bottom (rate it and it joins the order).
-  int _weight(GameRank r) => r == GameRank.unranked ? -1 : r.order;
+  // Worst-first puts unranked last; best-first puts unranked last too.
+  int _rankKey(GameRank r) => r == GameRank.unranked ? 99 : r.order;
+
+  int _compare(CatalogGame a, CatalogGame b) {
+    switch (_sort) {
+      case _Sort.rankWorst:
+        final c = _rankKey(RankStore.rankFor(b)).compareTo(_rankKey(RankStore.rankFor(a)));
+        // unranked (99) should sink, not float, under worst-first:
+        final aUn = RankStore.rankFor(a) == GameRank.unranked;
+        final bUn = RankStore.rankFor(b) == GameRank.unranked;
+        if (aUn != bUn) return aUn ? 1 : -1;
+        return c != 0 ? c : a.name.compareTo(b.name);
+      case _Sort.rankBest:
+        final c = _rankKey(RankStore.rankFor(a)).compareTo(_rankKey(RankStore.rankFor(b)));
+        return c != 0 ? c : a.name.compareTo(b.name);
+      case _Sort.nameAsc:
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      case _Sort.nameDesc:
+        return b.name.toLowerCase().compareTo(a.name.toLowerCase());
+    }
+  }
 
   List<CatalogGame> get _filtered {
-    var list = GameCatalog.games.where((g) {
-      if (_statusFilter.isNotEmpty && !_statusFilter.contains(g.status)) {
-        return false;
-      }
+    final q = _search.trim().toLowerCase();
+    final list = GameCatalog.games.where((g) {
+      if (q.isNotEmpty && !g.name.toLowerCase().contains(q)) return false;
       if (_onlyNoted && !RankStore.hasNote(g.id)) return false;
       return true;
-    }).toList();
-    list.sort((a, b) {
-      final w = _weight(RankStore.rankFor(b)).compareTo(_weight(RankStore.rankFor(a)));
-      return w != 0 ? w : a.name.compareTo(b.name);
-    });
+    }).toList()
+      ..sort(_compare);
     return list;
   }
 
@@ -67,7 +95,6 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
   }
 
   void _play(CatalogGame game) {
-    // Land on the game's scale chooser (reuses the normal launch path).
     Navigator.pop(context);
     context.read<ScaleExplorerBloc>().add(SelectScale(game.scale));
     context.read<NavigationBloc>().add(NavigateToScreen(AppScreen.miniGame));
@@ -96,7 +123,7 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
           children: [
             // Header
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+              padding: const EdgeInsets.fromLTRB(8, 8, 12, 0),
               child: Row(
                 children: [
                   IconButton(
@@ -122,44 +149,75 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
                 ],
               ),
             ),
-            // Filters
+            // Search
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: TextField(
+                onChanged: (v) => setState(() => _search = v),
+                style: const TextStyle(
+                    fontFamily: 'Avenir', fontSize: 14, color: Colors.white),
+                decoration: InputDecoration(
+                  isDense: true,
+                  prefixIcon: const Icon(Icons.search, size: 18, color: Colors.white38),
+                  hintText: 'Search games by name',
+                  hintStyle: const TextStyle(
+                      fontFamily: 'Avenir', fontSize: 13, color: Colors.white38),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            // Sort + filters
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
               child: Row(
                 children: [
-                  for (final s in GameStatus.values)
+                  for (final s in _Sort.values)
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
+                      child: ChoiceChip(
                         label: Text(s.label),
-                        selected: _statusFilter.contains(s),
-                        onSelected: (sel) => setState(() {
-                          sel ? _statusFilter.add(s) : _statusFilter.remove(s);
-                        }),
-                        selectedColor: s.color.withValues(alpha: 0.3),
+                        selected: _sort == s,
+                        onSelected: (_) => setState(() => _sort = s),
                         labelStyle: const TextStyle(
                             fontFamily: 'Avenir', fontSize: 11),
                       ),
                     ),
+                  Container(
+                    width: 1,
+                    height: 28,
+                    margin: const EdgeInsets.symmetric(horizontal: 6),
+                    color: Colors.white12,
+                  ),
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilterChip(
                       label: const Text('HAS FEEDBACK'),
                       selected: _onlyNoted,
-                      onSelected: (sel) => setState(() => _onlyNoted = sel),
-                      selectedColor: Colors.amber.withValues(alpha: 0.3),
-                      labelStyle:
-                          const TextStyle(fontFamily: 'Avenir', fontSize: 11),
+                      onSelected: (v) => setState(() => _onlyNoted = v),
+                      labelStyle: const TextStyle(
+                          fontFamily: 'Avenir', fontSize: 11),
                     ),
+                  ),
+                  FilterChip(
+                    label: const Text('GROUP BY SCALE'),
+                    selected: _groupByScale,
+                    onSelected: (v) => setState(() => _groupByScale = v),
+                    labelStyle:
+                        const TextStyle(fontFamily: 'Avenir', fontSize: 11),
                   ),
                 ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
               child: Text(
-                '${games.length} games · worst-rated first',
+                '${games.length} games',
                 style: TextStyle(
                   fontFamily: 'Avenir',
                   fontSize: 11,
@@ -169,15 +227,46 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
               ),
             ),
             Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 4, 10, 16),
-                itemCount: games.length,
-                itemBuilder: (context, i) => _row(games[i]),
-              ),
+              child: _groupByScale ? _groupedList(games) : _flatList(games),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _flatList(List<CatalogGame> games) {
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 16),
+      itemCount: games.length,
+      itemBuilder: (context, i) => _row(games[i]),
+    );
+  }
+
+  Widget _groupedList(List<CatalogGame> games) {
+    // Group by scale, scales in BioScale order; games within keep the sort.
+    final children = <Widget>[];
+    for (final scale in BioScale.values) {
+      final inScale = games.where((g) => g.scale == scale).toList();
+      if (inScale.isEmpty) continue;
+      children.add(Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+        child: Text(
+          scale.name.toUpperCase(),
+          style: TextStyle(
+            fontFamily: 'Avenir',
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1.5,
+            color: Colors.white.withValues(alpha: 0.55),
+          ),
+        ),
+      ));
+      children.addAll(inScale.map(_row));
+    }
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+      children: children,
     );
   }
 
@@ -195,7 +284,6 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
       ),
       child: Row(
         children: [
-          // Rank badge — tap to rate/comment.
           GestureDetector(
             onTap: () => _rate(game),
             behavior: HitTestBehavior.opaque,
@@ -246,11 +334,11 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${game.scale.name} · ${game.status.label}',
+                  game.scale.name,
                   style: TextStyle(
                     fontFamily: 'Avenir',
                     fontSize: 11,
-                    color: game.status.color.withValues(alpha: 0.9),
+                    color: Colors.white.withValues(alpha: 0.45),
                   ),
                 ),
               ],

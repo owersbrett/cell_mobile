@@ -331,7 +331,8 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   int _lives = 3;
   int _combo = 0;
   int _sectionsCompleted = 0;
-  int _roundIndex = 0; // index into _kOrgans
+  int _roundIndex = 0; // index into _playOrder
+  List<int> _playOrder = []; // shuffled+interleaved order into _kOrgans
   double _lastT = 0;
 
   // ---- per-round state -----------------------------------------------------
@@ -406,11 +407,43 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     _wrongFlash = 0;
     _completeGlow = -1;
     _pathogenConsumedAge = -1;
+    _buildPlayOrder();
     _startRound();
   }
 
+  /// Shuffle the specimens and weave the (distinct) animal organs evenly through
+  /// the (near-identical) plant cross-sections, so you never face the same kind
+  /// of slice back-to-back — the variety the game was missing.
+  void _buildPlayOrder() {
+    final plant = <int>[];
+    final animal = <int>[];
+    for (int i = 0; i < _kOrgans.length; i++) {
+      (_kOrgans[i].kingdom == _Kingdom.plant ? plant : animal).add(i);
+    }
+    plant.shuffle(_rng);
+    animal.shuffle(_rng);
+    final total = plant.length + animal.length;
+    final order = <int>[];
+    int pi = 0, ai = 0;
+    for (int k = 0; k < total; k++) {
+      // Drop an animal in at its proportional slot; fill with plants otherwise.
+      final wantAnimal =
+          ai < animal.length && (ai + 1) * total <= (k + 1) * animal.length;
+      if (wantAnimal || pi >= plant.length) {
+        order.add(animal[ai++]);
+      } else {
+        order.add(plant[pi++]);
+      }
+    }
+    _playOrder = order;
+  }
+
   void _startRound() {
-    _organ = _kOrgans[_roundIndex % _kOrgans.length];
+    if (_playOrder.isEmpty) _buildPlayOrder();
+    // Reshuffle for a fresh mix each time we loop through every specimen.
+    final orderIdx = _roundIndex % _playOrder.length;
+    if (orderIdx == 0 && _roundIndex > 0) _buildPlayOrder();
+    _organ = _kOrgans[_playOrder[_roundIndex % _playOrder.length]];
     _filled.clear();
     _dropped.clear();
     _fillAnims.clear();
@@ -452,17 +485,18 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     final realTissues = List<_Tissue>.from(_organ.zones)..shuffle(_rng);
 
     // ---- Escalating decoy count ----------------------------------------------
-    // Starts at organ's baseDecoyCount; gains 1 extra every 4 completions,
-    // capped so total chips ≤ 8 (avoids chip tray overflow on small screens).
-    final extraDecoys = _sectionsCompleted ~/ 4;
+    // Starts at organ's baseDecoyCount; gains 1 extra every 3 completions (was
+    // every 4 — ramps harder, more on screen at once), capped so total chips
+    // ≤ 8 (avoids chip tray overflow on small screens).
+    final extraDecoys = _sectionsCompleted ~/ 3;
     final maxExtra = (8 - realTissues.length - _organ.baseDecoyCount).clamp(0, 3);
     final decoyCount = (_organ.baseDecoyCount + extraDecoys).clamp(
         _organ.baseDecoyCount, _organ.baseDecoyCount + maxExtra);
 
     // Pick decoys: at higher difficulty mix cross-kingdom decoys for harder
-    // pattern-matching. Below section 6 use kingdom-homogenous pool.
+    // pattern-matching. Cross-kingdom kicks in from section 4 (was 6).
     final List<_Tissue> decoyPool;
-    if (_sectionsCompleted >= 6) {
+    if (_sectionsCompleted >= 4) {
       decoyPool = List<_Tissue>.from(_kAllDecoys);
     } else {
       decoyPool = List<_Tissue>.from(

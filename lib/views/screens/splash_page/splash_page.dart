@@ -4,6 +4,7 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/data/organelles.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/games/play_config.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:cell_mobile/views/screens/games_debug_page/games_debug_page.dart';
@@ -115,6 +116,8 @@ class SplashPage extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 24),
         child: Column(
           children: [
+            const _ModeSelector(),
+            const SizedBox(height: 18),
             _SplashDoor(
               title: 'ORIGINAL',
               subtitle: 'The original interactive cell',
@@ -165,6 +168,145 @@ class SplashPage extends StatelessWidget {
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Home-page play-mode picker: Solo / 1v1 / 1v1v1 / 1v1v1v1. Sets [PlayConfig],
+/// which Explore games read to decide how many AI opponents to score against.
+class _ModeSelector extends StatefulWidget {
+  const _ModeSelector();
+  @override
+  State<_ModeSelector> createState() => _ModeSelectorState();
+}
+
+class _ModeSelectorState extends State<_ModeSelector> {
+  @override
+  void initState() {
+    super.initState();
+    PlayConfig.load().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'MODE',
+          style: TextStyle(
+            fontFamily: Potatuhs.bodyFont,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 2,
+            color: Potatuhs.textSecondary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            for (final m in GameMode.values) ...[
+              Expanded(child: _modeChip(m)),
+              if (m != GameMode.values.last) const SizedBox(width: 8),
+            ],
+          ],
+        ),
+        const SizedBox(height: 10),
+        _disruptionToggle(),
+      ],
+    );
+  }
+
+  Widget _disruptionToggle() {
+    final enabled = PlayConfig.opponentCount > 0; // nobody to disrupt in solo
+    final on = PlayConfig.disruption && enabled;
+    return Opacity(
+      opacity: enabled ? 1 : 0.4,
+      child: GestureDetector(
+        onTap: enabled
+            ? () async {
+                await PlayConfig.setDisruption(!PlayConfig.disruption);
+                if (mounted) setState(() {});
+              }
+            : null,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: on
+                ? Potatuhs.orange.withValues(alpha: 0.18)
+                : Colors.white.withValues(alpha: 0.04),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: on
+                  ? Potatuhs.orange
+                  : Colors.white.withValues(alpha: 0.12),
+              width: on ? 1.6 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.bolt,
+                  size: 16,
+                  color: on ? Potatuhs.orange : Colors.white54),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'DISRUPTION — opponents can mess with you',
+                  style: TextStyle(
+                    fontFamily: Potatuhs.bodyFont,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.4,
+                    color: on ? Potatuhs.orange : Colors.white60,
+                  ),
+                ),
+              ),
+              Icon(on ? Icons.toggle_on : Icons.toggle_off,
+                  size: 26, color: on ? Potatuhs.orange : Colors.white38),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _modeChip(GameMode m) {
+    final selected = PlayConfig.mode == m;
+    return GestureDetector(
+      onTap: () async {
+        await PlayConfig.setMode(m);
+        if (mounted) setState(() {});
+      },
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected
+              ? Potatuhs.gold.withValues(alpha: 0.22)
+              : Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected
+                ? Potatuhs.gold
+                : Colors.white.withValues(alpha: 0.12),
+            width: selected ? 1.6 : 1,
+          ),
+        ),
+        child: Text(
+          m.label,
+          style: TextStyle(
+            fontFamily: Potatuhs.bodyFont,
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.5,
+            color: selected ? Potatuhs.gold : Colors.white70,
+          ),
         ),
       ),
     );

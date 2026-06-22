@@ -25,6 +25,11 @@ class MiniGameHost extends StatefulWidget {
   /// party mode (real players already provide the comparison).
   final int opponentCount;
 
+  /// When true, opponents may interfere with the player's run. Games that
+  /// support score-disruption read this; the host surfaces a "disruption on"
+  /// badge during play so the feature is testable even before a game wires it.
+  final bool disruption;
+
   const MiniGameHost({
     Key? key,
     required this.spec,
@@ -32,6 +37,7 @@ class MiniGameHost extends StatefulWidget {
     this.playerLabel,
     this.onComplete,
     this.opponentCount = 0,
+    this.disruption = false,
   }) : super(key: key);
 
   bool get isParty => onComplete != null;
@@ -218,6 +224,45 @@ class _MiniGameHostState extends State<MiniGameHost> {
                     if (_session.phase == MiniGamePhase.countdown)
                       _CountdownOverlay(
                           value: _countdown, accent: spec.accent),
+                    // Disruption-active badge — feature is on for this round.
+                    if (widget.disruption &&
+                        _session.phase == MiniGamePhase.playing)
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: SafeArea(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFF7043)
+                                  .withValues(alpha: 0.22),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                  color: const Color(0xFFFF7043)
+                                      .withValues(alpha: 0.7)),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.bolt,
+                                    size: 13, color: Color(0xFFFF7043)),
+                                SizedBox(width: 3),
+                                Text(
+                                  'DISRUPTION',
+                                  style: TextStyle(
+                                    fontFamily: _kFont,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.8,
+                                    color: Color(0xFFFF7043),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                     // Always-available quit. In a party round the board overlays
                     // its own SKIP/forfeit, so the in-game quit is for solo
                     // Explore play (leave back to the scale).

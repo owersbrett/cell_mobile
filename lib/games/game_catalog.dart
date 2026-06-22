@@ -7,9 +7,6 @@ import '../models/bio_entity.dart';
 /// Assignable in-app from the chooser; see `RankStore`.
 enum GameRank { s, a, b, c, d, f, unranked }
 
-/// Build-readiness flag — the "which games need work" signal.
-enum GameStatus { ship, needsWork, prototype }
-
 extension GameRankLabel on GameRank {
   String get label => switch (this) {
         GameRank.s => 'S',
@@ -43,20 +40,6 @@ extension GameRankLabel on GameRank {
   ];
 }
 
-extension GameStatusLabel on GameStatus {
-  String get label => switch (this) {
-        GameStatus.ship => 'SHIP',
-        GameStatus.needsWork => 'NEEDS WORK',
-        GameStatus.prototype => 'PROTOTYPE',
-      };
-
-  Color get color => switch (this) {
-        GameStatus.ship => const Color(0xFF66BB6A),
-        GameStatus.needsWork => const Color(0xFFFFA726),
-        GameStatus.prototype => const Color(0xFF90A4AE),
-      };
-}
-
 /// One game in the catalog — the single rankable record for every game on every
 /// scale, across BOTH the registry/arcade system and the legacy per-scale
 /// games. Self-describing so the picker renders straight from it.
@@ -70,7 +53,6 @@ class CatalogGame {
   final String tagline;
   final BioScale scale;
   final GameRank rank;
-  final GameStatus status;
   final Color accent;
   final IconData icon;
 
@@ -83,7 +65,6 @@ class CatalogGame {
     required this.tagline,
     required this.scale,
     required this.rank,
-    required this.status,
     required this.accent,
     required this.icon,
     this.specId,
@@ -112,7 +93,6 @@ class GameCatalog {
       tagline: 'Ignite matter out of the void',
       scale: BioScale.nothings,
       rank: GameRank.b,
-      status: GameStatus.ship,
       accent: Color(0xFFFFAB40),
       icon: Icons.flare,
       specId: 'big_bang',
@@ -124,7 +104,6 @@ class GameCatalog {
       tagline: 'Count the corners, tap them true',
       scale: BioScale.somethings,
       rank: GameRank.a,
-      status: GameStatus.ship,
       accent: Color(0xFF7E57C2),
       icon: Icons.category,
       specId: 'corners',
@@ -136,7 +115,6 @@ class GameCatalog {
       tagline: 'Smash particles at the perfect moment',
       scale: BioScale.particles,
       rank: GameRank.b,
-      status: GameStatus.ship,
       accent: Color(0xFFAB47BC),
       icon: Icons.grain,
       specId: 'collider',
@@ -147,7 +125,6 @@ class GameCatalog {
       tagline: 'Pump the beam — hold the band — survive',
       scale: BioScale.particles,
       rank: GameRank.b,
-      status: GameStatus.ship,
       accent: Color(0xFFCE93D8),
       icon: Icons.bolt,
       specId: 'accelerator',
@@ -159,7 +136,6 @@ class GameCatalog {
       tagline: 'Assemble elements particle by particle',
       scale: BioScale.atoms,
       rank: GameRank.s,
-      status: GameStatus.ship,
       accent: Color(0xFF5C6BC0),
       icon: Icons.blur_on,
       specId: 'atom_builder',
@@ -171,7 +147,6 @@ class GameCatalog {
       tagline: 'Bond the right atoms, skip the rest',
       scale: BioScale.molecular,
       rank: GameRank.a,
-      status: GameStatus.ship,
       accent: Color(0xFF00BCD4),
       icon: Icons.science,
       specId: 'molecule_mixer',
@@ -183,7 +158,6 @@ class GameCatalog {
       tagline: 'Eat, grow, dodge — stay alive',
       scale: BioScale.organelle,
       rank: GameRank.a,
-      status: GameStatus.ship,
       accent: Color(0xFF9C27B0),
       icon: Icons.blur_circular,
       specId: 'hungry_cell',
@@ -195,7 +169,6 @@ class GameCatalog {
       tagline: 'Split the cell, race the clock',
       scale: BioScale.cell,
       rank: GameRank.b,
-      status: GameStatus.needsWork,
       accent: Color(0xFF26A69A),
       icon: Icons.hub,
     ),
@@ -206,7 +179,6 @@ class GameCatalog {
       tagline: 'Stack the tissue layers in order',
       scale: BioScale.tissue,
       rank: GameRank.b,
-      status: GameStatus.ship,
       accent: Color(0xFF42A5F5),
       icon: Icons.layers,
     ),
@@ -217,7 +189,6 @@ class GameCatalog {
       tagline: 'Name the part — human or potato — fast',
       scale: BioScale.organ,
       rank: GameRank.a,
-      status: GameStatus.ship,
       accent: Color(0xFF8BC34A),
       icon: Icons.quiz,
       specId: 'organ_rush',
@@ -229,7 +200,6 @@ class GameCatalog {
       tagline: 'Wire the organ systems together',
       scale: BioScale.organSystem,
       rank: GameRank.b,
-      status: GameStatus.ship,
       accent: Color(0xFF26C6DA),
       icon: Icons.account_tree,
     ),
@@ -240,7 +210,6 @@ class GameCatalog {
       tagline: 'Reap each crop at the right moment',
       scale: BioScale.organism,
       rank: GameRank.d,
-      status: GameStatus.needsWork,
       accent: Color(0xFFFFCA28),
       icon: Icons.agriculture,
     ),
@@ -251,7 +220,6 @@ class GameCatalog {
       tagline: 'Keep the ecosystem in balance',
       scale: BioScale.ecosystem,
       rank: GameRank.c,
-      status: GameStatus.needsWork,
       accent: Color(0xFF66BB6A),
       icon: Icons.park,
     ),
@@ -262,7 +230,6 @@ class GameCatalog {
       tagline: 'Run the farm before it runs you',
       scale: BioScale.farmSystem,
       rank: GameRank.c,
-      status: GameStatus.needsWork,
       accent: Color(0xFF9CCC65),
       icon: Icons.grass,
     ),
@@ -273,7 +240,6 @@ class GameCatalog {
       tagline: 'Move the harvest down the chain',
       scale: BioScale.supplyChain,
       rank: GameRank.c,
-      status: GameStatus.prototype,
       accent: Color(0xFFFF7043),
       icon: Icons.local_shipping,
     ),
@@ -284,7 +250,6 @@ class GameCatalog {
       tagline: 'Trade the commodity swings, beat the close',
       scale: BioScale.financial,
       rank: GameRank.b,
-      status: GameStatus.ship,
       accent: Color(0xFFFFD54F),
       icon: Icons.show_chart,
     ),
@@ -295,7 +260,6 @@ class GameCatalog {
       tagline: 'Ride real gravity — bigger pulls harder',
       scale: BioScale.planets,
       rank: GameRank.a,
-      status: GameStatus.ship,
       accent: Color(0xFF29B6F6),
       icon: Icons.public,
     ),
@@ -306,7 +270,6 @@ class GameCatalog {
       tagline: 'Trace the orbits into place',
       scale: BioScale.solarSystems,
       rank: GameRank.c,
-      status: GameStatus.needsWork,
       accent: Color(0xFFFFB74D),
       icon: Icons.brightness_7,
     ),
@@ -317,7 +280,6 @@ class GameCatalog {
       tagline: 'Sweep the stars before they fade',
       scale: BioScale.galactic,
       rank: GameRank.c,
-      status: GameStatus.needsWork,
       accent: Color(0xFFBA68C8),
       icon: Icons.auto_awesome,
     ),
@@ -328,7 +290,6 @@ class GameCatalog {
       tagline: 'Link the cosmic web node to node',
       scale: BioScale.cosmicStructures,
       rank: GameRank.c,
-      status: GameStatus.needsWork,
       accent: Color(0xFF7E57C2),
       icon: Icons.hub,
     ),
@@ -339,7 +300,6 @@ class GameCatalog {
       tagline: 'Fold realities into one',
       scale: BioScale.multiverseAll,
       rank: GameRank.c,
-      status: GameStatus.needsWork,
       accent: Color(0xFFEC407A),
       icon: Icons.blur_circular,
     ),
@@ -350,7 +310,6 @@ class GameCatalog {
       tagline: 'Name it in every tongue',
       scale: BioScale.universeAll,
       rank: GameRank.b,
-      status: GameStatus.ship,
       accent: Color(0xFF26A69A),
       icon: Icons.translate,
     ),
@@ -361,7 +320,6 @@ class GameCatalog {
       tagline: 'Tap past every limit',
       scale: BioScale.infinities,
       rank: GameRank.c,
-      status: GameStatus.needsWork,
       accent: Color(0xFF5C6BC0),
       icon: Icons.all_inclusive,
     ),
