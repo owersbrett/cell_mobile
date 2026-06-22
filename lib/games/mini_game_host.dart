@@ -252,6 +252,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
                   bestScore: widget.isParty ? null : _bestScore,
                   newBest: _newBest,
                   isParty: widget.isParty,
+                  opponents: _opponents,
                   onContinue: widget.isParty
                       ? () => widget.onComplete!(_session.score)
                       : null,
@@ -579,6 +580,21 @@ class _CountdownOverlay extends StatelessWidget {
   }
 }
 
+/// A generated AI opponent and the score it posted this round.
+class _Opponent {
+  final String name;
+  final int score;
+  const _Opponent(this.name, this.score);
+}
+
+/// One row of the final standings (you or an opponent).
+class _Standing {
+  final String name;
+  final int score;
+  final bool isPlayer;
+  const _Standing(this.name, this.score, this.isPlayer);
+}
+
 class _ResultsView extends StatelessWidget {
   final MiniGameSpec spec;
   final int score;
@@ -586,6 +602,7 @@ class _ResultsView extends StatelessWidget {
   final int? bestScore;
   final bool newBest;
   final bool isParty;
+  final List<_Opponent> opponents;
   final VoidCallback? onContinue;
   final VoidCallback? onPlayAgain;
   final VoidCallback onExit;
@@ -596,11 +613,107 @@ class _ResultsView extends StatelessWidget {
     required this.newBest,
     required this.isParty,
     required this.onExit,
+    this.opponents = const [],
     this.playerLabel,
     this.bestScore,
     this.onContinue,
     this.onPlayAgain,
   });
+
+  /// Final standings: you + opponents, highest score first.
+  List<_Standing> get _standings {
+    final all = <_Standing>[
+      _Standing('YOU', score, true),
+      for (final o in opponents) _Standing(o.name, o.score, false),
+    ]..sort((a, b) => b.score.compareTo(a.score));
+    return all;
+  }
+
+  int get _place =>
+      _standings.indexWhere((s) => s.isPlayer) + 1;
+
+  static String _ordinal(int p) => switch (p) {
+        1 => '1st',
+        2 => '2nd',
+        3 => '3rd',
+        _ => '${p}th',
+      };
+
+  Widget _standingsBlock(Color accent) {
+    final standings = _standings;
+    final win = _place == 1;
+    return Column(
+      children: [
+        Text(
+          '${_ordinal(_place)} of ${standings.length}',
+          style: TextStyle(
+            fontFamily: _kFont,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1.5,
+            color: win ? const Color(0xFFFFD54F) : Colors.white,
+          ),
+        ),
+        const SizedBox(height: 10),
+        for (int i = 0; i < standings.length; i++)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: standings[i].isPlayer
+                    ? accent.withValues(alpha: 0.15)
+                    : Colors.white.withValues(alpha: 0.03),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: standings[i].isPlayer
+                      ? accent.withValues(alpha: 0.6)
+                      : Colors.white.withValues(alpha: 0.06),
+                ),
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 24,
+                    child: Text(
+                      '${i + 1}',
+                      style: TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      standings[i].name,
+                      style: TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 15,
+                        fontWeight: standings[i].isPlayer
+                            ? FontWeight.bold
+                            : FontWeight.w500,
+                        color: standings[i].isPlayer ? accent : Colors.white70,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${standings[i].score}',
+                    style: TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: standings[i].isPlayer ? accent : Colors.white70,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -685,6 +798,10 @@ class _ResultsView extends StatelessWidget {
                     fontFamily: _kFont, fontSize: 14, color: Colors.white54),
               ),
             ),
+          ],
+          if (opponents.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            _standingsBlock(accent),
           ],
           const Spacer(),
           if (isParty)

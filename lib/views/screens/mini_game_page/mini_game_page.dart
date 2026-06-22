@@ -69,11 +69,16 @@ class _MiniGamePageState extends State<MiniGamePage> {
     final chosen = _chosen!;
     void backToPicker() => setState(() => _chosen = null);
 
-    // Registry game → shared host.
+    // Registry game → shared host. Explore defaults to 1v1v1v1 vs AI bots so
+    // the post-game comparison is exercised; P2 will make the mode a choice.
     if (chosen.specId != null) {
       final spec = MiniGameRegistry.byId(chosen.specId!);
       if (spec != null) {
-        return MiniGameHost(spec: spec, onExit: backToPicker);
+        return MiniGameHost(
+          spec: spec,
+          onExit: backToPicker,
+          opponentCount: 3,
+        );
       }
     }
 
