@@ -49,6 +49,34 @@ class _MiniGameHostState extends State<MiniGameHost> {
   Duration _appliedBonus = Duration.zero;
   int? _bestScore;
   bool _newBest = false;
+  List<_Opponent> _opponents = const [];
+
+  // The Tuber Eight minus the player — default AI opponents.
+  static const _botNames = [
+    'Tater', 'Chip', 'Mash', 'Fry', 'Hash', 'Gnocchi', 'Latke',
+  ];
+
+  /// Generate somewhat-random opponent scores, scaled to the game's realistic
+  /// human ceiling so the comparison feels fair. Solo (Explore) only.
+  void _generateOpponents() {
+    if (widget.isParty || widget.opponentCount <= 0) {
+      _opponents = const [];
+      return;
+    }
+    final rng = Random();
+    // Realistic ceiling: the tuned humanMax, or a score-relative estimate.
+    final ceiling = widget.spec.humanMax > 0
+        ? widget.spec.humanMax
+        : max(120, (_session.score * 1.7).round());
+    final names = [..._botNames]..shuffle(rng);
+    _opponents = List.generate(widget.opponentCount, (i) {
+      // 50–95% of the ceiling, with a little noise; clamped to the ceiling.
+      final skill = 0.5 + rng.nextDouble() * 0.45;
+      final noise = (rng.nextDouble() - 0.5) * 0.10;
+      final s = (ceiling * (skill + noise)).round().clamp(0, ceiling);
+      return _Opponent(names[i % names.length], s);
+    });
+  }
 
   @override
   void initState() {
@@ -119,6 +147,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
     _session.hostTick(Duration.zero);
     if (!fromSession) _session.hostSetPhase(MiniGamePhase.finished);
     if (!widget.isParty) _saveBest();
+    _generateOpponents();
     setState(() {});
   }
 
