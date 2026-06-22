@@ -95,9 +95,15 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
   }
 
   void _play(CatalogGame game) {
+    // Dispatch on the live context FIRST (capture the blocs), then pop — popping
+    // first tears down this context so the events would no-op and we'd just land
+    // back on home. Changing the underlying screen, then popping the debug route,
+    // reveals the game's chooser.
+    final scaleBloc = context.read<ScaleExplorerBloc>();
+    final navBloc = context.read<NavigationBloc>();
+    scaleBloc.add(SelectScale(game.scale));
+    navBloc.add(NavigateToScreen(AppScreen.miniGame));
     Navigator.pop(context);
-    context.read<ScaleExplorerBloc>().add(SelectScale(game.scale));
-    context.read<NavigationBloc>().add(NavigateToScreen(AppScreen.miniGame));
   }
 
   Future<void> _copyAll() async {

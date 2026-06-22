@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../firebase_bootstrap.dart';
+import '../../games/play_config.dart';
 import '../net/firebase_party_transport.dart';
 import '../net/party_net.dart';
 import '../net/party_session.dart';
@@ -40,7 +41,9 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
   _LobbyStage _stage = _LobbyStage.choose;
   PartyNet? _net;
   bool _isHost = false;
-  PartyMode _mode = PartyMode.duel; // 2-player by default (good for testing)
+  // Defaults to the mode picked on the home screen (Solo/1v1/1v1v1/1v1v1v1);
+  // host-a-room opens pre-set to that size. Still changeable via _modeToggle.
+  PartyMode _mode = PlayConfig.partyMode;
   String? _error;
   bool _busy = false;
 
@@ -431,14 +434,21 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
   }
 
   Widget _modeToggle() {
-    Widget pill(String label, PartyMode mode) {
+    // The four home-screen formats, in player-count order.
+    const modes = [
+      PartyMode.solo,
+      PartyMode.duel,
+      PartyMode.ffa3,
+      PartyMode.ffa4,
+    ];
+    Widget pill(PartyMode mode) {
       final selected = _mode == mode;
       return Expanded(
         child: GestureDetector(
           onTap: () => setState(() => _mode = mode),
           child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 4),
-            padding: const EdgeInsets.symmetric(vertical: 10),
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
             decoration: BoxDecoration(
               color: selected ? Potatuhs.gold.withValues(alpha: 0.2) : null,
               borderRadius: BorderRadius.circular(12),
@@ -447,23 +457,22 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
                   width: 1.5),
             ),
             child: Center(
-              child: Text(label,
-                  style: Potatuhs.body(
-                      size: 13,
-                      weight: FontWeight.w700,
-                      color: selected ? Potatuhs.gold : Potatuhs.textFaint)),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(mode.label,
+                    style: Potatuhs.body(
+                        size: 13,
+                        weight: FontWeight.w700,
+                        color:
+                            selected ? Potatuhs.gold : Potatuhs.textFaint)),
+              ),
             ),
           ),
         ),
       );
     }
 
-    return Row(
-      children: [
-        pill('1 v 1', PartyMode.duel),
-        pill('4 PLAYERS', PartyMode.ffa4),
-      ],
-    );
+    return Row(children: modes.map(pill).toList());
   }
 }
 

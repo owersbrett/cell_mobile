@@ -162,9 +162,24 @@ class SplashPage extends StatelessWidget {
                 subtitle: 'Debug · all games, ranks & feedback',
                 icon: Icons.bug_report,
                 accent: Potatuhs.gold,
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const GamesDebugPage()),
-                ),
+                onTap: () {
+                  // Providers live inside the home route, below the Navigator,
+                  // so a pushed route can't see them. Forward the existing bloc
+                  // instances to the pushed GamesDebugPage.
+                  final scaleBloc = context.read<ScaleExplorerBloc>();
+                  final navBloc = context.read<NavigationBloc>();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => MultiBlocProvider(
+                        providers: [
+                          BlocProvider<ScaleExplorerBloc>.value(value: scaleBloc),
+                          BlocProvider<NavigationBloc>.value(value: navBloc),
+                        ],
+                        child: const GamesDebugPage(),
+                      ),
+                    ),
+                  );
+                },
               ),
             ],
           ],

@@ -1,5 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../party/party_models.dart';
+
 /// How many players a round runs — Solo or against AI opponents.
 enum GameMode { solo, duel, trio, quad }
 
@@ -36,6 +38,15 @@ class PlayConfig {
 
   /// Opponent count fed to [MiniGameHost] for Explore play.
   static int get opponentCount => mode.opponents;
+
+  /// The party room format to default to when hosting, derived from the
+  /// home-screen mode — now a clean 1:1 (solo / 1v1 / 1v1v1 / 1v1v1v1).
+  static PartyMode get partyMode => switch (mode) {
+        GameMode.solo => PartyMode.solo,
+        GameMode.duel => PartyMode.duel,
+        GameMode.trio => PartyMode.ffa3,
+        GameMode.quad => PartyMode.ffa4,
+      };
 
   /// Disruption is only active when there's actually someone to disrupt you.
   static bool get disruptionActive => disruption && opponentCount > 0;

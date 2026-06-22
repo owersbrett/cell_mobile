@@ -7246,7 +7246,14 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
         vx: (_rng.nextDouble() - 0.5) * 80,
         vy: -40 - _rng.nextDouble() * 60,
         life: 0.55,
-        color: HSVColor.fromAHSV(1, _bgHue + _rng.nextDouble() * 40 - 20, 0.7, 1.0).toColor(),
+        // Normalize into [0,360): _bgHue near the 0/360 wrap + the ±20 jitter
+        // could otherwise go out of range and HSVColor.fromAHSV asserts.
+        color: HSVColor.fromAHSV(
+                1,
+                ((_bgHue + _rng.nextDouble() * 40 - 20) % 360 + 360) % 360,
+                0.7,
+                1.0)
+            .toColor(),
         radius: 2.5 + _rng.nextDouble() * 2,
       ));
     }
@@ -7584,12 +7591,12 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
   Widget _buildPowerUpCard(_ICPowerUp pu, {bool compact = false}) {
     // Scale down typography and padding when many cards are on screen so
     // everything stays readable without needing massive screen real estate.
-    final double emojiFontSize = compact ? 16.0 : 22.0;
-    final double labelFontSize = compact ? 9.0 : 11.0;
-    final double descFontSize = compact ? 8.0 : 9.0;
+    final double emojiFontSize = compact ? 20.0 : 26.0;
+    final double labelFontSize = compact ? 12.0 : 15.0;
+    final double descFontSize = compact ? 10.0 : 12.0;
     final EdgeInsets pad = compact
-        ? const EdgeInsets.symmetric(horizontal: 4, vertical: 6)
-        : const EdgeInsets.symmetric(horizontal: 8, vertical: 10);
+        ? const EdgeInsets.symmetric(horizontal: 6, vertical: 8)
+        : const EdgeInsets.symmetric(horizontal: 10, vertical: 12);
 
     return GestureDetector(
       onTapDown: (_) => _onPickPowerUp(pu),
@@ -7622,7 +7629,8 @@ class _InfinityCounterGameState extends State<InfinityCounterGame>
               style: TextStyle(
                 fontFamily: 'Avenir',
                 fontSize: descFontSize,
-                color: Colors.white.withValues(alpha: 0.55),
+                height: 1.25,
+                color: Colors.white.withValues(alpha: 0.85),
               ),
             ),
           ],
@@ -10599,6 +10607,10 @@ class _EverythingGameState extends State<EverythingGame>
   double _wordTimeLeft = _ewWordTimeStart;
   double _wordTimeBudget = _ewWordTimeStart;
   int _langIndex = 0;
+  // Shuffled order of form indices so each word starts on a RANDOM language
+  // (not always Spanish) and cycles through all of them in random order.
+  List<int> _formOrder = [];
+  int _formPos = 0;
   double _langTimer = 0;
   bool _hint1Shown = false;   // category
   bool _hint2Shown = false;   // first letter
@@ -10656,7 +10668,11 @@ class _EverythingGameState extends State<EverythingGame>
         .clamp(_ewWordTimeMin, _ewWordTimeStart);
     _wordTimeBudget = timeThisRound;
     _wordTimeLeft = timeThisRound;
-    _langIndex = 0;
+    // Random language order per word — starts on a random language, not Spanish.
+    _formOrder = List<int>.generate(_current.forms.length, (i) => i)
+      ..shuffle(_rng);
+    _formPos = 0;
+    _langIndex = _formOrder.isEmpty ? 0 : _formOrder[0];
     _langTimer = 0;
     _hint1Shown = false;
     _hint2Shown = false;
@@ -10731,11 +10747,17 @@ class _EverythingGameState extends State<EverythingGame>
       if (!_hint1Shown && elapsed >= _effectiveHint1Delay) _hint1Shown = true;
       if (!_hint2Shown && elapsed >= _effectiveHint2Delay) _hint2Shown = true;
 
-      // Language cycling
+      // Language cycling — walk the shuffled order, reshuffle each full pass
+      // so it keeps surfacing every language in a fresh random sequence.
       _langTimer += dt;
-      if (_langTimer >= _effectiveLangCycle) {
+      if (_langTimer >= _effectiveLangCycle && _formOrder.isNotEmpty) {
         _langTimer = 0;
-        _langIndex = (_langIndex + 1) % _current.forms.length;
+        _formPos++;
+        if (_formPos >= _formOrder.length) {
+          _formOrder.shuffle(_rng);
+          _formPos = 0;
+        }
+        _langIndex = _formOrder[_formPos];
       }
 
       // Timeout → advance, no points
@@ -10845,9 +10867,19 @@ class _EverythingGameState extends State<EverythingGame>
                         fraction: (_wordTimeLeft / _wordTimeBudget).clamp(0.0, 1.0),
                       ),
                       const SizedBox(height: 14),
-                      // Current foreign-language form
+                      // Current foreign-language form. A fade+scale transition
+                      // makes each language change clearly visible so the player
+                      // can adjust mid-type as it keeps cycling.
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 280),
+                        transitionBuilder: (child, anim) => FadeTransition(
+                          opacity: anim,
+                          child: ScaleTransition(
+                            scale: Tween<double>(begin: 0.85, end: 1.0)
+                                .animate(anim),
+                            child: child,
+                          ),
+                        ),
                         child: Text(
                           _current.forms[_langIndex],
                           key: ValueKey(_langIndex),

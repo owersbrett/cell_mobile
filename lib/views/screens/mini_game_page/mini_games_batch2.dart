@@ -904,6 +904,51 @@ class _ScorePop {
   });
 }
 
+/// Draws all Harvest FX particles + score pops in ONE paint pass. Replaces the
+/// dozens of per-particle Positioned/Opacity widgets that stalled the web GPU
+/// (each Opacity = an offscreen saveLayer) and blacked the screen on bursts.
+class _HarvestFxPainter extends CustomPainter {
+  final List<_FxParticle> fx;
+  final List<_ScorePop> pops;
+  _HarvestFxPainter({required this.fx, required this.pops});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final p in fx) {
+      final a = p.life.clamp(0.0, 1.0);
+      if (a <= 0) continue;
+      canvas.drawCircle(
+        Offset(p.x, p.y),
+        (p.size / 2) * a,
+        Paint()..color = p.color.withValues(alpha: a),
+      );
+    }
+    for (final pop in pops) {
+      final a = pop.life.clamp(0.0, 1.0);
+      if (a <= 0) continue;
+      final tp = TextPainter(
+        text: TextSpan(
+          text: pop.label,
+          style: TextStyle(
+            fontFamily: 'Avenir',
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+            color: pop.color.withValues(alpha: a),
+            shadows: [
+              Shadow(color: Colors.black.withValues(alpha: a), blurRadius: 4),
+            ],
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(pop.x - 24, pop.y));
+    }
+  }
+
+  @override
+  bool shouldRepaint(_HarvestFxPainter oldDelegate) => true;
+}
+
 // ---------------------------------------------------------------------------
 // _FactCard — a floating fact card that drifts upward and wiggles
 // ---------------------------------------------------------------------------
@@ -1329,6 +1374,10 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
         life: 1.0,
       ));
     }
+    // Cap concurrent cards so their fade (Opacity) layers can't pile up.
+    if (_facts.length > 3) {
+      _facts.removeRange(0, _facts.length - 3);
+    }
   }
 
   void _harvest(int r, int c, double px, double py) {
@@ -1494,11 +1543,20 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
       const double hudHeight = 72.0;
       const double bottomBarHeight = 62.0;
       const double gridPadding = 12.0;
-      final double availableH = h - hudHeight - bottomBarHeight - gridPadding * 2;
-      final double availableW = w - gridPadding * 2;
+      // Clamp to non-negative: in a short/narrow viewport (e.g. a small web
+      // window or iframe) the fixed HUD + bottom bar can exceed the height,
+      // making these negative — a negative-sized SizedBox below throws a layout
+      // assertion and the game goes black. Clamping degrades gracefully instead.
+      final double availableH =
+          (h - hudHeight - bottomBarHeight - gridPadding * 2)
+              .clamp(0.0, double.infinity);
+      final double availableW =
+          (w - gridPadding * 2).clamp(0.0, double.infinity);
       const double spacing = 7.0;
-      final double patchW = (availableW - (_cols - 1) * spacing) / _cols;
-      final double patchH = (availableH - (_rows - 1) * spacing) / _rows;
+      final double patchW =
+          ((availableW - (_cols - 1) * spacing) / _cols).clamp(0.0, double.infinity);
+      final double patchH =
+          ((availableH - (_rows - 1) * spacing) / _rows).clamp(0.0, double.infinity);
       final double patchSize = patchW < patchH ? patchW : patchH;
 
       return Container(
@@ -1754,42 +1812,20 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
             ),
 
             // ── FX particles ──────────────────────────────────────────────
-            ..._fx.where((p) => p.life > 0).map((p) => Positioned(
-                  left: p.x - p.size / 2,
-                  top: p.y - p.size / 2,
-                  child: Container(
-                    width: p.size,
-                    height: p.size,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: p.color.withValues(alpha: p.life.clamp(0.0, 1.0)),
-                    ),
-                  ),
-                )),
-
-            // ── Score pops ────────────────────────────────────────────────
-            ..._pops.where((pop) => pop.life > 0).map((pop) => Positioned(
-                  left: pop.x - 24,
-                  top: pop.y,
-                  child: Opacity(
-                    opacity: pop.life.clamp(0.0, 1.0),
-                    child: Text(
-                      pop.label,
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: pop.color,
-                        shadows: const [
-                          Shadow(
-                            color: Colors.black,
-                            blurRadius: 4,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                )),
+            // ── FX particles + score pops ─────────────────────────────────
+            // Drawn in ONE CustomPaint pass. Previously these were dozens of
+            // individual Positioned/Opacity widgets per harvest burst; on web
+            // each Opacity forces an offscreen saveLayer, and a burst (peaking
+            // ~5–6 harvests in) stalled the GPU for seconds — the screen went
+            // black until the particles expired. A single painter has no per-
+            // particle layers.
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: _HarvestFxPainter(fx: _fx, pops: _pops),
+                ),
+              ),
+            ),
 
             // ── Bottom action bar ─────────────────────────────────────────
             if (!_gameOver)

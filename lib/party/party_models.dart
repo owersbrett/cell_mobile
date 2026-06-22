@@ -1,14 +1,21 @@
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:flutter/material.dart';
 
-/// Supported match formats. Standard game is 4-player free-for-all.
-enum PartyMode { duel, ffa4, teams2v2, teams3v3, teams4v4, ffa8 }
+/// Supported match formats. The four home-screen modes are solo / duel / ffa3 /
+/// ffa4 (1 / 1v1 / 1v1v1 / 1v1v1v1); team + 8-player formats also exist.
+/// NOTE: serialized by `.index` (party_controller / party_net), so NEW modes
+/// are APPENDED to preserve existing indices — never reorder.
+enum PartyMode { duel, ffa4, teams2v2, teams3v3, teams4v4, ffa8, solo, ffa3 }
 
 extension PartyModeInfo on PartyMode {
   String get label {
     switch (this) {
+      case PartyMode.solo:
+        return 'SOLO';
       case PartyMode.duel:
         return '1 v 1';
+      case PartyMode.ffa3:
+        return '1 v 1 v 1';
       case PartyMode.ffa4:
         return '1 v 1 v 1 v 1';
       case PartyMode.teams2v2:
@@ -24,8 +31,12 @@ extension PartyModeInfo on PartyMode {
 
   int get playerCount {
     switch (this) {
+      case PartyMode.solo:
+        return 1;
       case PartyMode.duel:
         return 2;
+      case PartyMode.ffa3:
+        return 3;
       case PartyMode.ffa4:
         return 4;
       case PartyMode.teams2v2:
