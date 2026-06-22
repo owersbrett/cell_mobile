@@ -6,6 +6,8 @@ import 'package:cell_mobile/data/organelles.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
+import 'package:cell_mobile/views/screens/games_debug_page/games_debug_page.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -149,6 +151,19 @@ class SplashPage extends StatelessWidget {
                   .read<NavigationBloc>()
                   .add(NavigateToScreen(AppScreen.play)),
             ),
+            // Debug-only: the games triage console (ranks + feedback + filters).
+            if (kDebugMode) ...[
+              const SizedBox(height: 14),
+              _SplashDoor(
+                title: 'GAMES',
+                subtitle: 'Debug · all games, ranks & feedback',
+                icon: Icons.bug_report,
+                accent: Potatuhs.gold,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const GamesDebugPage()),
+                ),
+              ),
+            ],
           ],
         ),
       ),

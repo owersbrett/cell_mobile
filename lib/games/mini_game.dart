@@ -101,6 +101,12 @@ class MiniGameSpec {
   final IconData icon;
   final MiniGameBuilder builder;
 
+  /// The realistic per-round ceiling — what a SKILLED HUMAN could actually
+  /// reach in a round, not the theoretical point total (difficulty ramps past
+  /// human reach). Used to calibrate AI-opponent scores. 0 = untuned; the host
+  /// falls back to a score-relative estimate. Tune per game by playtest.
+  final int humanMax;
+
   const MiniGameSpec({
     required this.id,
     required this.name,
@@ -114,5 +120,6 @@ class MiniGameSpec {
     required this.accent,
     required this.icon,
     required this.builder,
+    this.humanMax = 0,
   });
 }

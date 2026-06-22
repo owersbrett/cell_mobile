@@ -217,6 +217,14 @@ class _OrganQuizGameState extends State<OrganQuizGame>
     });
   }
 
+  /// Tap the fact flare to skip the remaining wait and jump to the next
+  /// question — going fast, you shouldn't be stuck watching the timer.
+  void _skipFactFlare() {
+    if (_answerState == _AnswerState.waiting) return; // not showing a fact
+    _postAnswerTimer = 0; // next tick advances via the normal path
+    setState(() {});
+  }
+
   // ============================================================================
   // Scoring
   // ============================================================================
@@ -607,48 +615,71 @@ class _OrganQuizGameState extends State<OrganQuizGame>
             : '+$pts')
         : _question.answer;
 
-    return Container(
-      key: ValueKey(_question.prompt),
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-      decoration: BoxDecoration(
-        color: _answerState == _AnswerState.correct
-            ? _kGoodGreen.withValues(alpha: 0.10)
-            : realmColor.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
+    return GestureDetector(
+      onTap: _skipFactFlare,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        key: ValueKey(_question.prompt),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        decoration: BoxDecoration(
           color: _answerState == _AnswerState.correct
-              ? _kGoodGreen.withValues(alpha: 0.55)
-              : _kBadRed.withValues(alpha: 0.55),
-          width: 1.4,
+              ? _kGoodGreen.withValues(alpha: 0.10)
+              : realmColor.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: _answerState == _AnswerState.correct
+                ? _kGoodGreen.withValues(alpha: 0.55)
+                : _kBadRed.withValues(alpha: 0.55),
+            width: 1.4,
+          ),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            header,
-            style: TextStyle(
-              fontFamily: _kFont,
-              fontSize: 15,
-              fontWeight: FontWeight.w900,
-              color: _answerState == _AnswerState.correct
-                  ? _kGoodGreen
-                  : _kBadRed,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              header,
+              style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: 15,
+                fontWeight: FontWeight.w900,
+                color: _answerState == _AnswerState.correct
+                    ? _kGoodGreen
+                    : _kBadRed,
+              ),
             ),
-          ),
-          const SizedBox(height: 5),
-          Text(
-            _question.fact,
-            style: const TextStyle(
-              fontFamily: _kFont,
-              fontSize: 13,
-              color: _kTextSub,
-              height: 1.4,
+            const SizedBox(height: 5),
+            Text(
+              _question.fact,
+              style: const TextStyle(
+                fontFamily: _kFont,
+                fontSize: 13,
+                color: _kTextSub,
+                height: 1.4,
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  'TAP TO CONTINUE',
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.0,
+                    color: realmColor.withValues(alpha: 0.7),
+                  ),
+                ),
+                const SizedBox(width: 3),
+                Icon(Icons.arrow_forward,
+                    size: 12, color: realmColor.withValues(alpha: 0.7)),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

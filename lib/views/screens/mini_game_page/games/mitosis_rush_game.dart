@@ -1501,28 +1501,21 @@ class _MRPainter extends CustomPainter {
       for (final base in _kAllBases) {
         final rect = baseBtnRects[base];
         if (rect == null) continue;
-        final isCorrect = baseQueueIdx < baseQueue.length &&
-            _kBaseComplement[baseQueue[baseQueueIdx]] == base;
-        final btnColor = isCorrect ? _kGreen : _kCyan;
 
-        // Button background
+        // All four choices render IDENTICALLY — the player must know the
+        // complement (A↔T, G↔C). Never highlight the correct answer.
+        canvas.drawRRect(
+            RRect.fromRectAndRadius(rect, const Radius.circular(10)),
+            Paint()..color = _kCyan.withValues(alpha: 0.08));
         canvas.drawRRect(
             RRect.fromRectAndRadius(rect, const Radius.circular(10)),
             Paint()
-              ..color = btnColor.withValues(alpha: isCorrect ? 0.18 : 0.08)
-              ..maskFilter = isCorrect
-                  ? MaskFilter.blur(BlurStyle.normal, _kGlowBlur)
-                  : null);
-        canvas.drawRRect(
-            RRect.fromRectAndRadius(rect, const Radius.circular(10)),
-            Paint()
-              ..color = btnColor.withValues(alpha: isCorrect ? 0.65 : 0.28)
+              ..color = _kCyan.withValues(alpha: 0.30)
               ..style = PaintingStyle.stroke
-              ..strokeWidth = isCorrect ? 2.2 : 1.4);
+              ..strokeWidth = 1.6);
 
         _drawTextAt(canvas, base, 26,
-            btnColor.withValues(alpha: isCorrect ? 1.0 : 0.65),
-            rect.center);
+            _kCyan.withValues(alpha: 0.90), rect.center);
       }
     }
 

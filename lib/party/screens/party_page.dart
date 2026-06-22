@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
+import 'package:cell_mobile/telemetry/cell_telemetry.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -71,6 +72,10 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   void _start(PartyMode mode, int rounds, List<String> names) {
     final c =
         PartyController(mode: mode, totalRounds: rounds, playerNames: names);
+    // Count this fresh board game into the shared counter (Sessions KPI).
+    // Only on a NEW board (not _resume), so resuming a dropped game doesn't
+    // double-count. Fire-and-forget. See docs/SESSIONS_COUNTER.md.
+    CellTelemetry.recordBoardPlay();
     _bind(c);
     PartySessionStore.save(c); // persist the fresh game right away
     setState(() {

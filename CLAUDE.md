@@ -73,4 +73,12 @@ The app uses BLoC (Business Logic Component) pattern with flutter_bloc for state
 - The app supports portrait orientation only
 - Uses SharedPreferences to track first-time app launch
 - Assets are stored in `assets/images/` directory
+
+## BROADCAST PROTOCOL (consultant interface)
+A consultant session at the Potatuhs root coordinates this game with sod_tori, Tater Dash,
+and the HPG manual. Keep `~/Potatuhs/hpg/_status/cell_mobile.md` current — it is how the
+consultant reads your goals/progress without interrupting you. Update it when you (1) set or
+revise goals, (2) hit a milestone or blocker, (3) write/change `manual/manual-spec.json`.
+Follow the schema in `~/Potatuhs/hpg/_status/README.md`. Keep it short; it is a status board,
+not a devlog.
 - Configuration files are in `config/` directory

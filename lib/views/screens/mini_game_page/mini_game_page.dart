@@ -2,11 +2,13 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
-import 'package:cell_mobile/games/mini_game.dart';
+import 'package:cell_mobile/games/game_catalog.dart';
+import 'package:cell_mobile/games/rank_store.dart';
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'games/big_bang_game.dart';
 import 'games/thought_catcher_game.dart';
@@ -24,12 +26,13 @@ import 'mini_games_batch3.dart';
 import 'package:cell_mobile/games/financial/market_trader/market_trader.dart'
     as mt;
 
-/// Generic mini-game page — routes to the appropriate game(s) per scale.
+/// Generic mini-game page — routes to a scale's game(s) via the ranked catalog.
 ///
-/// • 0 registry games on the scale → legacy single game (the `_buildGame` switch).
-/// • 1 registry game → launches it straight into the shared host.
-/// • 2+ registry games → shows a picker so the player chooses (e.g. particles →
-///   Collider or Accelerator).
+/// EVERY scale shows the chooser (the particles Collider/Accelerator pattern,
+/// generalised to all 22 scales) listing that scale's [GameCatalog] games
+/// ordered by rank — even at one game today, ready to grow toward ~8. Picking a
+/// game launches it: registry games via the shared [MiniGameHost], legacy games
+/// via their per-scale widget (`_buildGame`).
 class MiniGamePage extends StatefulWidget {
   final BioScale scale;
   const MiniGamePage({Key? key, required this.scale}) : super(key: key);
@@ -39,8 +42,8 @@ class MiniGamePage extends StatefulWidget {
 }
 
 class _MiniGamePageState extends State<MiniGamePage> {
-  /// The game chosen from the picker (only used when a scale has 2+ games).
-  MiniGameSpec? _chosen;
+  /// The game chosen from the per-scale picker; null shows the picker.
+  CatalogGame? _chosen;
 
   BioScale get scale => widget.scale;
 
@@ -50,57 +53,59 @@ class _MiniGamePageState extends State<MiniGamePage> {
 
   @override
   Widget build(BuildContext context) {
-    final games = MiniGameRegistry.gamesForScale(scale);
+    final games = GameCatalog.forScale(scale);
 
-    // 2+ games and none chosen yet → let the player pick.
-    if (games.length > 1 && _chosen == null) {
+    // Every scale shows the chooser (generalised particles pattern), even at
+    // one game — ready to grow toward ~8 per scale.
+    if (_chosen == null) {
       return _GamePicker(
         scale: scale,
         games: games,
         onBack: _toOverview,
-        onPick: (spec) => setState(() => _chosen = spec),
+        onPick: (g) => setState(() => _chosen = g),
       );
     }
 
-    // A single registry game (or one chosen from the picker) → play it.
-    final spec = _chosen ?? (games.isNotEmpty ? games.first : null);
-    if (spec != null) {
-      return MiniGameHost(
-        spec: spec,
-        // Back from a multi-game scale returns to the picker; otherwise to
-        // the scale overview.
-        onExit: games.length > 1
-            ? () => setState(() => _chosen = null)
-            : _toOverview,
-      );
+    final chosen = _chosen!;
+    void backToPicker() => setState(() => _chosen = null);
+
+    // Registry game → shared host.
+    if (chosen.specId != null) {
+      final spec = MiniGameRegistry.byId(chosen.specId!);
+      if (spec != null) {
+        return MiniGameHost(spec: spec, onExit: backToPicker);
+      }
     }
 
+    // Legacy game → its per-scale widget, wrapped with a HUD + back-to-picker.
+    return _legacyScaffold(chosen, backToPicker);
+  }
+
+  Widget _legacyScaffold(CatalogGame game, VoidCallback onBack) {
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Column(
           children: [
-            // HUD bar
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   GestureDetector(
-                    onTap: () => context.read<NavigationBloc>().add(
-                      NavigateToScreen(AppScreen.scaleOverview),
-                    ),
+                    onTap: onBack,
                     child: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         color: const Color(0x88000000),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.arrow_back, color: Colors.white70, size: 22),
+                      child: const Icon(Icons.arrow_back,
+                          color: Colors.white70, size: 22),
                     ),
                   ),
                   Text(
-                    _gameName(scale),
+                    game.name,
                     style: const TextStyle(
                       fontFamily: 'Avenir',
                       fontSize: 16,
@@ -112,39 +117,11 @@ class _MiniGamePageState extends State<MiniGamePage> {
                 ],
               ),
             ),
-            // Game content
             Expanded(child: _buildGame(scale)),
           ],
         ),
       ),
     );
-  }
-
-  String _gameName(BioScale scale) {
-    switch (scale) {
-      case BioScale.nothings: return 'Big Bang';
-      case BioScale.somethings: return 'Thought Catcher';
-      case BioScale.particles: return 'Particle Accelerator';
-      case BioScale.atoms: return 'Starch Factory';
-      case BioScale.molecular: return 'Molecule Builder';
-      case BioScale.organelle: return 'Cell Builder';
-      case BioScale.cell: return 'Mitosis Rush';
-      case BioScale.tissue: return 'Layer Builder';
-      case BioScale.organ: return 'Grow the Plant';
-      case BioScale.organSystem: return 'System Link';
-      case BioScale.organism: return 'Harvest';
-      case BioScale.ecosystem: return 'Potato Rush';
-      case BioScale.farmSystem: return 'Farm Panic';
-      case BioScale.supplyChain: return 'Delivery';
-      case BioScale.financial: return 'Market Trader';
-      case BioScale.planets: return 'Orbit Catch';
-      case BioScale.solarSystems: return 'Orbital Mechanic';
-      case BioScale.galactic: return 'Star Collector';
-      case BioScale.cosmicStructures: return 'Neuron Connect';
-      case BioScale.multiverseAll: return 'Reality Merge';
-      case BioScale.universeAll: return 'Everything Everywhere';
-      case BioScale.infinities: return 'Count Forever';
-    }
   }
 
   Widget _buildGame(BioScale scale) {
@@ -181,11 +158,11 @@ class _MiniGamePageState extends State<MiniGamePage> {
 // Collider + Accelerator). Lets the player choose which to play.
 // ---------------------------------------------------------------------------
 
-class _GamePicker extends StatelessWidget {
+class _GamePicker extends StatefulWidget {
   final BioScale scale;
-  final List<MiniGameSpec> games;
+  final List<CatalogGame> games;
   final VoidCallback onBack;
-  final ValueChanged<MiniGameSpec> onPick;
+  final ValueChanged<CatalogGame> onPick;
 
   const _GamePicker({
     required this.scale,
@@ -195,7 +172,47 @@ class _GamePicker extends StatelessWidget {
   });
 
   @override
+  State<_GamePicker> createState() => _GamePickerState();
+}
+
+class _GamePickerState extends State<_GamePicker> {
+  BioScale get scale => widget.scale;
+
+  @override
+  void initState() {
+    super.initState();
+    // Load any saved rank overrides, then re-sort with them applied.
+    RankStore.load().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  /// Scale's games ordered by their EFFECTIVE rank (override or default).
+  List<CatalogGame> get _sorted {
+    final list = [...widget.games];
+    list.sort((a, b) {
+      final r = RankStore.rankFor(a).order.compareTo(RankStore.rankFor(b).order);
+      return r != 0 ? r : a.name.compareTo(b.name);
+    });
+    return list;
+  }
+
+  Future<void> _editGame(CatalogGame game) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true, // keyboard pushes the sheet up
+      backgroundColor: const Color(0xFF15131C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => GameFeedbackSheet(game: game),
+    );
+    if (mounted) setState(() {}); // refresh rank badge + comment indicator
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final games = _sorted;
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
@@ -208,7 +225,7 @@ class _GamePicker extends StatelessWidget {
               child: Row(
                 children: [
                   GestureDetector(
-                    onTap: onBack,
+                    onTap: widget.onBack,
                     child: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
@@ -236,7 +253,7 @@ class _GamePicker extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(54, 0, 16, 6),
               child: Text(
-                '${scale.name.toUpperCase()} · ${games.length} games',
+                '${scale.name.toUpperCase()} · ${games.length} ${games.length == 1 ? 'game' : 'games'}',
                 style: TextStyle(
                   fontFamily: 'Avenir',
                   fontSize: 11,
@@ -250,8 +267,13 @@ class _GamePicker extends StatelessWidget {
               child: ListView.builder(
                 padding: const EdgeInsets.fromLTRB(14, 6, 14, 16),
                 itemCount: games.length,
-                itemBuilder: (context, i) =>
-                    _GameCard(spec: games[i], onTap: () => onPick(games[i])),
+                itemBuilder: (context, i) => _GameCard(
+                  game: games[i],
+                  rank: RankStore.rankFor(games[i]),
+                  hasNote: RankStore.hasNote(games[i].id),
+                  onTap: () => widget.onPick(games[i]),
+                  onEdit: () => _editGame(games[i]),
+                ),
               ),
             ),
           ],
@@ -262,13 +284,22 @@ class _GamePicker extends StatelessWidget {
 }
 
 class _GameCard extends StatelessWidget {
-  final MiniGameSpec spec;
+  final CatalogGame game;
+  final GameRank rank;
+  final bool hasNote;
   final VoidCallback onTap;
-  const _GameCard({required this.spec, required this.onTap});
+  final VoidCallback onEdit;
+  const _GameCard({
+    required this.game,
+    required this.rank,
+    required this.hasNote,
+    required this.onTap,
+    required this.onEdit,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final accent = spec.accent;
+    final accent = game.accent;
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -293,6 +324,9 @@ class _GameCard extends StatelessWidget {
         ),
         child: Row(
           children: [
+            // Rank badge — the assigned tier, leading the card.
+            _rankBadge(accent),
+            const SizedBox(width: 12),
             Container(
               width: 52,
               height: 52,
@@ -301,7 +335,7 @@ class _GameCard extends StatelessWidget {
                 shape: BoxShape.circle,
                 border: Border.all(color: accent.withValues(alpha: 0.6)),
               ),
-              child: Icon(spec.icon, color: accent, size: 26),
+              child: Icon(game.icon, color: accent, size: 26),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -309,7 +343,7 @@ class _GameCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    spec.name,
+                    game.name,
                     style: const TextStyle(
                       fontFamily: 'Avenir',
                       fontSize: 17,
@@ -319,7 +353,7 @@ class _GameCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    spec.tagline,
+                    game.tagline,
                     style: TextStyle(
                       fontFamily: 'Avenir',
                       fontSize: 12,
@@ -330,10 +364,23 @@ class _GameCard extends StatelessWidget {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      _chip(Icons.timer_outlined, '${spec.durationSeconds}s',
-                          accent),
-                      const SizedBox(width: 6),
-                      _chip(Icons.emoji_events_outlined, spec.scoreUnit, accent),
+                      _statusChip(game.status),
+                      if (hasNote) ...[
+                        const SizedBox(width: 6),
+                        Icon(Icons.mode_comment,
+                            size: 13, color: accent.withValues(alpha: 0.85)),
+                        const SizedBox(width: 3),
+                        Text(
+                          'FEEDBACK',
+                          style: TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.8,
+                            color: accent.withValues(alpha: 0.85),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],
@@ -347,29 +394,262 @@ class _GameCard extends StatelessWidget {
     );
   }
 
-  Widget _chip(IconData icon, String label, Color accent) {
+  Widget _rankBadge(Color accent) {
+    // Tappable — rate (S A B C D F) + comment on this game from the chooser.
+    return GestureDetector(
+      onTap: onEdit,
+      behavior: HitTestBehavior.opaque,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: accent.withValues(alpha: 0.6)),
+            ),
+            child: Text(
+              rank.label,
+              style: TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: accent,
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Icon(Icons.edit, size: 10, color: accent.withValues(alpha: 0.6)),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusChip(GameStatus status) {
+    final color = status.color;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.3),
+        color: color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: accent.withValues(alpha: 0.3)),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: accent.withValues(alpha: 0.9), size: 12),
-          const SizedBox(width: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontFamily: 'Avenir',
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: Colors.white.withValues(alpha: 0.8),
-            ),
+      child: Text(
+        status.label,
+        style: TextStyle(
+          fontFamily: 'Avenir',
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Game feedback sheet — rate (S A B C D F) + jot comments + copy them out.
+// Shared by the chooser and the debug Games console.
+// ---------------------------------------------------------------------------
+
+class GameFeedbackSheet extends StatefulWidget {
+  final CatalogGame game;
+  const GameFeedbackSheet({super.key, required this.game});
+
+  @override
+  State<GameFeedbackSheet> createState() => _GameFeedbackSheetState();
+}
+
+class _GameFeedbackSheetState extends State<GameFeedbackSheet> {
+  late final TextEditingController _noteCtrl;
+  late GameRank _rank;
+
+  CatalogGame get game => widget.game;
+
+  @override
+  void initState() {
+    super.initState();
+    _rank = RankStore.rankFor(game);
+    _noteCtrl = TextEditingController(text: RankStore.noteFor(game.id));
+  }
+
+  @override
+  void dispose() {
+    // Persist whatever's typed when the sheet closes.
+    RankStore.setNote(game.id, _noteCtrl.text);
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _copy() async {
+    await RankStore.setNote(game.id, _noteCtrl.text);
+    await Clipboard.setData(ClipboardData(text: RankStore.feedbackFor(game)));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${game.name} feedback'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = game.accent;
+    return Padding(
+      // Lift above the keyboard.
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'RATE ${game.name.toUpperCase()}',
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.2,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Tap a tier — best (S) to worst (F).',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 12,
+                  color: Colors.white.withValues(alpha: 0.5),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  for (final r in GameRankLabel.assignable)
+                    GestureDetector(
+                      onTap: () async {
+                        setState(() => _rank = r);
+                        await RankStore.setRank(game.id, r);
+                      },
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        width: 46,
+                        height: 46,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: r == _rank
+                              ? accent.withValues(alpha: 0.30)
+                              : accent.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: r == _rank
+                                ? accent
+                                : accent.withValues(alpha: 0.4),
+                            width: r == _rank ? 2 : 1,
+                          ),
+                        ),
+                        child: Text(
+                          r.label,
+                          style: TextStyle(
+                            fontFamily: 'Avenir',
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: r == _rank
+                                ? accent
+                                : Colors.white.withValues(alpha: 0.8),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              Text(
+                'COMMENTS',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                  color: Colors.white.withValues(alpha: 0.6),
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _noteCtrl,
+                maxLines: 4,
+                minLines: 3,
+                style: const TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 14,
+                  color: Colors.white,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'What needs work? Jot it now — copy it to the agent later.',
+                  hintStyle: TextStyle(
+                    fontFamily: 'Avenir',
+                    fontSize: 13,
+                    color: Colors.white.withValues(alpha: 0.35),
+                  ),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: accent.withValues(alpha: 0.4)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: accent.withValues(alpha: 0.3)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: accent, width: 1.5),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _copy,
+                      icon: const Icon(Icons.copy, size: 16),
+                      label: const Text('COPY'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: accent,
+                        side: BorderSide(color: accent.withValues(alpha: 0.6)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: accent,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text('DONE'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

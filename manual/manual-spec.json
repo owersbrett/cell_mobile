@@ -1,0 +1,104 @@
+{
+  "game": "Explore the Cell",
+  "tagline": "One potato. Every scale. A whole party of games inside.",
+  "pageBudget": 22,
+  "sections": [
+    {
+      "kind": "overview",
+      "title": "Welcome to the Cell",
+      "body": "Explore the Cell is not a game. It's a game OF games — a board you travel, twenty-two worlds deep, where every stop hides something to play. Pick a character, take a spin, and ride the board from the empty hush of THE VOID all the way out to the screaming edge of INFINITY. Land somewhere and the world cracks open into a mini-game: a 60-second jolt of pure arcade you and your friends fight over for the round. Win it, pocket your points, and move on. This is the studio's first game, and it is many. Everything we learned building it — the rules, the manual you're holding, the way each tiny world is its own self-contained scene — becomes the house style for every Hot Potato Game that comes after. So: deep breath. We're starting at zero. Literally.",
+      "art": "Rubber-hose yokai cover splash: a wide-eyed cartoon potato in 1930s gloves standing on a glowing spiral game-board that zooms from a tiny void-dot up into a galaxy, thick ink-black outlines, warm gold-and-sienna palette, confident hero pose, expressive pie-cut eyes"
+    },
+    {
+      "kind": "overview",
+      "title": "The Big Idea — A Board Made of Worlds",
+      "body": "Think Mario Party, but the board is a ladder of reality. Each region you cross is a SCALE — a single zoom level of the universe, from nothings to somethings to particles, atoms, cells, organs, farms, planets, galaxies, and beyond. Your character is a tuber moving across that ladder, square by square, and each scale is its own little kingdom with its own games. Some games are solo score-attacks. Some let you sabotage the player next to you. Some are themselves six games in one, fired at you WarioWare-style. The board is the spine; the mini-games are the muscle. When Brett says \"the main game,\" he means this board. When he says \"a game,\" he means one of the little worlds you drop into. Keep those words straight and you'll never get lost.",
+      "art": "Bird's-eye view of the board path snaking through six themed islands (void, atoms, cell, plant, planet, galaxy), each island a different warm color, a little potato token mid-hop between two squares, rubber-hose style, thick outlines, cozy storybook depth"
+    },
+    {
+      "kind": "characters",
+      "title": "The Tuber Eight",
+      "body": "Eight spuds are ready to roll. SPUD (lime green) is the everytater, steady and bright. TATER (orange) runs hot and reckless. CHIP (electric blue) is fast, twitchy, all reflex. MASH (gold) is soft, lucky, never panics. FRY (hot pink) is the showboat — high risk, high points. HASH (leaf green) grinds it out, never the flashiest, always in the running. GNOCCHI (lavender) is the wildcard nobody reads right. LATKE (teal) plays the long game and steals it at the buzzer. Pick by color, pick by vibe — none of them play differently under the hood, but everyone at the table will swear their tuber is built different. They're all family. They're all potatoes. Don't worry about it.",
+      "art": "Roster lineup of eight rubber-hose potato characters in a row, each a distinct warm color with big expressive eyes and white gloves, varied silhouettes (round, lumpy, long, crinkled), name banner under each, 1930s cartoon energy, thick ink outlines"
+    },
+    {
+      "kind": "controls",
+      "title": "Reading the Board",
+      "body": "On the board, your turn is simple. Tap to take your spin — the wheel kicks out how many squares you move. Walk the path and watch for FORKS: some squares branch, and the route you pick changes which world you land in and which power-ups you grab along the way. Squares come in flavors — GAIN (spuds in your pocket), LOSE (spuds out), POWER-UP (a tool for later), EVENT (the board does something to everyone), and SHOP (spend what you've banked). Land on a scale's territory and the board hands off to a mini-game. Everything you need is on screen and oversized — this game is built thumbs-first, portrait, one-handed on a phone. No menus to memorize. Spin, move, play, repeat.",
+      "art": "Close-up of a board fork with two glowing path branches, a potato token deciding, floating square-type icons (coin, skull, gift-box, lightning, shop-tent) labeled in chunky display type, rubber-hose style, warm gradient background not flat black"
+    },
+    {
+      "kind": "controls",
+      "title": "Inside a Mini-Game",
+      "body": "Every mini-game teaches itself before it starts — a WarioWare-style banner tells you the one thing to do, and you're playing inside three seconds. Most games are pure TAP: tap the spark, tap the corner, tap the collision at the perfect beat. A few are DRAG: hold and steer your cell, pump the beam, slide the needle into the band. The score is always on screen, always climbing or stalling so you know exactly how you're doing. And there is ALWAYS a way out — a quit affordance the game itself can't take away from you. If a world ever hiccups, you exit clean and the party rolls on. No mini-game can trap you. That's a promise the engine keeps, not a courtesy.",
+      "art": "Phone-frame view of a mini-game in progress: a big WarioWare-style instruction banner reading 'TAP THE SPARK!', a glowing score counter top-right, a small ever-present exit button corner, rubber-hose potato hand reaching to tap, energetic, thick outlines"
+    },
+    {
+      "kind": "rules",
+      "title": "How a Session Runs",
+      "body": "A session is one trip around an agreed stretch of board. Players take turns spinning and moving; whenever someone triggers a scale, EVERYONE plays that scale's mini-game and the best score takes the round's prize. Bank spuds on gain squares, spend them in shops on power-ups and shortcuts, and bend the EVENT squares to your favor when you can. Crucially: a session is DROPPABLE. Put the phone down mid-board, come back tonight or tomorrow, and pick up exactly where you left off — nothing here assumes one unbroken sitting. Real life interrupts; the game waits. When the agreed lap closes, spuds are counted, bonuses awarded, and a winner is crowned. Then you start a fresh board and do it all again.",
+      "art": "Four rubber-hose potatoes huddled around a single phone passing it hand to hand, scorecards floating above their heads, a 'ROUND WINNER' ribbon on one, cozy couch-coop warmth, expressive faces mid-cheer and mid-groan, thick ink outlines"
+    },
+    {
+      "kind": "rules",
+      "title": "Winning the Round, Winning the Board",
+      "body": "Two things to win. The ROUND: every time a mini-game fires, top score takes that round's payout — and the games are tuned so the difficulty climbs until a flawless run is humanly impossible, which means scores cluster at the ceiling of skill and ties are rare. The BOARD: across the whole session you're banking spuds from gain squares, round payouts, shop plays, and end-game bonuses. The board winner is not always the best player at the games — a sharp route, a well-timed power-up, and a clutch shop buy can carry a middling thumbs to victory. That gap between skill and fortune is the whole point. The arcade rewards reflexes; the board rewards nerve.",
+      "art": "A victory podium scene with the winning potato hoisting a golden spud trophy, confetti made of tiny potato eyes, runner-up tubers clapping with comic envy, warm spotlight, rubber-hose yokai style, bold display-type banner reading 'BOARD CHAMP'"
+    },
+    {
+      "kind": "mechanics",
+      "title": "The Twenty-Two Scales",
+      "body": "The board is a ladder of zoom, and each rung is a world with at least one game of its own. NOTHINGS (math, void, zero). SOMETHINGS (the first shapes). PARTICLES. ATOMS. MOLECULAR. ORGANELLE. CELL. TISSUE. ORGAN. ORGAN SYSTEM. ORGANISM. ECOSYSTEM. FARM SYSTEM. SUPPLY CHAIN. FINANCIAL. PLANETS. SOLAR SYSTEMS. GALACTIC. COSMIC STRUCTURES. MULTIVERSE. UNIVERSE. INFINITIES. Travel the board and you are literally zooming out from less-than-a-speck to more-than-everything, and each stop teaches the rung it sits on while it entertains you. You don't study it. You play it, and it sticks anyway. That's the trick the whole game is built on.",
+      "art": "A vertical zoom-ladder infographic: stacked circular portholes climbing from a tiny void dot, through an atom, a cell, a potato, the Earth, a galaxy, to an infinity loop at top, each porthole warmly illustrated, rubber-hose style, gold-to-deep-ink gradient spine"
+    },
+    {
+      "kind": "mechanics",
+      "title": "Build Your Board — Pick the Games",
+      "body": "No two boards have to play the same. When you set up a new session, you choose which games come along for the ride — slot A, B, C, D, E, F — a hand-picked rotation pulled from the full ranked library. Want a fast, brutal reflex night? Stack tap-games. Want a teaching session for the kids? Load the builders. Every game in the library carries a rank, so the cream rises to the top of the picker and the strongest worlds are always one tap away. Pick six, lock the board, and that's your night. Change them next time. The board is a frame; you decide what hangs in it.",
+      "art": "A character-select-style grid of six game tiles labeled A through F, each tile a glowing icon (spark, polygon, colliding particles, atom, cell, organ), a potato hand pinning its picks, chunky display-type slots, rubber-hose style, warm UI glow"
+    },
+    {
+      "kind": "mechanics",
+      "title": "Power-Ups & Disruption",
+      "body": "Banked spuds buy tools, and tools bend the board. Power-ups range from movement tricks (extra spins, shortcuts through a fork) to round-edge (a head start in the next mini-game) to the spicy stuff — DISRUPTION, where certain games and items let you reach across the table and mess with a rival's run. Some mini-games are built to be disruptive by nature: you're not just chasing your own score, you're actively making someone else's worse. Use it. Friendships were not promised in the manual. Just know the engine keeps every game escapable and fair at the bottom — disruption messes with your score, never with your ability to play.",
+      "art": "A mischievous rubber-hose potato lobbing a glowing power-up jar at a rival mid-game, the rival's score visibly wobbling, cartoon motion lines, gleeful expressions, warm palette, thick ink outlines, 1930s prankster energy"
+    },
+    {
+      "kind": "mechanics",
+      "title": "Sign In, Sync, Play Together",
+      "body": "Sign in once and the game knows you. Your character, your record, your place on a dropped board — all of it travels with your account instead of living and dying on one device. Signing in is also what turns local couch-play into ONLINE party: a lobby spins up over the studio's live backbone, friends join with a code, and inputs relay in real time so the table can be in four different kitchens. Don't want an account? You never need one to play pass-and-play on a single phone — the door's always open for a quick local round. But sign in and the game gets a memory: every session you finish is counted, credited to you, and carried forward.",
+      "art": "Split scene: left, a single phone passed between two potatoes on a couch; right, four potatoes in four floating windows connected by glowing threads to a central potato-shaped server, a friendly 'SIGN IN' badge between them, rubber-hose style, warm tech glow"
+    },
+    {
+      "kind": "mechanics",
+      "title": "Drop It, Resume It — The Session Lives On",
+      "body": "Life interrupts a game night. The cell does not care. Every session is built to be put down and picked back up: the board state, everyone's spuds, whose turn it is, which world is next — all held, all waiting. Close the app mid-spin and the board is still there tonight. This is a design law, not a nice-to-have: nothing in the game is allowed to assume an unbroken run. A session that survives interruption is a session that gets FINISHED — and a finished session is the unit everything else is counted in. Drop it without guilt. Resume it without friction. The party keeps its place.",
+      "art": "A board frozen mid-game under a soft 'paused' glow, a potato token tucked under a tiny blanket on its square, a clock ticking gently in the corner, cozy and reassuring, rubber-hose yokai style, warm dim palette"
+    },
+    {
+      "kind": "strategy",
+      "title": "Field Guide — The Headliner Games",
+      "body": "BIG BANG (Nothings): tap sparks out of the void, build a combo to 5x, dodge red antimatter, and brace for the closing matter-waves. CORNERS (Somethings): tap each shape exactly as many times as it has corners — three for a triangle, eight for a cube — then STOP. COLLIDER (Particles): two particles race a ring; tap the instant they cross for a perfect smash, and each hit speeds them up. ATOM BUILDER (Atoms): feed your atom the protons, neutrons, and electrons it needs and skip the ones it doesn't. MOLECULE MIXER (Molecular): bond the right atoms into the target molecule — two hydrogen, one oxygen, that's water. HUNGRY CELL (Organelle): drag to steer, eat nutrients, grab organelles, dodge the spiky viruses. ORGAN RUSH (Organ): name the part — human or potato — before the clock, faster answers score harder.",
+      "art": "A two-page contact sheet of seven game thumbnails in a grid: a void of sparks, spinning polygons, a particle ring, an assembling atom, a water molecule, a hungry blob-cell, a quiz buzzer — each warmly rendered, labeled in display type, rubber-hose style"
+    },
+    {
+      "kind": "strategy",
+      "title": "Tuber Tactics — How to Actually Win",
+      "body": "Combos beat single hits — in every tap-game, back-to-back accuracy multiplies, so a clean streak is worth more than frantic mashing. Restraint scores: games like Corners punish the over-tap harder than the under-tap, so commit only when you're sure. Read the escalation — every game ramps until perfection is impossible, so don't fight for a flawless run, fight for the BEST run in the room. On the board, the route is a resource: take the fork toward the shops and power-ups when you're behind, take the safe lane when you're protecting a lead. And spend your spuds — hoarded spuds win nothing; a well-timed shop buy or disruption item is how middling thumbs steal a board from sharper ones.",
+      "art": "An over-the-shoulder coaching scene: a wise older potato in spectacles pointing at a strategy chalkboard covered in combo arrows, fork-route diagrams, and a 'SPEND YOUR SPUDS' note, an eager young tuber taking notes, rubber-hose style, warm classroom glow"
+    },
+    {
+      "kind": "strategy",
+      "title": "The Potato Through-Line",
+      "body": "Mario has Mario. The cell has the potato. It's the thread that ties twenty-two wildly different scales into one game: starch and sulfur down at the molecular floor, a single tuber's cells in the middle, a potato farm at the ecosystem rung, and — as you zoom out far enough — the Earth itself reframed as one great potato farm, the cosmos as potato lineage. It's never forced. Not every world wears the potato (not every Mario Party game is about Mario), but whenever a rung CAN be told through the spud, it is. Watch for it. The deeper you play, the more the universe starts to look suspiciously like it was grown in a field. We've always been here. We always will be. Don't worry about it.",
+      "art": "A surreal zoom-out gag: a normal potato farm that, pulled back, reveals the whole planet Earth is the farm and the stars beyond are sprouting potato eyes, dreamy cosmic warmth, rubber-hose yokai style, thick outlines, a knowing-but-earnest mood"
+    },
+    {
+      "kind": "overview",
+      "title": "What Comes After the Cell",
+      "body": "This game is a doorway. Explore the Cell is the studio's first, and on purpose it is also its rulebook: the scene-isolation contract, the instruct-before-you-play law, the four-doc discipline behind every world, the ranked and pickable library — all of it was forged here so the next hundred Hot Potato Games inherit it for free. After the cell comes a wider field of games, all learning-based, structured their own ways. But they'll all carry the cell's DNA. So when you finish your first board, know that you didn't just play a game. You played the seed the whole studio grows from. Now go start another session — they're counting.",
+      "art": "A rubber-hose potato stepping through a glowing doorway shaped like a cell membrane, beyond it a horizon dotted with dozens of new game-world islands stretching to the sky, hopeful and expansive, warm gold light, thick ink outlines, 1930s adventure energy"
+    }
+  ],
+  "convergenceHook": "Explore the Cell is the proving ground for hotpotatogames.com's central metric: the Session. Every completed trip around the board — solo score-attack or full online party — is one countable, account-credited Session, and because sign-in carries a player's record and dropped boards resume cleanly, sessions actually get FINISHED rather than abandoned on a dead device. That makes the cell the first real feeder into the season's Sessions ladder (1 → 1M), and the ranked, pickable game library means the strongest worlds surface to the top and weak ones get flagged for work instead of quietly tanking a run. As the studio's first title, its conventions — instruct-before-play, escapable scenes, the four-doc discipline, and the manual you're reading — become the template every future Hot Potato Game ships against, so each new game arrives already wired to mint Sessions on the same backbone. The cell doesn't just count sessions; it teaches the whole catalog how to count them."
+}

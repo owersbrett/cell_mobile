@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../telemetry/cell_telemetry.dart';
 import '../theme/potatuhs.dart';
 import 'mini_game.dart';
 
@@ -18,12 +20,18 @@ class MiniGameHost extends StatefulWidget {
   final ValueChanged<int>? onComplete;
   final VoidCallback onExit;
 
+  /// Number of AI opponents to score against in solo (Explore) play. 0 = solo
+  /// score-attack (no comparison). 1/2/3 → 1v1 / 1v1v1 / 1v1v1v1. Ignored in
+  /// party mode (real players already provide the comparison).
+  final int opponentCount;
+
   const MiniGameHost({
     Key? key,
     required this.spec,
     required this.onExit,
     this.playerLabel,
     this.onComplete,
+    this.opponentCount = 0,
   }) : super(key: key);
 
   bool get isParty => onComplete != null;
@@ -83,6 +91,9 @@ class _MiniGameHostState extends State<MiniGameHost> {
   }
 
   void _begin() {
+    // Count this play into the shared hot-potato-games counter (Sessions KPI).
+    // Fire-and-forget; never blocks or throws. See docs/SESSIONS_COUNTER.md.
+    CellTelemetry.recordMiniGamePlay(widget.spec.id);
     _endsAt = DateTime.now()
         .add(Duration(seconds: widget.spec.durationSeconds));
     _appliedBonus = Duration.zero;
