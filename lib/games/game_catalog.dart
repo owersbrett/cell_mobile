@@ -97,6 +97,16 @@ class GameCatalog {
       icon: Icons.flare,
       specId: 'big_bang',
     ),
+    CatalogGame(
+      id: 'bit_memory',
+      name: 'Bit Memory',
+      tagline: 'Memorize the bits, play them back — the string doubles each level',
+      scale: BioScale.nothings,
+      rank: GameRank.b,
+      accent: Color(0xFF35D0BA),
+      icon: Icons.memory,
+      specId: 'bit_memory',
+    ),
     // ---- somethings ----
     CatalogGame(
       id: 'corners',
@@ -107,6 +117,16 @@ class GameCatalog {
       accent: Color(0xFF7E57C2),
       icon: Icons.category,
       specId: 'corners',
+    ),
+    CatalogGame(
+      id: 'whose_idea',
+      name: 'Whose Idea?',
+      tagline: 'Tap the mind history credits with the big idea',
+      scale: BioScale.somethings,
+      rank: GameRank.b,
+      accent: Color(0xFFFFD600),
+      icon: Icons.lightbulb_rounded,
+      specId: 'whose_idea',
     ),
     // ---- particles (the existing two-game scale) ----
     CatalogGame(

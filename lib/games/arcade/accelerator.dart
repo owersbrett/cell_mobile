@@ -40,6 +40,11 @@ const int _kPointsBonusPerLevelSq = 8;
 /// Points per second of in-band dwell (ongoing drip while holding the band).
 const double _kDwellPointsPerSec = 4.0;
 
+/// How fast the charge meter (_dwellAcc) bleeds back down while OUT of band,
+/// in seconds-of-charge lost per real second. Slightly gentler than the 1.0/s
+/// fill rate so a brief slip is recoverable instead of a full reset.
+const double _kDwellPullbackRate = 0.8;
+
 // ── Colour palette ────────────────────────────────────────────────────────────
 const _kFont = 'Avenir'; // matches Collider
 const _kAccent = Color(0xFFCE93D8); // lighter purple — second particles game
@@ -134,11 +139,13 @@ class _AcceleratorGameState extends State<AcceleratorGame>
           _levelUp();
         }
       } else {
-        // Out of band: reset dwell, brief warning flash.
+        // Out of band: pull the charge meter back toward 0 instead of hard
+        // resetting, so the player can recover lost charge by getting the
+        // needle back in-band. Brief warning flash while charge remains.
         if (_dwellAcc > 0.1) {
           _missFlash = 0.6;
         }
-        _dwellAcc = 0.0;
+        _dwellAcc = math.max(0.0, _dwellAcc - dt * _kDwellPullbackRate);
       }
     }
 

@@ -9,6 +9,8 @@ import 'arcade/corners.dart';
 import 'arcade/hungry_cell.dart';
 import 'arcade/organ_quiz.dart';
 import 'arcade/molecule_mixer.dart';
+import 'nothings/bit_memory/bit_memory_game.dart';
+import 'somethings/whose_idea/whose_idea_game.dart';
 import 'infinities/count_forever/count_forever.dart';
 import 'supply_chain/delivery/delivery_game.dart';
 import 'universe_all/everything/everything.dart';
@@ -60,6 +62,29 @@ class MiniGameRegistry {
       builder: (context, session) => BigBangArcade(session: session),
     ),
     MiniGameSpec(
+      id: 'bit_memory',
+      name: 'Bit Memory',
+      scale: BioScale.nothings,
+      tagline: 'Memorize the bits, then play them back — the string doubles each level',
+      rules: [
+        'Memorize the string of 0s and 1s shown.',
+        'Tap GO to start answering early.',
+        'Replay it in order on the 0 / 1 pad.',
+        'One wrong bit ends the attempt.',
+        'Right: +bits×10 and level up. Wrong: drop a level.',
+      ],
+      howToWin:
+          'Bank the most points before time runs out — deeper strings pay exponentially more.',
+      durationSeconds: 60,
+      scoreUnit: 'points',
+      enabled: true,
+      accent: const Color(0xFF35D0BA),
+      icon: Icons.memory,
+      humanMax: 1500,
+      starThresholds: const [300, 800, 1500],
+      builder: (context, session) => BitMemoryGame(session: session),
+    ),
+    MiniGameSpec(
       id: 'corners',
       name: 'Corners',
       scale: BioScale.somethings,
@@ -77,6 +102,27 @@ class MiniGameRegistry {
       accent: const Color(0xFF7E57C2),
       icon: Icons.category,
       builder: (context, session) => CornersGame(session: session),
+    ),
+    MiniGameSpec(
+      id: 'whose_idea',
+      name: 'Whose Idea?',
+      scale: BioScale.somethings,
+      tagline: 'Tap the mind history credits with the big idea',
+      rules: [
+        'A big idea appears with four historical thinkers.',
+        'Tap the one credited with introducing it — faster answers score more.',
+        'Build a streak for a multiplier; a context card drops after every answer.',
+        'Attributions reflect accepted history — credit the winners wrote down.',
+      ],
+      howToWin: 'Most points when time runs out wins.',
+      durationSeconds: 60,
+      scoreUnit: 'points',
+      enabled: true,
+      accent: const Color(0xFFFFD600),
+      icon: Icons.lightbulb_rounded,
+      humanMax: 520,
+      starThresholds: const [150, 320, 520],
+      builder: (context, session) => WhoseIdeaGame(session: session),
     ),
     MiniGameSpec(
       id: 'collider',

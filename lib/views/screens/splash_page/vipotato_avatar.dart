@@ -23,33 +23,25 @@ class VIPotatoAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final layers = config?.layers ?? const <Trait>[];
-    final shape = circle
-        ? BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: layers.isEmpty ? Potatuhs.ctaGradient : null,
-            color: layers.isEmpty ? null : Colors.black.withValues(alpha: 0.15),
-            border: Border.all(color: Potatuhs.ink, width: 2),
-          )
-        : BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            gradient: layers.isEmpty ? Potatuhs.ctaGradient : null,
-            color: layers.isEmpty ? null : Colors.black.withValues(alpha: 0.15),
-          );
-
+    final radius = BorderRadius.circular(18);
     final initial = (fallbackInitial != null && fallbackInitial!.isNotEmpty)
         ? fallbackInitial![0].toUpperCase()
         : '?';
 
-    return Container(
-      width: size,
-      height: size,
-      decoration: shape,
-      clipBehavior: Clip.antiAlias,
-      alignment: Alignment.center,
-      child: layers.isEmpty
-          ? Text(initial,
-              style: Potatuhs.display(size: size * 0.42, color: Potatuhs.ink))
-          : Stack(
+    // The fill that gets clipped to the avatar shape: either the brand gradient
+    // (with an initial) or the stacked, edge-to-edge trait layers.
+    final Widget fill = layers.isEmpty
+        ? DecoratedBox(
+            decoration: const BoxDecoration(gradient: Potatuhs.ctaGradient),
+            child: Center(
+              child: Text(initial,
+                  style:
+                      Potatuhs.display(size: size * 0.42, color: Potatuhs.ink)),
+            ),
+          )
+        : ColoredBox(
+            color: Colors.black.withValues(alpha: 0.15),
+            child: Stack(
               fit: StackFit.expand,
               children: [
                 for (final t in layers)
@@ -61,6 +53,28 @@ class VIPotatoAvatar extends StatelessWidget {
                   ),
               ],
             ),
+          );
+
+    // Explicit clip (ClipOval / ClipRRect) reliably trims the square trait PNGs
+    // to the avatar shape; the border is painted on top so it never gets clipped.
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (circle) ClipOval(child: fill) else ClipRRect(borderRadius: radius, child: fill),
+          IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                shape: circle ? BoxShape.circle : BoxShape.rectangle,
+                borderRadius: circle ? null : radius,
+                border: Border.all(color: Potatuhs.ink, width: 2),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
