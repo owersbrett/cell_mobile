@@ -30,6 +30,8 @@ dependencies:
   firebase_core:
   firebase_auth:
   firebase_database:
+  # hot-potato-games account profiles (users/{uid}) — email + anonymous auth.
+  cloud_firestore:
 
   # Accelerometer access — used for shake-to-boost in arcade games.
   sensors_plus: ^6.0.0

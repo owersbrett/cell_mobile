@@ -1,12 +1,14 @@
 # GAME.md — Harvest (Organism scale)
 
-> Canonical spec. The core harvest loop is decent and stays; this adds (1) clear instructions and
-> (2) a signature **fact-bombardment** mechanic.
+> Canonical spec. The core harvest loop is decent and stays; the signature side-mechanic is now
+> ephemeral **bonus coins** that flash up around the field and demand fast hands (this replaced the
+> old swaying fact cards, which were a performance sink — see Implementation notes).
 
 - **Scale (cell):** organism
-- **Game id:** harvest (current widget: `OrganismHarvestGame` in `mini_games_batch2.dart`)
+- **Game id:** harvest (widget: `OrganismHarvestGame` in `lib/games/organism/harvest/harvest_game.dart`)
 - **One-line concept:** Tend a 4×4 field — harvest each patch the moment it ripens (before it rots)
-  for the most points; spend coins on helpers; and **swat the facts that bombard you on every harvest.**
+  for the most points; spend coins on helpers; and **snatch the bonus coins that flash up in the field
+  margin before they vanish.**
 - **Role:** solo high-score
 
 ## Core loop (existing — keep)
@@ -19,33 +21,41 @@ Add a clear "how to play / how to score the most" intro card and/or a persistent
 - "Harvest when the ring is GREEN/FULL for max points — too early or rotten scores low."
 - "Chain harvests fast for a COMBO multiplier."
 - "Spend coins on Water (grow faster) and Helper (auto-rescue)."
-- "Tap the facts that pop up to clear them — and earn coins."
+- "Grab the bonus coins that flash up around the field — they vanish fast."
 
-## NEW — Fact bombardment (signature mechanic)
-- **On each harvest, spawn fact card(s)** from `lib/games/organism/organism_facts.dart` (`kOrganismFacts`).
-- Cards **float upward and WIGGLE off on their own** after a few seconds — they do **NOT** need tapping
-  (so they never hard-block play).
-- **Tapping a card closes it AND pays coins** (the incentive to swat them). Closing facts generates funds.
-- Deliberately **pushy**: stack several so the screen gets busy — a clear directive to clear them so you
-  can get back to harvesting. (Tune the spawn rate so it's playful-annoying, not unplayable.)
-- **Coin power-up: "Auto-Close"** — buy it to auto-dismiss facts for a duration (still pays the coin
-  bonus as if tapped, or a reduced one — tune). Sits alongside Water/Helper in the power-up bar.
+## Bonus coins (signature side-mechanic)
+- **Ephemeral coins spawn in the field margin** around the core 4×4 grid — a few alive at once
+  (cap 4), each living ~1.2–1.8s before fading out. Tapping one banks its value (a normal coin, or a
+  rarer "rich" coin worth more).
+- **Spawn rate scales with your combo** — the better you're doing, the faster coins rain, so a hot
+  streak adds genuine speed pressure: keep harvesting AND keep snatching coins before they disappear.
+- Drawn entirely on the ticker-driven canvas (no widgets), so the mechanic is smooth and free of the
+  jitter the old fact cards caused.
+- Power-up bar is **Helper + Water** (the old Auto-Close power-up managed fact cards and was retired).
 
 ## Scoring
-Existing harvest scoring + combos, PLUS coins from swatting facts. Facts are non-blocking flavor that
-double as a coin faucet; the strategic choice is swat-for-coins vs. focus-on-harvest (and the Auto-Close
-power-up resolves the tension for a price).
+Existing harvest scoring + combos. Coins (harvest payouts + snatched bonus coins) fund the power-ups;
+the strategic tension is split attention — milk ripe harvests for points vs. peel off to grab the
+fast-vanishing bonus coins.
 
 ## Educational angle
-The facts ARE the education here — organism facts (a potato is an organ AND an organism; what makes a
-living thing an organism; the crops; wild organism trivia). The headliner: **a potato is an organ of
-the plant, but an organism once it has an eye and is planted.**
+Organism facts are surfaced in a **fixed fact banner** beneath the field, refreshed on each ripe
+harvest (non-repeating). Source: `lib/games/organism/organism_facts.dart` (`kOrganismFacts`) — a potato
+is an organ AND an organism; what makes a living thing an organism; the crops; wild organism trivia.
+The headliner: **a potato is an organ of the plant, but an organism once it has an eye and is planted.**
 
 ## Potato angle
 Built in — it's a potato field, and the marquee facts are potato identity facts.
 
 ## Implementation notes
-- Edit ONLY `OrganismHarvestGame` within `mini_games_batch2.dart` (megafile — do not touch the other
-  games in it). Import `organism_facts.dart`.
-- Canvas/widget-rendered cards; wiggle = small sine x-offset while floating up + fade. No assets.
-- Keep the existing session/results/exit behavior intact.
+- Self-contained module: `lib/games/organism/harvest/harvest_game.dart`. Imports `organism_facts.dart`.
+- **All motion lives on the canvas, never in the widget tree.** Grid, particles, score pops, and bonus
+  coins are drawn in ticker-driven `CustomPaint`s; only static/low-frequency widgets (HUD numbers, the
+  fact banner, power-up buttons) update on the throttled `setState`. The previous swaying fact cards
+  were real widgets repositioned via `Positioned` every rebuild — re-running text layout at 15fps, which
+  caused the visible jitter/black-screen. Do NOT reintroduce moving widgets.
+- A single play-area-level `GestureDetector` owns all taps: it checks bonus coins first, then maps to a
+  core-grid cell using geometry cached from `build()`. The grid/FX painters are gesture-less.
+- Per-coin `+N` glyphs and the fact banner reuse the cached-`TextPainter` discipline (lay out once, never
+  shape text in `paint()`).
+- Keep the existing session/results/exit behavior intact (`isRunning` gate, `addScore`, `noteStreak`).

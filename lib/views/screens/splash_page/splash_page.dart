@@ -1,14 +1,16 @@
+import 'package:cell_mobile/app_version.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/data/organelles.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
-import 'package:cell_mobile/games/play_config.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
+import 'package:cell_mobile/user_profile.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:cell_mobile/views/screens/games_debug_page/games_debug_page.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:cell_mobile/views/screens/splash_page/account_sheet.dart';
+import 'package:cell_mobile/views/screens/splash_page/settings_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -30,62 +32,68 @@ class SplashPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: isWide ? _buildWide(context, size) : _buildTall(context, size),
+        child: Stack(
+          children: [
+            isWide ? _buildWide(context, size) : _buildTall(context, size),
+            // Top-left: hot-potato-games account (sign in / profile).
+            Positioned(
+              top: 4,
+              left: 4,
+              child: _AccountButton(),
+            ),
+            // Top-right: play settings (mode + CPU roster).
+            Positioned(
+              top: 4,
+              right: 4,
+              child: _CornerIcon(
+                icon: Icons.settings,
+                tooltip: 'Settings',
+                onTap: () => showSettingsSheet(context),
+              ),
+            ),
+            // Deploy heartbeat — bumped by the /deploy skill so a live deploy is
+            // visually verifiable on the home screen. See lib/app_version.dart.
+            Positioned(
+              right: 12,
+              bottom: 6,
+              child: Text(
+                kBuildLabel,
+                style: const TextStyle(
+                  fontFamily: Potatuhs.bodyFont,
+                  fontSize: 11,
+                  letterSpacing: 1,
+                  color: Colors.white38,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  /// Portrait / phone: stacked column, scrollable so nothing clips.
+  /// Portrait / phone: stacked column, centered, scrollable so nothing clips.
   Widget _buildTall(BuildContext context, Size size) {
-    final cellSize = size.width * 0.6;
+    final cellSize = (size.width * 0.6).clamp(0.0, 300.0).toDouble();
+    // Vertical centering when the content fits; falls back to scroll when it
+    // doesn't. The content column is capped so it stays centered on wide
+    // phones / tablets instead of stretching edge-to-edge.
     return SingleChildScrollView(
       child: ConstrainedBox(
         constraints: BoxConstraints(minHeight: size.height),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _cellAnimation(cellSize),
-              const SizedBox(height: 36),
-              Text(
-                'EXPLORE THE CELL',
-                style: Potatuhs.display(size: 30, spacing: 3),
-              ),
-              const SizedBox(height: 28),
-              _menu(context),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Desktop / landscape: animation on the left, title + menu on the right.
-  Widget _buildWide(BuildContext context, Size size) {
-    // Size the cell off the available height so it never crowds the menu.
-    final cellSize =
-        (size.height * 0.78).clamp(0.0, size.width * 0.5).toDouble();
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Center(child: _cellAnimation(cellSize)),
-        ),
-        Expanded(
-          child: SingleChildScrollView(
+        child: Center(
+          child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 24),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Padding(
-                  padding: const EdgeInsets.only(left: 24),
-                  child: Text(
-                    'EXPLORE THE CELL',
-                    style: Potatuhs.display(size: 30, spacing: 3),
-                  ),
+                _cellAnimation(context, cellSize),
+                const SizedBox(height: 36),
+                Text(
+                  'EXPLORE THE CELL',
+                  textAlign: TextAlign.center,
+                  style: Potatuhs.display(size: 30, spacing: 3),
                 ),
                 const SizedBox(height: 28),
                 _menu(context),
@@ -93,17 +101,68 @@ class SplashPage extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  /// Desktop / landscape: animation on the left, title + menu on the right.
+  /// Both halves center their own content, so the composition reads balanced
+  /// instead of hugging the centre seam.
+  Widget _buildWide(BuildContext context, Size size) {
+    // Size the cell off the available height so it never crowds the menu.
+    final cellSize =
+        (size.height * 0.72).clamp(0.0, size.width * 0.42).toDouble();
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Center(child: _cellAnimation(context, cellSize)),
+        ),
+        Expanded(
+          // Center the menu block both axes within its half. The scroll view
+          // sizes to content (so Center can centre it vertically) and only
+          // scrolls when the menu is taller than the viewport.
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Text(
+                      'EXPLORE THE CELL',
+                      textAlign: TextAlign.center,
+                      style: Potatuhs.display(size: 30, spacing: 3),
+                    ),
+                    const SizedBox(height: 28),
+                    _menu(context),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }
 
-  Widget _cellAnimation(double dimension) {
-    return SizedBox(
-      width: dimension,
-      height: dimension,
-      child: Stack(
-        alignment: Alignment.center,
-        children: _buildCellAnimation(),
+  // The animated cell is now the door to the original interactive cell — tap it
+  // to open what used to be the ORIGINAL menu button.
+  Widget _cellAnimation(BuildContext context, double dimension) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => context
+          .read<NavigationBloc>()
+          .add(NavigateToScreen(AppScreen.cellInteractive)),
+      child: SizedBox(
+        width: dimension,
+        height: dimension,
+        child: Stack(
+          alignment: Alignment.center,
+          children: _buildCellAnimation(),
+        ),
       ),
     );
   }
@@ -116,18 +175,6 @@ class SplashPage extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 24),
         child: Column(
           children: [
-            const _ModeSelector(),
-            const SizedBox(height: 18),
-            _SplashDoor(
-              title: 'ORIGINAL',
-              subtitle: 'The original interactive cell',
-              icon: Icons.cell_wifi,
-              accent: Potatuhs.glaucous,
-              onTap: () => context
-                  .read<NavigationBloc>()
-                  .add(NavigateToScreen(AppScreen.cellInteractive)),
-            ),
-            const SizedBox(height: 14),
             _SplashDoor(
               title: 'LEARN',
               subtitle: 'Explore the cell, scale by scale',
@@ -154,34 +201,33 @@ class SplashPage extends StatelessWidget {
                   .read<NavigationBloc>()
                   .add(NavigateToScreen(AppScreen.play)),
             ),
-            // Debug-only: the games triage console (ranks + feedback + filters).
-            if (kDebugMode) ...[
-              const SizedBox(height: 14),
-              _SplashDoor(
-                title: 'GAMES',
-                subtitle: 'Debug · all games, ranks & feedback',
-                icon: Icons.bug_report,
-                accent: Potatuhs.gold,
-                onTap: () {
-                  // Providers live inside the home route, below the Navigator,
-                  // so a pushed route can't see them. Forward the existing bloc
-                  // instances to the pushed GamesDebugPage.
-                  final scaleBloc = context.read<ScaleExplorerBloc>();
-                  final navBloc = context.read<NavigationBloc>();
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => MultiBlocProvider(
-                        providers: [
-                          BlocProvider<ScaleExplorerBloc>.value(value: scaleBloc),
-                          BlocProvider<NavigationBloc>.value(value: navBloc),
-                        ],
-                        child: const GamesDebugPage(),
-                      ),
+            // The games triage console (ranks + feedback + filters) — now always
+            // available, not just in debug builds.
+            const SizedBox(height: 14),
+            _SplashDoor(
+              title: 'GAMES',
+              subtitle: 'All games · ranks & feedback',
+              icon: Icons.grid_view_rounded,
+              accent: Potatuhs.gold,
+              onTap: () {
+                // Providers live inside the home route, below the Navigator,
+                // so a pushed route can't see them. Forward the existing bloc
+                // instances to the pushed GamesDebugPage.
+                final scaleBloc = context.read<ScaleExplorerBloc>();
+                final navBloc = context.read<NavigationBloc>();
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => MultiBlocProvider(
+                      providers: [
+                        BlocProvider<ScaleExplorerBloc>.value(value: scaleBloc),
+                        BlocProvider<NavigationBloc>.value(value: navBloc),
+                      ],
+                      child: const GamesDebugPage(),
                     ),
-                  );
-                },
-              ),
-            ],
+                  ),
+                );
+              },
+            ),
           ],
         ),
       ),
@@ -189,141 +235,49 @@ class SplashPage extends StatelessWidget {
   }
 }
 
-/// Home-page play-mode picker: Solo / 1v1 / 1v1v1 / 1v1v1v1. Sets [PlayConfig],
-/// which Explore games read to decide how many AI opponents to score against.
-class _ModeSelector extends StatefulWidget {
-  const _ModeSelector();
-  @override
-  State<_ModeSelector> createState() => _ModeSelectorState();
-}
-
-class _ModeSelectorState extends State<_ModeSelector> {
-  @override
-  void initState() {
-    super.initState();
-    PlayConfig.load().then((_) {
-      if (mounted) setState(() {});
-    });
-  }
+/// A circular, semi-transparent corner button for the splash overlay icons.
+class _CornerIcon extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  final Color color;
+  const _CornerIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.color = Colors.white70,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'MODE',
-          style: TextStyle(
-            fontFamily: Potatuhs.bodyFont,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 2,
-            color: Potatuhs.textSecondary,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            for (final m in GameMode.values) ...[
-              Expanded(child: _modeChip(m)),
-              if (m != GameMode.values.last) const SizedBox(width: 8),
-            ],
-          ],
-        ),
-        const SizedBox(height: 10),
-        _disruptionToggle(),
-      ],
-    );
-  }
-
-  Widget _disruptionToggle() {
-    final enabled = PlayConfig.opponentCount > 0; // nobody to disrupt in solo
-    final on = PlayConfig.disruption && enabled;
-    return Opacity(
-      opacity: enabled ? 1 : 0.4,
-      child: GestureDetector(
-        onTap: enabled
-            ? () async {
-                await PlayConfig.setDisruption(!PlayConfig.disruption);
-                if (mounted) setState(() {});
-              }
-            : null,
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: on
-                ? Potatuhs.orange.withValues(alpha: 0.18)
-                : Colors.white.withValues(alpha: 0.04),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: on
-                  ? Potatuhs.orange
-                  : Colors.white.withValues(alpha: 0.12),
-              width: on ? 1.6 : 1,
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.bolt,
-                  size: 16,
-                  color: on ? Potatuhs.orange : Colors.white54),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'DISRUPTION — opponents can mess with you',
-                  style: TextStyle(
-                    fontFamily: Potatuhs.bodyFont,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.4,
-                    color: on ? Potatuhs.orange : Colors.white60,
-                  ),
-                ),
-              ),
-              Icon(on ? Icons.toggle_on : Icons.toggle_off,
-                  size: 26, color: on ? Potatuhs.orange : Colors.white38),
-            ],
-          ),
-        ),
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onTap,
+      icon: Icon(icon, color: color, size: 26),
+      style: IconButton.styleFrom(
+        backgroundColor: Colors.white.withValues(alpha: 0.06),
+        padding: const EdgeInsets.all(10),
       ),
     );
   }
+}
 
-  Widget _modeChip(GameMode m) {
-    final selected = PlayConfig.mode == m;
-    return GestureDetector(
-      onTap: () async {
-        await PlayConfig.setMode(m);
-        if (mounted) setState(() {});
+/// Top-left account entry — shows a person icon when signed out / anonymous and
+/// a filled badge (with the account's initial) once signed in with email.
+class _AccountButton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<HpgUser?>(
+      valueListenable: AuthService.current,
+      builder: (context, user, _) {
+        final signedIn = user != null && !user.isAnonymous;
+        return _CornerIcon(
+          icon: signedIn ? Icons.account_circle : Icons.account_circle_outlined,
+          tooltip: signedIn ? 'Account' : 'Sign in',
+          color: signedIn ? Potatuhs.gold : Colors.white70,
+          onTap: () => showAccountSheet(context),
+        );
       },
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 11),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected
-              ? Potatuhs.gold.withValues(alpha: 0.22)
-              : Colors.white.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: selected
-                ? Potatuhs.gold
-                : Colors.white.withValues(alpha: 0.12),
-            width: selected ? 1.6 : 1,
-          ),
-        ),
-        child: Text(
-          m.label,
-          style: TextStyle(
-            fontFamily: Potatuhs.bodyFont,
-            fontSize: 12,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.5,
-            color: selected ? Potatuhs.gold : Colors.white70,
-          ),
-        ),
-      ),
     );
   }
 }

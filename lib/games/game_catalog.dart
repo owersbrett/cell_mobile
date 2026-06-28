@@ -171,6 +171,7 @@ class GameCatalog {
       rank: GameRank.b,
       accent: Color(0xFF26A69A),
       icon: Icons.hub,
+      specId: 'mitosis_rush',
     ),
     // ---- tissue ----
     CatalogGame(
@@ -181,6 +182,7 @@ class GameCatalog {
       rank: GameRank.b,
       accent: Color(0xFF42A5F5),
       icon: Icons.layers,
+      specId: 'tissue_layer',
     ),
     // ---- organ ----
     CatalogGame(
@@ -202,6 +204,7 @@ class GameCatalog {
       rank: GameRank.b,
       accent: Color(0xFF26C6DA),
       icon: Icons.account_tree,
+      specId: 'organ_system',
     ),
     // ---- organism ----
     CatalogGame(
@@ -212,6 +215,7 @@ class GameCatalog {
       rank: GameRank.d,
       accent: Color(0xFFFFCA28),
       icon: Icons.agriculture,
+      specId: 'harvest',
     ),
     // ---- ecosystem ----
     CatalogGame(
@@ -222,6 +226,7 @@ class GameCatalog {
       rank: GameRank.c,
       accent: Color(0xFF66BB6A),
       icon: Icons.park,
+      specId: 'potato_rush',
     ),
     // ---- farmSystem ----
     CatalogGame(
@@ -232,36 +237,40 @@ class GameCatalog {
       rank: GameRank.c,
       accent: Color(0xFF9CCC65),
       icon: Icons.grass,
+      specId: 'farm_panic',
     ),
     // ---- supplyChain ----
     CatalogGame(
       id: 'supply_chain',
       name: 'Delivery',
-      tagline: 'Move the harvest down the chain',
+      tagline: 'Find the shortest route through every stop',
       scale: BioScale.supplyChain,
       rank: GameRank.c,
       accent: Color(0xFFFF7043),
-      icon: Icons.local_shipping,
+      icon: Icons.route,
+      specId: 'delivery',
     ),
     // ---- financial ----
     CatalogGame(
       id: 'market_trader',
       name: 'Market Trader',
-      tagline: 'Trade the commodity swings, beat the close',
+      tagline: 'Size your trades, work the order book, bank profit',
       scale: BioScale.financial,
       rank: GameRank.b,
       accent: Color(0xFFFFD54F),
       icon: Icons.show_chart,
+      specId: 'market_trader',
     ),
     // ---- planets ----
     CatalogGame(
       id: 'planet_catch',
       name: 'Orbit Catch',
-      tagline: 'Ride real gravity — bigger pulls harder',
+      tagline: 'Aim into the wells — gravity bends every shot',
       scale: BioScale.planets,
       rank: GameRank.a,
       accent: Color(0xFF29B6F6),
       icon: Icons.public,
+      specId: 'planet_catch',
     ),
     // ---- solarSystems ----
     CatalogGame(
@@ -272,6 +281,7 @@ class GameCatalog {
       rank: GameRank.c,
       accent: Color(0xFFFFB74D),
       icon: Icons.brightness_7,
+      specId: 'solar_sort',
     ),
     // ---- galactic ----
     CatalogGame(
@@ -282,26 +292,29 @@ class GameCatalog {
       rank: GameRank.c,
       accent: Color(0xFFBA68C8),
       icon: Icons.auto_awesome,
+      specId: 'galaxy_collector',
     ),
     // ---- cosmicStructures ----
     CatalogGame(
       id: 'neuron_connect',
       name: 'Neuron Connect',
-      tagline: 'Link the cosmic web node to node',
+      tagline: 'Aim the axons, fire the cascade',
       scale: BioScale.cosmicStructures,
       rank: GameRank.c,
       accent: Color(0xFF7E57C2),
       icon: Icons.hub,
+      specId: 'neuron_connect',
     ),
     // ---- multiverseAll ----
     CatalogGame(
       id: 'reality_merge',
       name: 'Reality Merge',
-      tagline: 'Fold realities into one',
+      tagline: 'Align two realities, dimension by dimension',
       scale: BioScale.multiverseAll,
       rank: GameRank.c,
       accent: Color(0xFFEC407A),
       icon: Icons.blur_circular,
+      specId: 'reality_merge',
     ),
     // ---- universeAll ----
     CatalogGame(
@@ -312,6 +325,7 @@ class GameCatalog {
       rank: GameRank.b,
       accent: Color(0xFF26A69A),
       icon: Icons.translate,
+      specId: 'everything',
     ),
     // ---- infinities ----
     CatalogGame(
@@ -322,6 +336,7 @@ class GameCatalog {
       rank: GameRank.c,
       accent: Color(0xFF5C6BC0),
       icon: Icons.all_inclusive,
+      specId: 'infinity_counter',
     ),
   ];
 

@@ -74,6 +74,7 @@ class GameMeta {
   final int rounds;
   final int seed;
   final String status; // 'lobby' | 'playing' | 'over'
+  final String mapId; // which GameMap the host chose
 
   const GameMeta({
     required this.host,
@@ -81,14 +82,16 @@ class GameMeta {
     required this.rounds,
     required this.seed,
     required this.status,
+    this.mapId = 'down_the_hole',
   });
 
-  GameMeta copyWith({String? status}) => GameMeta(
+  GameMeta copyWith({String? status, String? mapId}) => GameMeta(
         host: host,
         mode: mode,
         rounds: rounds,
         seed: seed,
         status: status ?? this.status,
+        mapId: mapId ?? this.mapId,
       );
 
   Map<String, dynamic> toJson() => {
@@ -97,6 +100,7 @@ class GameMeta {
         'rounds': rounds,
         'seed': seed,
         'status': status,
+        'mapId': mapId,
       };
 
   factory GameMeta.fromJson(Map<String, dynamic> j) => GameMeta(
@@ -105,6 +109,7 @@ class GameMeta {
         rounds: j['rounds'] as int,
         seed: j['seed'] as int,
         status: (j['status'] as String?) ?? 'lobby',
+        mapId: (j['mapId'] as String?) ?? 'down_the_hole',
       );
 }
 
@@ -114,21 +119,38 @@ class NetPlayer {
   final String name;
   final int slot; // seat index = PartyPlayer.index
   final int color; // ARGB
+  final int character; // index into kCharacters (chosen in the lobby)
 
-  const NetPlayer(
-      {required this.uid,
-      required this.name,
-      required this.slot,
-      required this.color});
+  const NetPlayer({
+    required this.uid,
+    required this.name,
+    required this.slot,
+    required this.color,
+    this.character = 0,
+  });
 
-  Map<String, dynamic> toJson() =>
-      {'uid': uid, 'name': name, 'slot': slot, 'color': color};
+  NetPlayer copyWith({int? color, int? character}) => NetPlayer(
+        uid: uid,
+        name: name,
+        slot: slot,
+        color: color ?? this.color,
+        character: character ?? this.character,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'uid': uid,
+        'name': name,
+        'slot': slot,
+        'color': color,
+        'character': character,
+      };
 
   factory NetPlayer.fromJson(Map<String, dynamic> j) => NetPlayer(
         uid: j['uid'] as String,
         name: j['name'] as String,
         slot: j['slot'] as int,
         color: j['color'] as int,
+        character: (j['character'] as int?) ?? (j['slot'] as int),
       );
 }
 

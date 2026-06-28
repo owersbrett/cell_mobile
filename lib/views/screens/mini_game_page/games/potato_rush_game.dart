@@ -2,6 +2,8 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
+import 'package:cell_mobile/games/mini_game.dart';
+
 import '../../../../games/fx.dart';
 import '../../../../theme/potatuhs.dart';
 
@@ -55,14 +57,15 @@ const int kChaseSwipesBase = 5;
 const int kChaseSwipesPerDiff = 7;
 const double kChaseSwipeThreshold = 1.5;
 
-// CATCH sub-game
+// CATCH sub-game — drag a basket to catch falling spuds
 const int kCatchNeededBase = 5;
 const int kCatchNeededPerDiff = 6;
-const double kCatchSpeedBase = 170.0;
-const double kCatchSpeedVar = 150.0;
-const double kCatchSpawnIntervalBase = 0.18;
-const double kCatchSpawnIntervalVar = 0.10;
-const double kCatchHitRadius = 30.0;
+const double kCatchSpeedBase = 150.0;
+const double kCatchSpeedVar = 130.0;
+const double kCatchSpawnIntervalBase = 0.34;
+const double kCatchSpawnIntervalVar = 0.22;
+const double kCatchBasketHalfW = 46.0; // basket mouth half-width (catch zone)
+const double kCatchBasketY = 0.82; // basket vertical position (fraction)
 
 // MIX (Shake) sub-game
 const int kMixShakesBase = 5;
@@ -130,12 +133,14 @@ class _HarvestGame extends _MicroGame {
 
   final List<_HarvestTarget> _targets = [];
   final List<FxParticle> _particles = [];
+  double _pulse = 0;
 
   @override
   void init(Size size, Random rng, double diff) {
     super.init(size, rng, diff);
     _targets.clear();
     _particles.clear();
+    _pulse = 0;
     final count = kHarvestCountBase + (diff * kHarvestCountPerDiff).toInt();
     final spacing = size.height * 0.55 / max(count - 1, 1);
     for (int i = 0; i < count; i++) {
@@ -162,6 +167,7 @@ class _HarvestGame extends _MicroGame {
 
   @override
   void update(double dt) {
+    _pulse += dt;
     for (final t in _targets) {
       if (t.harvested) t.flyAge += dt;
     }
@@ -225,25 +231,16 @@ class _HarvestGame extends _MicroGame {
         // Potato orb (underground)
         GameFx.orb(canvas, Offset(t.x, t.y + 9), 12, _kPotato, glow: 0.6);
 
-        // Directional arrow hint
-        final ax = t.x + 56;
-        if (ax < size.width - 10) {
-          canvas.drawLine(
-            Offset(ax, t.y),
-            Offset(ax + 18, t.y),
-            Paint()
-              ..color = Colors.white.withValues(alpha: 0.18)
-              ..strokeWidth = 2
-              ..strokeCap = StrokeCap.round,
-          );
-          canvas.drawLine(
-            Offset(ax + 18, t.y),
-            Offset(ax + 12, t.y - 5),
-            Paint()
-              ..color = Colors.white.withValues(alpha: 0.18)
-              ..strokeWidth = 2
-              ..strokeCap = StrokeCap.round,
-          );
+        // Directional swipe hint: a train of chevrons that scroll right so the
+        // required input (swipe →) is unmistakable.
+        final baseAx = t.x + 50;
+        final flow = (_pulse * 40) % 22;
+        for (int c = 0; c < 3; c++) {
+          final ax = baseAx + c * 18 + flow;
+          if (ax > size.width - 12) continue;
+          final fade = (1.0 - c * 0.28).clamp(0.0, 1.0);
+          _drawSlideArrow(canvas, Offset(ax, t.y), 1,
+              Colors.white.withValues(alpha: 0.30 * fade));
         }
       } else {
         // Fly-away potato arc
@@ -271,7 +268,10 @@ class _HarvestGame extends _MicroGame {
   }
 }
 
-// ---- WATER: tap rapidly to rain -------------------------------------------
+// ---- WATER: tap the cloud rapidly to rain ---------------------------------
+// Affordance: a single big pulsing "tap here" cloud target sits center-stage.
+// You hammer it. Each tap squishes the cloud, fires rain from IT, and rings a
+// ripple — so the input reads unambiguously as "tap this thing fast".
 
 class _RainDrop {
   double x, y, speed;
@@ -282,34 +282,47 @@ class _WaterGame extends _MicroGame {
   @override
   String get title => 'WATER!';
   @override
-  String get hint => 'tap rapidly ↑↑↑';
+  String get hint => 'tap the cloud — fast!';
   @override
   Color get tint => const Color(0xFF1565C0);
 
   int _needed = 7;
   int _taps = 0;
+  double _squish = 0; // 1 → 0 squash on each tap
+  double _pulse = 0; // ambient idle pulse clock
   final List<_RainDrop> _drops = [];
+  final List<_Ripple> _ripples = [];
   final List<FxParticle> _particles = [];
   final Random _rng = Random();
+
+  Offset get _cloudCenter => Offset(_sz.width / 2, _sz.height * 0.32);
+  double get _cloudR => _sz.width * 0.20;
 
   @override
   void init(Size size, Random rng, double diff) {
     super.init(size, rng, diff);
     _needed = kWaterTapsBase + (diff * kWaterTapsPerDiff).toInt();
     _taps = 0;
+    _squish = 0;
+    _pulse = 0;
     _drops.clear();
+    _ripples.clear();
     _particles.clear();
   }
 
   @override
   void onDown(Offset pos) {
+    // Tap anywhere counts, but the cloud is the obvious target. Bias rain to
+    // fall from the cloud so the cause→effect chain is legible.
     _taps++;
-    // Splash particle at tap position
-    _particles.addAll(_burst(pos, _kWater, count: 8));
-    for (int i = 0; i < 4; i++) {
+    _squish = 1.0;
+    final c = _cloudCenter;
+    _ripples.add(_Ripple(c, _cloudR + 8, _kWater));
+    _particles.addAll(_burst(c, _kWater, count: 8));
+    for (int i = 0; i < 5; i++) {
       _drops.add(_RainDrop(
-        _rng.nextDouble() * _sz.width,
-        -_rng.nextDouble() * 40,
+        c.dx + (_rng.nextDouble() - 0.5) * _cloudR * 2,
+        c.dy + 14,
         220 + _rng.nextDouble() * 160,
       ));
     }
@@ -317,10 +330,13 @@ class _WaterGame extends _MicroGame {
 
   @override
   void update(double dt) {
+    _pulse += dt;
+    _squish = (_squish - dt * 6).clamp(0.0, 1.0);
     for (final d in _drops) {
       d.y += d.speed * dt;
     }
     _drops.removeWhere((d) => d.y > _sz.height);
+    _ripples.removeWhere((r) => !r.step(dt));
     _particles.removeWhere((p) => !p.step(dt));
   }
 
@@ -342,15 +358,15 @@ class _WaterGame extends _MicroGame {
         ),
     );
 
-    // Growing crops
+    // Growing crops (the reward for watering)
     const cropCount = 6;
     for (int i = 0; i < cropCount; i++) {
       final cx = size.width * (0.12 + i * 0.76 / (cropCount - 1));
       final cropH = 18 + progress * 48;
       final baseY = size.height * 0.72;
       final greenAmt = Curves.easeIn.transform(progress);
-      final stalkColor = Color.lerp(
-          const Color(0xFF8D6E63), _kPlant, greenAmt)!;
+      final stalkColor =
+          Color.lerp(const Color(0xFF8D6E63), _kPlant, greenAmt)!;
       canvas.drawLine(
         Offset(cx, baseY),
         Offset(cx, baseY - cropH),
@@ -377,19 +393,59 @@ class _WaterGame extends _MicroGame {
             ..strokeCap = StrokeCap.round,
         );
       }
-      // Ripe glow at tip when near complete
       if (progress > 0.7) {
         GameFx.orb(canvas, Offset(cx, baseY - cropH), 5 * progress, _kPotato,
             glow: 0.5 * progress);
       }
     }
 
-    // Raindrops — teardrop shape
+    // Falling rain (from the cloud)
     for (final d in _drops) {
       canvas.drawOval(
         Rect.fromCenter(center: Offset(d.x, d.y + 4), width: 4, height: 8),
         Paint()..color = _kWater.withValues(alpha: 0.65),
       );
+    }
+
+    // Tap ripples
+    for (final r in _ripples) {
+      r.paint(canvas);
+    }
+
+    // --- The tap target: a pulsing rain cloud, the obvious thing to hit ---
+    final c = _cloudCenter;
+    final idle = 0.5 + 0.5 * sin(_pulse * 3.4);
+    final squash = 1.0 - _squish * 0.18;
+    final stretch = 1.0 + _squish * 0.10;
+    final r = _cloudR;
+
+    // Pulsing "tap me" halo ring (breathes when idle, snaps on tap)
+    final haloR = r + 10 + idle * 6 + _squish * 10;
+    canvas.drawCircle(
+      c,
+      haloR,
+      Paint()
+        ..color = _kWater.withValues(alpha: 0.10 + idle * 0.10)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+
+    // Cloud body = three overlapping orbs (puffs), with squash/stretch
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.scale(stretch, squash);
+    GameFx.orb(canvas, const Offset(-22, 6), 22, Colors.white, glow: 0.25);
+    GameFx.orb(canvas, const Offset(22, 6), 20, Colors.white, glow: 0.25);
+    GameFx.orb(canvas, const Offset(0, -8), 26,
+        Color.lerp(Colors.white, _kWater, 0.18)!,
+        glow: 0.35);
+    canvas.restore();
+
+    // Tap finger hint icon over the cloud (fades as you progress)
+    final hintA = (1.0 - progress * 1.6).clamp(0.0, 1.0) * (0.4 + idle * 0.5);
+    if (hintA > 0.02) {
+      _drawTapGlyph(canvas, c, 16, Colors.white.withValues(alpha: hintA));
     }
 
     FxBurst.paint(canvas, _particles);
@@ -421,12 +477,14 @@ class _PlantGame extends _MicroGame {
 
   final List<_Hole> _holes = [];
   final List<FxParticle> _particles = [];
+  double _pulse = 0;
 
   @override
   void init(Size size, Random rng, double diff) {
     super.init(size, rng, diff);
     _holes.clear();
     _particles.clear();
+    _pulse = 0;
     final count = kPlantCountBase + (diff * kPlantCountPerDiff).toInt();
     for (int i = 0; i < count; i++) {
       _holes.add(_Hole(
@@ -450,6 +508,7 @@ class _PlantGame extends _MicroGame {
 
   @override
   void update(double dt) {
+    _pulse += dt;
     for (final h in _holes) {
       if (h.planted) h.popAge += dt;
     }
@@ -474,16 +533,21 @@ class _PlantGame extends _MicroGame {
 
     for (final h in _holes) {
       if (!h.planted) {
+        // Per-hole staggered pulse so they read as live tap targets.
+        final ph = 0.5 + 0.5 * sin(_pulse * 3.4 + h.x * 0.05);
         // Hole shadow
         canvas.drawOval(
           Rect.fromCenter(center: Offset(h.x, h.y), width: 36, height: 18),
           Paint()..color = _kSoil.withValues(alpha: 0.65),
         );
-        // Ring glow (tap target hint)
+        // Pulsing tap-target ring
         canvas.drawOval(
-          Rect.fromCenter(center: Offset(h.x, h.y), width: 42, height: 24),
+          Rect.fromCenter(
+              center: Offset(h.x, h.y),
+              width: 42 + ph * 8,
+              height: 24 + ph * 5),
           Paint()
-            ..color = _kPotato.withValues(alpha: 0.25)
+            ..color = _kPotato.withValues(alpha: 0.18 + ph * 0.22)
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2,
         );
@@ -493,6 +557,9 @@ class _PlantGame extends _MicroGame {
           4,
           Paint()..color = _kPotatoDark.withValues(alpha: 0.6),
         );
+        // Tap glyph hovering above the hole
+        _drawTapGlyph(canvas, Offset(h.x, h.y - 22), 12,
+            Colors.white.withValues(alpha: 0.18 + ph * 0.22));
       } else {
         // Filled hole
         canvas.drawOval(
@@ -956,11 +1023,16 @@ class _ChaseGame extends _MicroGame {
   }
 }
 
-// ---- CATCH: tap falling potatoes ------------------------------------------
+// ---- CATCH: DRAG the basket to catch falling spuds ------------------------
+// Affordance now MATCHES interaction: the basket follows your finger along the
+// bottom. Spuds are caught when they fall into the basket mouth — no tapping.
+// A grip-handle, a horizontal track, and a "drag" glyph all signal "move me".
 
 class _FallingPotato {
   double x, y, speed, rot;
-  bool caught = false;
+  bool caught = false; // landed in basket
+  bool missed = false; // fell past the basket
+  double caughtAge = 0;
   _FallingPotato(this.x, this.y, this.speed, this.rot);
 }
 
@@ -968,17 +1040,22 @@ class _CatchGame extends _MicroGame {
   @override
   String get title => 'CATCH!';
   @override
-  String get hint => 'tap the falling spuds';
+  String get hint => 'drag the basket ←→';
   @override
-  Color get tint => const Color(0xFF4E342E);
+  Color get tint => const Color(0xFF6D4C41);
 
   int _needed = 5;
   int _caught = 0;
   int _spawned = 0;
   double _spawnTimer = 0;
+  double _basketX = 0; // current basket center x
+  bool _grabbed = false;
+  double _hintT = 0; // idle hint clock
   final List<_FallingPotato> _potatoes = [];
   final List<FxParticle> _particles = [];
   final Random _rng = Random();
+
+  double get _basketY => _sz.height * kCatchBasketY;
 
   @override
   void init(Size size, Random rng, double diff) {
@@ -986,44 +1063,76 @@ class _CatchGame extends _MicroGame {
     _needed = kCatchNeededBase + (diff * kCatchNeededPerDiff).toInt();
     _caught = 0;
     _spawned = 0;
-    _spawnTimer = 0.04;
+    _spawnTimer = 0.5; // brief beat before the first spud
+    _basketX = size.width / 2;
+    _grabbed = false;
+    _hintT = 0;
     _potatoes.clear();
     _particles.clear();
   }
 
+  void _moveBasketTo(double x) {
+    final lo = kCatchBasketHalfW + 6;
+    final hi = _sz.width - kCatchBasketHalfW - 6;
+    // On a very narrow viewport hi can fall below lo, which makes num.clamp
+    // throw inside the input handler and blanks the screen. Center instead.
+    _basketX = hi <= lo ? _sz.width / 2 : x.clamp(lo, hi);
+  }
+
   @override
   void onDown(Offset pos) {
-    for (final p in _potatoes) {
-      if (!p.caught && (Offset(p.x, p.y) - pos).distance < kCatchHitRadius) {
-        p.caught = true;
-        _caught++;
-        _particles.addAll(_burst(Offset(p.x, p.y), _kPotato, count: 12));
-        break;
-      }
-    }
+    _grabbed = true;
+    _moveBasketTo(pos.dx);
+  }
+
+  @override
+  void onMove(Offset pos, Offset delta) {
+    _grabbed = true;
+    _moveBasketTo(pos.dx);
+  }
+
+  @override
+  void onUp(Offset pos) {
+    _grabbed = false;
   }
 
   @override
   void update(double dt) {
+    _hintT += dt;
     _spawnTimer -= dt;
-    if (_spawnTimer <= 0 && _spawned < _needed + 5) {
-      _spawnTimer = kCatchSpawnIntervalBase +
-          _rng.nextDouble() * kCatchSpawnIntervalVar;
+    if (_spawnTimer <= 0 && _spawned < _needed + 4) {
+      _spawnTimer =
+          kCatchSpawnIntervalBase + _rng.nextDouble() * kCatchSpawnIntervalVar;
       _spawned++;
       _potatoes.add(_FallingPotato(
-        _sz.width * (0.08 + _rng.nextDouble() * 0.84),
+        _sz.width * (0.12 + _rng.nextDouble() * 0.76),
         -22,
         kCatchSpeedBase + _rng.nextDouble() * kCatchSpeedVar,
         _rng.nextDouble() * 2 * pi,
       ));
     }
 
+    final mouthY = _basketY - 10;
     for (final p in _potatoes) {
-      if (p.caught) continue;
+      if (p.caught) {
+        p.caughtAge += dt;
+        continue;
+      }
+      if (p.missed) continue;
       p.y += p.speed * dt;
-      p.rot += dt * 3.5;
+      p.rot += dt * 3.0;
+      // Catch test: spud reaches basket mouth and is within the mouth width.
+      if (p.y >= mouthY && p.y <= mouthY + 22) {
+        if ((p.x - _basketX).abs() <= kCatchBasketHalfW) {
+          p.caught = true;
+          _caught++;
+          _particles.addAll(_burst(Offset(p.x, mouthY), _kPotato, count: 12));
+        }
+      }
+      if (p.y > _sz.height + 30) p.missed = true;
     }
-    _potatoes.removeWhere((p) => p.caught || p.y > _sz.height + 35);
+    _potatoes.removeWhere(
+        (p) => (p.caught && p.caughtAge > 0.4) || p.y > _sz.height + 60);
     _particles.removeWhere((p) => !p.step(dt));
   }
 
@@ -1032,65 +1141,169 @@ class _CatchGame extends _MicroGame {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Basket at bottom with depth
-    final bx = size.width / 2;
-    final by = size.height * 0.84;
-    // Basket shadow
+    final bx = _basketX == 0 ? size.width / 2 : _basketX;
+    final by = _basketY;
+    final idle = 0.5 + 0.5 * sin(_hintT * 3.0);
+
+    // --- Drag track: a faint rail the basket slides on, signalling motion ---
+    final railY = by + 24;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(
+            kCatchBasketHalfW, railY - 2, size.width - kCatchBasketHalfW * 2, 4),
+        const Radius.circular(2),
+      ),
+      Paint()..color = Colors.white.withValues(alpha: 0.06),
+    );
+    // End caps with little arrows to read as "slide left/right"
+    final arrowA = (_grabbed ? 0.12 : 0.10 + idle * 0.18);
+    _drawSlideArrow(canvas, Offset(kCatchBasketHalfW + 4, railY), -1,
+        Colors.white.withValues(alpha: arrowA));
+    _drawSlideArrow(canvas, Offset(size.width - kCatchBasketHalfW - 4, railY), 1,
+        Colors.white.withValues(alpha: arrowA));
+
+    // --- Falling potatoes ---
+    for (final p in _potatoes) {
+      if (p.caught) {
+        // Quick settle pop into the basket.
+        final t = (p.caughtAge / 0.4).clamp(0.0, 1.0);
+        final yy = (by - 10) + 8 * t;
+        GameFx.orb(canvas, Offset(bx, yy), 12 * (1 - t * 0.3), _kPotato,
+            glow: 0.4 * (1 - t));
+        continue;
+      }
+      canvas.save();
+      canvas.translate(p.x, p.y);
+      canvas.rotate(p.rot);
+      // Lozenge potato body for a less "circular token" read.
+      final body = Rect.fromCenter(center: Offset.zero, width: 30, height: 22);
+      canvas.drawOval(
+        body,
+        Paint()
+          ..shader = RadialGradient(
+            center: const Alignment(-0.35, -0.4),
+            colors: [
+              Color.lerp(_kPotato, Colors.white, 0.4)!,
+              _kPotato,
+              Color.lerp(_kPotato, Colors.black, 0.4)!,
+            ],
+            stops: const [0.0, 0.55, 1.0],
+          ).createShader(body),
+      );
+      // Eyes (sprouts) for character
+      canvas.drawCircle(const Offset(-5, -2), 1.6,
+          Paint()..color = _kPotatoDark.withValues(alpha: 0.7));
+      canvas.drawCircle(const Offset(6, 3), 1.4,
+          Paint()..color = _kPotatoDark.withValues(alpha: 0.7));
+      canvas.restore();
+    }
+
+    // --- The basket (drawn at finger position) ---
+    _drawBasket(canvas, bx, by, grabbed: _grabbed, glow: idle);
+
+    // Count label tucked under the basket
+    GameFx.text(
+      canvas,
+      '$_caught/$_needed',
+      Offset(bx, by + 40),
+      13,
+      Colors.white.withValues(alpha: 0.45),
+    );
+
+    FxBurst.paint(canvas, _particles);
+  }
+
+  void _drawBasket(Canvas canvas, double bx, double by,
+      {required bool grabbed, required double glow}) {
+    const w = kCatchBasketHalfW; // half-width
+    // Grab glow when held (or breathing hint when idle)
+    if (grabbed) {
+      canvas.drawCircle(
+        Offset(bx, by),
+        w + 14,
+        Paint()
+          ..color = _kPotato.withValues(alpha: 0.10)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+      );
+    }
+    // Shadow
     canvas.drawOval(
-      Rect.fromCenter(center: Offset(bx, by + 8), width: 78, height: 14),
-      Paint()..color = Colors.black.withValues(alpha: 0.25),
+      Rect.fromCenter(center: Offset(bx, by + 24), width: w * 1.9, height: 12),
+      Paint()..color = Colors.black.withValues(alpha: 0.28),
     );
-    // Basket body
-    canvas.drawArc(
-      Rect.fromCenter(center: Offset(bx, by), width: 80, height: 48),
-      0,
-      pi,
-      false,
+    // Basket body — filled bucket so it clearly "holds" things
+    final bodyPath = Path()
+      ..moveTo(bx - w, by - 8)
+      ..lineTo(bx + w, by - 8)
+      ..lineTo(bx + w * 0.78, by + 26)
+      ..lineTo(bx - w * 0.78, by + 26)
+      ..close();
+    canvas.drawPath(
+      bodyPath,
       Paint()
-        ..color = _kPotatoDark.withValues(alpha: 0.6)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4
-        ..strokeCap = StrokeCap.round,
-    );
-    // Basket rim
-    canvas.drawLine(
-      Offset(bx - 40, by),
-      Offset(bx + 40, by),
-      Paint()
-        ..color = _kPotatoDark.withValues(alpha: 0.4)
-        ..strokeWidth = 3,
+        ..shader = ui.Gradient.linear(
+          Offset(bx - w, by),
+          Offset(bx + w, by),
+          [
+            Color.lerp(_kPotatoDark, Colors.white, 0.15)!,
+            _kPotatoDark,
+            Color.lerp(_kPotatoDark, Colors.black, 0.3)!,
+          ],
+          [0.0, 0.5, 1.0],
+        ),
     );
     // Weave lines
     for (int i = -2; i <= 2; i++) {
       canvas.drawLine(
-        Offset(bx + i * 16, by),
-        Offset(bx + i * 16 - 4, by + 18),
+        Offset(bx + i * 16, by - 8),
+        Offset(bx + i * 13, by + 26),
         Paint()
-          ..color = _kPotatoDark.withValues(alpha: 0.2)
-          ..strokeWidth = 1.5,
+          ..color = Colors.black.withValues(alpha: 0.18)
+          ..strokeWidth = 1.4,
       );
     }
-
-    // Count label
-    GameFx.text(
-      canvas,
-      '$_caught/$_needed',
-      Offset(bx, by + 22),
-      13,
-      Colors.white.withValues(alpha: 0.4),
+    canvas.drawLine(
+      Offset(bx - w * 0.88, by + 9),
+      Offset(bx + w * 0.88, by + 9),
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.15)
+        ..strokeWidth = 1.4,
     );
-
-    // Falling potatoes
-    for (final p in _potatoes) {
-      if (p.caught) continue;
-      canvas.save();
-      canvas.translate(p.x, p.y);
-      canvas.rotate(p.rot);
-      GameFx.orb(canvas, Offset.zero, 14, _kPotato, glow: 0.5);
-      canvas.restore();
+    // Rim (the catch mouth) — bright so the target zone reads clearly
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(bx, by - 8), width: w * 2.1, height: 8),
+        const Radius.circular(4),
+      ),
+      Paint()
+        ..color = Color.lerp(_kPotatoDark, _kPotato, 0.5)!
+            .withValues(alpha: 0.95),
+    );
+    // Mouth highlight glints
+    canvas.drawLine(
+      Offset(bx - w * 0.9, by - 10),
+      Offset(bx + w * 0.9, by - 10),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.25 + glow * 0.15)
+        ..strokeWidth = 1.5,
+    );
+    // Handle arc on top — reads as "grab me"
+    canvas.drawArc(
+      Rect.fromCenter(center: Offset(bx, by - 12), width: w * 1.2, height: 26),
+      pi,
+      pi,
+      false,
+      Paint()
+        ..color = _kPotatoDark.withValues(alpha: 0.85)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.5
+        ..strokeCap = StrokeCap.round,
+    );
+    // Drag glyph floating over the handle (fades once you grab it)
+    if (!grabbed) {
+      _drawDragGlyph(
+          canvas, Offset(bx, by - 30), Colors.white.withValues(alpha: 0.35 + glow * 0.35));
     }
-
-    FxBurst.paint(canvas, _particles);
   }
 }
 
@@ -1246,6 +1459,80 @@ class _ShakeGame extends _MicroGame {
 
 // ---- shared draw helpers --------------------------------------------------
 
+// Expanding ring used for tap feedback (Water cloud). Lives ~0.45s.
+class _Ripple {
+  Offset center;
+  double r0;
+  final Color color;
+  double age = 0;
+  _Ripple(this.center, this.r0, this.color);
+
+  bool step(double dt) {
+    age += dt;
+    return age < 0.45;
+  }
+
+  void paint(Canvas canvas) {
+    final t = (age / 0.45).clamp(0.0, 1.0);
+    canvas.drawCircle(
+      center,
+      r0 + t * 34,
+      Paint()
+        ..color = color.withValues(alpha: (1 - t) * 0.45)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5 * (1 - t),
+    );
+  }
+}
+
+// A small "tap" glyph: a finger-dot with a couple of impact lines. Signals
+// "press here" without any extra assets.
+void _drawTapGlyph(Canvas canvas, Offset c, double s, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeCap = StrokeCap.round;
+  // Finger dot
+  canvas.drawCircle(c, s * 0.34, Paint()..color = color);
+  // Impact lines radiating up/out
+  p.strokeWidth = s * 0.14;
+  for (final a in [-0.9, 0.0, 0.9]) {
+    final dir = Offset(sin(a), -cos(a));
+    canvas.drawLine(
+      c + dir * (s * 0.55),
+      c + dir * (s * 0.95),
+      p,
+    );
+  }
+}
+
+// A horizontal double-headed "drag" glyph (← • →) signalling left/right motion.
+void _drawDragGlyph(Canvas canvas, Offset c, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(c.translate(-10, 0), c.translate(10, 0), p);
+  canvas.drawCircle(c, 2.4, Paint()..color = color);
+  // Left head
+  canvas.drawLine(c.translate(-10, 0), c.translate(-6, -4), p);
+  canvas.drawLine(c.translate(-10, 0), c.translate(-6, 4), p);
+  // Right head
+  canvas.drawLine(c.translate(10, 0), c.translate(6, -4), p);
+  canvas.drawLine(c.translate(10, 0), c.translate(6, 4), p);
+}
+
+// A single chevron pointing left (dir=-1) or right (dir=1).
+void _drawSlideArrow(Canvas canvas, Offset c, int dir, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final dx = 5.0 * dir;
+  canvas.drawLine(c.translate(dx, 0), c.translate(-dx, -5), p);
+  canvas.drawLine(c.translate(dx, 0), c.translate(-dx, 5), p);
+}
+
 // Progress bar utility (reused by Water, Chase, Mix)
 void _drawProgressBar(
     Canvas canvas, double x, double y, double w, double h, double progress,
@@ -1275,7 +1562,8 @@ enum _Phase { preGame, instruction, playing, result, speedUp, gameOver }
 // ---- main widget ----------------------------------------------------------
 
 class PotatoRushGame extends StatefulWidget {
-  const PotatoRushGame({Key? key}) : super(key: key);
+  final MiniGameSession session;
+  const PotatoRushGame({super.key, required this.session});
   @override
   State<PotatoRushGame> createState() => _PotatoRushGameState();
 }
@@ -1348,7 +1636,6 @@ class _PotatoRushGameState extends State<PotatoRushGame>
     _score = 0;
     _lives = 3;
     _round = 0;
-    _sessionClock = kSessionDuration;
     _sessionStarted = true;
     _resultParticles.clear();
     _phase = _Phase.instruction;
@@ -1370,20 +1657,16 @@ class _PotatoRushGameState extends State<PotatoRushGame>
     _lastTime = now;
     if (_size == Size.zero) return;
 
+    // Host owns the clock and the countdown. Only advance while the session
+    // is in its playing phase.
+    if (!widget.session.isRunning) return;
+
     setState(() {
       _elapsed += dt;
 
-      // Tick session clock while game is in progress.
-      if (_sessionStarted &&
-          _phase != _Phase.preGame &&
-          _phase != _Phase.gameOver) {
-        _sessionClock -= dt;
-        if (_sessionClock <= 0) {
-          _sessionClock = 0;
-          _sessionStarted = false;
-          _phase = _Phase.gameOver;
-          return;
-        }
+      // Auto-start the internal round machine once the host begins play.
+      if (!_sessionStarted) {
+        _startGame();
       }
 
       _resultParticles.removeWhere((p) => !p.step(dt));
@@ -1407,8 +1690,8 @@ class _PotatoRushGameState extends State<PotatoRushGame>
 
           if (_currentGame?.isComplete == true) {
             _lastWin = true;
-            _score++;
             _round++;
+            widget.session.addScore(1);
             _phase = _Phase.result;
             _phaseTimer = kResultDuration;
             // Win burst at center
@@ -1428,8 +1711,8 @@ class _PotatoRushGameState extends State<PotatoRushGame>
           _phaseTimer -= dt;
           if (_phaseTimer <= 0) {
             if (_lives <= 0) {
-              _phase = _Phase.gameOver;
-              _sessionStarted = false;
+              // Sudden-death: out of lives ends the run early.
+              widget.session.endEarly();
             } else if (_round > 0 && _round % 5 == 0) {
               _phase = _Phase.speedUp;
               _phaseTimer = kSpeedUpDuration;
@@ -1450,18 +1733,8 @@ class _PotatoRushGameState extends State<PotatoRushGame>
   }
 
   void _onPointerDown(Offset pos) {
-    switch (_phase) {
-      case _Phase.preGame:
-        _startGame();
-        break;
-      case _Phase.gameOver:
-        _startGame();
-        break;
-      case _Phase.playing:
-        _currentGame?.onDown(pos);
-        break;
-      default:
-        break;
+    if (_phase == _Phase.playing) {
+      _currentGame?.onDown(pos);
     }
   }
 
@@ -1542,7 +1815,7 @@ class _PotatoRushPainter extends CustomPainter {
 
     switch (phase) {
       case _Phase.preGame:
-        _drawPreGame(canvas, size);
+        // Host draws the intro/countdown.
         break;
       case _Phase.instruction:
         _drawInstruction(canvas, size);
@@ -1557,33 +1830,9 @@ class _PotatoRushPainter extends CustomPainter {
         _drawSpeedUp(canvas, size);
         break;
       case _Phase.gameOver:
-        _drawGameOver(canvas, size);
+        // Host draws the results screen.
         break;
     }
-  }
-
-  void _drawPreGame(Canvas canvas, Size size) {
-    // Hero potato orb
-    GameFx.orb(canvas, Offset(size.width / 2, size.height * 0.33), 38,
-        _kPotato, glow: 1.0, specular: true);
-
-    GameFx.text(canvas, 'POTATO RUSH',
-        Offset(size.width / 2, size.height * 0.48), 32,
-        Colors.white.withValues(alpha: 0.92),
-        display: true, glow: 0.45);
-
-    GameFx.text(canvas, 'Do what it says. Fast.',
-        Offset(size.width / 2, size.height * 0.55), 13,
-        Potatuhs.textSecondary.withValues(alpha: 0.65));
-
-    GameFx.text(canvas, '${kSessionDuration.toInt()}s — GO!',
-        Offset(size.width / 2, size.height * 0.61), 13,
-        _kPotato.withValues(alpha: 0.5),
-        glow: 0.3);
-
-    GameFx.text(canvas, 'Tap to start',
-        Offset(size.width / 2, size.height * 0.70), 14,
-        Colors.white.withValues(alpha: 0.28));
   }
 
   void _drawInstruction(Canvas canvas, Size size) {
@@ -1628,8 +1877,6 @@ class _PotatoRushPainter extends CustomPainter {
         glow: 0.2);
 
     _drawLives(canvas, size);
-    _drawScore(canvas, size);
-    _drawSessionClock(canvas, size);
   }
 
   void _drawPlaying(Canvas canvas, Size size) {
@@ -1662,8 +1909,6 @@ class _PotatoRushPainter extends CustomPainter {
     );
 
     _drawLives(canvas, size);
-    _drawScore(canvas, size);
-    _drawSessionClock(canvas, size);
   }
 
   void _drawResult(Canvas canvas, Size size) {
@@ -1703,8 +1948,6 @@ class _PotatoRushPainter extends CustomPainter {
     FxBurst.paint(canvas, resultParticles);
 
     _drawLives(canvas, size);
-    _drawScore(canvas, size);
-    _drawSessionClock(canvas, size);
   }
 
   void _drawSpeedUp(Canvas canvas, Size size) {
@@ -1726,35 +1969,6 @@ class _PotatoRushPainter extends CustomPainter {
         display: true,
         glow: pulse * 0.7);
     _drawLives(canvas, size);
-    _drawScore(canvas, size);
-    _drawSessionClock(canvas, size);
-  }
-
-  void _drawGameOver(Canvas canvas, Size size) {
-    canvas.drawRect(
-        Offset.zero & size,
-        Paint()..color = Colors.black.withValues(alpha: 0.78));
-
-    GameFx.orb(canvas, Offset(size.width / 2, size.height * 0.30), 28,
-        _kPotato, glow: 0.8);
-
-    GameFx.text(canvas, 'GAME OVER',
-        Offset(size.width / 2, size.height * 0.44), 28,
-        Colors.white.withValues(alpha: 0.60),
-        display: true);
-
-    GameFx.text(canvas, '$score',
-        Offset(size.width / 2, size.height * 0.55), 56,
-        _kPotato.withValues(alpha: 0.9),
-        display: true, glow: 0.65);
-
-    GameFx.text(canvas, '$round rounds survived',
-        Offset(size.width / 2, size.height * 0.64), 14,
-        Potatuhs.textSecondary.withValues(alpha: 0.5));
-
-    GameFx.text(canvas, 'Tap to restart',
-        Offset(size.width / 2, size.height * 0.73), 14,
-        Colors.white.withValues(alpha: 0.28));
   }
 
   void _drawLives(Canvas canvas, Size size) {
@@ -1775,37 +1989,6 @@ class _PotatoRushPainter extends CustomPainter {
         );
       }
     }
-  }
-
-  void _drawScore(Canvas canvas, Size size) {
-    GameFx.text(
-      canvas,
-      '$score',
-      Offset(size.width - 28, 20),
-      20,
-      _kPotato.withValues(alpha: 0.8),
-      display: true,
-      glow: 0.4,
-    );
-  }
-
-  // Session clock — top-centre, turns red/urgent in final 8s.
-  void _drawSessionClock(Canvas canvas, Size size) {
-    final secs = sessionClock.ceil();
-    final urgent = sessionClock < 8;
-    final clockColor = urgent
-        ? Color.lerp(const Color(0xFFFF5252), _kPotato,
-            (sessionClock / 8).clamp(0.0, 1.0))!
-        : Colors.white.withValues(alpha: 0.40);
-    final pulse = urgent ? (0.7 + 0.3 * sin(elapsed * 12)) : 1.0;
-    GameFx.text(
-      canvas,
-      '$secs',
-      Offset(size.width / 2, 20),
-      urgent ? 16 : 14,
-      clockColor.withValues(alpha: clockColor.a * pulse),
-      glow: urgent ? 0.5 * pulse : 0.0,
-    );
   }
 
   @override

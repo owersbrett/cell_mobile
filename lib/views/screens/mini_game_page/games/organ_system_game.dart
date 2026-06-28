@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:cell_mobile/games/mini_game.dart';
 
 // ===========================================================================
 // SYSTEM LINK — Manage a potato plant's organ systems.
@@ -295,7 +296,8 @@ const _kConnections = <_Connection>[
 // ---- widget ----------------------------------------------------------------
 
 class OrganSystemGame extends StatefulWidget {
-  const OrganSystemGame({Key? key}) : super(key: key);
+  final MiniGameSession session;
+  const OrganSystemGame({Key? key, required this.session}) : super(key: key);
   @override
   State<OrganSystemGame> createState() => _OrganSystemGameState();
 }
@@ -362,6 +364,8 @@ class _OrganSystemGameState extends State<OrganSystemGame>
           ..addListener(_tick);
     _ticker.forward();
     _lastT = DateTime.now().microsecondsSinceEpoch / 1e6;
+    // Host owns intro/countdown/results — start the simulation immediately.
+    _initGame();
   }
 
   @override
@@ -501,9 +505,10 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       sy = srcNode.y + (_rng.nextDouble() - 0.5) * 70;
     }
 
-    // Clamp to screen
-    sx = sx.clamp(24, _sz.width - 24);
-    sy = sy.clamp(64, _sz.height - 48);
+    // Clamp to screen — guard against narrow viewports inverting the clamp
+    // bounds (num.clamp throws when upper < lower → black screen).
+    sx = _sz.width <= 48 ? _sz.width / 2 : sx.clamp(24, _sz.width - 24);
+    sy = _sz.height <= 112 ? _sz.height / 2 : sy.clamp(64, _sz.height - 48);
 
     _resources.add(_Resource(
       type: type,
@@ -569,7 +574,9 @@ class _OrganSystemGameState extends State<OrganSystemGame>
     final now = DateTime.now().microsecondsSinceEpoch / 1e6;
     final dt = (now - _lastT).clamp(0.001, 0.05);
     _lastT = now;
-    if (_gameOver || !_started) return;
+    // Host owns the clock: only simulate while the session is in its playing
+    // phase (skips intro/countdown/results/wind-down).
+    if (!widget.session.isRunning) return;
 
     setState(() {
       _elapsed += dt;
@@ -578,9 +585,6 @@ class _OrganSystemGameState extends State<OrganSystemGame>
 
       // Ramp difficulty over time
       _difficulty = 1.0 + _elapsed / _kDiffRampPeriod;
-      if (_elapsed >= _kGameDurationCap && !_gameOver) {
-        _gameOver = true; // survived the full gauntlet — report final score
-      }
 
       // ---- combo decay ----
       _comboTimer += dt;
@@ -608,7 +612,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
             node.damageFlash = 0.3;
             if (node.health <= 0) {
               node.health = 0;
-              _gameOver = true;
+              widget.session.endEarly();
             }
           }
         }
@@ -674,7 +678,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
           pest.deathAge = 0;
           if (targetNode.health <= 0) {
             targetNode.health = 0;
-            _gameOver = true;
+            widget.session.endEarly();
           }
         } else {
           final speed = sqrt(pest.vx * pest.vx + pest.vy * pest.vy);
@@ -742,14 +746,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
   // ---- input ---------------------------------------------------------------
 
   void _onTapDown(Offset pos) {
-    if (_gameOver) {
-      setState(() => _initGame());
-      return;
-    }
-    if (!_started) {
-      setState(() => _initGame());
-      return;
-    }
+    if (!widget.session.isRunning) return;
 
     // Check: tap on pest to squish it
     bool hitPest = false;
@@ -851,6 +848,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
 
             final pts = 10 + (_combo > 0 ? _combo * 2 : 0);
             _score += pts;
+            widget.session.addScore(pts);
             _deliveries++;
 
             _pops.add(_Popup(node.x, node.y - 36, '+$pts', res.color));
@@ -910,6 +908,7 @@ class _OrganSystemGameState extends State<OrganSystemGame>
       final mult = min(_combo, 8);
       final pts = 5 * mult;
       _score += pts;
+      widget.session.addScore(pts);
       _pestsKilled++;
 
       _burst(pest.x, pest.y, _kPestRed, 12);
@@ -1045,11 +1044,8 @@ class _GamePainter extends CustomPainter {
     );
     canvas.drawRect(Offset.zero & size, Paint()..shader = bgGrad);
 
-    if (!started && !gameOver) {
-      _drawPreGame(canvas, size);
-      return;
-    }
-
+    // Host owns the intro/countdown/results overlays — the game canvas only
+    // ever draws the live simulation.
     _drawConnections(canvas, size);
     _drawFlowParticles(canvas);
     _drawNodes(canvas, size);
@@ -1063,62 +1059,6 @@ class _GamePainter extends CustomPainter {
     if (!tutorialDismissed && tutorialAge < 6) {
       _drawTutorial(canvas, size);
     }
-
-    if (gameOver) _drawGameOver(canvas, size);
-  }
-
-  // ---- pre-game ------------------------------------------------------------
-
-  void _drawPreGame(Canvas canvas, Size size) {
-    // Title
-    _paintText(canvas, 'SYSTEM LINK', 28,
-        Colors.white.withValues(alpha: 0.75), FontWeight.w300,
-        size.width / 2, size.height / 2 - 80, true);
-
-    // Subtitle
-    _paintText(canvas, 'Manage your potato plant\'s', 13,
-        Colors.white.withValues(alpha: 0.35), FontWeight.w300,
-        size.width / 2, size.height / 2 - 36, true);
-    _paintText(canvas, 'organ systems to survive', 13,
-        Colors.white.withValues(alpha: 0.35), FontWeight.w300,
-        size.width / 2, size.height / 2 - 18, true);
-
-    // Instructions
-    _paintText(canvas, 'Drag resources to needy organs', 11,
-        _kTan.withValues(alpha: 0.4), FontWeight.w400,
-        size.width / 2, size.height / 2 + 16, true);
-    _paintText(canvas, 'Tap pests to squish them', 11,
-        _kPestRed.withValues(alpha: 0.4), FontWeight.w400,
-        size.width / 2, size.height / 2 + 34, true);
-
-    // Diamond preview
-    final cx = size.width / 2;
-    final cy = size.height / 2 + 80;
-    final previewNodes = [
-      Offset(cx, cy + 28), // root bottom
-      Offset(cx, cy - 28), // shoot top
-      Offset(cx - 34, cy), // vascular left
-      Offset(cx + 34, cy), // reproductive right
-    ];
-    final previewColors = [_kBrown, _kGreen, _kTan, const Color(0xFFE8A0BF)];
-    // connections
-    for (final c in _kConnections) {
-      canvas.drawLine(
-        previewNodes[c.a],
-        previewNodes[c.b],
-        Paint()
-          ..color = Colors.white.withValues(alpha: 0.06)
-          ..strokeWidth = 1,
-      );
-    }
-    for (int i = 0; i < 4; i++) {
-      canvas.drawCircle(previewNodes[i], 8,
-          Paint()..color = previewColors[i].withValues(alpha: 0.4));
-    }
-
-    _paintText(canvas, 'Tap to start', 13,
-        Colors.white.withValues(alpha: 0.22), FontWeight.w300,
-        size.width / 2, size.height / 2 + 140, true);
   }
 
   // ---- connections ---------------------------------------------------------
@@ -1532,10 +1472,8 @@ class _GamePainter extends CustomPainter {
   // ---- HUD -----------------------------------------------------------------
 
   void _drawHud(Canvas canvas, Size size) {
-    // Score (top center)
-    _paintText(canvas, '$score', 22,
-        Colors.white.withValues(alpha: 0.45), FontWeight.w300,
-        size.width / 2, 24, true);
+    // NOTE: the host draws the score, score unit, remaining time and progress
+    // bar on top. This game only draws its own game-specific HUD below.
 
     // Combo (top right)
     if (combo > 1) {
@@ -1544,14 +1482,7 @@ class _GamePainter extends CustomPainter {
           size.width - 30, 22, true);
     }
 
-    // Time survived (top left)
-    final mins = (elapsed ~/ 60).toString().padLeft(2, '0');
-    final secs = (elapsed.toInt() % 60).toString().padLeft(2, '0');
-    _paintText(canvas, '$mins:$secs', 12,
-        Colors.white.withValues(alpha: 0.22), FontWeight.w400,
-        24, 22, false);
-
-    // Difficulty indicator (below time)
+    // Difficulty indicator (top left)
     final diffLabel = 'LV ${difficulty.floor()}';
     _paintText(canvas, diffLabel, 9,
         _kTan.withValues(alpha: 0.25), FontWeight.w400,
@@ -1601,56 +1532,6 @@ class _GamePainter extends CustomPainter {
     _paintText(canvas, 'Keep all organ systems alive!', 11,
         _kTan.withValues(alpha: textAlpha * 0.7), FontWeight.w300,
         size.width / 2, size.height - 52, true);
-  }
-
-  // ---- game over -----------------------------------------------------------
-
-  void _drawGameOver(Canvas canvas, Size size) {
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..color = Colors.black.withValues(alpha: 0.82),
-    );
-
-    // Find dead organ (null means survived the full timer)
-    String deadOrgan = '';
-    for (final n in nodes) {
-      if (n.health <= 0) {
-        deadOrgan = n.label;
-        break;
-      }
-    }
-    final survived = deadOrgan.isEmpty && elapsed >= _kGameDurationCap;
-
-    _paintText(canvas, survived ? 'SURVIVED' : 'PLANT LOST', 32,
-        Colors.white.withValues(alpha: 0.65), FontWeight.w300,
-        size.width / 2, size.height / 2 - 80, true);
-
-    if (survived) {
-      _paintText(canvas, 'Flawless run — peak score!', 14,
-          _kGreen.withValues(alpha: 0.6), FontWeight.w400,
-          size.width / 2, size.height / 2 - 42, true);
-    } else if (deadOrgan.isNotEmpty) {
-      _paintText(canvas, '$deadOrgan system failed', 14,
-          _kPestRed.withValues(alpha: 0.5), FontWeight.w400,
-          size.width / 2, size.height / 2 - 42, true);
-    }
-
-    _paintText(canvas, '$score', 52,
-        Colors.white.withValues(alpha: 0.75), FontWeight.w200,
-        size.width / 2, size.height / 2 + 6, true);
-
-    final mins = (elapsed ~/ 60).toString().padLeft(2, '0');
-    final secs = (elapsed.toInt() % 60).toString().padLeft(2, '0');
-    _paintText(canvas, 'Survived $mins:$secs', 13,
-        Colors.white.withValues(alpha: 0.3), FontWeight.w300,
-        size.width / 2, size.height / 2 + 52, true);
-    _paintText(canvas, '$deliveries deliveries  $pestsKilled pests squished', 11,
-        Colors.white.withValues(alpha: 0.2), FontWeight.w300,
-        size.width / 2, size.height / 2 + 72, true);
-
-    _paintText(canvas, 'Tap to retry', 13,
-        Colors.white.withValues(alpha: 0.22), FontWeight.w300,
-        size.width / 2, size.height / 2 + 108, true);
   }
 
   // ---- helpers -------------------------------------------------------------

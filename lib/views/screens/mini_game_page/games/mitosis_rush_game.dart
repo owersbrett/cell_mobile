@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:cell_mobile/games/mini_game.dart';
 
 // ---------------------------------------------------------------------------
 // Mitosis Rush — spec 2026-06-17
@@ -214,7 +215,8 @@ class _FxLabel {
 // ── Widget ────────────────────────────────────────────────────────────────────
 
 class MitosisRushGame extends StatefulWidget {
-  const MitosisRushGame({Key? key}) : super(key: key);
+  final MiniGameSession session;
+  const MitosisRushGame({Key? key, required this.session}) : super(key: key);
   @override
   State<MitosisRushGame> createState() => _MRState();
 }
@@ -229,8 +231,10 @@ class _MRState extends State<MitosisRushGame>
   final _CellModel _cell = _CellModel();
 
   // ── Phase state ─────────────────────────────────────────────────────────────
-  _Phase _phase = _Phase.intro;
-  double _phaseTimer = 3.0;
+  // Host owns the intro/countdown/results; the game begins in its first
+  // playing phase (G1) immediately.
+  _Phase _phase = _Phase.g1;
+  double _phaseTimer = _kG1Time;
   double _bannerAge = 0;
   bool _phaseDone = false;
   double _phaseDoneAge = 0;
@@ -418,6 +422,7 @@ class _MRState extends State<MitosisRushGame>
     _phaseDoneAge = 0;
     _shake = 4;
     _totalScore += extraPoints;
+    widget.session.addScore(extraPoints);
   }
 
   void _scoreAndAdvance() {
@@ -427,6 +432,7 @@ class _MRState extends State<MitosisRushGame>
     final earned = base + timeBonus;
     _phaseResults.add(_PhaseResult(phase: _phase, score: earned));
     _totalScore += earned;
+    widget.session.addScore(earned);
 
     if (_isInterphase(_phase)) {
       _interphaseBonus += (earned ~/ 20).clamp(0, 5);
@@ -438,7 +444,10 @@ class _MRState extends State<MitosisRushGame>
   void _advancePhase() {
     final idx = _sequence.indexOf(_phase);
     if (idx < 0 || idx >= _sequence.length - 1) {
-      setState(() { _phase = _Phase.results; });
+      // All mitosis phases cleared — the run is complete. The host owns the
+      // results screen, so end the round early; the score stands.
+      _phase = _Phase.results;
+      widget.session.endEarly();
     } else {
       _startPhase(_sequence[idx + 1]);
     }
@@ -447,6 +456,7 @@ class _MRState extends State<MitosisRushGame>
   void _timeOut() {
     _phaseResults.add(_PhaseResult(phase: _phase, score: _kPhaseCompleteBase ~/ 2));
     _totalScore += _kPhaseCompleteBase ~/ 2;
+    widget.session.addScore(_kPhaseCompleteBase ~/ 2);
     _shake = 5;
     _advancePhase();
   }
@@ -477,6 +487,10 @@ class _MRState extends State<MitosisRushGame>
   // ── Game tick ─────────────────────────────────────────────────────────────────
 
   void _onTick() {
+    // The host (MiniGameHost) owns the round clock, countdown and results. The
+    // game only advances its own phase simulation while the round is playing.
+    if (!widget.session.isRunning) return;
+
     final now = _now();
     final dt = (now - _lastTime).clamp(0.001, 0.05);
     _lastTime = now;
@@ -491,15 +505,6 @@ class _MRState extends State<MitosisRushGame>
 
       _tickParticles(dt);
 
-      if (_phase == _Phase.intro) {
-        _phaseTimer -= dt;
-        if (_phaseTimer <= 0) {
-          _cell.baseRadius = _cellBaseRadius(_size);
-          _cell.radius = _cell.baseRadius;
-          _startPhase(_Phase.g1);
-        }
-        return;
-      }
       if (_phase == _Phase.results) return;
 
       _bannerAge += dt;
@@ -732,6 +737,7 @@ class _MRState extends State<MitosisRushGame>
     _burst(mid.dx, mid.dy, _kGreen, n: 12);
     _label(mid.dx, mid.dy, '+$_kG1BasePoints', _kGreen);
     _totalScore += _kG1BasePoints;
+    widget.session.addScore(_kG1BasePoints);
     _currentAxisIdx = _rng.nextInt(4);
 
     final maxHits = _phase == _Phase.g1 ? 20 : 15;
@@ -767,6 +773,7 @@ class _MRState extends State<MitosisRushGame>
       final bonus = _sStreak > 2 ? (_sStreak - 2) * _kSStreakBonus : 0;
       final pts = _kSBasePoints + bonus;
       _totalScore += pts;
+      widget.session.addScore(pts);
       _label(cx, cy - 30, '+$pts${_sStreak > 2 ? " ×$_sStreak" : ""}', _kCyan);
       _burst(cx, cy, _kCyan, n: 6);
       _cell.dnaFill = _sMatched / _kSBasesTotal;
@@ -805,6 +812,7 @@ class _MRState extends State<MitosisRushGame>
     _burst(mid.dx, mid.dy, _kCyan, n: 8);
     _label(mid.dx, mid.dy, '+$_kProphasePoints', _kCyan);
     _totalScore += _kProphasePoints;
+    widget.session.addScore(_kProphasePoints);
 
     if (_cell.condensation >= 1.0) {
       _label(_size.width / 2, _size.height / 2 - 30, 'CONDENSED!', _kCyan);
@@ -989,10 +997,8 @@ class _MRState extends State<MitosisRushGame>
   // ── Tap handler ──────────────────────────────────────────────────────────────
 
   void _onTapDown(TapDownDetails d) {
-    if (_phase == _Phase.results) {
-      _restart();
-      return;
-    }
+    // Host owns the results screen / replay; the game has no self-restart.
+    if (_phase == _Phase.results) return;
     if (_phase == _Phase.s && !_phaseDone) {
       setState(() { _handleSTap(d.localPosition); });
     }
@@ -1243,7 +1249,7 @@ class _MRPainter extends CustomPainter {
 
     switch (phase) {
       case _Phase.intro:
-        _drawIntro(canvas, size, cx, cy);
+        // Host owns the intro/get-ready; game starts in the playing area.
         break;
       case _Phase.g1:
       case _Phase.g2:
@@ -1268,7 +1274,7 @@ class _MRPainter extends CustomPainter {
         _drawCytokinesis(canvas, size, cx, cy);
         break;
       case _Phase.results:
-        _drawResults(canvas, size, cx, cy);
+        // Host owns the results/standings screen — game draws nothing here.
         break;
     }
 
@@ -1574,8 +1580,11 @@ class _MRPainter extends CustomPainter {
     _drawLockHalf(canvas, cx + lockX, cy, cell.radius * 0.30, true, _kGold);
     _drawLockHalf(canvas, cx + keyX, cy, cell.radius * 0.30, false, _kGold);
 
-    final gap = (keyX + lockX).clamp(0.0, cell.radius);
-    final gapProg = 1 - (gap / (cell.radius * 0.9)).clamp(0.0, 1.0);
+    // Guard against radius <= 0 (clamp inversion + division-by-zero → NaN
+    // reaching withValues(alpha:), which blanks the canvas).
+    final gap = (keyX + lockX).clamp(0.0, cell.radius <= 0 ? 0.0 : cell.radius);
+    final denom = cell.radius * 0.9;
+    final gapProg = denom <= 0 ? 0.0 : 1 - (gap / denom).clamp(0.0, 1.0);
 
     _drawCenteredText(canvas, size,
         metaphaseLocked ? 'ALIGNED!' : 'SLIDE halves together!', 14,
@@ -1866,44 +1875,11 @@ class _MRPainter extends CustomPainter {
   // ── HUD ───────────────────────────────────────────────────────────────────────
 
   void _drawHUD(Canvas canvas, Size size) {
-    final remaining = (phaseTimer / phaseMaxTime).clamp(0.0, 1.0);
-    final tCol = remaining < 0.25
-        ? _kDanger
-        : Colors.white.withValues(alpha: 0.40);
-
-    const barH = 4.0;
-    final barY = size.height - barH;
-    canvas.drawRect(Rect.fromLTWH(0, barY, size.width, barH),
-        Paint()..color = Colors.white.withValues(alpha: 0.04));
-    canvas.drawRect(
-        Rect.fromLTWH(0, barY, size.width * remaining, barH),
-        Paint()..color = tCol.withValues(alpha: 0.65));
-
-    if (remaining < 0.25) {
-      canvas.drawRect(
-          Rect.fromLTWH(0, barY - 1, size.width * remaining, barH + 2),
-          Paint()
-            ..color = _kDanger.withValues(alpha: 0.18)
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
-    }
-
-    final secsStr = '${phaseTimer.ceil()}s';
-    final timerTp = TextPainter(
-      text: TextSpan(
-          text: secsStr,
-          style: TextStyle(
-              fontFamily: 'Avenir',
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-              color: tCol)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    timerTp.paint(canvas, Offset(size.width - timerTp.width - 14, 10));
-
+    // The host draws the game name, the live score + unit, the seconds
+    // remaining + progress bar. The game keeps only its phase-specific HUD: the
+    // current phase name (which mitosis stage you're in) so the lesson reads.
     _drawText(canvas, _phaseName(phase), 13,
         _phaseColor(phase).withValues(alpha: 0.55), const Offset(14, 10));
-    _drawText(canvas, 'Score: $totalScore', 11,
-        _kGold.withValues(alpha: 0.38), Offset(size.width - 90, 28));
   }
 
   void _drawBanner(Canvas canvas, Size size, double cx, double cy) {

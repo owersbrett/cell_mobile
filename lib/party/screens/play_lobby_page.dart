@@ -15,6 +15,9 @@ import '../net/firebase_party_transport.dart';
 import '../net/party_net.dart';
 import '../net/party_session.dart';
 import '../net/party_transport.dart';
+import '../maps/game_map.dart';
+import '../maps/map_preview.dart';
+import '../maps/ops.dart';
 import '../party_models.dart';
 
 /// PLAY entry. Host a room (you get a code) or join one with a code; both put a
@@ -44,6 +47,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
   // Defaults to the mode picked on the home screen (Solo/1v1/1v1v1/1v1v1v1);
   // host-a-room opens pre-set to that size. Still changeable via _modeToggle.
   PartyMode _mode = PlayConfig.partyMode;
+  String _mapId = kDefaultMapId; // board chosen on the host card
   String? _error;
   bool _busy = false;
 
@@ -101,6 +105,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
       _busy = true;
       _error = null;
     });
+    PlayConfig.mapId = _mapId; // keep the local fallback in sync
     try {
       _transport ??= FirebasePartyTransport();
       final net = await PartyNet.host(
@@ -110,6 +115,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
         name: name,
         mode: _mode,
         rounds: 5,
+        mapId: _mapId,
       );
       PartySession.active = net;
       net.addListener(_onNet);
@@ -163,6 +169,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
 
   void _playLocal() {
     PartySession.active = null;
+    PlayConfig.mapId = _mapId; // the board picked on the host card
     _toBoard();
   }
 
@@ -218,6 +225,8 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
           child: Column(
             children: [
               _modeToggle(),
+              const SizedBox(height: 12),
+              _mapPicker(),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
@@ -317,7 +326,9 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
             ),
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 16),
+        _roomMapPreview(net),
+        const SizedBox(height: 20),
         Text('PLAYERS (${players.length}/${_mode.playerCount})',
             style: Potatuhs.label(color: Potatuhs.textFaint)),
         const SizedBox(height: 8),
@@ -325,16 +336,12 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Row(
                 children: [
-                  Container(
-                    width: 14,
-                    height: 14,
-                    decoration: BoxDecoration(
-                      color: Color(p.color),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
+                  _lobbyAvatar(p.character % kCharacters.length, size: 26),
                   const SizedBox(width: 10),
                   Text(p.name, style: Potatuhs.body(size: 18)),
+                  const SizedBox(width: 6),
+                  Text(kCharacters[p.character % kCharacters.length].name,
+                      style: Potatuhs.body(size: 12, color: Potatuhs.textFaint)),
                   if (p.slot == 0) ...[
                     const SizedBox(width: 8),
                     Text('HOST', style: Potatuhs.label(color: Potatuhs.gold)),
@@ -342,6 +349,8 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
                 ],
               ),
             )),
+        const SizedBox(height: 18),
+        _characterPicker(net),
         const Spacer(),
         if (_isHost)
           SizedBox(
@@ -365,6 +374,86 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
       ],
     );
   }
+
+  // --------------------------------------------------- character picking
+
+  /// Everyone in the room (host + joiners) picks their avatar from the same
+  /// offline-mode roster ([kCharacters]) while waiting for the host to start.
+  /// Taken characters dim out; your pick is highlighted.
+  Widget _characterPicker(PartyNet? net) {
+    if (net == null) return const SizedBox.shrink();
+    final me = net.myPlayer;
+    final mine = me?.character;
+    final taken = {
+      for (final p in net.players)
+        if (p.uid != me?.uid) p.character
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('PICK YOUR CHARACTER',
+            style: Potatuhs.label(color: Potatuhs.textFaint)),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (var i = 0; i < kCharacters.length; i++)
+              _characterChoice(net, i,
+                  selected: i == mine, taken: taken.contains(i)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _characterChoice(PartyNet net, int i,
+      {required bool selected, required bool taken}) {
+    final dim = taken && !selected;
+    return GestureDetector(
+      onTap: dim
+          ? null
+          : () async {
+              await net.chooseCharacter(i);
+              if (mounted) setState(() {});
+            },
+      child: Opacity(
+        opacity: dim ? 0.3 : 1,
+        child: Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: selected ? Potatuhs.gold.withValues(alpha: 0.2) : null,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color: selected ? Potatuhs.gold : Colors.white24, width: 1.5),
+          ),
+          child: _lobbyAvatar(i, size: 46),
+        ),
+      ),
+    );
+  }
+
+  Widget _lobbyAvatar(int i, {double size = 28}) {
+    final c = kCharacters[i];
+    if (c.asset != null) {
+      return ClipOval(
+        child: Image.asset(
+          c.asset!,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _colorDot(c.color, size),
+        ),
+      );
+    }
+    return _colorDot(c.color, size);
+  }
+
+  Widget _colorDot(Color color, double size) => Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      );
 
   // --------------------------------------------------------------- pieces
 
@@ -432,6 +521,117 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
       ),
     );
   }
+
+  /// Host-card board chooser — pick which of the three maps the room plays.
+  Widget _mapPicker() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('BOARD', style: Potatuhs.label(color: Potatuhs.textFaint)),
+        const SizedBox(height: 6),
+        Row(
+          children: kGameMaps.map((m) {
+            final selected = m.id == _mapId;
+            return Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _mapId = m.id),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color:
+                        selected ? Potatuhs.gold.withValues(alpha: 0.18) : null,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: selected ? Potatuhs.gold : Colors.white24,
+                        width: 1.5),
+                  ),
+                  child: Column(
+                    children: [
+                      MapPreview(map: m, size: 54),
+                      const SizedBox(height: 4),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          m.name,
+                          style: Potatuhs.body(
+                              size: 10,
+                              weight: FontWeight.w700,
+                              color: selected
+                                  ? Potatuhs.gold
+                                  : Potatuhs.textFaint),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  /// In-room board preview — the host sees their pick; a joiner sees the board
+  /// the host chose (via the live room meta).
+  Widget _roomMapPreview(PartyNet? net) {
+    final id = _isHost ? _mapId : (net?.mapId ?? kDefaultMapId);
+    final map = gameMapById(id);
+    return Column(
+      children: [
+        MapPreview(map: map, size: 110),
+        const SizedBox(height: 6),
+        Text(map.name, style: Potatuhs.body(size: 14, color: Potatuhs.gold)),
+        Text(
+          map.subtitle,
+          textAlign: TextAlign.center,
+          style: Potatuhs.body(size: 11, color: Potatuhs.textSecondary),
+        ),
+        if (map.bosses.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 10,
+            children: [
+              for (final b in map.bosses)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _opAvatar(b, size: 24),
+                    const SizedBox(width: 4),
+                    Text(b.name,
+                        style:
+                            Potatuhs.body(size: 11, color: Potatuhs.orange)),
+                  ],
+                ),
+            ],
+          ),
+        ],
+        const SizedBox(height: 4),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _opAvatar(kPeeler, size: 18),
+            _opAvatar(kMasher, size: 18),
+            const SizedBox(width: 6),
+            Text('Peeler & Masher are loose on every board',
+                style: Potatuhs.body(size: 10, color: Potatuhs.textFaint)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _opAvatar(Op op, {double size = 22}) => ClipOval(
+        child: Image.asset(
+          op.asset,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => SizedBox(width: size, height: size),
+        ),
+      );
 
   Widget _modeToggle() {
     // The four home-screen formats, in player-count order.

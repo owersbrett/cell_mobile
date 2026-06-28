@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../maps/game_map.dart';
 import '../party_controller.dart';
 import '../party_models.dart';
 import 'party_transport.dart';
@@ -40,6 +41,9 @@ class PartyNet extends ChangeNotifier {
   List<NetPlayer> players = [];
   String status = 'lobby';
   GameMeta? meta;
+
+  /// The board the host chose for this room (for the join-screen preview).
+  String get mapId => meta?.mapId ?? kDefaultMapId;
 
   // Host bookkeeping: requests processed into the canonical log.
   int _processed = 0;
@@ -87,6 +91,7 @@ class PartyNet extends ChangeNotifier {
     required String name,
     required PartyMode mode,
     required int rounds,
+    String mapId = kDefaultMapId,
     int? seed,
   }) async {
     final net = PartyNet._(
@@ -97,12 +102,17 @@ class PartyNet extends ChangeNotifier {
       rounds: rounds,
       seed: seed ?? Random().nextInt(0x7fffffff),
       status: 'lobby',
+      mapId: mapId,
     );
     await transport.createGame(
       gameId,
       meta,
       NetPlayer(
-          uid: uid, name: name, slot: 0, color: kCharacters[0].color.toARGB32()),
+          uid: uid,
+          name: name,
+          slot: 0,
+          color: kCharacters[0].color.toARGB32(),
+          character: 0),
     );
     net._listen();
     return net;
@@ -140,7 +150,8 @@ class PartyNet extends ChangeNotifier {
           uid: uid,
           name: name,
           slot: slot,
-          color: kCharacters[slot % kCharacters.length].color.toARGB32()),
+          color: kCharacters[slot % kCharacters.length].color.toARGB32(),
+          character: slot % kCharacters.length),
     );
     return net;
   }
@@ -164,6 +175,8 @@ class PartyNet extends ChangeNotifier {
       playerNames: _names(),
       seed: m.seed,
       randomMode: PartyRandomMode.host,
+      gameMap: gameMapById(m.mapId),
+      characters: _characters(),
     );
     await transport.setStatus(gameId, 'playing');
     // Seed the canonical node so clients have something to attach to.
@@ -173,6 +186,29 @@ class PartyNet extends ChangeNotifier {
   }
 
   List<String> _names() => [for (final p in _seated) p.name];
+  List<int> _characters() => [for (final p in _seated) p.character];
+
+  /// This device's player row, once seated.
+  NetPlayer? get myPlayer {
+    for (final p in players) {
+      if (p.uid == myUid) return p;
+    }
+    return null;
+  }
+
+  /// Pick a character in the lobby — re-publishes this device's player row with
+  /// the chosen [kCharacters] index (and its color). Live for everyone via the
+  /// roster listener. No-op once a character is taken by someone else.
+  Future<void> chooseCharacter(int index) async {
+    final me = myPlayer;
+    if (me == null) return;
+    if (players.any((p) => p.uid != myUid && p.character == index)) return;
+    await transport.joinPlayer(
+      gameId,
+      me.copyWith(
+          character: index, color: kCharacters[index].color.toARGB32()),
+    );
+  }
 
   // ------------------------------------------------------------------ acting
 
@@ -343,6 +379,8 @@ class PartyNet extends ChangeNotifier {
       playerNames: _names(),
       seed: m.seed,
       randomMode: PartyRandomMode.client,
+      gameMap: gameMapById(m.mapId),
+      characters: _characters(),
     );
     // Catch up on anything the host published before we were ready.
     final pending = _pendingSnap;

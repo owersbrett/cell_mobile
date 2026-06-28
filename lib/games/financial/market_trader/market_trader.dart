@@ -1,33 +1,29 @@
-import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../fx.dart';
+import '../../mini_game.dart';
 import '../../../theme/potatuhs.dart';
-
-// ─── Shared juice particle ────────────────────────────────────────────────────
-class _JuiceParticle {
-  double x, y, vx, vy, life, maxLife, radius;
-  Color color;
-  _JuiceParticle({
-    required this.x,
-    required this.y,
-    required this.vx,
-    required this.vy,
-    required this.life,
-    required this.color,
-    this.radius = 3,
-  }) : maxLife = life;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FinancialTradingGame — "Market Trader"  (BioScale.financial)
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// A coherent trading desk. The player has DIRECT control over:
+//   • SIZE — how many shares each action moves (stepper + lot presets + MAX).
+//   • ORDERS — place LIMIT BUY orders that RESERVE cash until they fill against
+//     the moving market, or CANCEL them (small fee) to free that cash back up.
+//   • MARKET buys/sells — instant fills at the live price.
+//
+// Cash is split into AVAILABLE (free to deploy) and RESERVED (tied up in open
+// buy orders). Score = cumulative REALIZED P&L, reported to the host session on
+// every sell via session.addScore. The host owns the clock / countdown /
+// results; this widget only runs the sim while session.isRunning.
 
-const double _kMtStartingCash   = 200.0;
-const double _kMtGameDuration   = 60.0;
+// --- Wallet / market tuning -------------------------------------------------
+const double _kMtStartingCash   = 1000.0; // opening capital
+const double _kMtGameDuration   = 60.0;   // seconds (mirrors host clock)
 const double _kMtBaseTickHz     = 12.0;
 const double _kMtMaxTickHz      = 30.0;
 const double _kMtBaseVolatility = 1.8;
@@ -38,13 +34,18 @@ const double _kMtNewsChance     = 0.08;
 const double _kMtNewsAmplitude  = 14.0;
 const double _kMtStartingPrice  = 100.0;
 
+// --- Order / sizing tuning --------------------------------------------------
+// A limit buy can be placed up to this fraction below the live price.
+const double _kMtLimitOffsetMax = 0.18;
+// Cancelling an open order costs this fraction of the order's reserved value.
+const double _kMtCancelFeeRate  = 0.01;
+// Lot presets (in shares) offered as one-tap sizing buttons.
+const List<int> _kMtLotPresets  = [1, 5, 25];
+
+// --- Player market-event tuning ---
 const double _kMtEventImpulse   = 22.0;
 const double _kMtEventDuration  = 2.5;
 const double _kMtEventCooldown  = 14.0;
-
-const double _kMtLoanSize       = 120.0;
-const double _kMtInterestRate   = 0.04;
-const double _kMtMinPayment     = 30.0;
 
 class _MtPriceSample {
   final double price;
@@ -92,8 +93,19 @@ const List<_MtEventDef> _kMtEvents = [
   _MtEventDef('Abundance', '🌾', -1.0),
 ];
 
+/// One open LIMIT BUY order. Reserves [reserved] cash (= shares × limit) until
+/// the market trades at/under [limit] and the order fills.
+class _MtOrder {
+  final int    shares;
+  final double limit;
+  double get reserved => shares * limit;
+  _MtOrder(this.shares, this.limit);
+}
+
 class FinancialTradingGame extends StatefulWidget {
-  const FinancialTradingGame({Key? key}) : super(key: key);
+  final MiniGameSession session;
+  const FinancialTradingGame({Key? key, required this.session})
+      : super(key: key);
   @override
   State<FinancialTradingGame> createState() => _FinancialTradingGameState();
 }
@@ -103,11 +115,30 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   late AnimationController _ctrl;
   final Random _rng = Random();
 
-  double _cash     = _kMtStartingCash;
+  // --- Wallet ---
+  // Free cash you can spend right now.
+  double _available = _kMtStartingCash;
+  // Cash locked behind open buy orders (sum of every _MtOrder.reserved).
+  double _reserved  = 0.0;
+  // Cumulative realized P&L — this IS the score reported to the session.
+  double _realized  = 0.0;
+
   double _timeLeft = _kMtGameDuration;
-  bool   _gameOver = false;
   double _elapsed  = 0.0;
 
+  // --- Position (held shares, average cost basis) ---
+  double _heldShares  = 0.0;
+  double _avgCost      = 0.0; // weighted avg entry price of held shares
+
+  // --- Sizing ---
+  int _lotSize = 5;          // shares per action (the player's batch knob)
+  // Limit offset 0..1 → 0 = at market, 1 = max below market. Drives limit price.
+  double _limitOffset = 0.0;
+
+  // --- Open buy orders ---
+  final List<_MtOrder> _orders = [];
+
+  // --- Price / market ---
   double _price       = _kMtStartingPrice;
   double _trend       = 0.0;
   double _trendTimer  = 0.0;
@@ -115,29 +146,22 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   _MtNews? _news;
   double _newsTimer   = 0.0;
 
-  bool   _inPosition   = false;
-  double _entryPrice   = 0.0;
-  double _shares       = 0.0;
-
+  // --- Chart ---
   final List<_MtPriceSample> _chart = [];
   static const int _kChartMax = 200;
 
+  // --- FX ---
   final List<FxParticle> _fxParticles = [];
   final List<_MtPop>     _pops        = [];
-  final List<_JuiceParticle> _juiceParticles = [];
-
-  List<Map<String, dynamic>> _highScores = [];
-  double _bestScore    = 0.0;
-  bool   _newHighScore = false;
-  double _newHsTimer   = 0.0;
 
   late final List<double> _eventCooldowns;
-
-  double _debt = 0.0;
 
   Color  _flashColor = Colors.transparent;
   double _flashAlpha = 0.0;
 
+  Size _screen = Size.zero;
+
+  // --- Derived ---
   double get _volatility {
     final t = 1.0 - (_timeLeft / _kMtGameDuration);
     return _kMtBaseVolatility + (_kMtMaxVolatility - _kMtBaseVolatility) * t;
@@ -146,11 +170,19 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     final t = 1.0 - (_timeLeft / _kMtGameDuration);
     return _kMtBaseTickHz + (_kMtMaxTickHz - _kMtBaseTickHz) * t;
   }
+  bool   get _inPosition  => _heldShares > 1e-6;
+  double get _positionValue => _heldShares * _price;
   double get _unrealizedPnl =>
-      _inPosition ? (_price - _entryPrice) * _shares : 0.0;
-  double get _totalNetWorth =>
-      _cash + (_inPosition ? _price * _shares : 0.0);
-  double get _finalScore => _totalNetWorth - _debt;
+      _inPosition ? (_price - _avgCost) * _heldShares : 0.0;
+  // The selected limit price for a new buy order (offset below market).
+  double get _limitPrice =>
+      _price * (1.0 - _limitOffset * _kMtLimitOffsetMax);
+  // Cash cost to reserve a buy of the current lot at the current limit.
+  double get _orderCost => _lotSize * _limitPrice;
+  bool   get _canPlaceOrder =>
+      _lotSize > 0 && _available >= _orderCost - 1e-6;
+  bool   get _canMarketBuy =>
+      _lotSize > 0 && _available >= _lotSize * _price - 1e-6;
 
   @override
   void initState() {
@@ -161,50 +193,6 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         vsync: this, duration: const Duration(hours: 1))
       ..addListener(_tick)
       ..forward();
-    _loadHighScores();
-  }
-
-  Future<void> _loadHighScores() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('market_trader_hs_v2');
-    if (raw != null) {
-      final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
-      if (mounted) {
-        setState(() {
-          _highScores =
-              decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-          if (_highScores.isNotEmpty) {
-            _bestScore = (_highScores.first['score'] as num).toDouble();
-          }
-        });
-      }
-    }
-  }
-
-  Future<void> _saveHighScore(double score) async {
-    final prefs = await SharedPreferences.getInstance();
-    _highScores.add({
-      'score': score,
-      'date': DateTime.now().toIso8601String().substring(0, 10),
-    });
-    _highScores.sort(
-        (a, b) => (b['score'] as num).compareTo(a['score'] as num));
-    if (_highScores.length > 5) _highScores = _highScores.sublist(0, 5);
-    await prefs.setString('market_trader_hs_v2', jsonEncode(_highScores));
-    if (_highScores.isNotEmpty) {
-      _bestScore = (_highScores.first['score'] as num).toDouble();
-    }
-  }
-
-  void _checkAndSaveHighScore() {
-    final score = _finalScore;
-    final qualifies = _highScores.length < 5 ||
-        score > (_highScores.last['score'] as num).toDouble();
-    if (qualifies) {
-      _newHighScore = true;
-      _newHsTimer   = 3.0;
-      _saveHighScore(score);
-    }
   }
 
   @override
@@ -213,19 +201,13 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     super.dispose();
   }
 
+  // ─── Main loop (host owns the clock) ──────────────────────────────────────
   void _tick() {
-    if (_gameOver) return;
+    if (!widget.session.isRunning) return;
     const dt = 1 / 60.0;
+    _timeLeft = widget.session.remaining.inMilliseconds / 1000.0;
     setState(() {
-      _elapsed  += dt;
-      _timeLeft -= dt;
-      if (_timeLeft <= 0) {
-        if (_inPosition) _sell(silent: true);
-        _timeLeft = 0;
-        _gameOver = true;
-        _checkAndSaveHighScore();
-        return;
-      }
+      _elapsed += dt;
 
       _trendTimer -= dt;
       if (_trendTimer <= 0) {
@@ -246,6 +228,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       _priceClock -= steps;
       for (int s = 0; s < steps; s++) {
         _stepPrice();
+        _fillOrders(); // check limit orders against each price step
       }
 
       if (_chart.isEmpty ||
@@ -254,15 +237,10 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         if (_chart.length > _kChartMax) _chart.removeAt(0);
       }
 
-      if (_debt > 0) {
-        final interest = _debt * _kMtInterestRate * dt;
-        _debt += interest;
-        _cash  = (_cash - interest).clamp(0.0, double.infinity);
-      }
-
       for (int i = 0; i < _eventCooldowns.length; i++) {
         if (_eventCooldowns[i] > 0) {
-          _eventCooldowns[i] = (_eventCooldowns[i] - dt).clamp(0.0, _kMtEventCooldown);
+          _eventCooldowns[i] =
+              (_eventCooldowns[i] - dt).clamp(0.0, _kMtEventCooldown);
         }
       }
 
@@ -270,14 +248,6 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
       _fxParticles.removeWhere((p) => !p.step(dt));
       _pops.removeWhere((p) => !p.step(dt));
-      for (final p in _juiceParticles) {
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.life -= dt;
-      }
-      _juiceParticles.removeWhere((p) => p.life <= 0);
-
-      if (_newHsTimer > 0) _newHsTimer -= dt;
     });
   }
 
@@ -307,87 +277,155 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     _trendTimer = _kMtNewsDuration;
   }
 
-  void _buy(Size screenSize) {
-    if (_gameOver || _inPosition) return;
-    final investAmount = _cash * 0.8;
-    if (investAmount < 1) return;
+  // ─── Sizing controls ──────────────────────────────────────────────────────
+  void _setLot(int v) => setState(() => _lotSize = v.clamp(1, 9999));
+  void _bumpLot(int by) => setState(() => _lotSize = (_lotSize + by).clamp(1, 9999));
+  void _maxLot() {
+    // Largest lot the available cash can buy at the current limit price.
+    final maxByCash = (_available / max(_limitPrice, 0.01)).floor();
+    setState(() => _lotSize = max(1, maxByCash));
+  }
+
+  // ─── Orders ───────────────────────────────────────────────────────────────
+  /// Place a LIMIT BUY: reserves cash now, fills when price ≤ limit.
+  void _placeOrder() {
+    if (!widget.session.isRunning) return;
+    final cost = _orderCost;
+    if (_lotSize <= 0 || _available < cost - 1e-6) return;
     setState(() {
-      _entryPrice = _price;
-      _shares     = investAmount / _price;
-      _cash      -= investAmount;
-      _inPosition = true;
-      final center = Offset(screenSize.width / 2, screenSize.height * 0.55);
-      _fxParticles.addAll(
-          FxBurst.spawn(center, Potatuhs.airForce, count: 10, speed: 90));
+      _available -= cost;
+      _reserved  += cost;
+      _orders.add(_MtOrder(_lotSize, _limitPrice));
+      _spawnFx(Potatuhs.airForce, count: 8, speed: 70);
     });
   }
 
-  void _sell({bool silent = false, Size screenSize = Size.zero}) {
-    if (!_inPosition) return;
-    final proceeds  = _price * _shares;
-    final pnl       = proceeds - _entryPrice * _shares;
-    final pnlInt    = pnl.round();
-    _cash          += proceeds;
-    _inPosition     = false;
-    _shares         = 0;
-    _entryPrice     = 0;
-    if (silent) return;
-    final profit = pnl >= 0;
-    final col    = profit ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
-    _flashColor  = col;
-    _flashAlpha  = 0.28;
-    final popPos = screenSize == Size.zero
-        ? const Offset(160, 260)
-        : Offset(screenSize.width * 0.5, screenSize.height * 0.42);
-    _pops.add(_MtPop(popPos, '${profit ? "+" : ""}\$${pnlInt.abs()}', col));
-    if (profit && pnl > 5) {
-      final burstOrigin = screenSize == Size.zero
-          ? const Offset(180, 270)
-          : Offset(screenSize.width * 0.5, screenSize.height * 0.44);
-      _fxParticles.addAll(FxBurst.spawn(
-        burstOrigin, Potatuhs.gold,
-        count: pnl > 20 ? 22 : 14, speed: pnl > 20 ? 160 : 110,
-      ));
+  /// Instant MARKET BUY of the current lot at the live price.
+  void _marketBuy() {
+    if (!widget.session.isRunning) return;
+    final cost = _lotSize * _price;
+    if (_lotSize <= 0 || _available < cost - 1e-6) return;
+    setState(() {
+      _available -= cost;
+      _addShares(_lotSize.toDouble(), _price);
+      _flashColor = Potatuhs.airForce;
+      _flashAlpha = 0.18;
+      _spawnFx(Potatuhs.airForce, count: 10, speed: 90);
+    });
+  }
+
+  /// Cancel an open order: refund reserved cash MINUS a small fee.
+  void _cancelOrder(int index) {
+    if (index < 0 || index >= _orders.length) return;
+    setState(() {
+      final o   = _orders.removeAt(index);
+      final fee = o.reserved * _kMtCancelFeeRate;
+      _reserved  -= o.reserved;
+      _available += o.reserved - fee;
+      _realized  -= fee; // the cancel fee is a realized cost against your P&L
+      _syncScore();
+      _popLabel('-\$${fee.toStringAsFixed(1)} fee', const Color(0xFFEF5350),
+          yFrac: 0.40);
+    });
+  }
+
+  void _cancelAllOrders() {
+    if (_orders.isEmpty) return;
+    setState(() {
+      double feeTotal = 0;
+      for (final o in _orders) {
+        final fee = o.reserved * _kMtCancelFeeRate;
+        feeTotal   += fee;
+        _reserved  -= o.reserved;
+        _available += o.reserved - fee;
+      }
+      _orders.clear();
+      _realized -= feeTotal;
+      _syncScore();
+      if (feeTotal > 0) {
+        _popLabel('-\$${feeTotal.toStringAsFixed(1)} fees',
+            const Color(0xFFEF5350), yFrac: 0.40);
+      }
+    });
+  }
+
+  /// Fill any open buy order whose limit is at/above the current price.
+  /// Cash was already reserved at placement; here it converts to shares.
+  void _fillOrders() {
+    if (_orders.isEmpty) return;
+    for (int i = _orders.length - 1; i >= 0; i--) {
+      final o = _orders[i];
+      if (_price <= o.limit + 1e-9) {
+        // Fill at the limit (cash reserved at the limit, so basis = limit).
+        _reserved -= o.reserved;
+        _addShares(o.shares.toDouble(), o.limit);
+        _orders.removeAt(i);
+        _flashColor = const Color(0xFF66BB6A);
+        _flashAlpha = 0.20;
+        _spawnFx(const Color(0xFF66BB6A), count: 8, speed: 80);
+        _popLabel('FILLED ${o.shares}@\$${o.limit.toStringAsFixed(2)}',
+            const Color(0xFF66BB6A), yFrac: 0.46);
+      }
     }
   }
 
-  void _restart() {
+  void _addShares(double shares, double price) {
+    final newTotal = _heldShares + shares;
+    if (newTotal <= 1e-9) return;
+    _avgCost   = (_avgCost * _heldShares + price * shares) / newTotal;
+    _heldShares = newTotal;
+  }
+
+  // ─── Selling (realizes P&L → score) ───────────────────────────────────────
+  void _sell(int shares, {bool silent = false}) {
+    if (_heldShares <= 1e-6) return;
+    final qty = min(shares.toDouble(), _heldShares);
+    if (qty <= 1e-6) return;
+    final proceeds = qty * _price;
+    final pnl      = (_price - _avgCost) * qty;
     setState(() {
-      _cash        = _kMtStartingCash;
-      _timeLeft    = _kMtGameDuration;
-      _gameOver    = false;
-      _elapsed     = 0.0;
-      _price       = _kMtStartingPrice;
-      _trend       = 0.0;
-      _trendTimer  = 0.0;
-      _priceClock  = 0.0;
-      _news        = null;
-      _newsTimer   = 0.0;
-      _inPosition  = false;
-      _entryPrice  = 0.0;
-      _shares      = 0.0;
-      _debt        = 0.0;
-      for (int i = 0; i < _eventCooldowns.length; i++) {
-        _eventCooldowns[i] = 0.0;
+      _available  += proceeds;
+      _heldShares -= qty;
+      if (_heldShares <= 1e-6) {
+        _heldShares = 0;
+        _avgCost    = 0;
       }
-      _chart.clear();
-      _chart.add(_MtPriceSample(_price));
-      _fxParticles.clear();
-      _pops.clear();
-      _juiceParticles.clear();
-      _flashAlpha  = 0.0;
-      _newHighScore = false;
-      _newHsTimer  = 0.0;
+      _realized += pnl;
+      _syncScore();
+      if (silent) return;
+      final profit = pnl >= 0;
+      final col    = profit ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
+      _flashColor  = col;
+      _flashAlpha  = 0.28;
+      _popLabel('${profit ? "+" : "-"}\$${pnl.abs().toStringAsFixed(0)}', col,
+          yFrac: 0.42);
+      if (profit && pnl > 5) {
+        _spawnFx(Potatuhs.gold,
+            count: pnl > 40 ? 22 : 14, speed: pnl > 40 ? 160 : 110, yFrac: 0.44);
+      }
     });
   }
 
+  void _sellLot()  => _sell(_lotSize);
+  void _sellAll()  => _sell(_heldShares.ceil());
+
+  /// Report the running realized P&L to the host scoreboard. The session
+  /// clamps at 0, so it tracks the high-water positive total of realized gains.
+  void _syncScore() {
+    // session.score is monotonic via addScore; push the delta to reach _realized.
+    final target  = _realized.round();
+    final current = widget.session.score;
+    widget.session.addScore(target - current);
+  }
+
+  // ─── Player market events ─────────────────────────────────────────────────
   void _triggerEvent(int idx) {
-    if (_gameOver) return;
+    if (!widget.session.isRunning) return;
     if (_eventCooldowns[idx] > 0) return;
     setState(() {
       final ev = _kMtEvents[idx];
       final impulse = ev.sign * _kMtEventImpulse;
-      _news      = _MtNews(ev.label.toUpperCase(), impulse, _kMtEventDuration);
+      _news       = _MtNews(ev.label.toUpperCase(), impulse, _kMtEventDuration);
       _newsTimer  = _kMtEventDuration;
       _trend      = ev.sign * 0.95;
       _trendTimer = _kMtEventDuration;
@@ -395,44 +433,31 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     });
   }
 
-  void _takeCredit() {
-    if (_gameOver) return;
-    setState(() {
-      _cash += _kMtLoanSize;
-      _debt += _kMtLoanSize;
-    });
+  // ─── FX helpers ───────────────────────────────────────────────────────────
+  void _spawnFx(Color color,
+      {int count = 10, double speed = 90, double yFrac = 0.5}) {
+    if (_screen == Size.zero) return;
+    final center = Offset(_screen.width / 2, _screen.height * yFrac);
+    _fxParticles.addAll(FxBurst.spawn(center, color, count: count, speed: speed));
   }
 
-  void _payDebt() {
-    if (_gameOver || _debt <= 0) return;
-    setState(() {
-      final payment = min(_cash, _debt);
-      _cash -= payment;
-      _debt -= payment;
-      if (_debt < 0.01) _debt = 0.0;
-    });
+  void _popLabel(String label, Color color, {double yFrac = 0.42}) {
+    final pos = _screen == Size.zero
+        ? const Offset(160, 260)
+        : Offset(_screen.width * 0.5, _screen.height * yFrac);
+    _pops.add(_MtPop(pos, label, color));
   }
 
-  void _minPayment() {
-    if (_gameOver || _debt <= 0) return;
-    setState(() {
-      final payment = min(_cash, min(_kMtMinPayment, _debt));
-      _cash -= payment;
-      _debt -= payment;
-      if (_debt < 0.01) _debt = 0.0;
-    });
-  }
-
+  // ════════════════════════════════════════════════════════════════════════
+  // BUILD
+  // ════════════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
-    final pnl      = _totalNetWorth - _kMtStartingCash;
-    final timerRed = _timeLeft < 10 && !_gameOver;
-
     return LayoutBuilder(builder: (ctx, constraints) {
       final w = constraints.maxWidth;
       final h = constraints.maxHeight;
-      final chartH = (h * 0.34).clamp(120.0, 220.0);
-      final screenSize = Size(w, h);
+      _screen = Size(w, h);
+      final chartH = (h * 0.26).clamp(110.0, 190.0);
 
       return Stack(children: [
         Positioned.fill(
@@ -454,25 +479,12 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
         SafeArea(
           child: Column(children: [
-            _buildHud(w, pnl, timerRed),
-
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-              child: Text(
-                'Buy low, sell high — beat the market',
-                textAlign: TextAlign.center,
-                style: Potatuhs.label(
-                    size: 11, color: Potatuhs.textSecondary),
-              ),
-            ),
-
+            _buildWalletBar(),
             _buildPriceTicker(),
-
-            if (_news != null)
-              _buildNewsBanner(_news!),
+            if (_news != null) _buildNewsBanner(_news!),
 
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
               child: SizedBox(
                 height: chartH,
                 width: double.infinity,
@@ -480,7 +492,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                   borderRadius: BorderRadius.circular(12),
                   child: CustomPaint(
                     painter: _MtChartPainter(
-                        _chart, _kMtStartingPrice, _elapsed),
+                        _chart, _kMtStartingPrice, _limitPriceLine()),
                   ),
                 ),
               ),
@@ -488,115 +500,99 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
             _buildPositionRow(),
 
-            const Spacer(),
+            Expanded(
+              child: SingleChildScrollView(
+                physics: const ClampingScrollPhysics(),
+                child: Column(children: [
+                  _buildSizeControl(),
+                  _buildOrderControls(),
+                  if (_orders.isNotEmpty) _buildOpenOrders(),
+                  _buildEventButtons(),
+                  const SizedBox(height: 6),
+                ]),
+              ),
+            ),
 
-            if (!_gameOver) ...[
-              _buildEventButtons(),
-              _buildDebtControls(),
-            ],
-
-            if (!_gameOver)
-              _buildTradeButtons(screenSize),
-
-            const SizedBox(height: 10),
-
-            if (_gameOver)
-              _buildGameOver(),
+            _buildTradeButtons(),
+            const SizedBox(height: 8),
           ]),
         ),
 
         Positioned.fill(
           child: IgnorePointer(
             child: CustomPaint(
-              painter: _MtFxPainter(_fxParticles, _pops, _juiceParticles),
+              painter: _MtFxPainter(_fxParticles, _pops),
             ),
           ),
         ),
-
-        if (_newHighScore && _newHsTimer > 0)
-          Positioned(
-            top: h * 0.22,
-            left: 0,
-            right: 0,
-            child: IgnorePointer(
-              child: Center(
-                child: Text(
-                  'NEW HIGH SCORE!',
-                  style: Potatuhs.display(size: 26, color: Potatuhs.gold)
-                      .copyWith(
-                    shadows: [
-                      Shadow(
-                          color: Potatuhs.orange.withValues(alpha: 0.9),
-                          blurRadius: 24),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
       ]);
     });
   }
 
-  Widget _buildHud(double w, double pnl, bool timerRed) {
+  // The open-order limit line drawn on the chart (null = none / at market).
+  double? _limitPriceLine() {
+    if (_orders.isEmpty) return null;
+    // Highest pending limit — the next one likely to fill.
+    return _orders.map((o) => o.limit).reduce(max);
+  }
+
+  // ─── Wallet bar: AVAILABLE / RESERVED / POSITION / REALIZED ───────────────
+  Widget _buildWalletBar() {
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: Potatuhs.surface(
-        fill: Potatuhs.inkPanel.withValues(alpha: 0.88),
+        fill: Potatuhs.inkPanel.withValues(alpha: 0.9),
         borderColor: Potatuhs.airForce.withValues(alpha: 0.35),
         radius: 14,
       ),
       child: Row(children: [
-        Text(
-          '${_timeLeft.ceil()}s',
-          style: Potatuhs.body(
-            size: 18,
-            weight: FontWeight.w800,
-            color: timerRed ? const Color(0xFFEF5350) : Potatuhs.textPrimary,
-          ),
+        _walletStat('AVAILABLE', '\$${_available.toStringAsFixed(0)}',
+            Potatuhs.textPrimary),
+        _walletDivider(),
+        _walletStat('RESERVED', '\$${_reserved.toStringAsFixed(0)}',
+            _reserved > 0.5 ? Potatuhs.sienna : Potatuhs.textFaint),
+        _walletDivider(),
+        _walletStat(
+          'POSITION',
+          _inPosition
+              ? '${_heldShares.toStringAsFixed(0)} sh'
+              : '—',
+          _inPosition ? Potatuhs.airForce : Potatuhs.textFaint,
         ),
-        const SizedBox(width: 10),
-        if (_bestScore > 0)
-          Text(
-            'BEST \$${_bestScore.toStringAsFixed(0)}',
-            style: Potatuhs.label(size: 9, color: Potatuhs.textFaint),
-          ),
-        const Spacer(),
-        Text(
-          '\$${_totalNetWorth.toStringAsFixed(0)}',
-          style: Potatuhs.body(
-              size: 20, weight: FontWeight.w800, color: Potatuhs.sienna),
-        ),
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: (pnl >= 0
-                    ? const Color(0xFF1B5E20)
-                    : const Color(0xFF7F0000))
-                .withValues(alpha: 0.85),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: pnl >= 0
-                  ? const Color(0xFF66BB6A).withValues(alpha: 0.6)
-                  : const Color(0xFFEF5350).withValues(alpha: 0.6),
-            ),
-          ),
-          child: Text(
-            '${pnl >= 0 ? "+" : ""}\$${pnl.toStringAsFixed(0)}',
-            style: Potatuhs.label(
-              size: 11,
-              color: pnl >= 0
-                  ? const Color(0xFF66BB6A)
-                  : const Color(0xFFEF5350),
-            ),
-          ),
+        _walletDivider(),
+        _walletStat(
+          'P&L',
+          '${_realized >= 0 ? "+" : "-"}\$${_realized.abs().toStringAsFixed(0)}',
+          _realized >= 0 ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
         ),
       ]),
     );
   }
 
+  Widget _walletStat(String label, String value, Color color) {
+    return Expanded(
+      child: Column(children: [
+        Text(label,
+            style: Potatuhs.label(size: 8, color: Potatuhs.textFaint),
+            maxLines: 1, overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 2),
+        Text(value,
+            style: Potatuhs.body(
+                size: 15, weight: FontWeight.w800, color: color),
+            maxLines: 1, overflow: TextOverflow.ellipsis),
+      ]),
+    );
+  }
+
+  Widget _walletDivider() => Container(
+        width: 1,
+        height: 26,
+        margin: const EdgeInsets.symmetric(horizontal: 6),
+        color: Colors.white.withValues(alpha: 0.08),
+      );
+
+  // ─── Live price ───────────────────────────────────────────────────────────
   Widget _buildPriceTicker() {
     final delta = _chart.length >= 6
         ? _price - _chart[max(0, _chart.length - 6)].price
@@ -611,27 +607,26 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           Text(
             '\$${_price.toStringAsFixed(2)}',
             style: Potatuhs.display(
-              size: 36,
+              size: 30,
               color: up ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
-            ).copyWith(
-              shadows: [
-                Shadow(
-                  color: (up
-                      ? const Color(0xFF66BB6A)
-                      : const Color(0xFFEF5350))
-                      .withValues(alpha: 0.55),
-                  blurRadius: 14,
-                ),
-              ],
-            ),
+            ).copyWith(shadows: [
+              Shadow(
+                color: (up
+                        ? const Color(0xFF66BB6A)
+                        : const Color(0xFFEF5350))
+                    .withValues(alpha: 0.55),
+                blurRadius: 14,
+              ),
+            ]),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
             decoration: BoxDecoration(
               color: (up
-                  ? const Color(0xFF1B5E20)
-                  : const Color(0xFF7F0000)).withValues(alpha: 0.7),
+                      ? const Color(0xFF1B5E20)
+                      : const Color(0xFF7F0000))
+                  .withValues(alpha: 0.7),
               borderRadius: BorderRadius.circular(6),
             ),
             child: Text(
@@ -644,17 +639,10 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
             ),
           ),
           const Spacer(),
-          if (_news != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              decoration: BoxDecoration(
-                color: Potatuhs.orange.withValues(alpha: 0.3),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                    color: Potatuhs.orange.withValues(alpha: 0.7)),
-              ),
-              child: Text('NEWS',
-                  style: Potatuhs.label(size: 10, color: Potatuhs.gold)),
+          if (_inPosition)
+            Text(
+              'avg \$${_avgCost.toStringAsFixed(2)}',
+              style: Potatuhs.label(size: 10, color: Potatuhs.textSecondary),
             ),
         ],
       ),
@@ -677,13 +665,9 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         const Text('\u{1F4F0}', style: TextStyle(fontSize: 14)),
         const SizedBox(width: 8),
         Expanded(
-          child: Text(
-            news.headline,
-            style: Potatuhs.body(
-                size: 12,
-                weight: FontWeight.w700,
-                color: Potatuhs.gold),
-          ),
+          child: Text(news.headline,
+              style: Potatuhs.body(
+                  size: 12, weight: FontWeight.w700, color: Potatuhs.gold)),
         ),
         Text(
           news.impulse > 0 ? '▲ SPIKE' : '▼ CRASH',
@@ -697,154 +681,234 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     );
   }
 
+  // ─── Position summary ─────────────────────────────────────────────────────
   Widget _buildPositionRow() {
     if (!_inPosition) {
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
         child: Text(
-          'No open position  —  tap BUY to enter',
-          style: Potatuhs.label(size: 11, color: Potatuhs.textFaint),
+          'No shares held — set a size, then BUY or place a LIMIT order',
+          style: Potatuhs.label(size: 10, color: Potatuhs.textFaint),
           textAlign: TextAlign.center,
         ),
       );
     }
     final upnl = _unrealizedPnl;
+    final col  = upnl >= 0 ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: Potatuhs.surface(
-        fill: (upnl >= 0
-            ? const Color(0xFF1B5E20)
-            : const Color(0xFF7F0000)).withValues(alpha: 0.35),
-        borderColor: (upnl >= 0
-            ? const Color(0xFF66BB6A)
-            : const Color(0xFFEF5350)).withValues(alpha: 0.5),
+        fill: col.withValues(alpha: 0.18),
+        borderColor: col.withValues(alpha: 0.5),
         radius: 10,
       ),
       child: Row(children: [
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('OPEN  @  \$${_entryPrice.toStringAsFixed(2)}',
-              style: Potatuhs.label(size: 10, color: Potatuhs.textSecondary)),
-          const SizedBox(height: 2),
+        Text('${_heldShares.toStringAsFixed(0)} sh @ \$${_avgCost.toStringAsFixed(2)}',
+            style: Potatuhs.label(size: 11, color: Potatuhs.textSecondary)),
+        const Spacer(),
+        Text('val \$${_positionValue.toStringAsFixed(0)}',
+            style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary)),
+        const SizedBox(width: 10),
+        Text(
+          'unreal ${upnl >= 0 ? "+" : "-"}\$${upnl.abs().toStringAsFixed(0)}',
+          style: Potatuhs.body(size: 13, weight: FontWeight.w700, color: col),
+        ),
+      ]),
+    );
+  }
+
+  // ─── SIZE control (the batch knob) ────────────────────────────────────────
+  Widget _buildSizeControl() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 4, 10, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: Potatuhs.surface(
+        fill: Potatuhs.inkPanel.withValues(alpha: 0.7),
+        borderColor: Potatuhs.gold.withValues(alpha: 0.3),
+        radius: 12,
+      ),
+      child: Column(children: [
+        Row(children: [
+          Text('SIZE',
+              style: Potatuhs.label(size: 10, color: Potatuhs.gold)),
+          const SizedBox(width: 10),
+          _stepperBtn('−', () => _bumpLot(-1)),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Center(
+              child: Text('$_lotSize sh',
+                  style: Potatuhs.body(
+                      size: 20,
+                      weight: FontWeight.w800,
+                      color: Potatuhs.textPrimary)),
+            ),
+          ),
+          _stepperBtn('+', () => _bumpLot(1)),
+          const SizedBox(width: 8),
+          ..._kMtLotPresets.map((p) => Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: _presetBtn('$p', () => _setLot(p), _lotSize == p),
+              )),
+          const SizedBox(width: 4),
+          _presetBtn('MAX', _maxLot, false, wide: true),
+        ]),
+        const SizedBox(height: 6),
+        Row(children: [
+          Text('LIMIT', style: Potatuhs.label(size: 9, color: Potatuhs.airForce)),
+          const SizedBox(width: 6),
           Text(
-            'Unrealized  ${upnl >= 0 ? "+" : ""}\$${upnl.toStringAsFixed(2)}',
-            style: Potatuhs.body(
-              size: 14,
-              weight: FontWeight.w700,
-              color: upnl >= 0
-                  ? const Color(0xFF66BB6A)
-                  : const Color(0xFFEF5350),
+            _limitOffset <= 0.001
+                ? 'at market \$${_price.toStringAsFixed(2)}'
+                : '\$${_limitPrice.toStringAsFixed(2)}  (${(_limitOffset * _kMtLimitOffsetMax * 100).toStringAsFixed(0)}% below)',
+            style: Potatuhs.label(size: 9, color: Potatuhs.textSecondary),
+          ),
+          Expanded(
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                thumbShape:
+                    const RoundSliderThumbShape(enabledThumbRadius: 7),
+                overlayShape:
+                    const RoundSliderOverlayShape(overlayRadius: 14),
+                activeTrackColor: Potatuhs.airForce,
+                inactiveTrackColor: Colors.white.withValues(alpha: 0.12),
+                thumbColor: Potatuhs.airForce,
+              ),
+              child: Slider(
+                value: _limitOffset,
+                onChanged: (v) => setState(() => _limitOffset = v),
+              ),
             ),
           ),
         ]),
-        const Spacer(),
-        Text(
-          '\$${(_price * _shares).toStringAsFixed(0)} value',
-          style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary),
-        ),
       ]),
     );
   }
 
-  Widget _buildTradeButtons(Size screenSize) {
+  Widget _stepperBtn(String label, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 34,
+        height: 34,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+        ),
+        child: Text(label,
+            style: Potatuhs.body(
+                size: 20,
+                weight: FontWeight.w800,
+                color: Potatuhs.textPrimary)),
+      ),
+    );
+  }
+
+  Widget _presetBtn(String label, VoidCallback onTap, bool active,
+      {bool wide = false}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        constraints: BoxConstraints(minWidth: wide ? 40 : 28),
+        height: 30,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        decoration: BoxDecoration(
+          color: active
+              ? Potatuhs.gold.withValues(alpha: 0.28)
+              : Colors.white.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: active
+                ? Potatuhs.gold.withValues(alpha: 0.7)
+                : Colors.white.withValues(alpha: 0.14),
+          ),
+        ),
+        child: Text(label,
+            style: Potatuhs.label(
+                size: 10,
+                color: active ? Potatuhs.gold : Potatuhs.textSecondary)),
+      ),
+    );
+  }
+
+  // ─── Order controls: PLACE LIMIT / CANCEL ALL ─────────────────────────────
+  Widget _buildOrderControls() {
+    final placeReady = _canPlaceOrder && widget.session.isRunning;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
       child: Row(children: [
         Expanded(
+          flex: 3,
           child: GestureDetector(
-            onTap: _inPosition ? null : () => _buy(screenSize),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 120),
-              height: 62,
+            onTap: placeReady ? _placeOrder : null,
+            child: Container(
+              height: 46,
+              alignment: Alignment.center,
               decoration: BoxDecoration(
-                gradient: _inPosition
-                    ? null
-                    : const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF1B5E20), Color(0xFF388E3C)],
-                      ),
-                color: _inPosition
-                    ? Colors.white.withValues(alpha: 0.06)
-                    : null,
-                borderRadius: BorderRadius.circular(16),
+                color: placeReady
+                    ? Potatuhs.airForce.withValues(alpha: 0.22)
+                    : Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: _inPosition
-                      ? Colors.white.withValues(alpha: 0.12)
-                      : const Color(0xFF66BB6A).withValues(alpha: 0.8),
-                  width: 1.5,
+                  color: placeReady
+                      ? Potatuhs.airForce.withValues(alpha: 0.7)
+                      : Colors.white.withValues(alpha: 0.12),
+                  width: 1.4,
                 ),
-                boxShadow: _inPosition
-                    ? null
-                    : [
-                        BoxShadow(
-                          color: const Color(0xFF66BB6A).withValues(alpha: 0.35),
-                          blurRadius: 18,
-                        ),
-                      ],
               ),
-              child: Center(
-                child: Text(
-                  'BUY',
-                  style: Potatuhs.display(
-                    size: 22,
-                    color: _inPosition
-                        ? Potatuhs.textFaint
-                        : const Color(0xFF66BB6A),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text('PLACE LIMIT BUY',
+                      style: Potatuhs.label(
+                          size: 11,
+                          color: placeReady
+                              ? Potatuhs.airForce
+                              : Potatuhs.textFaint)),
+                  Text(
+                    'reserve \$${_orderCost.toStringAsFixed(0)}  ·  $_lotSize @ \$${_limitPrice.toStringAsFixed(2)}',
+                    style: Potatuhs.label(size: 8, color: Potatuhs.textFaint),
                   ),
-                ),
+                ],
               ),
             ),
           ),
         ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: GestureDetector(
-            onTap: _inPosition
-                ? () => setState(() => _sell(screenSize: screenSize))
-                : null,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 120),
-              height: 62,
-              decoration: BoxDecoration(
-                gradient: _inPosition
-                    ? const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF7F0000), Color(0xFFC62828)],
-                      )
-                    : null,
-                color: _inPosition
-                    ? null
-                    : Colors.white.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: _inPosition
-                      ? const Color(0xFFEF5350).withValues(alpha: 0.8)
-                      : Colors.white.withValues(alpha: 0.12),
-                  width: 1.5,
-                ),
-                boxShadow: _inPosition
-                    ? [
-                        BoxShadow(
-                          color:
-                              const Color(0xFFEF5350).withValues(alpha: 0.35),
-                          blurRadius: 18,
-                        ),
-                      ]
-                    : null,
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: _orders.isNotEmpty ? _cancelAllOrders : null,
+          child: Container(
+            height: 46,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: _orders.isNotEmpty
+                  ? const Color(0xFF7F0000).withValues(alpha: 0.3)
+                  : Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: _orders.isNotEmpty
+                    ? const Color(0xFFEF5350).withValues(alpha: 0.6)
+                    : Colors.white.withValues(alpha: 0.12),
+                width: 1.4,
               ),
-              child: Center(
-                child: Text(
-                  'SELL',
-                  style: Potatuhs.display(
-                    size: 22,
-                    color: _inPosition
-                        ? const Color(0xFFEF5350)
-                        : Potatuhs.textFaint,
-                  ),
-                ),
-              ),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text('CANCEL ALL',
+                    style: Potatuhs.label(
+                        size: 10,
+                        color: _orders.isNotEmpty
+                            ? const Color(0xFFEF5350)
+                            : Potatuhs.textFaint)),
+                Text('${(_kMtCancelFeeRate * 100).toStringAsFixed(0)}% fee',
+                    style: Potatuhs.label(size: 7, color: Potatuhs.textFaint)),
+              ],
             ),
           ),
         ),
@@ -852,9 +916,43 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     );
   }
 
+  // ─── Open-order chips (tap to cancel one) ─────────────────────────────────
+  Widget _buildOpenOrders() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 2),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: List.generate(_orders.length, (i) {
+          final o = _orders[i];
+          return GestureDetector(
+            onTap: () => _cancelOrder(i),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Potatuhs.sienna.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(8),
+                border:
+                    Border.all(color: Potatuhs.sienna.withValues(alpha: 0.55)),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text('${o.shares} @ \$${o.limit.toStringAsFixed(2)}',
+                    style: Potatuhs.label(size: 9, color: Potatuhs.sienna)),
+                const SizedBox(width: 6),
+                Icon(Icons.close,
+                    size: 12, color: const Color(0xFFEF5350).withValues(alpha: 0.9)),
+              ]),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  // ─── Player market events ─────────────────────────────────────────────────
   Widget _buildEventButtons() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 4, 10, 2),
+      padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
       child: Row(
         children: List.generate(_kMtEvents.length, (i) {
           final ev       = _kMtEvents[i];
@@ -862,18 +960,16 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           final ready    = cd <= 0;
           final progress = ready ? 1.0 : 1.0 - (cd / _kMtEventCooldown);
           final isUp     = ev.sign > 0;
-          final accentCol = isUp
-              ? const Color(0xFF66BB6A)
-              : const Color(0xFFEF5350);
+          final accentCol =
+              isUp ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
           return Expanded(
             child: GestureDetector(
               onTap: ready ? () => _triggerEvent(i) : null,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 2),
                 child: Stack(alignment: Alignment.center, children: [
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 100),
-                    height: 44,
+                  Container(
+                    height: 42,
                     decoration: BoxDecoration(
                       color: ready
                           ? accentCol.withValues(alpha: 0.18)
@@ -889,48 +985,40 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text(
-                          ev.emoji,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: ready
-                                ? Colors.white
-                                : Colors.white.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        Text(
-                          ev.label,
-                          style: Potatuhs.label(
-                            size: 7,
-                            color: ready
-                                ? accentCol
-                                : Potatuhs.textFaint.withValues(alpha: 0.4),
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        Text(ev.emoji,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: ready
+                                  ? Colors.white
+                                  : Colors.white.withValues(alpha: 0.3),
+                            )),
+                        Text(ev.label,
+                            style: Potatuhs.label(
+                              size: 7,
+                              color: ready
+                                  ? accentCol
+                                  : Potatuhs.textFaint.withValues(alpha: 0.4),
+                            ),
+                            overflow: TextOverflow.ellipsis),
                       ],
                     ),
                   ),
                   if (!ready)
                     SizedBox(
-                      width: 44,
-                      height: 44,
+                      width: 42,
+                      height: 42,
                       child: CustomPaint(
-                        painter: _MtCooldownRingPainter(
-                            progress, accentCol),
+                        painter: _MtCooldownRingPainter(progress, accentCol),
                       ),
                     ),
                   if (!ready)
                     Positioned(
                       bottom: 2,
                       right: 3,
-                      child: Text(
-                        '${cd.ceil()}',
-                        style: Potatuhs.label(
-                            size: 7,
-                            color:
-                                Colors.white.withValues(alpha: 0.55)),
-                      ),
+                      child: Text('${cd.ceil()}',
+                          style: Potatuhs.label(
+                              size: 7,
+                              color: Colors.white.withValues(alpha: 0.55))),
                     ),
                 ]),
               ),
@@ -941,164 +1029,116 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     );
   }
 
-  Widget _buildDebtControls() {
-    final hasDebt = _debt > 0.01;
+  // ─── BUY (market) / SELL row ──────────────────────────────────────────────
+  Widget _buildTradeButtons() {
+    final buyReady  = _canMarketBuy && widget.session.isRunning;
+    final sellReady = _inPosition && widget.session.isRunning;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 2, 10, 4),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: hasDebt
-              ? const Color(0xFF7F0000).withValues(alpha: 0.22)
-              : Potatuhs.inkPanel.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: hasDebt
-                ? const Color(0xFFEF5350).withValues(alpha: 0.45)
-                : Colors.white.withValues(alpha: 0.1),
-            width: 1.0,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Row(children: [
+        Expanded(
+          child: _bigBtn(
+            top: 'BUY $_lotSize',
+            sub: 'market \$${(_lotSize * _price).toStringAsFixed(0)}',
+            enabled: buyReady,
+            colorA: const Color(0xFF1B5E20),
+            colorB: const Color(0xFF388E3C),
+            accent: const Color(0xFF66BB6A),
+            onTap: _marketBuy,
           ),
         ),
-        child: Row(children: [
-          if (hasDebt) ...[
-            const Text('💳', style: TextStyle(fontSize: 13)),
-            const SizedBox(width: 4),
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(
-                'DEBT  \$${_debt.toStringAsFixed(0)}',
-                style: Potatuhs.label(
-                    size: 9,
-                    color: const Color(0xFFEF5350)),
-              ),
-              Text(
-                '${(_kMtInterestRate * 100).toStringAsFixed(0)}%/s bleeding',
-                style: Potatuhs.label(
-                    size: 7,
-                    color: Potatuhs.textFaint),
-              ),
-            ]),
-            const SizedBox(width: 6),
-          ] else ...[
-            Text(
-              'Credit available',
-              style: Potatuhs.label(size: 9, color: Potatuhs.textFaint),
-            ),
-          ],
-          const Spacer(),
-          _debtBtn(
-            label: '+\$${_kMtLoanSize.toInt()} Credit',
-            color: Potatuhs.airForce,
-            onTap: _takeCredit,
+        const SizedBox(width: 10),
+        Expanded(
+          child: _bigBtn(
+            top: 'SELL $_lotSize',
+            sub: sellReady ? 'realize gains' : 'no shares',
+            enabled: sellReady,
+            colorA: const Color(0xFF7F0000),
+            colorB: const Color(0xFFC62828),
+            accent: const Color(0xFFEF5350),
+            onTap: _sellLot,
           ),
-          if (hasDebt) ...[
-            const SizedBox(width: 6),
-            _debtBtn(
-              label: 'Min \$${_kMtMinPayment.toInt()}',
-              color: const Color(0xFFEF9A00),
-              onTap: _minPayment,
+        ),
+        const SizedBox(width: 10),
+        GestureDetector(
+          onTap: sellReady ? _sellAll : null,
+          child: Container(
+            height: 58,
+            width: 64,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: sellReady
+                  ? const Color(0xFFC62828).withValues(alpha: 0.32)
+                  : Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: sellReady
+                    ? const Color(0xFFEF5350).withValues(alpha: 0.8)
+                    : Colors.white.withValues(alpha: 0.12),
+                width: 1.5,
+              ),
             ),
-            const SizedBox(width: 6),
-            _debtBtn(
-              label: 'Pay All',
-              color: const Color(0xFF66BB6A),
-              onTap: _payDebt,
-            ),
-          ],
-        ]),
-      ),
+            child: Text('SELL\nALL',
+                textAlign: TextAlign.center,
+                style: Potatuhs.label(
+                    size: 11,
+                    color: sellReady
+                        ? const Color(0xFFEF5350)
+                        : Potatuhs.textFaint)),
+          ),
+        ),
+      ]),
     );
   }
 
-  Widget _debtBtn({
-    required String label,
-    required Color color,
+  Widget _bigBtn({
+    required String top,
+    required String sub,
+    required bool enabled,
+    required Color colorA,
+    required Color colorB,
+    required Color accent,
     required VoidCallback onTap,
   }) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: enabled ? onTap : null,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        height: 58,
         decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.2),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withValues(alpha: 0.55), width: 1.0),
-        ),
-        child: Text(label,
-            style: Potatuhs.label(size: 9, color: color)),
-      ),
-    );
-  }
-
-  Widget _buildGameOver() {
-    final score  = _finalScore;
-    final won    = score >= 0;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(18),
-        decoration: Potatuhs.surface(
-          fill: Potatuhs.inkPanel.withValues(alpha: 0.95),
-          borderColor: won
-              ? const Color(0xFF66BB6A).withValues(alpha: 0.5)
-              : const Color(0xFFEF5350).withValues(alpha: 0.5),
-          radius: 18,
-          glowColor: won ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
-          glowStrength: 0.25,
-        ),
-        child: Column(children: [
-          Text(
-            won ? 'PROFITABLE CLOSE' : 'CLOSED IN THE RED',
-            style: Potatuhs.display(
-              size: 20,
-              color: won ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
-            ),
+          gradient: enabled
+              ? LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [colorA, colorB],
+                )
+              : null,
+          color: enabled ? null : Colors.white.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: enabled
+                ? accent.withValues(alpha: 0.8)
+                : Colors.white.withValues(alpha: 0.12),
+            width: 1.5,
           ),
-          const SizedBox(height: 4),
-          Text(
-            'Score: \$${score.toStringAsFixed(0)}  (${won ? "+" : ""}\$${(score - _kMtStartingCash).toStringAsFixed(0)})',
-            style: Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
-          ),
-          if (_debt > 0.01)
-            Text(
-              'Debt penalty: −\$${_debt.toStringAsFixed(0)}',
-              style: Potatuhs.label(
-                  size: 11,
-                  color: const Color(0xFFEF5350)),
-            ),
-          if (_highScores.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text('TOP SCORES',
-                style: Potatuhs.label(size: 10, color: Potatuhs.gold)),
-            const SizedBox(height: 4),
-            ..._highScores.asMap().entries.map((e) {
-              final i = e.key;
-              final s = e.value;
-              return Text(
-                '${i + 1}.  \$${(s['score'] as num).toStringAsFixed(0)}  ${s['date']}',
-                style: Potatuhs.body(size: 11, color: Potatuhs.textFaint),
-              );
-            }),
+          boxShadow: enabled
+              ? [BoxShadow(color: accent.withValues(alpha: 0.3), blurRadius: 16)]
+              : null,
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(top,
+                style: Potatuhs.display(
+                    size: 18,
+                    color: enabled ? accent : Potatuhs.textFaint)),
+            Text(sub,
+                style: Potatuhs.label(
+                    size: 8,
+                    color: enabled
+                        ? Colors.white.withValues(alpha: 0.8)
+                        : Potatuhs.textFaint)),
           ],
-          const SizedBox(height: 14),
-          GestureDetector(
-            onTap: _restart,
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 32, vertical: 12),
-              decoration: BoxDecoration(
-                gradient: Potatuhs.ctaGradient,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Potatuhs.ink, width: 2),
-                boxShadow:
-                    Potatuhs.glow(Potatuhs.orange, strength: 0.4, blur: 16),
-              ),
-              child: Text('PLAY AGAIN',
-                  style: Potatuhs.display(size: 16, color: Potatuhs.ink)),
-            ),
-          ),
-          const SizedBox(height: 4),
-        ]),
+        ),
       ),
     );
   }
@@ -1121,8 +1161,8 @@ class _MtBackgroundPainter extends CustomPainter {
 class _MtChartPainter extends CustomPainter {
   final List<_MtPriceSample> chart;
   final double baseline;
-  final double elapsed;
-  _MtChartPainter(this.chart, this.baseline, this.elapsed);
+  final double? limitLine;
+  _MtChartPainter(this.chart, this.baseline, this.limitLine);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1146,6 +1186,10 @@ class _MtChartPainter extends CustomPainter {
     double maxP = chart.map((s) => s.price).reduce(max);
     if (baseline < minP) minP = baseline;
     if (baseline > maxP) maxP = baseline;
+    if (limitLine != null) {
+      if (limitLine! < minP) minP = limitLine!;
+      if (limitLine! > maxP) maxP = limitLine!;
+    }
     final pad = (maxP - minP) * 0.12 + 4;
     minP -= pad;
     maxP += pad;
@@ -1172,6 +1216,25 @@ class _MtChartPainter extends CustomPainter {
       canvas.drawLine(Offset(x, baseY), Offset(x + 5, baseY), dashPaint);
     }
 
+    // Open-order limit line (sienna dashes + label).
+    if (limitLine != null) {
+      final ly = py(limitLine!);
+      final limPaint = Paint()
+        ..color = Potatuhs.sienna.withValues(alpha: 0.8)
+        ..strokeWidth = 1.2;
+      for (double x = 0; x < size.width; x += 12) {
+        canvas.drawLine(Offset(x, ly), Offset(x + 6, ly), limPaint);
+      }
+      GameFx.text(
+        canvas,
+        'LIMIT \$${limitLine!.toStringAsFixed(0)}',
+        Offset(6, ly - 12),
+        9,
+        Potatuhs.sienna,
+        weight: FontWeight.w700,
+      );
+    }
+
     final linePath = Path();
     for (int i = 0; i < chart.length; i++) {
       final x = px(i);
@@ -1180,11 +1243,9 @@ class _MtChartPainter extends CustomPainter {
     }
 
     final lastPrice = chart.last.price;
-    final profiting  = lastPrice >= baseline;
-    final lineColor  = profiting
-        ? const Color(0xFF66BB6A)
-        : const Color(0xFFEF5350);
-    final glowColor  = lineColor;
+    final profiting = lastPrice >= baseline;
+    final lineColor =
+        profiting ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
 
     final fillPath = Path.from(linePath)
       ..lineTo(size.width, size.height)
@@ -1206,10 +1267,10 @@ class _MtChartPainter extends CustomPainter {
     canvas.drawPath(
       linePath,
       Paint()
-        ..color = glowColor.withValues(alpha: 0.3)
+        ..color = lineColor.withValues(alpha: 0.3)
         ..strokeWidth = 7
         ..style = PaintingStyle.stroke
-        ..strokeCap  = StrokeCap.round
+        ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
     );
@@ -1217,10 +1278,10 @@ class _MtChartPainter extends CustomPainter {
     canvas.drawPath(
       linePath,
       Paint()
-        ..color      = lineColor
+        ..color = lineColor
         ..strokeWidth = 2.2
-        ..style      = PaintingStyle.stroke
-        ..strokeCap  = StrokeCap.round
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round,
     );
 
@@ -1232,25 +1293,14 @@ class _MtChartPainter extends CustomPainter {
         ..color = lineColor.withValues(alpha: 0.35)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
     );
-    canvas.drawCircle(
-      Offset(tipX, tipY), 3.5,
-      Paint()..color = lineColor,
-    );
+    canvas.drawCircle(Offset(tipX, tipY), 3.5, Paint()..color = lineColor);
 
-    GameFx.text(
-      canvas,
-      '\$${maxP.toStringAsFixed(0)}',
-      Offset(size.width - 22, 8),
-      9,
-      Potatuhs.textFaint.withValues(alpha: 0.7),
-    );
-    GameFx.text(
-      canvas,
-      '\$${minP.toStringAsFixed(0)}',
-      Offset(size.width - 22, size.height - 8),
-      9,
-      Potatuhs.textFaint.withValues(alpha: 0.7),
-    );
+    GameFx.text(canvas, '\$${maxP.toStringAsFixed(0)}',
+        Offset(size.width - 22, 8), 9,
+        Potatuhs.textFaint.withValues(alpha: 0.7));
+    GameFx.text(canvas, '\$${minP.toStringAsFixed(0)}',
+        Offset(size.width - 22, size.height - 8), 9,
+        Potatuhs.textFaint.withValues(alpha: 0.7));
   }
 
   @override
@@ -1259,22 +1309,14 @@ class _MtChartPainter extends CustomPainter {
 
 // ─── FX overlay painter ───────────────────────────────────────────────────────
 class _MtFxPainter extends CustomPainter {
-  final List<FxParticle>     particles;
-  final List<_MtPop>         pops;
-  final List<_JuiceParticle> juice;
-  _MtFxPainter(this.particles, this.pops, this.juice);
+  final List<FxParticle> particles;
+  final List<_MtPop>     pops;
+  _MtFxPainter(this.particles, this.pops);
 
   @override
   void paint(Canvas canvas, Size size) {
     FxBurst.paint(canvas, particles);
-    for (final p in pops)  p.paint(canvas);
-    for (final j in juice) {
-      final a = (j.life / j.maxLife).clamp(0.0, 1.0) * 0.85;
-      canvas.drawCircle(
-        Offset(j.x, j.y), j.radius * (0.4 + 0.6 * (j.life / j.maxLife)),
-        Paint()..color = j.color.withValues(alpha: a),
-      );
-    }
+    for (final p in pops) p.paint(canvas);
   }
 
   @override
@@ -1301,10 +1343,10 @@ class _MtCooldownRingPainter extends CustomPainter {
       progress * 2 * pi,
       false,
       Paint()
-        ..color       = color.withValues(alpha: 0.65)
+        ..color = color.withValues(alpha: 0.65)
         ..strokeWidth = 2.5
-        ..style       = PaintingStyle.stroke
-        ..strokeCap   = StrokeCap.round,
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round,
     );
   }
 

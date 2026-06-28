@@ -141,12 +141,18 @@ class BoardSection {
   final IconData icon;
   final PowerUp powerUp;
 
+  /// Flavor name for this region's themed power-up (e.g. 'harvest charm',
+  /// 'mitosis'). The mechanical effect is [powerUp]; this is the display label
+  /// the new maps use. Null falls back to [powerUp]'s own label.
+  final String? powerUpTheme;
+
   const BoardSection({
     required this.scale,
     required this.name,
     required this.color,
     required this.icon,
     required this.powerUp,
+    this.powerUpTheme,
   });
 }
 
@@ -197,7 +203,7 @@ const List<BoardSection> kBoardSections = [
   ),
 ];
 
-enum SpaceType { gain, lose, powerUp, event, shop }
+enum SpaceType { gain, lose, powerUp, event, shop, cardCommon, cardWild }
 
 /// Where the Potato Market sits on the main loop (Organelles section, inside
 /// the filibuster loop's circuit so stallers can keep passing it).
@@ -227,16 +233,36 @@ class BoardSpace {
   /// True for spaces on a shortcut lane (off the main serpentine loop).
   final bool isShortcut;
 
+  /// Position along the path, 0…N-1. Equals [index] on the new [GameMap]s;
+  /// kept separate so the legacy [buildBoard] retains its [index] meaning.
+  final int order;
+
+  /// Normalized board coordinates in [0..1] for the per-topology renderer
+  /// (spiral / grid / S-curve). Zero on the legacy board.
+  final double x;
+  final double y;
+
+  /// Auto-relocation target on landing — a ladder, snake, or rainbow slide.
+  /// Null for ordinary spaces. (Forks use [nexts]; jumps move you immediately.)
+  final int? jumpTo;
+
   const BoardSpace({
     required this.index,
     required this.sectionIndex,
     required this.type,
     required this.nexts,
     this.isShortcut = false,
+    this.order = 0,
+    this.x = 0,
+    this.y = 0,
+    this.jumpTo,
   });
 
   bool get isFork => nexts.length > 1;
+  bool get isJump => jumpTo != null;
 
+  /// Legacy-board section lookup (fixed 6-section [kBoardSections]). New
+  /// [GameMap]s carry their own sections — use [GameMap.sectionOf] there.
   BoardSection get section => kBoardSections[sectionIndex];
 }
 
@@ -367,11 +393,26 @@ class PartyPlayer {
   final Color color;
   final int teamIndex;
 
+  /// Index into [kCharacters] — the avatar this player picked in the lobby
+  /// (or the seat default). Drives the token sticker + color.
+  final int character;
+
   // Board state
   int position = 0;
   int paydirt = 0; // in-game currency, earned in mini-games & on the board
   int potatoes = 0; // bought at the Potato Market — most potatoes wins
   int atp = 0; // energy currency, trickles in each turn, spent to boost rolls
+  int diamonds = 0; // collected along the path; convert via the end-game award
+
+  // Per-player stats for the end-game superlative potato awards (MAPS_SPEC).
+  int roundWins = 0;
+  int roundLosses = 0; // "L's"
+  int stolenFromCount = 0;
+  int taps = 0;
+  int swipes = 0;
+  int itemsUsed = 0;
+  int stepsTaken = 0;
+  int get itemsHeldFinal => items.length;
 
   /// Held power-ups awaiting use — the player's pack. Picked up on power-up
   /// spaces, spent on your turn via [PartyController.useItem]. Capped at
@@ -391,6 +432,7 @@ class PartyPlayer {
     required this.name,
     required this.color,
     required this.teamIndex,
+    this.character = 0,
   });
 
   List<PowerUp> get armedPowerUps => [

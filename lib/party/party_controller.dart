@@ -4,6 +4,7 @@ import 'package:cell_mobile/games/mini_game.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:flutter/foundation.dart';
 
+import 'maps/game_map.dart';
 import 'party_models.dart';
 
 /// One recorded player decision. Deterministic transitions (walking a step,
@@ -121,6 +122,8 @@ class PartyController extends ChangeNotifier {
     int? seed,
     Random? random,
     this.randomMode = PartyRandomMode.local,
+    this.gameMap,
+    List<int>? characters,
   })  : seed = seed ?? _newSeed(),
         _initialNames = List<String>.unmodifiable(playerNames) {
     _rng = random ?? Random(this.seed);
@@ -128,11 +131,16 @@ class PartyController extends ChangeNotifier {
         ? _ReplayTape()
         : _SeededTape(_rng, record: randomMode == PartyRandomMode.host);
     for (var i = 0; i < mode.playerCount; i++) {
+      // Character chosen in the lobby (online) or defaulted to the seat index.
+      final charIdx = (characters != null && i < characters.length)
+          ? characters[i] % kCharacters.length
+          : i % kCharacters.length;
       players.add(PartyPlayer(
         index: i,
         name: playerNames[i],
-        color: kCharacters[i].color,
+        color: kCharacters[charIdx].color,
         teamIndex: mode.teamOf(i),
+        character: charIdx,
       ));
     }
     _beginTurn(); // first player's energy trickle
@@ -148,12 +156,14 @@ class PartyController extends ChangeNotifier {
     required List<String> playerNames,
     required int seed,
     required List<PartyInput> inputs,
+    GameMap? gameMap,
   }) {
     final c = PartyController(
       mode: mode,
       totalRounds: totalRounds,
       playerNames: playerNames,
       seed: seed,
+      gameMap: gameMap,
     );
     for (final input in inputs) {
       c._pumpToDecision();
@@ -176,6 +186,7 @@ class PartyController extends ChangeNotifier {
     required List<String> playerNames,
     required List<PartyInput> inputs,
     required List<int> randoms,
+    GameMap? gameMap,
   }) {
     final c = PartyController(
       mode: mode,
@@ -183,6 +194,7 @@ class PartyController extends ChangeNotifier {
       playerNames: playerNames,
       seed: 0, // unused: the client tape never touches Random
       randomMode: PartyRandomMode.client,
+      gameMap: gameMap,
     );
     c.feedRandoms(randoms);
     for (final input in inputs) {
@@ -216,8 +228,16 @@ class PartyController extends ChangeNotifier {
   /// Ordered log of player decisions — the replayable record of the match.
   final List<PartyInput> inputLog = [];
 
+  /// The board this match plays on. One of the three [GameMap]s when set;
+  /// otherwise the legacy 52-space loop.
+  final GameMap? gameMap;
+
   final List<PartyPlayer> players = [];
-  final List<BoardSpace> board = buildBoard();
+  late final List<BoardSpace> board = gameMap?.spaces ?? buildBoard();
+
+  /// Map-aware section lookup — the new maps carry their own 8–10 sections, the
+  /// legacy board uses the fixed [kBoardSections].
+  BoardSection sectionOf(BoardSpace s) => gameMap?.sectionOf(s) ?? s.section;
 
   PartyPhase phase = PartyPhase.turnStart;
   int round = 1;
@@ -361,6 +381,12 @@ class PartyController extends ChangeNotifier {
   void advanceStep() {
     if (phase != PartyPhase.moving || stepsRemaining <= 0) return;
     final from = board[currentPlayer.position];
+    // Linear maps end at the anchor (order 87, no successor): stop walking.
+    if (from.nexts.isEmpty) {
+      stepsRemaining = 0;
+      _finishStep();
+      return;
+    }
     if (from.isFork) {
       phase = PartyPhase.chooseBranch;
       notifyListeners();
@@ -389,14 +415,19 @@ class PartyController extends ChangeNotifier {
   void _stepTo(int next) {
     final p = currentPlayer;
     p.position = next;
+    p.stepsTaken++;
     stepsRemaining--;
-    if (next == 0) {
+    // Lap bonus only on the legacy loop (the maps are linear, not a ring).
+    if (gameMap == null && next == 0) {
       p.paydirt += 5;
       turnLog.add('${p.name} completed a lap of existence: +5 paydirt.');
     }
-    // Passing (or landing on) the Potato Market with enough paydirt pauses
-    // the walk for a purchase decision.
-    if (next == kShopIndex && p.paydirt >= kPotatoPrice) {
+    // Passing (or landing on) a market with enough paydirt pauses the walk for
+    // a purchase decision. Legacy uses the fixed shop index; maps use the type.
+    final atShop = gameMap == null
+        ? next == kShopIndex
+        : board[next].type == SpaceType.shop;
+    if (atShop && p.paydirt >= kPotatoPrice) {
       phase = PartyPhase.shopOffer;
       notifyListeners();
       return;
@@ -428,6 +459,16 @@ class PartyController extends ChangeNotifier {
   void _finishStep() {
     final p = currentPlayer;
     if (stepsRemaining <= 0) {
+      // Ladders / snakes / rainbow slides relocate you on landing, then the
+      // destination space resolves.
+      final landed = board[p.position];
+      if (landed.jumpTo != null) {
+        final to = landed.jumpTo!;
+        turnLog.add(to > p.position
+            ? '${p.name} rode a lift up to ${to}!'
+            : '${p.name} slipped back to ${to}.');
+        p.position = to;
+      }
       _resolveSpace(p, board[p.position], turnLog);
       phase = PartyPhase.spaceResolved;
     }
@@ -463,7 +504,7 @@ class PartyController extends ChangeNotifier {
         }
         break;
       case SpaceType.powerUp:
-        _grantPowerUp(p, space.section, log);
+        _grantPowerUp(p, sectionOf(space), log);
         break;
       case SpaceType.event:
         _runEvent(p, log);
@@ -473,6 +514,12 @@ class PartyController extends ChangeNotifier {
         // just means the walk ended at the market.
         log.add('${p.name} is at the Potato Market '
             '(potatoes cost $kPotatoPrice paydirt).');
+        break;
+      case SpaceType.cardCommon:
+      case SpaceType.cardWild:
+        // TODO(maps): draw from the Tater (common) / Void (wild) deck. Until the
+        // card engine lands, a card tile resolves as a generic event.
+        _runEvent(p, log);
         break;
     }
   }

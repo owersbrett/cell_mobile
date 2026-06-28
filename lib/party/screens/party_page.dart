@@ -10,6 +10,8 @@ import 'package:flutter/material.dart';
 
 import '../../theme/potatuhs.dart';
 import '../party_actions.dart';
+import '../../games/play_config.dart';
+import '../maps/game_map.dart';
 import '../party_controller.dart';
 import '../party_models.dart';
 import '../party_session_store.dart';
@@ -70,8 +72,12 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   }
 
   void _start(PartyMode mode, int rounds, List<String> names) {
-    final c =
-        PartyController(mode: mode, totalRounds: rounds, playerNames: names);
+    final c = PartyController(
+      mode: mode,
+      totalRounds: rounds,
+      playerNames: names,
+      gameMap: gameMapById(PlayConfig.mapId),
+    );
     // Count this fresh board game into the shared counter (Sessions KPI).
     // Only on a NEW board (not _resume), so resuming a dropped game doesn't
     // double-count. Fire-and-forget. See docs/SESSIONS_COUNTER.md.
@@ -520,13 +526,25 @@ class _BoardScreenState extends State<_BoardScreen> {
   Timer? _stepTimer;
   bool _diceSettled = false;
 
+  /// Persistent across the frequent controller rebuilds so a pinch-zoom on the
+  /// board doesn't snap back to 1× every time a token takes a step.
+  final TransformationController _boardTransform = TransformationController();
+
   PartyController get controller => widget.controller;
   PartyActions get actions => widget.actions;
 
   @override
   void initState() {
     super.initState();
+    _boardTransform.addListener(_onZoom);
     _syncMovement();
+  }
+
+  // Rebuild on zoom so the board furniture (nodes, links, tokens) can
+  // counter-scale to a constant on-screen size — zooming spreads the layout
+  // apart while the dots stay the same size, instead of ballooning.
+  void _onZoom() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -576,6 +594,7 @@ class _BoardScreenState extends State<_BoardScreen> {
   @override
   void dispose() {
     _stepTimer?.cancel();
+    _boardTransform.dispose();
     super.dispose();
   }
 
@@ -590,6 +609,7 @@ class _BoardScreenState extends State<_BoardScreen> {
               children: [
                 _topBar(),
                 _scoreboard(),
+                _narratorBar(),
                 const SizedBox(height: 4),
                 Expanded(
                   child: Padding(
@@ -598,6 +618,8 @@ class _BoardScreenState extends State<_BoardScreen> {
                       controller: controller,
                       positionOf: (p) => p.position,
                       highlightPlayer: controller.currentPlayer.index,
+                      transformController: _boardTransform,
+                      viewScale: _boardTransform.value.getMaxScaleOnAxis(),
                     ),
                   ),
                 ),
@@ -632,6 +654,99 @@ class _BoardScreenState extends State<_BoardScreen> {
         ),
       ),
     );
+  }
+
+  // ----------------------------------------------------------- narrator
+
+  /// Hash calls the play-by-play. A persistent strip under the scoreboard that
+  /// narrates each beat of the game in Hash's voice (leaf-green, the company's
+  /// steady grinder).
+  Widget _narratorBar() {
+    const hashGreen = Color(0xFF7CB342);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13200D),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: hashGreen.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: hashGreen,
+              shape: BoxShape.circle,
+              border: Border.all(color: hashGreen, width: 1.5),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Image.asset(
+              'assets/characters/hash.png',
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => const Center(
+                child: Text('H',
+                    style: TextStyle(
+                        fontFamily: _kFont,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black)),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('HASH · NARRATOR',
+                    style: Potatuhs.label(color: const Color(0xFF9CCC65))),
+                const SizedBox(height: 1),
+                Text(
+                  _hashNarration(),
+                  style:
+                      Potatuhs.body(size: 13, color: Potatuhs.textSecondary),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One line of Hash commentary for the current game beat. Prefers the live
+  /// turn log (the real effect that just happened); otherwise a phase prompt.
+  String _hashNarration() {
+    final c = controller;
+    final last = c.turnLog.isNotEmpty ? c.turnLog.last : null;
+    final who = c.currentPlayer.name;
+    switch (c.phase) {
+      case PartyPhase.turnStart:
+        return "Uhhh… $who, you're up. Give the dice a rip.";
+      case PartyPhase.rollResult:
+        return last ?? "$who lets it fly!";
+      case PartyPhase.moving:
+        return last ?? "$who is on the move…";
+      case PartyPhase.chooseBranch:
+        return "Fork in the road — $who, climb out or push deeper?";
+      case PartyPhase.shopOffer:
+        return last ?? "The Potato Market! Cash in, $who?";
+      case PartyPhase.spaceResolved:
+        return last ?? "And $who sticks the landing.";
+      case PartyPhase.minigameIntro:
+        return "Mini-game time — everybody plays for the paydirt!";
+      case PartyPhase.passPhone:
+        return "Pass the phone — $who, you're on deck.";
+      case PartyPhase.minigamePlaying:
+        return "Go go go!";
+      case PartyPhase.minigameResults:
+        return "Let's tally it up…";
+      case PartyPhase.gameOver:
+        return "Uhhh… and that's a wrap. What a game, folks.";
+    }
   }
 
   Widget _topBar() {
@@ -1343,11 +1458,18 @@ class _BoardView extends StatelessWidget {
   final PartyController controller;
   final int Function(PartyPlayer) positionOf;
   final int highlightPlayer;
+  final TransformationController transformController;
+
+  /// Current pinch-zoom scale; node/link/token sizes divide by this so they
+  /// keep a constant on-screen size as the board zooms.
+  final double viewScale;
 
   const _BoardView({
     required this.controller,
     required this.positionOf,
     required this.highlightPlayer,
+    required this.transformController,
+    required this.viewScale,
   });
 
   @override
@@ -1355,7 +1477,11 @@ class _BoardView extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final geo = _BoardGeometry(
-            Size(constraints.maxWidth, constraints.maxHeight));
+          Size(constraints.maxWidth, constraints.maxHeight),
+          spaces: controller.board,
+          useXY: controller.gameMap != null,
+          scale: viewScale,
+        );
 
         // Group tokens by node so co-located tokens fan out around it.
         final tokensAt = <int, List<PartyPlayer>>{};
@@ -1365,12 +1491,29 @@ class _BoardView extends StatelessWidget {
 
         final startCenter = geo.nodeCenter(0);
 
-        return Stack(
-          clipBehavior: Clip.none,
-          children: [
-            // Territory watermarks at each section's arc, nudged inward.
-            for (var s = 0; s < _BoardGeometry.sections; s++)
-              _sectionLabel(geo, s),
+        // Pinch to zoom + drag to pan the board; nodes, links and tokens scale
+        // with the zoom. Double-tap resets to the full board. The transform is
+        // held by the parent state so it survives the frequent step-by-step
+        // rebuilds. Tapping a space (per-node tooltip) works at any zoom.
+        return GestureDetector(
+          onDoubleTap: () =>
+              transformController.value = Matrix4.identity(),
+          child: InteractiveViewer(
+            transformationController: transformController,
+            minScale: 0.6,
+            maxScale: 5.0,
+            boundaryMargin: const EdgeInsets.all(160),
+            child: SizedBox(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+            // Territory watermarks — legacy ring only (the new maps carry
+            // their own 8–10 sections and skip the centroid watermark).
+            if (controller.gameMap == null)
+              for (var s = 0; s < _BoardGeometry.sections; s++)
+                _sectionLabel(geo, s),
             Positioned.fill(
               child: CustomPaint(painter: _BoardPathPainter(geo)),
             ),
@@ -1395,7 +1538,10 @@ class _BoardView extends StatelessWidget {
             ),
             for (final entry in tokensAt.entries)
               ..._tokens(geo, entry.key, entry.value),
-          ],
+              ],
+              ),
+            ),
+          ),
         );
       },
     );
@@ -1430,7 +1576,7 @@ class _BoardView extends StatelessWidget {
     final isShop = space.type == SpaceType.shop;
     // Shop is a landmark — draw it larger; shortcut nodes slightly smaller.
     final r = geo.nodeRadius * (isShop ? 1.35 : space.isShortcut ? 0.85 : 1.0);
-    var color = space.section.color;
+    var color = controller.sectionOf(space).color;
 
     IconData icon;
     Color iconColor;
@@ -1455,6 +1601,14 @@ class _BoardView extends StatelessWidget {
         icon = Icons.storefront;
         iconColor = const Color(0xFFD7A86E);
         color = const Color(0xFFD7A86E);
+        break;
+      case SpaceType.cardCommon:
+        icon = Icons.style;
+        iconColor = const Color(0xFF80DEEA);
+        break;
+      case SpaceType.cardWild:
+        icon = Icons.auto_awesome;
+        iconColor = const Color(0xFFCE93D8);
         break;
     }
 
@@ -1507,18 +1661,34 @@ class _BoardView extends StatelessWidget {
   /// What landing on [space] does — shown as a tap tooltip on the tile.
   String _spaceDescription(BoardSpace space) {
     final lane = space.isShortcut ? ' · risky shortcut lane' : '';
+    final sec = controller.sectionOf(space);
+    // On the new maps, lead with the region name so a tap tells you where you
+    // are as well as what the space does.
+    final region = controller.gameMap != null ? '${sec.name}\n' : '';
+    final isAnchor = controller.gameMap != null &&
+        space.order == controller.board.length - 1;
+    if (isAnchor) {
+      return '${region}THE ANCHOR\nThe finish line + potato shop — buy a potato '
+          'for $kPotatoPrice paydirt.';
+    }
     switch (space.type) {
       case SpaceType.gain:
-        return 'Paydirt space$lane\nLand here: +5 paydirt.';
+        return '${region}Paydirt space$lane\nLand here: +5 paydirt.';
       case SpaceType.lose:
-        return 'Entropy space$lane\nLand here: −5 paydirt (a Void Shield blocks it).';
+        return '${region}Entropy space$lane\nLand here: −5 paydirt (a Void Shield blocks it).';
       case SpaceType.powerUp:
-        final pu = space.section.powerUp;
-        return '${pu.label}$lane\nPick it up to use on your turn: ${pu.description}.';
+        final pu = sec.powerUp;
+        final theme = sec.powerUpTheme;
+        final name = theme != null ? '${pu.label} · $theme' : pu.label;
+        return '$region$name$lane\nPick it up to use on your turn: ${pu.description}.';
       case SpaceType.event:
-        return 'Event space$lane\nTriggers a random cosmic event.';
+        return '${region}Event space$lane\nTriggers a random cosmic event.';
       case SpaceType.shop:
-        return 'Potato Market\nSpend $kPotatoPrice paydirt for a potato.';
+        return '${region}Potato Market\nSpend $kPotatoPrice paydirt for a potato.';
+      case SpaceType.cardCommon:
+        return '${region}Tater Card$lane\nDraw a common card — usually upside.';
+      case SpaceType.cardWild:
+        return '${region}Void Card$lane\nDraw a wild card — big swings, can hurt.';
     }
   }
 
@@ -1534,10 +1704,13 @@ class _BoardView extends StatelessWidget {
       final fan = players.length > 1 ? geo.nodeRadius * 0.75 : 0.0;
       final angle = 2 * pi * j / players.length - pi / 2;
       final off = Offset(cos(angle) * fan, sin(angle) * fan);
+      final asset = kCharacters[p.character % kCharacters.length].asset;
       widgets.add(AnimatedPositioned(
         key: ValueKey('token_${p.index}'),
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeOut,
+        // Matches the per-step walk cadence so the character visibly slides
+        // node-to-node toward its next location.
+        duration: const Duration(milliseconds: 230),
+        curve: Curves.easeInOut,
         left: center.dx + off.dx - tr,
         top: center.dy + off.dy - tr,
         child: Container(
@@ -1546,13 +1719,26 @@ class _BoardView extends StatelessWidget {
           decoration: BoxDecoration(
             color: p.color,
             shape: BoxShape.circle,
-            border: Border.all(color: Colors.black, width: 1),
+            border: Border.all(
+                color: isCurrent ? Colors.white : Colors.black,
+                width: isCurrent ? 2.5 : 1.5),
             boxShadow: [
               BoxShadow(
                   color: p.color.withValues(alpha: 0.85),
                   blurRadius: isCurrent ? 8 : 4),
             ],
           ),
+          // The character sprite rides the token; falls back to the solid color
+          // chip if the asset is missing.
+          child: asset == null
+              ? null
+              : ClipOval(
+                  child: Image.asset(
+                    asset,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
         ),
       ));
     }
@@ -1575,14 +1761,28 @@ class _BoardGeometry {
   late final double _len;
   late final double nodeRadius;
 
-  _BoardGeometry(this.size)
-      : rect = _boardRect(size),
+  /// The spaces being rendered, and whether to lay them out by their own
+  /// normalized (x,y) — true for the three [GameMap]s, false for the legacy ring.
+  final List<BoardSpace> spaces;
+  final bool useXY;
+
+  /// Live pinch-zoom scale. Node/link/token sizes divide by this so they hold
+  /// a constant on-screen size while the layout zooms.
+  final double viewScale;
+
+  _BoardGeometry(this.size,
+      {this.spaces = const [], this.useXY = false, double scale = 1.0})
+      : viewScale = scale <= 0 ? 1.0 : scale,
+        rect = _boardRect(size),
         corner = _boardCorner(size) {
     loop = Path()
       ..addRRect(RRect.fromRectAndRadius(rect, Radius.circular(corner)));
     _metric = loop.computeMetrics().first;
     _len = _metric.length;
-    nodeRadius = min(22.0, _len / kMainLoopLength * 0.42);
+    final base = useXY
+        ? min(15.0, min(rect.width, rect.height) / 18)
+        : min(22.0, _len / kMainLoopLength * 0.42);
+    nodeRadius = base / viewScale;
   }
 
   static Rect _boardRect(Size size) {
@@ -1612,6 +1812,10 @@ class _BoardGeometry {
       _metric.extractPath(f0 * _len, f1 * _len);
 
   Offset nodeCenter(int index) {
+    if (useXY) {
+      final s = spaces[index];
+      return Offset(rect.left + s.x * rect.width, rect.top + s.y * rect.height);
+    }
     if (index >= kMainLoopLength) return branchNodeCenter(index);
     return _pointAt(index / kMainLoopLength);
   }
@@ -1681,6 +1885,12 @@ class _BoardPathPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // New maps lay out by (x,y): draw path links + ladders/snakes/slides and
+    // skip the legacy ring entirely.
+    if (geo.useXY) {
+      _paintTopology(canvas);
+      return;
+    }
     // Soft under-glow + base ring on the whole closed loop.
     canvas.drawPath(
       geo.loop,
@@ -1745,6 +1955,43 @@ class _BoardPathPainter extends CustomPainter {
       );
       // Arrowhead near the merge, pointing the way the lane flows.
       _arrow(canvas, _quad(f, c, m, 0.80), m - c, col, 6);
+    }
+  }
+
+  /// Renders a [GameMap] topology: thin links along the path, plus accented
+  /// strokes for ladders (green, forward) and snakes/back-slides (red).
+  void _paintTopology(Canvas canvas) {
+    final spaces = geo.spaces;
+    final z = geo.viewScale; // counter-scale strokes to constant on-screen width
+    final link = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3 / z
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white.withValues(alpha: 0.20);
+    for (final s in spaces) {
+      final from = geo.nodeCenter(s.order);
+      for (final n in s.nexts) {
+        canvas.drawLine(from, geo.nodeCenter(n), link);
+      }
+    }
+    for (final s in spaces) {
+      final j = s.jumpTo;
+      if (j == null) continue;
+      final col = j > s.order
+          ? const Color(0xFF81C784) // ladder / slide up
+          : const Color(0xFFE57373); // snake back
+      final a = geo.nodeCenter(s.order);
+      final b = geo.nodeCenter(j);
+      canvas.drawLine(
+        a,
+        b,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5 / z
+          ..strokeCap = StrokeCap.round
+          ..color = col.withValues(alpha: 0.75),
+      );
+      _arrow(canvas, Offset.lerp(a, b, 0.85)!, b - a, col, 6 / z);
     }
   }
 

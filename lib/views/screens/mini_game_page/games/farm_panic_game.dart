@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
+import 'package:cell_mobile/games/mini_game.dart';
 import '../../../../games/fx.dart';
 import '../../../../theme/potatuhs.dart';
 
@@ -70,6 +71,10 @@ const double _kHintShowDuration = 2.5; // how long each hint banner shows
 const double _kMidHintCooldown = 18.0; // don't re-show hint more often than this
 const double _kCircStallThresh = 0.22; // avg flow below this triggers hint
 const double _kNoSwipeHintTime = 8.0; // secs without underground swipe → hint
+
+// Failure clocks (for urgency / countdown rings). These mirror the existing
+// fail thresholds so the on-screen countdown is honest.
+const double _kWeedLifeMax = 12.0; // weed damages crop after this many secs
 
 // ---- palette (brand-aligned) -----------------------------------------------
 
@@ -160,7 +165,7 @@ class _Popup {
 
 // ---- phase -----------------------------------------------------------------
 
-enum _Phase { preGame, playing, gameOver }
+enum _Phase { preGame, playing }
 
 // ---- hint state ------------------------------------------------------------
 
@@ -172,10 +177,40 @@ class _Hint {
   _Hint(this.kind);
 }
 
+// ---- next-action directive --------------------------------------------------
+//
+// Every frame we score each demand source by how close it is to costing the
+// player points, pick the single most-urgent one, and surface it as (a) a
+// big colour-coded banner telling the player what to do, and (b) a spotlight +
+// countdown ring drawn on that exact target. The player should never wonder
+// "what now?".
+
+enum _ActionKind { swipeChannel, swatBug, pullWeed, harvest, grabToken, flood }
+
+class _Directive {
+  final _ActionKind kind;
+  final String verb; // e.g. "SWIPE!"
+  final Color color;
+  final double urgency; // 0..1, 1 = about to fail / highest value
+  final Offset? target; // world-space point to spotlight (null = no target)
+  final double? targetRadius; // spotlight radius
+  final double? countdown; // 0..1 of a failure clock remaining (null = none)
+  const _Directive({
+    required this.kind,
+    required this.verb,
+    required this.color,
+    required this.urgency,
+    this.target,
+    this.targetRadius,
+    this.countdown,
+  });
+}
+
 // ---- widget ----------------------------------------------------------------
 
 class FarmPanicGame extends StatefulWidget {
-  const FarmPanicGame({Key? key}) : super(key: key);
+  final MiniGameSession session;
+  const FarmPanicGame({super.key, required this.session});
   @override
   State<FarmPanicGame> createState() => _FarmPanicGameState();
 }
@@ -191,7 +226,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   double _lastTime = 0;
   Size _size = Size.zero;
 
-  int _score = 0;
+  int get _score => widget.session.score;
   int _combo = 1;
 
   // Underground
@@ -222,6 +257,13 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   // Hint system
   _Hint? _activeHint;
   double _lastHintTime = -999;
+
+  // Next-action directive (recomputed each tick)
+  _Directive? _directive;
+  // Smoothed "verb pop" — kicks to 1.0 when the directed action changes so the
+  // banner punches the player's attention, then decays.
+  _ActionKind? _lastDirectiveKind;
+  double _directivePop = 0;
   // Swipe guide animation (shown at game start)
   double _swipeGuideAge = 0;
   bool _swipeGuideDone = false;
@@ -273,6 +315,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
           ..addListener(_onTick);
     _ticker.forward();
     _lastTime = _now();
+    _startGame();
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
@@ -286,7 +329,6 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   // ---- game setup -----------------------------------------------------------
 
   void _startGame() {
-    _score = 0;
     _prevScore = 0;
     _combo = 1;
     _elapsed = 0;
@@ -295,6 +337,9 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _lastSwipeTime = -999;
     _lastHintTime = -999;
     _activeHint = null;
+    _directive = null;
+    _lastDirectiveKind = null;
+    _directivePop = 0;
     _swipeGuideAge = 0;
     _swipeGuideDone = false;
     _scoreFlash = 0;
@@ -331,15 +376,10 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     final dt = (now - _lastTime).clamp(0.001, 0.05).toDouble();
     _lastTime = now;
     if (_size == Size.zero) return;
+    if (!widget.session.isRunning) return;
 
     setState(() {
-      if (_phase != _Phase.playing) return;
-
       _elapsed += dt;
-      if (_elapsed >= _kGameDuration) {
-        _phase = _Phase.gameOver;
-        return;
-      }
 
       _updateShake(dt);
       _updateSwipeGuide(dt);
@@ -357,7 +397,174 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       _spawnTokens(dt);
       _spawnWaterBursts(dt);
       _checkScoreFlash(dt);
+      _computeDirective(dt);
     });
+  }
+
+  // ---- next-action directive ------------------------------------------------
+  //
+  // Build the single most-important "do this now" cue. We rank every live
+  // demand source by an urgency in 0..1, where 1 means "you are about to lose
+  // points / miss the biggest reward", and surface the winner.
+
+  void _computeDirective(double dt) {
+    _Directive? best;
+    void consider(_Directive d) {
+      if (best == null || d.urgency > best!.urgency) best = d;
+    }
+
+    final w = _size.width;
+
+    // 1) Failing channel (circulation about to stall). Most-empty channel.
+    int worstCh = -1;
+    double worstFlow = 1.0;
+    for (int i = 0; i < _channels.length; i++) {
+      if (_channels[i].flow < worstFlow) {
+        worstFlow = _channels[i].flow;
+        worstCh = i;
+      }
+    }
+    if (worstCh >= 0 && worstFlow < 0.45) {
+      // urgency rises as flow approaches 0
+      final u = (1.0 - worstFlow / 0.45).clamp(0.0, 1.0) * 0.82;
+      consider(_Directive(
+        kind: _ActionKind.swipeChannel,
+        verb: 'SWIPE!',
+        color: _kRootFlow,
+        urgency: u,
+        target: Offset(w * 0.5, _channelY(worstCh)),
+        targetRadius: 40,
+        countdown: worstFlow.clamp(0.0, 1.0), // ring drains as flow drains
+      ));
+    }
+
+    // 2) Weed about to damage crop. Oldest unpulled weed.
+    _Weed? oldestWeed;
+    for (final weed in _weeds) {
+      if (weed.pulled) continue;
+      if (oldestWeed == null || weed.age > oldestWeed.age) oldestWeed = weed;
+    }
+    if (oldestWeed != null) {
+      final frac = (oldestWeed.age / _kWeedLifeMax).clamp(0.0, 1.0);
+      // grows from a baseline so weeds always read as a real task
+      final u = (0.45 + 0.5 * frac).clamp(0.0, 1.0);
+      consider(_Directive(
+        kind: _ActionKind.pullWeed,
+        verb: 'YANK WEED!',
+        color: _kWeedColor,
+        urgency: u,
+        target: Offset(oldestWeed.x, oldestWeed.y),
+        targetRadius: 30,
+        countdown: (1.0 - frac).clamp(0.0, 1.0),
+      ));
+    }
+
+    // 3) Bug about to break through the ground line. Lowest (closest) live bug.
+    _Bug? nearestBug;
+    for (final bug in _bugs) {
+      if (bug.dead) continue;
+      if (nearestBug == null || bug.y > nearestBug.y) nearestBug = bug;
+    }
+    if (nearestBug != null) {
+      final breach = _groundY * _kBugDamageThresh;
+      final frac = (nearestBug.y / breach).clamp(0.0, 1.0);
+      final u = (0.4 + 0.55 * frac).clamp(0.0, 1.0);
+      consider(_Directive(
+        kind: _ActionKind.swatBug,
+        verb: 'SWIPE BUG!',
+        color: _kBugColor,
+        urgency: u,
+        target: Offset(nearestBug.x, nearestBug.y),
+        targetRadius: 30,
+        countdown: (1.0 - frac).clamp(0.0, 1.0),
+      ));
+    }
+
+    // 4) Ripe potato ready to harvest (big reward, not a failure). Pick the one
+    //    that has been ripe longest.
+    _Potato? bestRipe;
+    for (final p in _potatoes) {
+      if (!p.ripe) continue;
+      if (bestRipe == null || p.ripeFlashAge > bestRipe.ripeFlashAge) {
+        bestRipe = p;
+      }
+    }
+    if (bestRipe != null) {
+      // reward urgency ramps the longer it sits unharvested
+      final u = (0.5 + 0.3 * (bestRipe.ripeFlashAge / 5.0)).clamp(0.0, 0.86);
+      final px = bestRipe.x * w;
+      final tipY = _groundY - (20.0 + 45.0);
+      consider(_Directive(
+        kind: _ActionKind.harvest,
+        verb: 'HARVEST!',
+        color: _kHarvestReady,
+        urgency: u,
+        target: Offset(px, tipY),
+        targetRadius: 26,
+        countdown: null,
+      ));
+    }
+
+    // 5) Water burst (rare flood power-up) — strong nudge while it's live.
+    _WaterBurst? wb;
+    for (final b in _waterBursts) {
+      if (b.collected) continue;
+      wb = b;
+      break;
+    }
+    if (wb != null) {
+      final frac = (wb.age / 5.5).clamp(0.0, 1.0);
+      consider(_Directive(
+        kind: _ActionKind.flood,
+        verb: 'FLOOD! SWIPE',
+        color: _kWaterBurst,
+        urgency: (0.5 + 0.25 * frac).clamp(0.0, 0.78),
+        target: Offset(wb.x, wb.y),
+        targetRadius: 30,
+        countdown: (1.0 - frac).clamp(0.0, 1.0),
+      ));
+    }
+
+    // 6) Floating cash token — low-priority grab.
+    _Token? tok;
+    for (final t in _tokens) {
+      if (t.banked) continue;
+      tok = t;
+      break;
+    }
+    if (tok != null) {
+      final frac = (tok.age / 4.5).clamp(0.0, 1.0);
+      consider(_Directive(
+        kind: _ActionKind.grabToken,
+        verb: 'GRAB \$!',
+        color: _kTokenColor,
+        urgency: (0.32 + 0.2 * frac).clamp(0.0, 0.6),
+        target: Offset(tok.x, tok.y),
+        targetRadius: 26,
+        countdown: (1.0 - frac).clamp(0.0, 1.0),
+      ));
+    }
+
+    // Fallback so the banner is never empty early-game: nudge swiping.
+    best ??= _Directive(
+      kind: _ActionKind.swipeChannel,
+      verb: 'SWIPE TO GROW!',
+      color: _kRootFlow,
+      urgency: 0.2,
+      target: _channels.isNotEmpty ? Offset(w * 0.5, _channelY(0)) : null,
+      targetRadius: 40,
+      countdown: null,
+    );
+
+    // Pop the banner when the directed action changes.
+    if (best!.kind != _lastDirectiveKind) {
+      _directivePop = 1.0;
+      _lastDirectiveKind = best!.kind;
+    } else {
+      _directivePop = (_directivePop - dt * 3.2).clamp(0.0, 1.0);
+    }
+
+    _directive = best;
   }
 
   void _updateShake(double dt) {
@@ -427,7 +634,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       final growBonus = avg * _kPotatoGrowRate * dt;
       // Drip score proportional to growth (makes the circulation feel productive)
       final dripPts = (growBonus * _potatoes.where((p) => !p.ripe).length * _combo * 2).round();
-      if (dripPts > 0) _score += dripPts;
+      if (dripPts > 0) widget.session.addScore(dripPts);
 
       for (final p in _potatoes) {
         if (p.ripe) {
@@ -477,7 +684,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
       if (bug.y >= groundLine * _kBugDamageThresh) {
         bug.dead = true;
-        _score = max(0, _score + _kBugDamageScore);
+        widget.session.addScore(_kBugDamageScore);
         _combo = 1;
         _shakeIntensity = 6;
         _spawnPopup(bug.x, groundLine - 20, '$_kBugDamageScore', _kDanger);
@@ -498,7 +705,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       // Weed damages if it lingers too long (12s)
       if (w.age > 12.0) {
         w.pulled = true; // kill without points
-        _score = max(0, _score + _kWeedDamage);
+        widget.session.addScore(_kWeedDamage);
         _combo = 1;
         _shakeIntensity = 4;
         _spawnPopup(w.x, w.y - 20, '$_kWeedDamage WEED DAMAGE', _kDanger);
@@ -629,11 +836,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   // ---- gesture handling -----------------------------------------------------
 
   void _onPointerDown(Offset pos) {
-    if (_phase == _Phase.preGame || _phase == _Phase.gameOver) {
-      _startGame();
-      return;
-    }
-    if (_phase != _Phase.playing) return;
+    if (!widget.session.isRunning) return;
 
     if (pos.dy < _groundY) {
       // Above-ground: try token tap, weed tap, ripe potato harvest tap
@@ -684,7 +887,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       if (sqrt(dx * dx + dy * dy) < _kTokenRadius * 2.2) {
         tok.banked = true;
         final pts = _kTokenPoints * _combo;
-        _score += pts;
+        widget.session.addScore(pts);
         _spawnPopup(tok.x, tok.y, '+$pts', _kTokenColor, scale: 1.1);
         _spawnParticles(Offset(tok.x, tok.y), _kTokenColor, count: 10);
         _advanceCombo();
@@ -702,7 +905,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       if (sqrt(dx * dx + dy * dy) < _kWeedRadius * 2) {
         w.pulled = true;
         final pts = _kWeedPoints * _combo;
-        _score += pts;
+        widget.session.addScore(pts);
         _spawnPopup(w.x, w.y - 10, '+$pts YANKED', _kWeedColor, scale: 1.1);
         _spawnParticles(Offset(w.x, w.y), _kWeedColor, count: 8);
         _advanceCombo();
@@ -724,7 +927,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       if (sqrt(dx * dx + dy * dy) < _kHarvestTapRadius * 2.5) {
         // Harvest!
         final pts = _kHarvestPoints * _combo;
-        _score += pts;
+        widget.session.addScore(pts);
         _spawnPopup(px, tipY - 10, '+$pts HARVESTED!', _kPotatoGold, scale: 1.4);
         _spawnParticles(Offset(px, tipY), _kPotatoGold,
             count: 18, speed: 150);
@@ -750,7 +953,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
         if (bug.hitsLeft <= 0) {
           bug.dead = true;
           final pts = _kBugPoints * (bug.tier + 1) * _combo;
-          _score += pts;
+          widget.session.addScore(pts);
           _spawnPopup(bug.x, bug.y, '+$pts', _kGreen);
           _spawnParticles(Offset(bug.x, bug.y), _kBugColor, count: 10);
           _advanceCombo();
@@ -777,7 +980,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
           ch.flow = (ch.flow + _kWaterBurstFlowBoost).clamp(0.0, 1.0);
         }
         final pts = _kWaterBurstPoints * _combo;
-        _score += pts;
+        widget.session.addScore(pts);
         _spawnPopup(wb.x, wb.y, '+$pts FLOOD!', _kWaterBurst, scale: 1.2);
         _spawnParticles(Offset(wb.x, wb.y), _kWaterBurst,
             count: 16, speed: 140);
@@ -842,6 +1045,8 @@ class _FarmPanicGameState extends State<FarmPanicGame>
               activeHint: _activeHint,
               swipeGuideAge: _swipeGuideAge,
               swipeGuideDone: _swipeGuideDone,
+              directive: _directive,
+              directivePop: _directivePop,
             ),
             size: Size.infinite,
           ),
@@ -869,6 +1074,8 @@ class _FarmPanicPainter extends CustomPainter {
   final _Hint? activeHint;
   final double swipeGuideAge;
   final bool swipeGuideDone;
+  final _Directive? directive;
+  final double directivePop;
 
   _FarmPanicPainter({
     required this.phase,
@@ -891,17 +1098,12 @@ class _FarmPanicPainter extends CustomPainter {
     required this.activeHint,
     required this.swipeGuideAge,
     required this.swipeGuideDone,
+    required this.directive,
+    required this.directivePop,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (phase == _Phase.preGame) {
-      // Atmospheric bg even on pre-game
-      GameFx.atmosphere(canvas, size, Potatuhs.sienna, elapsed, motes: 24);
-      _drawPreGame(canvas, size);
-      return;
-    }
-
     // Shake transform
     if (shakeIntensity > 0) {
       canvas.save();
@@ -919,16 +1121,207 @@ class _FarmPanicPainter extends CustomPainter {
     _drawTokens(canvas, size);
     _drawWaterBursts(canvas, size);
     FxBurst.paint(canvas, particles);
+    _drawSpotlight(canvas, size); // ← spotlight the most-urgent target
     _drawPopups(canvas, size);
+    _drawVignette(canvas, size);
     _drawHUD(canvas, size);
+    _drawDirectiveBanner(canvas, size); // ← "DO THIS NOW" banner
     _drawSwipeGuide(canvas, size);
     _drawHintBanner(canvas, size);
 
     if (shakeIntensity > 0) canvas.restore();
+  }
 
-    if (phase == _Phase.gameOver) {
-      _drawGameOver(canvas, size);
+  // ---- vignette (frames the action, adds depth) -----------------------------
+
+  void _drawVignette(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+    final r = size.longestSide * 0.75;
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = RadialGradient(
+          center: Alignment.center,
+          radius: 0.9,
+          colors: [
+            const Color(0x00000000),
+            const Color(0x00000000),
+            Colors.black.withValues(alpha: 0.34),
+          ],
+          stops: const [0.0, 0.62, 1.0],
+        ).createShader(Rect.fromCircle(
+            center: Offset(size.width / 2, size.height / 2), radius: r)),
+    );
+  }
+
+  // ---- spotlight on the single most-urgent target ---------------------------
+
+  void _drawSpotlight(Canvas canvas, Size size) {
+    final d = directive;
+    if (d == null || d.target == null || d.targetRadius == null) return;
+    final c = d.target!;
+    if (!c.dx.isFinite || !c.dy.isFinite) return;
+    final baseR = d.targetRadius!;
+    // The more urgent, the tighter / faster / brighter the pulse.
+    final pulse = 0.5 + 0.5 * sin(elapsed * (6 + 6 * d.urgency));
+    final ringR = baseR + 6 + pulse * (4 + 6 * d.urgency);
+    final alpha = (0.35 + 0.5 * d.urgency).clamp(0.0, 0.95);
+
+    // Soft glow halo so the eye snaps to it.
+    canvas.drawCircle(
+      c,
+      ringR + 4,
+      Paint()
+        ..color = d.color.withValues(alpha: alpha * 0.22)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+    );
+
+    // Pulsing focus ring.
+    canvas.drawCircle(
+      c,
+      ringR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5 + 1.5 * d.urgency
+        ..color = d.color.withValues(alpha: alpha),
+    );
+
+    // Countdown arc — drains as the target approaches failure.
+    final cd = d.countdown;
+    if (cd != null && cd.isFinite) {
+      final frac = cd.clamp(0.0, 1.0);
+      final arcR = ringR + 7;
+      final rect = Rect.fromCircle(center: c, radius: arcR);
+      // track
+      canvas.drawArc(
+        rect,
+        -pi / 2,
+        2 * pi,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5
+          ..color = Colors.white.withValues(alpha: 0.10),
+      );
+      // remaining (turns red as it empties)
+      final cdColor = Color.lerp(_kDanger, d.color, frac)!;
+      canvas.drawArc(
+        rect,
+        -pi / 2,
+        2 * pi * frac,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.0
+          ..strokeCap = StrokeCap.round
+          ..color = cdColor.withValues(alpha: 0.9),
+      );
     }
+
+    // Down-pointing chevron above the target so it reads as "here".
+    final chevY = c.dy - ringR - 14;
+    if (chevY > 4) {
+      final chevAlpha = (0.55 + 0.4 * pulse) * alpha;
+      final path = Path()
+        ..moveTo(c.dx - 7, chevY - 5)
+        ..lineTo(c.dx, chevY + 3)
+        ..lineTo(c.dx + 7, chevY - 5);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..color = d.color.withValues(alpha: chevAlpha.clamp(0.0, 1.0)),
+      );
+    }
+  }
+
+  // ---- the big "DO THIS NOW" directive banner -------------------------------
+
+  void _drawDirectiveBanner(Canvas canvas, Size size) {
+    final d = directive;
+    if (d == null || size.width <= 0) return;
+
+    // Position: a pill near the top, clear of the host's score/timer chrome
+    // (host owns the very top — we sit just below it, centered).
+    final cx = size.width / 2;
+    final cy = (size.height * 0.085).clamp(34.0, 84.0);
+
+    // Urgency drives colour intensity + a heartbeat pulse.
+    final beat = 0.5 + 0.5 * sin(elapsed * (5 + 5 * d.urgency));
+    final pop = directivePop;
+    final scale = 1.0 + 0.12 * pop + 0.04 * beat * d.urgency;
+
+    final verb = d.verb;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: verb,
+        style: TextStyle(
+          fontFamily: Potatuhs.displayFont,
+          fontSize: 17,
+          fontWeight: FontWeight.w900,
+          color: Colors.white,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    // Guard the clamp: on a tiny viewport `size.width - 24` can fall below the
+    // 120 floor, and num.clamp throws if hi < lo (black-screen bug class).
+    final pillHi = (size.width - 24).clamp(40.0, double.infinity);
+    final pillLo = pillHi < 120.0 ? pillHi : 120.0;
+    final pillW = (tp.width + 44).clamp(pillLo, pillHi);
+    final pillH = 34.0;
+
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.scale(scale);
+    canvas.translate(-cx, -cy);
+
+    final pillRect = Rect.fromCenter(
+        center: Offset(cx, cy), width: pillW, height: pillH);
+    final pillRRect =
+        RRect.fromRectAndRadius(pillRect, const Radius.circular(17));
+
+    // Glow halo behind the pill (stronger with urgency).
+    canvas.drawRRect(
+      pillRRect,
+      Paint()
+        ..color = d.color.withValues(alpha: (0.25 + 0.4 * d.urgency) * (0.6 + 0.4 * beat))
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+    );
+    // Pill body.
+    canvas.drawRRect(
+      pillRRect,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(cx, cy - pillH / 2),
+          Offset(cx, cy + pillH / 2),
+          [
+            Color.lerp(const Color(0xFF0D1A12), d.color, 0.30)!,
+            Color.lerp(const Color(0xFF0A0F0B), d.color, 0.12)!,
+          ],
+        ),
+    );
+    // Bright urgency rim.
+    canvas.drawRRect(
+      pillRRect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6 + 1.2 * d.urgency
+        ..color = d.color.withValues(alpha: 0.55 + 0.4 * beat),
+    );
+
+    // A small leading "dot" marker in the action colour.
+    final dotX = cx - pillW / 2 + 16;
+    GameFx.orb(canvas, Offset(dotX, cy), 5, d.color, glow: 0.8 + 0.6 * beat);
+
+    // Verb text.
+    tp.paint(canvas, Offset(cx - tp.width / 2 + 8, cy - tp.height / 2));
+
+    canvas.restore();
   }
 
   // ---- above-ground zone ----------------------------------------------------
@@ -959,11 +1352,45 @@ class _FarmPanicPainter extends CustomPainter {
       canvas.drawCircle(Offset(x, y), 1.0 + (i % 3) * 0.3, motePaint);
     }
 
-    // Sun orb
-    final sunX = size.width * 0.82;
-    final sunY = groundY * 0.14;
-    GameFx.orb(canvas, Offset(sunX, sunY), 11, Potatuhs.gold,
-        glow: 0.7, specular: true);
+    // Warm sun bloom behind the sky — gives the flat gradient depth.
+    if (groundY > 0) {
+      final sunX = size.width * 0.82;
+      final sunY = groundY * 0.14;
+      final bloomR =
+          (groundY * 0.9).clamp(8.0, size.height.clamp(8.0, double.infinity));
+      canvas.drawCircle(
+        Offset(sunX, sunY),
+        bloomR,
+        Paint()
+          ..shader = RadialGradient(colors: [
+            Potatuhs.gold.withValues(alpha: 0.16),
+            Potatuhs.orange.withValues(alpha: 0.04),
+            const Color(0x00000000),
+          ], stops: const [
+            0.0,
+            0.45,
+            1.0,
+          ]).createShader(Rect.fromCircle(
+              center: Offset(sunX, sunY), radius: bloomR)),
+      );
+      // Sun orb
+      GameFx.orb(canvas, Offset(sunX, sunY), 11, Potatuhs.gold,
+          glow: 0.7, specular: true);
+      // Subtle distant hills silhouette for depth.
+      final hillPath = Path()..moveTo(0, groundY);
+      final hillTop = groundY - (groundY * 0.10).clamp(6.0, 40.0);
+      hillPath.lineTo(0, groundY - 4);
+      for (double x = 0; x <= size.width; x += size.width / 6) {
+        final hy = hillTop + sin(x * 0.012) * 6;
+        hillPath.lineTo(x, hy);
+      }
+      hillPath.lineTo(size.width, groundY);
+      hillPath.close();
+      canvas.drawPath(
+        hillPath,
+        Paint()..color = const Color(0xFF0E1A10).withValues(alpha: 0.5),
+      );
+    }
 
     // Stalks / leaves above ground
     for (final p in potatoes) {
@@ -1450,52 +1877,10 @@ class _FarmPanicPainter extends CustomPainter {
   // ---- HUD ------------------------------------------------------------------
 
   void _drawHUD(Canvas canvas, Size size) {
-    const barH = 5.0;
     const barY = 9.0;
-    const barX = 12.0;
-    final barW = size.width - 24;
+    const barH = 5.0;
 
-    // Time bar bg
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW, barH), const Radius.circular(2.5)),
-      Paint()..color = Colors.white.withValues(alpha: 0.07),
-    );
-
-    final timeLeft = ((gameTime - elapsed) / gameTime).clamp(0.0, 1.0);
-    final timerColor = timeLeft > 0.4
-        ? _kGreen
-        : timeLeft > 0.15
-            ? Potatuhs.sienna
-            : _kDanger;
-    final pulseAlpha =
-        timeLeft < 0.2 ? 0.55 + 0.3 * sin(elapsed * 14) : 0.7;
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(barX, barY, barW * timeLeft, barH),
-          const Radius.circular(2.5)),
-      Paint()
-        ..color = timerColor.withValues(alpha: pulseAlpha)
-        ..maskFilter = timeLeft < 0.2
-            ? const MaskFilter.blur(BlurStyle.normal, 3)
-            : null,
-    );
-
-    // Score — juicy gold, flashes on increment
-    final scoreGlow = 0.4 + scoreFlash * 0.6;
-    final scoreSz = 17.0 + scoreFlash * 4;
-    GameFx.text(
-      canvas,
-      '\$$score',
-      Offset(size.width / 2, 24),
-      scoreSz,
-      _kPotatoGold.withValues(alpha: 0.9 + scoreFlash * 0.1),
-      display: true,
-      glow: scoreGlow,
-    );
-
-    // Combo badge
+    // Combo badge (game-specific HUD — kept)
     if (combo > 1) {
       final comboAlpha = 0.65 + 0.3 * sin(elapsed * 8);
       // Mini badge bg
@@ -1640,75 +2025,6 @@ class _FarmPanicPainter extends CustomPainter {
       9,
       Potatuhs.textSecondary.withValues(alpha: alpha * 0.7),
     );
-  }
-
-  // ---- screens --------------------------------------------------------------
-
-  void _drawPreGame(Canvas canvas, Size size) {
-    // Zone preview
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height * 0.52),
-      Paint()..color = _kSkyBot.withValues(alpha: 0.45),
-    );
-    canvas.drawRect(
-      Rect.fromLTWH(0, size.height * 0.52, size.width, size.height * 0.48),
-      Paint()..color = _kSoilTop.withValues(alpha: 0.45),
-    );
-
-    // Potato orb as hero icon
-    GameFx.orb(
-      canvas,
-      Offset(size.width / 2, size.height * 0.28),
-      32,
-      _kPotatoGold,
-      glow: 1.0,
-    );
-
-    GameFx.text(canvas, 'FARM PANIC', Offset(size.width / 2, size.height * 0.45),
-        28, Colors.white.withValues(alpha: 0.85),
-        display: true, glow: 0.4);
-
-    GameFx.text(canvas, '60s • Two Zones • Juggle Both',
-        Offset(size.width / 2, size.height * 0.52), 11,
-        Potatuhs.textSecondary.withValues(alpha: 0.6));
-
-    GameFx.text(canvas, 'UNDERGROUND: swipe channels to circulate',
-        Offset(size.width / 2, size.height * 0.575), 10,
-        Colors.white.withValues(alpha: 0.35));
-
-    GameFx.text(canvas, 'ABOVE: swipe bugs • tap weeds • harvest ripe plants',
-        Offset(size.width / 2, size.height * 0.615), 10,
-        Colors.white.withValues(alpha: 0.35));
-
-    GameFx.text(canvas, 'Tap to Start',
-        Offset(size.width / 2, size.height * 0.68), 14,
-        Colors.white.withValues(alpha: 0.3));
-  }
-
-  void _drawGameOver(Canvas canvas, Size size) {
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..color = Colors.black.withValues(alpha: 0.82),
-    );
-
-    GameFx.text(canvas, 'FARM OVER',
-        Offset(size.width / 2, size.height / 2 - 60), 28,
-        Colors.white.withValues(alpha: 0.55),
-        display: true);
-
-    // Big score
-    GameFx.text(canvas, '$score',
-        Offset(size.width / 2, size.height / 2 - 8), 54,
-        _kPotatoGold.withValues(alpha: 0.9),
-        display: true, glow: 0.6);
-
-    GameFx.text(canvas, 'points',
-        Offset(size.width / 2, size.height / 2 + 32), 14,
-        Colors.white.withValues(alpha: 0.35));
-
-    GameFx.text(canvas, 'Tap to restart',
-        Offset(size.width / 2, size.height / 2 + 60), 13,
-        Colors.white.withValues(alpha: 0.25));
   }
 
   @override

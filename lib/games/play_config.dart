@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../party/maps/game_map.dart';
 import '../party/party_models.dart';
 
 /// How many players a round runs — Solo or against AI opponents.
@@ -30,6 +31,9 @@ class PlayConfig {
   static const _key = 'play_mode';
   static const _disruptKey = 'play_disruption';
   static GameMode mode = GameMode.quad;
+
+  /// The board chosen for the next local pass-and-play game (set by the lobby).
+  static String mapId = kDefaultMapId;
 
   /// When on, opponents may interfere with your run (games that support it read
   /// this flag). Only meaningful when there are opponents (non-solo).

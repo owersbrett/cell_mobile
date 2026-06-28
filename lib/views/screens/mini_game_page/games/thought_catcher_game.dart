@@ -201,9 +201,13 @@ class _ThoughtCatcherGameState extends State<ThoughtCatcherGame>
   void _spawnNear(Offset hotspot, Size sz, {double staggerDelay = 0}) {
     final x = sz.width * hotspot.dx + (_rng.nextDouble() - 0.5) * 70;
     final y = sz.height * hotspot.dy + (_rng.nextDouble() - 0.5) * 70;
+    // Guard: on a tiny viewport the upper clamp bound can drop below the lower
+    // bound, which makes num.clamp throw and blanks the screen.
+    final bx = sz.width <= 40 ? sz.width / 2 : x.clamp(20.0, sz.width - 20);
+    final by = sz.height <= 80 ? sz.height / 2 : y.clamp(40.0, sz.height - 40);
     final b = _SomethingBlip(
-      x: x.clamp(20, sz.width - 20),
-      y: y.clamp(40, sz.height - 40),
+      x: bx,
+      y: by,
       baseRadius: 38 + _rng.nextDouble() * 28,
       lifetime: 3.8 + _rng.nextDouble() * 1.0,
     );

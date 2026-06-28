@@ -313,6 +313,27 @@ class _OrganQuizGameState extends State<OrganQuizGame>
             ),
             // Main quiz UI.
             Positioned.fill(child: _buildQuizUI()),
+            // Fact flare overlays the bottom of the field after an answer so
+            // it never consumes column space (which would push the answer
+            // choices below the fold on short/wide browser windows).
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: SafeArea(
+                top: false,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  child: _answerState != _AnswerState.waiting
+                      ? _buildFactFlare(
+                          _realm == OrganRealm.human
+                              ? _kHumanAccent
+                              : _kPlantAccent,
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ),
+            ),
           ],
         ),
       );
@@ -323,42 +344,73 @@ class _OrganQuizGameState extends State<OrganQuizGame>
     final realmColor =
         _realm == OrganRealm.human ? _kHumanAccent : _kPlantAccent;
 
-    return Column(
-      children: [
-        // HUD bar.
-        _buildHUD(realmColor),
-        // Realm chip + prompt.
-        Expanded(
-          flex: 3,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _buildRealmChip(realmColor),
-                const SizedBox(height: 14),
-                _buildPrompt(),
-              ],
-            ),
-          ),
-        ),
-        // Option cards grid.
-        Expanded(
-          flex: 4,
-          child: Padding(
-            padding:
-                const EdgeInsets.only(left: 16, right: 16, bottom: 16),
-            child: _buildOptionGrid(realmColor),
-          ),
-        ),
-        // Fact flare (shown after an answer).
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 220),
-          child: _answerState != _AnswerState.waiting
-              ? _buildFactFlare(realmColor)
-              : const SizedBox.shrink(),
-        ),
-      ],
+    return SafeArea(
+      bottom: false,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // Reserve space at the bottom for the fact-flare overlay so the
+          // last row of choices is never hidden behind it.
+          const double flareReserve = 132;
+
+          final content = Column(
+            children: [
+              // HUD bar.
+              _buildHUD(realmColor),
+              // Realm chip + prompt.
+              Flexible(
+                flex: 3,
+                fit: FlexFit.loose,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildRealmChip(realmColor),
+                      const SizedBox(height: 14),
+                      _buildPrompt(),
+                    ],
+                  ),
+                ),
+              ),
+              // Option cards grid — gets the lion's share of space and is
+              // itself constrained so cards never overflow off-screen.
+              Flexible(
+                flex: 5,
+                fit: FlexFit.tight,
+                child: Padding(
+                  padding: const EdgeInsets.only(
+                      left: 16, right: 16, bottom: 16),
+                  child: _buildOptionGrid(realmColor),
+                ),
+              ),
+              // Spacer so the choices clear the fact-flare overlay region.
+              SizedBox(
+                height: _answerState != _AnswerState.waiting
+                    ? flareReserve
+                    : 0,
+              ),
+            ],
+          );
+
+          // If the viewport is too short to lay everything out comfortably,
+          // let the whole thing scroll rather than overflow/clip.
+          final bool tooShort = constraints.maxHeight < 460;
+          if (tooShort) {
+            return SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: 460,
+                  maxHeight: math.max(460, constraints.maxHeight),
+                ),
+                child: content,
+              ),
+            );
+          }
+          return content;
+        },
+      ),
     );
   }
 
@@ -515,15 +567,42 @@ class _OrganQuizGameState extends State<OrganQuizGame>
   // -- Option grid -----------------------------------------------------------
 
   Widget _buildOptionGrid(Color realmColor) {
-    return GridView.count(
-      crossAxisCount: 2,
-      mainAxisSpacing: 10,
-      crossAxisSpacing: 10,
-      childAspectRatio: 2.4,
-      physics: const NeverScrollableScrollPhysics(),
-      children: _options
-          .map((opt) => _buildOptionCard(opt, realmColor))
-          .toList(),
+    const double spacing = 10;
+    const int cols = 2;
+    const int rows = 2; // four options, 2x2
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Derive the child aspect ratio from the actual available box so the
+        // 2x2 grid always fills it exactly — never overflowing off-screen on
+        // short/wide browser windows (the previous fixed 2.4 ratio assumed a
+        // tall phone box and clipped the bottom row on wide viewports).
+        final double cellW =
+            (constraints.maxWidth - spacing * (cols - 1)) / cols;
+
+        double aspect = 2.4; // sensible fallback
+        if (constraints.maxHeight.isFinite && constraints.maxHeight > 0) {
+          final double cellH =
+              (constraints.maxHeight - spacing * (rows - 1)) / rows;
+          if (cellH > 0) {
+            // Keep cards from getting absurdly tall on very tall boxes, and
+            // never below ~1.4 so two text lines still fit.
+            aspect = (cellW / cellH).clamp(1.4, 3.6);
+          }
+        }
+
+        return GridView.count(
+          crossAxisCount: cols,
+          mainAxisSpacing: spacing,
+          crossAxisSpacing: spacing,
+          childAspectRatio: aspect,
+          physics: const NeverScrollableScrollPhysics(),
+          shrinkWrap: true,
+          children: _options
+              .map((opt) => _buildOptionCard(opt, realmColor))
+              .toList(),
+        );
+      },
     );
   }
 
@@ -620,7 +699,7 @@ class _OrganQuizGameState extends State<OrganQuizGame>
       behavior: HitTestBehavior.opaque,
       child: Container(
         key: ValueKey(_question.prompt),
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
         decoration: BoxDecoration(
           color: _answerState == _AnswerState.correct

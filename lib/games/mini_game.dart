@@ -22,12 +22,27 @@ class MiniGameSession extends ChangeNotifier {
   int _score = 0;
   Duration _remaining = Duration.zero;
   Duration _bonusTime = Duration.zero;
+  int _bestStreak = 0;
 
   MiniGamePhase get phase => _phase;
   int get score => _score;
   Duration get remaining => _remaining;
   Duration get bonusTime => _bonusTime;
   bool get isRunning => _phase == MiniGamePhase.playing;
+
+  /// Longest run of consecutive successes a game reported via [noteStreak].
+  /// Surfaced on the results screen as a streak award (20/30 = mastery).
+  int get bestStreak => _bestStreak;
+
+  /// Games that track a combo/streak report their *current* streak here on
+  /// every success; the session keeps the high-water mark. No-op outside play.
+  void noteStreak(int currentStreak) {
+    if (!isRunning) return;
+    if (currentStreak > _bestStreak) {
+      _bestStreak = currentStreak;
+      notifyListeners();
+    }
+  }
 
   void addScore(int delta) {
     if (!isRunning) return;
@@ -59,6 +74,7 @@ class MiniGameSession extends ChangeNotifier {
     _score = 0;
     _remaining = Duration(seconds: spec.durationSeconds);
     _bonusTime = Duration.zero;
+    _bestStreak = 0;
     _setPhase(MiniGamePhase.intro);
   }
 
@@ -107,6 +123,12 @@ class MiniGameSpec {
   /// falls back to a score-relative estimate. Tune per game by playtest.
   final int humanMax;
 
+  /// Up to three ascending score cutoffs `[oneStar, twoStar, threeStar]` that
+  /// map a final score to a 0–3 star rating on the results screen. Empty =
+  /// untuned; the host derives bands from [humanMax] or the player's own best.
+  /// Tune per game by playtest.
+  final List<int> starThresholds;
+
   const MiniGameSpec({
     required this.id,
     required this.name,
@@ -121,5 +143,6 @@ class MiniGameSpec {
     required this.icon,
     required this.builder,
     this.humanMax = 0,
+    this.starThresholds = const [],
   });
 }

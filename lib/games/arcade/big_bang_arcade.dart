@@ -262,6 +262,7 @@ class _BigBangArcadeState extends State<BigBangArcade>
 
   void _catchMatter(_Spark s) {
     _streak += 1;
+    widget.session.noteStreak(_streak); // feed the end-of-game streak award
     final mult = _multiplier;
     final gained = 10 * mult;
     widget.session.addScore(gained);

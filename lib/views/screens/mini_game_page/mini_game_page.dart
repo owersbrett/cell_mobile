@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
@@ -11,21 +12,6 @@ import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'games/big_bang_game.dart';
-import 'games/thought_catcher_game.dart';
-import 'games/starch_factory_game.dart';
-import 'games/molecule_builder_game.dart';
-import 'games/mitosis_rush_game.dart';
-import 'games/potato_rush_game.dart';
-import 'games/farm_panic_game.dart';
-import 'games/tissue_layer_game.dart';
-import 'games/organ_system_game.dart';
-import 'mini_games_batch2.dart';
-import 'mini_games_batch3.dart';
-// Enhanced financial game (market events + debt/credit; fixes sold-early lockout).
-// Aliased to avoid the name clash with the legacy FinancialTradingGame in batch3.
-import 'package:cell_mobile/games/financial/market_trader/market_trader.dart'
-    as mt;
 
 /// Generic mini-game page — routes to a scale's game(s) via the ranked catalog.
 ///
@@ -70,94 +56,52 @@ class _MiniGamePageState extends State<MiniGamePage> {
     final chosen = _chosen!;
     void backToPicker() => setState(() => _chosen = null);
 
-    // Registry game → shared host, vs the mode picked on the home page.
-    if (chosen.specId != null) {
-      final spec = MiniGameRegistry.byId(chosen.specId!);
-      if (spec != null) {
-        return MiniGameHost(
-          spec: spec,
-          onExit: backToPicker,
-          opponentCount: PlayConfig.opponentCount,
-          disruption: PlayConfig.disruptionActive,
-        );
-      }
-    }
-
-    // Legacy game → its per-scale widget, wrapped with a HUD + back-to-picker.
-    return _legacyScaffold(chosen, backToPicker);
+    // Every catalog game is a registry game now → the shared host. The mode
+    // picked on the home page (solo / 1v1 / …) flows through here.
+    final spec = MiniGameRegistry.byId(chosen.specId ?? '');
+    if (spec == null) return _missingGameScaffold(chosen, backToPicker);
+    return MiniGameHost(
+      spec: spec,
+      onExit: backToPicker,
+      opponentCount: PlayConfig.opponentCount,
+      disruption: PlayConfig.disruptionActive,
+    );
   }
 
-  Widget _legacyScaffold(CatalogGame game, VoidCallback onBack) {
+  /// Safety net for a catalog entry whose specId doesn't resolve. Should never
+  /// happen (every game is registry now) — shows a back-stop, not a crash.
+  Widget _missingGameScaffold(CatalogGame game, VoidCallback onBack) {
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  GestureDetector(
-                    onTap: onBack,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: const Color(0x88000000),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Icon(Icons.arrow_back,
-                          color: Colors.white70, size: 22),
-                    ),
-                  ),
-                  Text(
-                    game.name,
-                    style: const TextStyle(
-                      fontFamily: 'Avenir',
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white70,
-                    ),
-                  ),
-                  const SizedBox(width: 40),
-                ],
+        child: Stack(children: [
+          Center(
+            child: Text('${game.name} is unavailable',
+                style: const TextStyle(
+                    fontFamily: 'Avenir', color: Colors.white54)),
+          ),
+          Positioned(
+            top: 8,
+            left: 16,
+            child: GestureDetector(
+              onTap: onBack,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0x88000000),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.arrow_back,
+                    color: Colors.white70, size: 22),
               ),
             ),
-            Expanded(child: _buildGame(scale)),
-          ],
-        ),
+          ),
+        ]),
       ),
     );
   }
 
-  Widget _buildGame(BioScale scale) {
-    switch (scale) {
-      case BioScale.nothings: return BigBangGame();
-      case BioScale.somethings: return const ThoughtCatcherGame();
-      case BioScale.particles: return const _ParticleAcceleratorGame();
-      case BioScale.atoms: return const StarchFactoryGame();
-      case BioScale.molecular: return MoleculeBuilderGame();
-      case BioScale.cell: return const MitosisRushGame();
-      case BioScale.tissue: return const TissueLayerGame();
-      case BioScale.organ: return const OrganGrowGame();
-      case BioScale.organSystem: return const OrganSystemGame();
-      case BioScale.organism: return const OrganismHarvestGame();
-      case BioScale.ecosystem: return const PotatoRushGame();
-      case BioScale.farmSystem: return const FarmPanicGame();
-      case BioScale.supplyChain: return const SupplyChainGame();
-      case BioScale.financial: return const mt.FinancialTradingGame();
-      case BioScale.planets: return const PlanetCatchGame();
-      case BioScale.solarSystems: return const SolarSortGame();
-      case BioScale.galactic: return const GalaxyCollectorGame();
-      case BioScale.cosmicStructures: return const NeuronConnectGame();
-      case BioScale.multiverseAll: return const RealityMergeGame();
-      case BioScale.universeAll: return const EverythingGame();
-      case BioScale.infinities: return const InfinityCounterGame();
-      default: return BigBangGame();
-    }
-  }
 }
-
 
 // ---------------------------------------------------------------------------
 // Game picker — shown when a scale has more than one game (e.g. particles →

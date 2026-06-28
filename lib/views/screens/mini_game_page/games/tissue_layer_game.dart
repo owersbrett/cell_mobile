@@ -1,6 +1,8 @@
 import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:cell_mobile/games/mini_game.dart';
+import 'package:cell_mobile/games/fx.dart';
 
 // ============================================================================
 // DEFEND THE CELL — memory + speed game
@@ -314,7 +316,8 @@ class _Tendril {
 // ---------------------------------------------------------------------------
 
 class TissueLayerGame extends StatefulWidget {
-  const TissueLayerGame({Key? key}) : super(key: key);
+  final MiniGameSession session;
+  const TissueLayerGame({super.key, required this.session});
   @override
   State<TissueLayerGame> createState() => _TissueLayerGameState();
 }
@@ -322,7 +325,13 @@ class TissueLayerGame extends StatefulWidget {
 class _TissueLayerGameState extends State<TissueLayerGame>
     with SingleTickerProviderStateMixin {
   late AnimationController _ticker;
-  final Random _rng = Random();
+
+  // Per-game random base, fixed for the lifetime of this playthrough so the run
+  // is reproducible-within-itself but different every time the game mounts.
+  // Each round derives its own seeded Random from this base + the round index,
+  // so consecutive rounds never share a layout and no two playthroughs match.
+  late final int _gameSeed;
+  late Random _rng; // re-seeded per round from _gameSeed (see _startRound)
 
   // ---- game state ----------------------------------------------------------
   bool _started = false;
@@ -330,10 +339,21 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   int _score = 0;
   int _lives = 3;
   int _combo = 0;
+  int _perfectStreak = 0; // consecutive flawless rounds → session.noteStreak
   int _sectionsCompleted = 0;
   int _roundIndex = 0; // index into _playOrder
   List<int> _playOrder = []; // shuffled+interleaved order into _kOrgans
   double _lastT = 0;
+  double _clock = 0; // seconds clock for ambient fx drift
+
+  // ---- per-round randomness ------------------------------------------------
+  // A whole-cross-section rotation, randomized each round, so the spatial
+  // anchor of textures/labels (and the pathogen entry point) shifts — the same
+  // organ never looks identical twice.
+  double _roundRotation = 0;
+  // Order zones light up during the study phase. Randomized each round so the
+  // memorization is a fresh sequence, not a fixed "all at once" reveal.
+  List<_Tissue> _studyOrder = [];
 
   // ---- per-round state -----------------------------------------------------
   _Phase _phase = _Phase.studyCountdown;
@@ -341,6 +361,9 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   double _roundTimeLimit = 25.0; // shrinks each round
   double _roundTimeLeft = 25.0;
   double _studyDuration = 3.5;
+  double _pathogenSpeedMul = 1.0; // pressure ramps up at higher tiers
+  int _wrongPenalty = 4; // seconds lost per wrong drop, grows with difficulty
+  bool _roundFlawless = true; // no wrong drops / consumed zones this round
 
   // Default-initialised (not `late`) so the painter can safely read it on the
   // first frame, before _initGame()/_startRound() runs. _startRound() reassigns
@@ -378,11 +401,19 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   @override
   void initState() {
     super.initState();
+    // Fresh per-game seed each mount: every playthrough draws a different
+    // organ order, rotations, study sequences and decoy sets.
+    _gameSeed = DateTime.now().microsecondsSinceEpoch & 0x7fffffff;
+    _rng = Random(_gameSeed);
     _ticker =
         AnimationController(vsync: this, duration: const Duration(days: 1))
           ..addListener(_tick);
     _ticker.forward();
     _lastT = DateTime.now().microsecondsSinceEpoch / 1e6;
+    // Host owns the lifecycle (countdown / timer / results). Spin the game up
+    // immediately; the tick gates real progress on widget.session.isRunning.
+    _initGame();
+    _started = true;
   }
 
   @override
@@ -397,6 +428,7 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     _score = 0;
     _lives = 3;
     _combo = 0;
+    _perfectStreak = 0;
     _sectionsCompleted = 0;
     _roundIndex = 0;
     _gameOver = false;
@@ -439,6 +471,10 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   }
 
   void _startRound() {
+    // Per-round Random derived from the game seed + round index. Deterministic
+    // within this playthrough, but distinct for every round and every game.
+    _rng = Random(_gameSeed ^ (_roundIndex * 0x9E3779B1));
+
     if (_playOrder.isEmpty) _buildPlayOrder();
     // Reshuffle for a fresh mix each time we loop through every specimen.
     final orderIdx = _roundIndex % _playOrder.length;
@@ -450,25 +486,47 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     _dragIndex = null;
     _hoveredZone = null;
     _resultAge = -1;
+    _roundFlawless = true;
+
+    // Fresh whole-section rotation every round → the texture/label anchor and
+    // pathogen entry point shift, so even a repeated organ never looks the same.
+    _roundRotation = _rng.nextDouble() * 2 * pi;
+
+    // Randomized study reveal sequence — the zones light up one-by-one in a new
+    // order each round, turning a static "memorize" into a fresh mini-sequence.
+    _studyOrder = List<_Tissue>.from(_organ.zones)..shuffle(_rng);
+
+    // ---- Difficulty tier -----------------------------------------------------
+    // A single escalating level drives every pressure knob below, so the ramp
+    // reads as one coherent climb. Gentle early, genuinely hard late.
+    final lvl = _difficulty; // 0..N, grows with sections cleared
 
     // Pathogen starts at outer edge; grows inward during place phase
     _pathogenFrac = 0.0;
     _tendrils.clear();
-    // Spawn a ring of tendrils
-    const tendrilCount = 18;
+    // More tendrils later = a denser, more menacing creep front.
+    final tendrilCount = (16 + lvl * 2).clamp(16, 30);
     for (int i = 0; i < tendrilCount; i++) {
-      final angle = i / tendrilCount * 2 * pi + _rng.nextDouble() * 0.2;
+      final angle =
+          _roundRotation + i / tendrilCount * 2 * pi + _rng.nextDouble() * 0.25;
       _tendrils
           .add(_Tendril(angle, 0.0, 0.012 + _rng.nextDouble() * 0.008));
     }
 
-    // ---- Escalation ramp (gentle, capped) ------------------------------------
-    // Round time: starts at 25 s, loses 1.5 s every 2 completions, min 10 s.
-    _roundTimeLimit = (25.0 - (_sectionsCompleted ~/ 2) * 1.5).clamp(10.0, 25.0);
+    // ---- Escalation ramp (tiered, capped) ------------------------------------
+    // Round time: starts at 26 s, sheds ~2 s per tier, floor 9 s.
+    _roundTimeLimit = (26.0 - lvl * 2.0).clamp(9.0, 26.0);
     _roundTimeLeft = _roundTimeLimit;
 
-    // Study time: starts at 3.5 s, loses 0.3 s every 3 completions, min 1.8 s.
-    _studyDuration = (3.5 - (_sectionsCompleted ~/ 3) * 0.3).clamp(1.8, 3.5);
+    // Study time: starts at 3.6 s, sheds 0.35 s per tier, floor 1.4 s.
+    _studyDuration = (3.6 - lvl * 0.35).clamp(1.4, 3.6);
+
+    // Pathogen pressure: creeps 0..100% faster relative to the round timer as
+    // tiers climb, so late rounds bite well before the clock runs out.
+    _pathogenSpeedMul = (1.0 + lvl * 0.12).clamp(1.0, 2.0);
+
+    // Wrong-drop time penalty grows so sloppy guessing hurts more later.
+    _wrongPenalty = (4 + lvl).clamp(4, 9);
 
     // Study phase starts immediately (no separate countdown for simplicity)
     _phase = _Phase.study;
@@ -476,6 +534,10 @@ class _TissueLayerGameState extends State<TissueLayerGame>
 
     _buildChips();
   }
+
+  // Difficulty tier. Climbs one step roughly every two cleared sections, so the
+  // ramp is felt but earned. Capped so the floors above stay reachable.
+  int get _difficulty => (_sectionsCompleted ~/ 2).clamp(0, 8);
 
   void _buildChips() {
     _chips.clear();
@@ -485,18 +547,18 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     final realTissues = List<_Tissue>.from(_organ.zones)..shuffle(_rng);
 
     // ---- Escalating decoy count ----------------------------------------------
-    // Starts at organ's baseDecoyCount; gains 1 extra every 3 completions (was
-    // every 4 — ramps harder, more on screen at once), capped so total chips
-    // ≤ 8 (avoids chip tray overflow on small screens).
-    final extraDecoys = _sectionsCompleted ~/ 3;
-    final maxExtra = (8 - realTissues.length - _organ.baseDecoyCount).clamp(0, 3);
+    // Starts at organ's baseDecoyCount; gains 1 extra per difficulty tier so
+    // the tray fills with plausible wrong answers as the climb continues.
+    // Capped so total chips ≤ 8 (avoids chip tray overflow on small screens).
+    final extraDecoys = _difficulty;
+    final maxExtra = (8 - realTissues.length - _organ.baseDecoyCount).clamp(0, 4);
     final decoyCount = (_organ.baseDecoyCount + extraDecoys).clamp(
         _organ.baseDecoyCount, _organ.baseDecoyCount + maxExtra);
 
-    // Pick decoys: at higher difficulty mix cross-kingdom decoys for harder
-    // pattern-matching. Cross-kingdom kicks in from section 4 (was 6).
+    // Pick decoys: from tier 2 mix cross-kingdom decoys for harder
+    // pattern-matching (plant terms among animal slices and vice-versa).
     final List<_Tissue> decoyPool;
-    if (_sectionsCompleted >= 4) {
+    if (_difficulty >= 2) {
       decoyPool = List<_Tissue>.from(_kAllDecoys);
     } else {
       decoyPool = List<_Tissue>.from(
@@ -551,9 +613,11 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     final now = DateTime.now().microsecondsSinceEpoch / 1e6;
     final dt = (now - _lastT).clamp(0.001, 0.05);
     _lastT = now;
-    if (_gameOver || !_started) return;
+    // Host gates the run: only advance while in the playing phase.
+    if (!widget.session.isRunning) return;
 
     setState(() {
+      _clock += dt;
       // particles
       for (final p in _fx) {
         p.x += p.vx * dt;
@@ -591,9 +655,9 @@ class _TissueLayerGameState extends State<TissueLayerGame>
         case _Phase.place:
           _roundTimeLeft -= dt;
 
-          // Pathogen advances during place phase
-          // Full inward travel takes the round time limit
-          final pathogenSpeed = 1.0 / _roundTimeLimit;
+          // Pathogen advances during place phase. Base travel spans the round
+          // time limit; the difficulty multiplier makes it bite sooner later.
+          final pathogenSpeed = _pathogenSpeedMul / _roundTimeLimit;
           _pathogenFrac += pathogenSpeed * dt;
           _pathogenFrac = _pathogenFrac.clamp(0.0, 1.0);
 
@@ -619,7 +683,7 @@ class _TissueLayerGameState extends State<TissueLayerGame>
           _resultAge += dt;
           if (_resultAge > 1.8) {
             if (_lives <= 0) {
-              _gameOver = true;
+              widget.session.endEarly();
             } else {
               _sectionsCompleted++;
               _roundIndex++;
@@ -666,6 +730,7 @@ class _TissueLayerGameState extends State<TissueLayerGame>
         _fillAnims.add(_ZoneFill(z, false));
         _pathogenConsumedAge = 0;
         _wrongFlash = 0.5;
+        _roundFlawless = false;
         _pops.add(_Popup(
           _center.dx + (_rng.nextDouble() - 0.5) * _radius,
           _center.dy,
@@ -713,20 +778,6 @@ class _TissueLayerGameState extends State<TissueLayerGame>
   // ---- input ---------------------------------------------------------------
 
   void _onPanStart(Offset pos) {
-    if (_gameOver) {
-      setState(() {
-        _initGame();
-        _started = true;
-      });
-      return;
-    }
-    if (!_started) {
-      setState(() {
-        _initGame();
-        _started = true;
-      });
-      return;
-    }
     if (_phase != _Phase.place) return;
 
     double best = double.infinity;
@@ -785,6 +836,7 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     final speedBonus = (_roundTimeLeft / _roundTimeLimit * 20).round();
     final pts = 15 + _combo * 5 + speedBonus;
     _score += pts;
+    widget.session.addScore(pts);
 
     final info = _kRealZones[zone]!;
     final midR = (info.innerFrac + info.outerFrac) / 2 * _radius;
@@ -794,8 +846,29 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     // Check if all required zones filled
     if (_organ.zones.every((z) => _filled.contains(z))) {
       _combo += 3; // bonus for completing
-      final bonus = 50 + _sectionsCompleted * 15;
+      // Completion bonus scales with the difficulty tier, so the hard rounds
+      // pay out more — the ramp is genuinely worth pushing into.
+      final bonus = 50 + _sectionsCompleted * 15 + _difficulty * 20;
       _score += bonus;
+      widget.session.addScore(bonus);
+
+      // Flawless round → grow the streak; a slip resets it. Streak feeds the
+      // host's streak tracker and awards an escalating perfect bonus.
+      if (_roundFlawless) {
+        _perfectStreak++;
+        widget.session.noteStreak(_perfectStreak);
+        if (_perfectStreak >= 2) {
+          final perfectBonus = _perfectStreak * 15;
+          _score += perfectBonus;
+          widget.session.addScore(perfectBonus);
+          _pops.add(_Popup(_center.dx, _center.dy + 10,
+              'PERFECT x$_perfectStreak  +$perfectBonus',
+              const Color(0xFFFFD54F)));
+        }
+      } else {
+        _perfectStreak = 0;
+      }
+
       _pops.add(_Popup(_center.dx, _center.dy - 40,
           '${_organ.name}  +$bonus', Colors.white));
       _completeGlow = 0;
@@ -806,10 +879,12 @@ class _TissueLayerGameState extends State<TissueLayerGame>
 
   void _placeWrong(_Chip chip, _Tissue zone) {
     _combo = 0;
+    _roundFlawless = false;
     _lives = (_lives - 1).clamp(0, 3);
-    _roundTimeLeft = (_roundTimeLeft - 4).clamp(0, _roundTimeLimit);
+    _roundTimeLeft = (_roundTimeLeft - _wrongPenalty).clamp(0, _roundTimeLimit);
     _wrongFlash = 0.5;
-    _pops.add(_Popup(chip.x, chip.y - 20, '-4s  ✗', const Color(0xFFFF5252)));
+    _pops.add(
+        _Popup(chip.x, chip.y - 20, '-${_wrongPenalty}s  ✗', const Color(0xFFFF5252)));
     _snapHome(chip);
     if (_lives <= 0) {
       _consumeAllUnfilled();
@@ -855,22 +930,26 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     return LayoutBuilder(builder: (ctx, box) {
       final newSz = Size(box.maxWidth, box.maxHeight);
       if (_sz != newSz) {
+        final wasZero = _sz == Size.zero;
         _sz = newSz;
-        if (_started && _chips.isNotEmpty) _buildChips();
+        // Chips couldn't be laid out before first layout (size was zero); build
+        // them once the real size arrives, then keep them positioned on resize.
+        if (_started && (_chips.isNotEmpty || wasZero)) _buildChips();
       }
       return GestureDetector(
         onPanStart: (d) => _onPanStart(d.localPosition),
         onPanUpdate: (d) => _onPanUpdate(d.localPosition),
         onPanEnd: (_) => _onPanEnd(),
-        onTapDown: (d) {
-          if (!_started || _gameOver) _onPanStart(d.localPosition);
-        },
         child: ClipRect(
           child: CustomPaint(
             painter: _GamePainter(
               phase: _phase,
               phaseTimer: _phaseTimer,
               studyDuration: _studyDuration,
+              clock: _clock,
+              roundRotation: _roundRotation,
+              studyOrder: List.of(_studyOrder),
+              difficulty: _difficulty,
               organ: _organ.name,
               organZones: _organ.zones,
               filled: Set.of(_filled),
@@ -914,6 +993,10 @@ class _GamePainter extends CustomPainter {
   final _Phase phase;
   final double phaseTimer;
   final double studyDuration;
+  final double clock;
+  final double roundRotation;
+  final List<_Tissue> studyOrder;
+  final int difficulty;
   final String organ;
   final List<_Tissue> organZones;
   final Set<_Tissue> filled;
@@ -945,6 +1028,10 @@ class _GamePainter extends CustomPainter {
     required this.phase,
     required this.phaseTimer,
     required this.studyDuration,
+    required this.clock,
+    required this.roundRotation,
+    required this.studyOrder,
+    required this.difficulty,
     required this.organ,
     required this.organZones,
     required this.filled,
@@ -975,13 +1062,13 @@ class _GamePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Background
-    canvas.drawRect(
-        Offset.zero & size, Paint()..color = const Color(0xFF070714));
-
-    if (!started && !gameOver) {
-      _drawPreGame(canvas, size);
-      return;
+    // Atmospheric background (gradient + drifting motes + glow blooms) instead
+    // of flat black — shared GameFx so the cell reads as living tissue.
+    if (size.width > 0 && size.height > 0) {
+      GameFx.atmosphere(canvas, size, const Color(0xFF2E7D5B), clock, motes: 28);
+    } else {
+      canvas.drawRect(
+          Offset.zero & size, Paint()..color = const Color(0xFF070714));
     }
 
     if (wrongFlash > 0) {
@@ -1002,7 +1089,6 @@ class _GamePainter extends CustomPainter {
     if (completeGlow >= 0 && phase == _Phase.complete) {
       _drawCompleteOverlay(canvas, size);
     }
-    if (gameOver) _drawGameOver(canvas, size);
   }
 
   // ---- pathogen ------------------------------------------------------------
@@ -1125,12 +1211,35 @@ class _GamePainter extends CustomPainter {
 
   void _drawStudyZone(Canvas canvas, _Tissue zone, _TissueInfo info,
       double innerR, double outerR) {
-    // Bright revealed state — fade in at start of study phase
-    final progress = (1.0 - phaseTimer / studyDuration).clamp(0.0, 1.0);
-    final fadeIn = (progress * 3).clamp(0.0, 1.0);
+    // Sequential reveal: each zone lights up at its slot in the (randomized)
+    // studyOrder, so the memorization is a fresh sequence every round rather
+    // than a single static flash. The whole sequence completes with time to
+    // spare before the place phase.
+    final n = studyOrder.isEmpty ? 1 : studyOrder.length;
+    final slot = studyOrder.indexOf(zone);
+    final idx = slot < 0 ? 0 : slot;
 
-    _fillRing(canvas, innerR, outerR, info.color.withValues(alpha: 0.55 * fadeIn));
-    _strokeRing(canvas, innerR, outerR, info.color.withValues(alpha: 0.8 * fadeIn));
+    // Elapsed fraction of the study phase (0 at start → 1 at end).
+    final elapsed = (1.0 - phaseTimer / studyDuration).clamp(0.0, 1.0);
+    // Reveal window: spread the n zones across the first 75% of study time,
+    // each fading in over a short, snappy window.
+    final span = 0.75 / n;
+    final startAt = idx * span;
+    final fadeIn = ((elapsed - startAt) / (span * 0.9)).clamp(0.0, 1.0);
+    if (fadeIn <= 0) {
+      // Not yet revealed — show the dashed placeholder so its slot is visible.
+      _drawDashedRing(canvas, innerR, outerR, info.color.withValues(alpha: 0.10));
+      return;
+    }
+
+    // A brief brightening pop right as the zone appears, easing to steady.
+    final pop = (1.0 - ((elapsed - startAt) / (span * 1.4)).clamp(0.0, 1.0));
+    final boost = 0.20 * pop;
+
+    _fillRing(canvas, innerR, outerR,
+        info.color.withValues(alpha: (0.55 + boost) * fadeIn));
+    _strokeRing(
+        canvas, innerR, outerR, info.color.withValues(alpha: (0.8 + boost) * fadeIn));
     _drawTextureDots(canvas, zone, info, innerR, outerR, fadeIn);
 
     // Label shown large during study
@@ -1284,35 +1393,28 @@ class _GamePainter extends CustomPainter {
           Colors.white.withValues(alpha: 0.22), FontWeight.w400, 20, 38, false);
     }
 
-    // Timer arc (top-right)
-    if (phase == _Phase.place) {
-      final frac = (roundTimeLeft / roundTimeLimit).clamp(0.0, 1.0);
-      final timerColor = frac < 0.3
-          ? const Color(0xFFFF5252)
-          : frac < 0.6
-              ? const Color(0xFFFFB74D)
-              : const Color(0xFF80CBC4);
-      // arc bar
-      final arcRect =
-          Rect.fromCenter(center: Offset(size.width - 28, 28), width: 36, height: 36);
-      canvas.drawArc(arcRect, -pi / 2, 2 * pi, false,
+    // Difficulty tier pips (top-right) — fills up as the climb escalates so the
+    // earned ramp is legible to the player.
+    if (difficulty > 0) {
+      for (int i = 0; i < 8; i++) {
+        final cx = size.width - 16 - i * 9.0;
+        final on = i < difficulty;
+        canvas.drawCircle(
+          Offset(cx, 18),
+          2.6,
           Paint()
-            ..color = Colors.white.withValues(alpha: 0.08)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 3);
-      canvas.drawArc(arcRect, -pi / 2, 2 * pi * frac, false,
-          Paint()
-            ..color = timerColor
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 3
-            ..strokeCap = StrokeCap.round);
-      _paintText(canvas, roundTimeLeft.ceil().toString(), 10,
-          timerColor, FontWeight.w500, size.width - 28, 28, true);
+            ..color = on
+                ? const Color(0xFFFF7043).withValues(alpha: 0.7)
+                : Colors.white.withValues(alpha: 0.10),
+        );
+      }
+      _paintText(canvas, 'TIER $difficulty', 8,
+          Colors.white.withValues(alpha: 0.28), FontWeight.w600,
+          size.width - 36, 30, true);
     }
 
-    // Score (bottom-centre)
-    _paintText(canvas, '$score', 20, Colors.white.withValues(alpha: 0.32),
-        FontWeight.w300, size.width / 2, size.height - 40, true);
+    // (Host draws the run timer + live score; the in-cell pathogen ring is the
+    // game-specific round-pressure visual, kept below.)
 
     // Combo (bottom-right)
     if (combo > 1) {
@@ -1380,34 +1482,6 @@ class _GamePainter extends CustomPainter {
         FontWeight.bold, size.width / 2, size.height / 2, true);
   }
 
-  void _drawPreGame(Canvas canvas, Size size) {
-    _paintText(canvas, 'DEFEND THE CELL', 26, Colors.white.withValues(alpha: 0.7),
-        FontWeight.w300, size.width / 2, size.height / 2 - 60, true);
-    _paintText(canvas, 'Watch — then rebuild the tissue layers', 13,
-        Colors.white.withValues(alpha: 0.3), FontWeight.w300,
-        size.width / 2, size.height / 2 - 22, true);
-    _paintText(canvas, 'before the pathogen breaks through', 13,
-        Colors.white.withValues(alpha: 0.3), FontWeight.w300,
-        size.width / 2, size.height / 2 - 4, true);
-    _paintText(canvas, 'Tap to start', 13, Colors.white.withValues(alpha: 0.22),
-        FontWeight.w300, size.width / 2, size.height / 2 + 38, true);
-  }
-
-  void _drawGameOver(Canvas canvas, Size size) {
-    canvas.drawRect(
-        Offset.zero & size,
-        Paint()..color = Colors.black.withValues(alpha: 0.82));
-    _paintText(canvas, 'OVERRUN', 32, Colors.white.withValues(alpha: 0.6),
-        FontWeight.w300, size.width / 2, size.height / 2 - 52, true);
-    _paintText(canvas, '$score', 52, Colors.white.withValues(alpha: 0.75),
-        FontWeight.w200, size.width / 2, size.height / 2 + 2, true);
-    _paintText(canvas, '$sectionsCompleted cells defended', 13,
-        Colors.white.withValues(alpha: 0.3), FontWeight.w300,
-        size.width / 2, size.height / 2 + 54, true);
-    _paintText(canvas, 'Tap to try again', 13, Colors.white.withValues(alpha: 0.22),
-        FontWeight.w300, size.width / 2, size.height / 2 + 80, true);
-  }
-
   // ---- helpers -------------------------------------------------------------
 
   void _fillRing(Canvas canvas, double innerR, double outerR, Color color) {
@@ -1443,7 +1517,7 @@ class _GamePainter extends CustomPainter {
     final dotCount = zone == _Tissue.pith ? 6 : 12;
     final dotR = (outerR - innerR) * 0.07;
     for (int i = 0; i < dotCount; i++) {
-      final a = (i / dotCount) * 2 * pi + zone.index * 1.5;
+      final a = (i / dotCount) * 2 * pi + zone.index * 1.5 + roundRotation;
       final r = midR + (outerR - innerR) * 0.22 * sin(i * 3.7);
       canvas.drawCircle(
         Offset(center.dx + cos(a) * r, center.dy + sin(a) * r),
