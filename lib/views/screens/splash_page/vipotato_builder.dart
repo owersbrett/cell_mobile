@@ -230,8 +230,14 @@ class _VIPotatoBuilderPageState extends State<VIPotatoBuilderPage> {
               const SizedBox(height: 8),
             ],
             PotatuhsButton(
-              label: _saving ? 'SAVING…' : 'SAVE & EQUIP',
+              label: _saving ? 'SAVING…' : 'SAVE',
               onTap: _saving || _config.traits.isEmpty ? () {} : _save,
+            ),
+            const SizedBox(height: 4),
+            TextButton(
+              onPressed: _saving ? null : () => Navigator.of(context).pop(),
+              child: Text('Cancel',
+                  style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary)),
             ),
           ],
         ),

@@ -7,10 +7,12 @@ import 'package:cell_mobile/data/organelles.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/user_profile.dart';
+import 'package:cell_mobile/vipotato.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:cell_mobile/views/screens/games_debug_page/games_debug_page.dart';
 import 'package:cell_mobile/views/screens/splash_page/account_sheet.dart';
 import 'package:cell_mobile/views/screens/splash_page/settings_sheet.dart';
+import 'package:cell_mobile/views/screens/splash_page/vipotato_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -262,20 +264,74 @@ class _CornerIcon extends StatelessWidget {
   }
 }
 
-/// Top-left account entry — shows a person icon when signed out / anonymous and
-/// a filled badge (with the account's initial) once signed in with email.
-class _AccountButton extends StatelessWidget {
+/// Top-left account entry — shows the player's equipped VIPotato avatar once
+/// authenticated (with one built), otherwise a person icon. Tapping opens the
+/// account sheet either way.
+class _AccountButton extends StatefulWidget {
+  @override
+  State<_AccountButton> createState() => _AccountButtonState();
+}
+
+class _AccountButtonState extends State<_AccountButton> {
+  String? _loadedFor;
+
+  @override
+  void initState() {
+    super.initState();
+    AuthService.current.addListener(_onUser);
+    _onUser();
+  }
+
+  @override
+  void dispose() {
+    AuthService.current.removeListener(_onUser);
+    super.dispose();
+  }
+
+  // Refresh the equipped avatar whenever the signed-in user changes.
+  void _onUser() {
+    final u = AuthService.current.value;
+    if (u == null) {
+      _loadedFor = null;
+    } else if (u.uid != _loadedFor) {
+      _loadedFor = u.uid;
+      VIPotatoService.loadEquipped();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<HpgUser?>(
       valueListenable: AuthService.current,
       builder: (context, user, _) {
-        final signedIn = user != null && !user.isAnonymous;
-        return _CornerIcon(
-          icon: signedIn ? Icons.account_circle : Icons.account_circle_outlined,
-          tooltip: signedIn ? 'Account' : 'Sign in',
-          color: signedIn ? Potatuhs.gold : Colors.white70,
-          onTap: () => showAccountSheet(context),
+        return ValueListenableBuilder<VIPotatoConfig?>(
+          valueListenable: VIPotatoService.equipped,
+          builder: (context, avatar, __) {
+            final hasAvatar =
+                user != null && avatar != null && !avatar.isEmpty;
+            if (hasAvatar) {
+              return Padding(
+                padding: const EdgeInsets.all(8),
+                child: GestureDetector(
+                  onTap: () => showAccountSheet(context),
+                  child: VIPotatoAvatar(
+                    config: avatar,
+                    size: 40,
+                    fallbackInitial: user.displayName ?? user.email,
+                  ),
+                ),
+              );
+            }
+            final signedIn = user != null && !user.isAnonymous;
+            return _CornerIcon(
+              icon: signedIn
+                  ? Icons.account_circle
+                  : Icons.account_circle_outlined,
+              tooltip: signedIn ? 'Account' : 'Sign in',
+              color: signedIn ? Potatuhs.gold : Colors.white70,
+              onTap: () => showAccountSheet(context),
+            );
+          },
         );
       },
     );

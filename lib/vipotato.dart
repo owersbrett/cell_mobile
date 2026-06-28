@@ -112,6 +112,12 @@ class VIPotatoService {
   static FirebaseFirestore get _db => FirebaseFirestore.instance;
   static String? get _uid => FirebaseAuth.instance.currentUser?.uid;
 
+  /// The current user's equipped avatar, kept live so the splash corner and the
+  /// account sheet both reflect a freshly-built potato. Updated by
+  /// [loadEquipped] and [saveAndEquip].
+  static final ValueNotifier<VIPotatoConfig?> equipped =
+      ValueNotifier<VIPotatoConfig?>(null);
+
   /// All traits, grouped by category and ordered by layer z-index. Empty on any
   /// failure (offline / rules) — the builder shows an empty state, never throws.
   static Future<Map<String, List<Trait>>> loadTraitsByCategory() async {
@@ -138,7 +144,10 @@ class VIPotatoService {
   /// The current user's equipped avatar, or null if none / signed out.
   static Future<VIPotatoConfig?> loadEquipped() async {
     final uid = _uid;
-    if (uid == null) return null;
+    if (uid == null) {
+      equipped.value = null;
+      return null;
+    }
     try {
       final snap = await _db
           .collection('vipotatoes')
@@ -146,9 +155,11 @@ class VIPotatoService {
           .where('isEquipped', isEqualTo: true)
           .limit(1)
           .get();
-      if (snap.docs.isEmpty) return null;
-      final doc = snap.docs.first;
-      return VIPotatoConfig.fromDoc(doc.id, doc.data());
+      final config = snap.docs.isEmpty
+          ? null
+          : VIPotatoConfig.fromDoc(snap.docs.first.id, snap.docs.first.data());
+      equipped.value = config;
+      return config;
     } catch (e) {
       debugPrint('VIPotatoService.loadEquipped: $e');
       return null;
@@ -200,6 +211,9 @@ class VIPotatoService {
     }
     await batch.commit();
 
-    return VIPotatoConfig(id: docId, name: config.name, traits: config.traits);
+    final saved =
+        VIPotatoConfig(id: docId, name: config.name, traits: config.traits);
+    equipped.value = saved;
+    return saved;
   }
 }
