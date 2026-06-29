@@ -47,6 +47,15 @@ const double _kMtEventImpulse   = 22.0;
 const double _kMtEventDuration  = 2.5;
 const double _kMtEventCooldown  = 14.0;
 
+// --- Render cadence ---------------------------------------------------------
+// The simulation steps every animation frame (~60 Hz), but the WIDGET TREE only
+// rebuilds at this rate. The smooth visuals (chart, particles, atmosphere) are
+// drawn by Listenable-driven CustomPainters, so we never rebuild the big control
+// tree 60×/sec — the app's known render-overload / black-screen bug class.
+const double _kMtRenderHz       = 20.0;
+// How often (seconds) a price sample is appended to the chart history.
+const double _kMtChartSampleSec = 0.25;
+
 class _MtPriceSample {
   final double price;
   _MtPriceSample(this.price);
@@ -124,7 +133,10 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   double _realized  = 0.0;
 
   double _timeLeft = _kMtGameDuration;
-  double _elapsed  = 0.0;
+
+  // Widget-tree refresh throttle + chart-sampling clocks (seconds).
+  double _renderAccum = 0.0;
+  double _chartTimer  = 0.0;
 
   // --- Position (held shares, average cost basis) ---
   double _heldShares  = 0.0;
@@ -149,6 +161,11 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   // --- Chart ---
   final List<_MtPriceSample> _chart = [];
   static const int _kChartMax = 200;
+  // Repaint signal for the chart painter — bumped when a sample is appended or
+  // the open-order set changes, so the chart repaints on real change only, not
+  // 60×/sec.
+  final ValueNotifier<int> _chartRev = ValueNotifier<int>(0);
+  void _bumpChart() => _chartRev.value++;
 
   // --- FX ---
   final List<FxParticle> _fxParticles = [];
@@ -198,57 +215,72 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   @override
   void dispose() {
     _ctrl.dispose();
+    _chartRev.dispose();
     super.dispose();
   }
 
   // ─── Main loop (host owns the clock) ──────────────────────────────────────
+  // The sim advances every frame; painters animate off Listenables. We only
+  // rebuild the widget tree at _kMtRenderHz, or immediately when a discrete
+  // event (order fill, news, cooldown ready) changes what the controls show.
   void _tick() {
     if (!widget.session.isRunning) return;
     const dt = 1 / 60.0;
     _timeLeft = widget.session.remaining.inMilliseconds / 1000.0;
-    setState(() {
-      _elapsed += dt;
+    bool dirty = false; // a discrete change that needs an immediate rebuild
 
-      _trendTimer -= dt;
-      if (_trendTimer <= 0) {
-        _trend      = (_rng.nextDouble() * 2 - 1);
-        _trendTimer = _kMtTrendDuration * (0.6 + _rng.nextDouble() * 0.8);
-        if (_news == null && _rng.nextDouble() < _kMtNewsChance) {
-          _spawnNews();
-        }
+    _trendTimer -= dt;
+    if (_trendTimer <= 0) {
+      _trend      = (_rng.nextDouble() * 2 - 1);
+      _trendTimer = _kMtTrendDuration * (0.6 + _rng.nextDouble() * 0.8);
+      if (_news == null && _rng.nextDouble() < _kMtNewsChance) {
+        _spawnNews();
+        dirty = true;
       }
+    }
 
-      if (_news != null) {
-        _newsTimer -= dt;
-        if (_newsTimer <= 0) _news = null;
+    if (_news != null) {
+      _newsTimer -= dt;
+      if (_newsTimer <= 0) {
+        _news = null;
+        dirty = true;
       }
+    }
 
-      _priceClock += dt * _tickHz;
-      final steps = _priceClock.floor();
-      _priceClock -= steps;
-      for (int s = 0; s < steps; s++) {
-        _stepPrice();
-        _fillOrders(); // check limit orders against each price step
+    _priceClock += dt * _tickHz;
+    final steps = _priceClock.floor();
+    _priceClock -= steps;
+    for (int s = 0; s < steps; s++) {
+      _stepPrice();
+      if (_fillOrders()) dirty = true; // limit fills are discrete events
+    }
+
+    _chartTimer += dt;
+    if (_chart.length < 2 || _chartTimer >= _kMtChartSampleSec) {
+      _chartTimer = 0;
+      _chart.add(_MtPriceSample(_price));
+      if (_chart.length > _kChartMax) _chart.removeAt(0);
+      _bumpChart();
+    }
+
+    for (int i = 0; i < _eventCooldowns.length; i++) {
+      if (_eventCooldowns[i] > 0) {
+        _eventCooldowns[i] =
+            (_eventCooldowns[i] - dt).clamp(0.0, _kMtEventCooldown);
+        if (_eventCooldowns[i] == 0) dirty = true; // button just re-enabled
       }
+    }
 
-      if (_chart.isEmpty ||
-          _chart.length < (_elapsed * _kMtBaseTickHz / 3).round() + 1) {
-        _chart.add(_MtPriceSample(_price));
-        if (_chart.length > _kChartMax) _chart.removeAt(0);
-      }
+    if (_flashAlpha > 0) _flashAlpha = (_flashAlpha - dt * 3).clamp(0, 1);
 
-      for (int i = 0; i < _eventCooldowns.length; i++) {
-        if (_eventCooldowns[i] > 0) {
-          _eventCooldowns[i] =
-              (_eventCooldowns[i] - dt).clamp(0.0, _kMtEventCooldown);
-        }
-      }
+    _fxParticles.removeWhere((p) => !p.step(dt));
+    _pops.removeWhere((p) => !p.step(dt));
 
-      if (_flashAlpha > 0) _flashAlpha = (_flashAlpha - dt * 3).clamp(0, 1);
-
-      _fxParticles.removeWhere((p) => !p.step(dt));
-      _pops.removeWhere((p) => !p.step(dt));
-    });
+    _renderAccum += dt;
+    if (dirty || _renderAccum >= 1.0 / _kMtRenderHz) {
+      _renderAccum = 0;
+      setState(() {}); // fields already mutated above
+    }
   }
 
   void _stepPrice() {
@@ -281,8 +313,10 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   void _setLot(int v) => setState(() => _lotSize = v.clamp(1, 9999));
   void _bumpLot(int by) => setState(() => _lotSize = (_lotSize + by).clamp(1, 9999));
   void _maxLot() {
-    // Largest lot the available cash can buy at the current limit price.
-    final maxByCash = (_available / max(_limitPrice, 0.01)).floor();
+    // Largest lot the available cash can buy at the live MARKET price. Sizing to
+    // market (not the lower limit price) guarantees BOTH a market BUY and a
+    // resting LIMIT order stay affordable — so MAX never leaves a button greyed.
+    final maxByCash = (_available / max(_price, 0.01)).floor();
     setState(() => _lotSize = max(1, maxByCash));
   }
 
@@ -297,6 +331,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       _reserved  += cost;
       _orders.add(_MtOrder(_lotSize, _limitPrice));
       _spawnFx(Potatuhs.airForce, count: 8, speed: 70);
+      _bumpChart();
     });
   }
 
@@ -316,32 +351,36 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
   /// Cancel an open order: refund reserved cash MINUS a small fee.
   void _cancelOrder(int index) {
+    if (!widget.session.isRunning) return;
     if (index < 0 || index >= _orders.length) return;
     setState(() {
       final o   = _orders.removeAt(index);
       final fee = o.reserved * _kMtCancelFeeRate;
-      _reserved  -= o.reserved;
+      _reserved  = max(0.0, _reserved - o.reserved);
       _available += o.reserved - fee;
       _realized  -= fee; // the cancel fee is a realized cost against your P&L
       _syncScore();
+      _bumpChart();
       _popLabel('-\$${fee.toStringAsFixed(1)} fee', const Color(0xFFEF5350),
           yFrac: 0.40);
     });
   }
 
   void _cancelAllOrders() {
+    if (!widget.session.isRunning) return;
     if (_orders.isEmpty) return;
     setState(() {
       double feeTotal = 0;
       for (final o in _orders) {
         final fee = o.reserved * _kMtCancelFeeRate;
         feeTotal   += fee;
-        _reserved  -= o.reserved;
         _available += o.reserved - fee;
       }
       _orders.clear();
+      _reserved  = 0.0; // every reserve was just released
       _realized -= feeTotal;
       _syncScore();
+      _bumpChart();
       if (feeTotal > 0) {
         _popLabel('-\$${feeTotal.toStringAsFixed(1)} fees',
             const Color(0xFFEF5350), yFrac: 0.40);
@@ -351,15 +390,18 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
   /// Fill any open buy order whose limit is at/above the current price.
   /// Cash was already reserved at placement; here it converts to shares.
-  void _fillOrders() {
-    if (_orders.isEmpty) return;
+  /// Returns true if at least one order filled.
+  bool _fillOrders() {
+    if (_orders.isEmpty) return false;
+    bool filled = false;
     for (int i = _orders.length - 1; i >= 0; i--) {
       final o = _orders[i];
       if (_price <= o.limit + 1e-9) {
         // Fill at the limit (cash reserved at the limit, so basis = limit).
-        _reserved -= o.reserved;
+        _reserved = max(0.0, _reserved - o.reserved);
         _addShares(o.shares.toDouble(), o.limit);
         _orders.removeAt(i);
+        filled = true;
         _flashColor = const Color(0xFF66BB6A);
         _flashAlpha = 0.20;
         _spawnFx(const Color(0xFF66BB6A), count: 8, speed: 80);
@@ -367,6 +409,8 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
             const Color(0xFF66BB6A), yFrac: 0.46);
       }
     }
+    if (filled) _bumpChart(); // open-order set (limit line) changed
+    return filled;
   }
 
   void _addShares(double shares, double price) {
@@ -378,6 +422,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
   // ─── Selling (realizes P&L → score) ───────────────────────────────────────
   void _sell(int shares, {bool silent = false}) {
+    if (!widget.session.isRunning) return;
     if (_heldShares <= 1e-6) return;
     final qty = min(shares.toDouble(), _heldShares);
     if (qty <= 1e-6) return;
@@ -463,7 +508,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         Positioned.fill(
           child: RepaintBoundary(
             child: CustomPaint(
-              painter: _MtBackgroundPainter(_elapsed, Potatuhs.airForce),
+              painter: _MtBackgroundPainter(_ctrl, Potatuhs.airForce),
             ),
           ),
         ),
@@ -490,9 +535,11 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                 width: double.infinity,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: CustomPaint(
-                    painter: _MtChartPainter(
-                        _chart, _kMtStartingPrice, _limitPriceLine()),
+                  child: RepaintBoundary(
+                    child: CustomPaint(
+                      painter: _MtChartPainter(_chart, _kMtStartingPrice,
+                          _limitPriceLine(), _chartRev),
+                    ),
                   ),
                 ),
               ),
@@ -521,7 +568,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         Positioned.fill(
           child: IgnorePointer(
             child: CustomPaint(
-              painter: _MtFxPainter(_fxParticles, _pops),
+              painter: _MtFxPainter(_fxParticles, _pops, _ctrl),
             ),
           ),
         ),
@@ -1145,16 +1192,21 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 }
 
 // ─── Background painter ───────────────────────────────────────────────────────
+// Repaints off the AnimationController (60 fps) without rebuilding any widgets,
+// deriving its own seconds-clock so the atmosphere drift stays smooth even while
+// the control tree refreshes at the lower _kMtRenderHz.
 class _MtBackgroundPainter extends CustomPainter {
-  final double t;
+  final AnimationController controller;
   final Color accent;
-  _MtBackgroundPainter(this.t, this.accent);
+  _MtBackgroundPainter(this.controller, this.accent)
+      : super(repaint: controller);
   @override
   void paint(Canvas canvas, Size size) {
+    final t = (controller.lastElapsedDuration?.inMilliseconds ?? 0) / 1000.0;
     GameFx.atmosphere(canvas, size, accent, t, motes: 28);
   }
   @override
-  bool shouldRepaint(covariant _MtBackgroundPainter old) => true;
+  bool shouldRepaint(covariant _MtBackgroundPainter old) => false;
 }
 
 // ─── Chart painter ────────────────────────────────────────────────────────────
@@ -1162,7 +1214,33 @@ class _MtChartPainter extends CustomPainter {
   final List<_MtPriceSample> chart;
   final double baseline;
   final double? limitLine;
-  _MtChartPainter(this.chart, this.baseline, this.limitLine);
+  _MtChartPainter(this.chart, this.baseline, this.limitLine, Listenable repaint)
+      : super(repaint: repaint);
+
+  // Reused TextPainters for the axis/limit labels — avoids rebuilding a
+  // TextPainter for every label on every repaint. Keyed by text+style; the cap
+  // keeps it from growing as price labels churn.
+  static final Map<String, TextPainter> _tpCache = {};
+  void _label(Canvas canvas, String s, Offset center, double size, Color color,
+      {FontWeight weight = FontWeight.w400}) {
+    final key = '$s|$color|$size|${weight.value}';
+    final tp = _tpCache.putIfAbsent(key, () {
+      if (_tpCache.length > 96) _tpCache.clear();
+      return TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            fontFamily: Potatuhs.bodyFont,
+            fontSize: size,
+            fontWeight: weight,
+            color: color,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+    });
+    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1225,10 +1303,10 @@ class _MtChartPainter extends CustomPainter {
       for (double x = 0; x < size.width; x += 12) {
         canvas.drawLine(Offset(x, ly), Offset(x + 6, ly), limPaint);
       }
-      GameFx.text(
+      _label(
         canvas,
         'LIMIT \$${limitLine!.toStringAsFixed(0)}',
-        Offset(6, ly - 12),
+        Offset(40, ly - 12),
         9,
         Potatuhs.sienna,
         weight: FontWeight.w700,
@@ -1295,23 +1373,27 @@ class _MtChartPainter extends CustomPainter {
     );
     canvas.drawCircle(Offset(tipX, tipY), 3.5, Paint()..color = lineColor);
 
-    GameFx.text(canvas, '\$${maxP.toStringAsFixed(0)}',
-        Offset(size.width - 22, 8), 9,
-        Potatuhs.textFaint.withValues(alpha: 0.7));
-    GameFx.text(canvas, '\$${minP.toStringAsFixed(0)}',
-        Offset(size.width - 22, size.height - 8), 9,
-        Potatuhs.textFaint.withValues(alpha: 0.7));
+    final axisColor = Potatuhs.textFaint.withValues(alpha: 0.7);
+    _label(canvas, '\$${maxP.toStringAsFixed(0)}',
+        Offset(size.width - 22, 9), 9, axisColor, weight: FontWeight.w700);
+    _label(canvas, '\$${minP.toStringAsFixed(0)}',
+        Offset(size.width - 22, size.height - 9), 9, axisColor,
+        weight: FontWeight.w700);
   }
 
   @override
-  bool shouldRepaint(covariant _MtChartPainter old) => true;
+  bool shouldRepaint(covariant _MtChartPainter old) =>
+      old.limitLine != limitLine || old.chart.length != chart.length;
 }
 
 // ─── FX overlay painter ───────────────────────────────────────────────────────
+// Reads the live particle/pop lists and repaints off the controller (60 fps),
+// so bursts stay smooth without forcing widget rebuilds.
 class _MtFxPainter extends CustomPainter {
   final List<FxParticle> particles;
   final List<_MtPop>     pops;
-  _MtFxPainter(this.particles, this.pops);
+  _MtFxPainter(this.particles, this.pops, Listenable repaint)
+      : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1320,7 +1402,7 @@ class _MtFxPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _MtFxPainter old) => true;
+  bool shouldRepaint(covariant _MtFxPainter old) => false;
 }
 
 // ─── Cooldown ring painter ────────────────────────────────────────────────────

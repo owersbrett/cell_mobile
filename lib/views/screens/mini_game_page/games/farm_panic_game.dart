@@ -7,109 +7,160 @@ import '../../../../games/fx.dart';
 import '../../../../theme/potatuhs.dart';
 
 // ---------------------------------------------------------------------------
-// Farm Panic — frantic two-zone 60s arcade game (potato / Hot Potato Games)
+// Farm Panic — frantic two-zone farm arcade (potato / Hot Potato Games)
 //
-// CONTRACT: const FarmPanicGame() — no params, no external score callbacks.
-// Self-contained in whatever Expanded slot MiniGamePage hands it, identical
-// interface to the old version.
+// CONTRACT: FarmPanicGame(session: session). The MiniGameHost owns the clock,
+// countdown, score HUD and results; this widget only simulates the field,
+// reports points via session.addScore, and gates all play on session.isRunning.
+//
+// RENDERING: the whole field is one continuous Ticker → one CustomPainter
+// (the "harvest lesson"). No per-entity widgets, no blur-heavy glow stacks,
+// capped particle/entity counts. The score, timer and results are host chrome.
 // ---------------------------------------------------------------------------
 
-// ---- FEEL CONSTANTS --------------------------------------------------------
+// ---- feel constants --------------------------------------------------------
 
-const double _kGameDuration = 30.0;
-
-// Underground zone
+// Underground water channels
 const int _kChannelCount = 4;
-const double _kFlowDecayBase = 0.14;
-const double _kFlowDecayScale = 0.28;
-const double _kSwipeFlowGain = 0.65;
-const double _kSwipeHitRadius = 32.0;
-const double _kPotatoGrowRate = 5.5;
-const double _kTokenBubbleRate = 6.5;
-const double _kTokenBubbleAccel = 0.07;
-const double _kTokenRadius = 22.0;
+const double _kFlowDecayBase = 0.13;
+const double _kFlowDecayScale = 0.26;
+const double _kSwipeFlowGain = 0.62;
+const double _kSwipeHitRadius = 34.0;
+const double _kChannelH = 16.0; // visual trough thickness
 
-// Above-ground — bugs
+// Crops
+const double _kPotatoGrowRate = 5.5;
+const int _kPotatoCount = 6;
+
+// Above-ground — bugs (SWIPE to swat)
 const double _kBugSpawnBase = 2.8;
-const double _kBugSpawnMin = 0.42;
-const double _kBugSpeed = 52.0;
+const double _kBugSpawnMin = 0.5;
+const double _kBugSpeed = 50.0;
 const double _kBugSpeedScale = 1.8;
-const double _kBugHitRadius = 36.0;
-const double _kBugSwipeDx = 8.0;
+const double _kBugHitRadius = 38.0;
+const double _kBugSwipeDx = 7.0;
 const int _kBugPoints = 15;
 const double _kBugDamageThresh = 0.93;
 const int _kBugDamageScore = -8;
+const int _kBugMaxAlive = 11;
 
-// Weeds (new pest type — tap to yank, not swipe)
+// Weeds (TAP to yank)
 const double _kWeedSpawnBase = 7.0;
 const double _kWeedSpawnMin = 3.2;
 const int _kWeedDamage = -12;
 const int _kWeedPoints = 20;
 const double _kWeedRadius = 26.0;
+const double _kWeedLifeMax = 12.0;
+const int _kWeedMaxAlive = 6;
 
-// Water burst power-up (underground flood — swipe fast for bonus)
+// Water-burst flood power-up (SWIPE)
 const double _kWaterBurstSpawnBase = 12.0;
-const double _kWaterBurstFlowBoost = 0.4; // extra flow given to all channels
+const double _kWaterBurstFlowBoost = 0.4;
 const int _kWaterBurstPoints = 30;
 
-// Ripe potato — tap the above-ground plant to harvest
+// Ripe potato harvest (TAP)
 const int _kHarvestPoints = 60;
-const double _kHarvestTapRadius = 24.0;
+const double _kHarvestTapRadius = 26.0;
 
-// Tokens
-const int _kTokenPoints = 30;
+// Cash tokens (TAP) — tokens pay CASH (which banks to score), not score direct
+const double _kTokenRadius = 20.0;
+const double _kTokenBubbleRate = 6.5;
+const double _kTokenBubbleAccel = 0.07;
+const int _kTokenMaxAlive = 5;
 
-// Scoring
+// ---- cash economy ----------------------------------------------------------
+// Cash is a held pool, separate from score. It SLOWLY auto-banks into score
+// (hold to bank) — so unspent cash is worth points, but you can SPEND it on a
+// relief upgrade before it banks. That is the core decision: relief now vs.
+// points later. scoreUnit is "dollars", so banked cash IS the score.
+const int _kTokenCash = 10;
+const int _kRichTokenCash = 20;
+const double _kRichTokenChance = 0.22;
+const int _kHarvestCash = 5;
+const int _kSwatCash = 1;
+const int _kWeedCash = 2;
+const int _kBurstCash = 3;
+const double _kCashBankRate = 3.0; // cash/sec that auto-deposits to score
+const int _kCashScoreWorth = 2; // score earned per banked cash
+
+// ---- shop / upgrades -------------------------------------------------------
+const double _kShopBarH = 62.0;
+const int _kCostPesticide = 18;
+const int _kCostWind = 16;
+const int _kCostIrrigation = 24;
+const int _kCostAutoCollect = 30;
+const double _kPestDuration = 6.0; // bug-spawn suppression
+const double _kWindDuration = 3.2; // sweep visual + spawn slow
+const double _kWindSlowMult = 1.9; // spawn interval ×mult while windy
+const double _kIrrigDuration = 8.0; // auto-water channels
+const double _kAutoDuration = 8.0; // farmhand auto-harvest
+const double _kAutoInterval = 0.7; // secs between auto-harvests
+
+// ---- scoring / misc --------------------------------------------------------
 const int _kComboMultMax = 5;
-
-// Misc
 const double _kShakeDecay = 9.0;
 const double _kPopupLifetime = 0.85;
 
 // Hint / discoverability
-const double _kHintShowDuration = 2.5; // how long each hint banner shows
-const double _kMidHintCooldown = 18.0; // don't re-show hint more often than this
-const double _kCircStallThresh = 0.22; // avg flow below this triggers hint
-const double _kNoSwipeHintTime = 8.0; // secs without underground swipe → hint
+const double _kHintShowDuration = 2.6;
+const double _kMidHintCooldown = 16.0;
+const double _kCircStallThresh = 0.22;
+const double _kNoSwipeHintTime = 8.0;
 
-// Failure clocks (for urgency / countdown rings). These mirror the existing
-// fail thresholds so the on-screen countdown is honest.
-const double _kWeedLifeMax = 12.0; // weed damages crop after this many secs
-
-// ---- palette (brand-aligned) -----------------------------------------------
-
-const Color _kSkyTop = Color(0xFF0C1510);
-const Color _kSkyBot = Color(0xFF152214);
-const Color _kSoilTop = Color(0xFF3B2007);
-const Color _kSoilBot = Color(0xFF5D3A1A);
-const Color _kRootPipe = Color(0xFF7B5E3A);
-const Color _kRootFlow = Color(0xFF42A5F5);
+// ---- palette (brand-aligned, warm earthy farm) -----------------------------
+const Color _kSkyTop = Color(0xFF11210F);
+const Color _kSkyMid = Color(0xFF1C3115);
+const Color _kSkyHorizon = Color(0xFF3A3410);
+const Color _kSoilTop = Color(0xFF4A2A0E);
+const Color _kSoilBot = Color(0xFF2A1708);
+const Color _kSoilRidge = Color(0xFF6B431E);
+const Color _kTrough = Color(0xFF24160A);
+const Color _kWater = Color(0xFF34B6F0);
+const Color _kWaterDeep = Color(0xFF1E7CC4);
 const Color _kPotatoGold = Potatuhs.gold;
-const Color _kPotatoDark = Color(0xFF9B6A20);
-const Color _kGreen = Color(0xFF66BB6A);
+const Color _kPotatoDark = Color(0xFF8A5A1E);
+const Color _kLeaf = Color(0xFF5BA84F);
+const Color _kLeafDark = Color(0xFF2E6B2C);
 const Color _kBugColor = Color(0xFFFF5722);
-const Color _kWeedColor = Color(0xFF8BC34A);
+const Color _kWeedColor = Color(0xFF9CCC65);
 const Color _kTokenColor = Potatuhs.sienna;
 const Color _kWaterBurst = Color(0xFF29B6F6);
 const Color _kDanger = Color(0xFFE53935);
 const Color _kHintBg = Color(0xCC0D1A2A);
 const Color _kHarvestReady = Potatuhs.orange;
 
+// ---- upgrade kinds ---------------------------------------------------------
+enum _Upgrade { pesticide, wind, irrigation, autoCollect }
+
+class _ShopItem {
+  final _Upgrade kind;
+  final String label;
+  final String glyph;
+  final int cost;
+  final Color color;
+  Rect rect = Rect.zero; // laid out each frame from canvas size
+  double buyFlash = 0; // pops to 1 on purchase, decays
+  _ShopItem(this.kind, this.label, this.glyph, this.cost, this.color);
+}
+
 // ---- data classes ----------------------------------------------------------
 
 class _Channel {
   final double yFrac;
-  double flow = 0.0;
-  bool swipeActive = false;
-  _Channel(this.yFrac);
+  double flow;
+  double phase = 0; // chevron scroll, advances with flow
+  double handle = 0.5; // 0..1 draggable-current position
+  double handleSeed;
+  _Channel(this.yFrac, this.flow, this.handleSeed);
 }
 
 class _Potato {
-  double x;
+  double x; // 0..1 across field
   double growth; // 0..1
   bool ripeFlash = false;
   double ripeFlashAge = 0;
-  _Potato(this.x, this.growth);
+  double sway;
+  _Potato(this.x, this.growth, this.sway);
   bool get ripe => growth >= 1.0;
 }
 
@@ -117,30 +168,30 @@ class _Bug {
   double x, y;
   bool dead = false;
   double deathAge = 0;
-  double dx = 0;
-  int tier; // 0=small, 1=fast, 2=armored (armored needs 2 hits)
+  double dx;
+  int tier; // 0=small, 1=fast, 2=armored
   int hitsLeft;
   _Bug({required this.x, required this.y, required this.dx, this.tier = 0})
       : hitsLeft = tier == 2 ? 2 : 1;
 }
 
 class _Weed {
-  double x;
-  double y; // in above-ground zone
+  double x, y;
   double age = 0;
   bool pulled = false;
   double pullAge = 0;
-  _Weed({required this.x, required this.y});
+  double seed;
+  _Weed({required this.x, required this.y, required this.seed});
 }
 
 class _Token {
   double x, y;
   bool banked = false;
   double age = 0;
-  _Token({required this.x, required this.y});
+  int value;
+  _Token({required this.x, required this.y, required this.value});
 }
 
-// Water burst: appears underground, player swipes it for a channel flood boost
 class _WaterBurst {
   double x, y;
   double age = 0;
@@ -154,20 +205,16 @@ class _Popup {
   String text;
   Color color;
   double scale;
-  _Popup(
-      {required this.x,
-      required this.y,
-      required this.text,
-      required this.color,
-      this.scale = 1.0})
-      : age = 0;
+  _Popup({
+    required this.x,
+    required this.y,
+    required this.text,
+    required this.color,
+    this.scale = 1.0,
+  }) : age = 0;
 }
 
-// ---- phase -----------------------------------------------------------------
-
 enum _Phase { preGame, playing }
-
-// ---- hint state ------------------------------------------------------------
 
 enum _HintKind { channelSwipe, harvestTap, weedTap }
 
@@ -178,23 +225,25 @@ class _Hint {
 }
 
 // ---- next-action directive --------------------------------------------------
-//
-// Every frame we score each demand source by how close it is to costing the
-// player points, pick the single most-urgent one, and surface it as (a) a
-// big colour-coded banner telling the player what to do, and (b) a spotlight +
-// countdown ring drawn on that exact target. The player should never wonder
-// "what now?".
-
+// One "do this now" cue: the single most-urgent demand, surfaced as a banner +
+// an on-target affordance. Crucially, the on-target cue is affordance-aware —
+// SWIPE targets get directional arrows, TAP targets get a pulsing ring — so the
+// directive reinforces (never fights) the new clearer affordances.
 enum _ActionKind { swipeChannel, swatBug, pullWeed, harvest, grabToken, flood }
+
+bool _isSwipeAction(_ActionKind k) =>
+    k == _ActionKind.swipeChannel ||
+    k == _ActionKind.flood ||
+    k == _ActionKind.swatBug;
 
 class _Directive {
   final _ActionKind kind;
-  final String verb; // e.g. "SWIPE!"
+  final String verb;
   final Color color;
-  final double urgency; // 0..1, 1 = about to fail / highest value
-  final Offset? target; // world-space point to spotlight (null = no target)
-  final double? targetRadius; // spotlight radius
-  final double? countdown; // 0..1 of a failure clock remaining (null = none)
+  final double urgency; // 0..1
+  final Offset? target;
+  final double? targetRadius;
+  final double? countdown; // 0..1 fail-clock remaining
   const _Directive({
     required this.kind,
     required this.verb,
@@ -220,7 +269,6 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   late AnimationController _ticker;
   final Random _rng = Random();
 
-  // ---- state ----------------------------------------------------------------
   _Phase _phase = _Phase.preGame;
   double _elapsed = 0;
   double _lastTime = 0;
@@ -228,6 +276,13 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
   int get _score => widget.session.score;
   int _combo = 1;
+
+  // Round length owns difficulty pacing — read from the host spec so the curve
+  // adapts whether the round is 30s or 60s (no hardcoded duration here).
+  double get _round {
+    final d = widget.session.spec.durationSeconds.toDouble();
+    return d > 1 ? d : 60.0;
+  }
 
   // Underground
   final List<_Channel> _channels = [];
@@ -243,63 +298,69 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   final List<_Weed> _weeds = [];
   final List<_Token> _tokens = [];
 
-  // Particles / popups
+  // FX
   final List<FxParticle> _particles = [];
   final List<_Popup> _popups = [];
-
-  // Visual
   double _shakeIntensity = 0;
 
   // Gesture
   int? _activeChannel;
-  double _lastSwipeTime = -999; // tracks last underground swipe for hint logic
+  double _lastSwipeTime = -999;
 
-  // Hint system
+  // Hints
   _Hint? _activeHint;
   double _lastHintTime = -999;
 
-  // Next-action directive (recomputed each tick)
+  // Directive
   _Directive? _directive;
-  // Smoothed "verb pop" — kicks to 1.0 when the directed action changes so the
-  // banner punches the player's attention, then decays.
   _ActionKind? _lastDirectiveKind;
   double _directivePop = 0;
-  // Swipe guide animation (shown at game start)
   double _swipeGuideAge = 0;
   bool _swipeGuideDone = false;
 
-  // Score flash for milestone pops
+  // Score flash
   int _prevScore = 0;
   double _scoreFlash = 0;
 
+  // ---- cash + shop ----------------------------------------------------------
+  double _cash = 0;
+  double _bankAccum = 0; // fractional banked-score carry
+  double _bankPulse = 0; // HUD "depositing" shimmer when banking
+
+  final List<_ShopItem> _shop = [
+    _ShopItem(_Upgrade.pesticide, 'PEST', '🐞', _kCostPesticide,
+        const Color(0xFF8BC34A)),
+    _ShopItem(_Upgrade.wind, 'WIND', '🌬', _kCostWind, _kWaterBurst),
+    _ShopItem(_Upgrade.irrigation, 'WATER', '💧', _kCostIrrigation, _kWater),
+    _ShopItem(_Upgrade.autoCollect, 'HAND', '🧺', _kCostAutoCollect,
+        Potatuhs.gold),
+  ];
+
+  // Upgrade timers (seconds remaining)
+  double _pestTimer = 0;
+  double _windTimer = 0;
+  double _windSweep = 0; // 0..1 gust position across field
+  double _irrigTimer = 0;
+  double _autoTimer = 0;
+  double _autoCd = 0;
+
   // Derived layout
-  double get _groundY => _size.height * 0.52;
-  double get _soilZoneH => _size.height - _groundY;
+  double get _groundY => _size.height * 0.50;
+  double get _playBottom => _size.height - _kShopBarH;
+  double get _soilZoneH => (_playBottom - _groundY).clamp(1.0, double.infinity);
 
-  // Bug speed escalation
   double _bugSpeed(double t) =>
-      _kBugSpeed * (1 + (_kBugSpeedScale - 1) * (t / _kGameDuration));
-
-  // Bug spawn interval escalation
+      _kBugSpeed * (1 + (_kBugSpeedScale - 1) * (t / _round));
   double _bugInterval(double t) =>
-      (_kBugSpawnBase - (_kBugSpawnBase - _kBugSpawnMin) * (t / _kGameDuration))
+      (_kBugSpawnBase - (_kBugSpawnBase - _kBugSpawnMin) * (t / _round))
           .clamp(_kBugSpawnMin, _kBugSpawnBase);
-
-  // Weed spawn escalation
   double _weedInterval(double t) =>
-      (_kWeedSpawnBase -
-              (_kWeedSpawnBase - _kWeedSpawnMin) * (t / _kGameDuration))
+      (_kWeedSpawnBase - (_kWeedSpawnBase - _kWeedSpawnMin) * (t / _round))
           .clamp(_kWeedSpawnMin, _kWeedSpawnBase);
-
-  // Flow decay escalation
-  double _flowDecay(double t) =>
-      _kFlowDecayBase + _kFlowDecayScale * (t / _kGameDuration);
-
-  // Token spawn interval
+  double _flowDecay(double t) => _kFlowDecayBase + _kFlowDecayScale * (t / _round);
   double _tokenInterval(double t) =>
       (_kTokenBubbleRate - _kTokenBubbleAccel * t).clamp(2.0, _kTokenBubbleRate);
 
-  // Average channel flow
   double get _avgFlow {
     if (_channels.isEmpty) return 0;
     return _channels.fold(0.0, (s, c) => s + c.flow) / _channels.length;
@@ -310,9 +371,8 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   @override
   void initState() {
     super.initState();
-    _ticker =
-        AnimationController(vsync: this, duration: const Duration(days: 1))
-          ..addListener(_onTick);
+    _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
+      ..addListener(_onTick);
     _ticker.forward();
     _lastTime = _now();
     _startGame();
@@ -325,8 +385,6 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _ticker.dispose();
     super.dispose();
   }
-
-  // ---- game setup -----------------------------------------------------------
 
   void _startGame() {
     _prevScore = 0;
@@ -343,6 +401,18 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _swipeGuideAge = 0;
     _swipeGuideDone = false;
     _scoreFlash = 0;
+    _cash = 0;
+    _bankAccum = 0;
+    _bankPulse = 0;
+    _pestTimer = 0;
+    _windTimer = 0;
+    _windSweep = 0;
+    _irrigTimer = 0;
+    _autoTimer = 0;
+    _autoCd = 0;
+    for (final s in _shop) {
+      s.buyFlash = 0;
+    }
     _popups.clear();
     _bugs.clear();
     _weeds.clear();
@@ -352,18 +422,25 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
     _channels.clear();
     for (int i = 0; i < _kChannelCount; i++) {
-      _channels.add(_Channel(0.2 + 0.6 * i / (_kChannelCount - 1))
-        ..flow = 0.35 + _rng.nextDouble() * 0.25);
+      _channels.add(_Channel(
+        0.16 + 0.78 * i / (_kChannelCount - 1),
+        0.35 + _rng.nextDouble() * 0.25,
+        _rng.nextDouble() * pi * 2,
+      ));
     }
 
     _potatoes.clear();
-    for (int i = 0; i < 6; i++) {
-      _potatoes.add(_Potato(0.1 + _rng.nextDouble() * 0.8, 0.08));
+    for (int i = 0; i < _kPotatoCount; i++) {
+      _potatoes.add(_Potato(
+        (i + 0.5) / _kPotatoCount + (_rng.nextDouble() - 0.5) * 0.06,
+        0.06 + _rng.nextDouble() * 0.08,
+        _rng.nextDouble() * pi * 2,
+      ));
     }
 
-    _bugTimer = _kBugSpawnBase * 0.4;
+    _bugTimer = _kBugSpawnBase * 0.5;
     _weedTimer = _kWeedSpawnBase * 0.6;
-    _tokenTimer = _kTokenBubbleRate * 0.3;
+    _tokenTimer = _kTokenBubbleRate * 0.25;
     _waterBurstTimer = _kWaterBurstSpawnBase * 0.5;
 
     _phase = _Phase.playing;
@@ -380,8 +457,9 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
     setState(() {
       _elapsed += dt;
-
       _updateShake(dt);
+      _updateUpgrades(dt);
+      _updateCash(dt);
       _updateSwipeGuide(dt);
       _updateHints(dt);
       _updateChannels(dt);
@@ -401,11 +479,123 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     });
   }
 
-  // ---- next-action directive ------------------------------------------------
-  //
-  // Build the single most-important "do this now" cue. We rank every live
-  // demand source by an urgency in 0..1, where 1 means "you are about to lose
-  // points / miss the biggest reward", and surface the winner.
+  // ---- upgrades -------------------------------------------------------------
+
+  void _updateUpgrades(double dt) {
+    for (final s in _shop) {
+      if (s.buyFlash > 0) s.buyFlash = (s.buyFlash - dt * 2.2).clamp(0.0, 1.0);
+    }
+    if (_pestTimer > 0) _pestTimer = (_pestTimer - dt).clamp(0.0, _kPestDuration);
+    if (_windTimer > 0) {
+      _windTimer = (_windTimer - dt).clamp(0.0, _kWindDuration);
+      _windSweep = (1.0 - _windTimer / _kWindDuration).clamp(0.0, 1.0);
+      // Gust keeps clearing weeds/loose bugs as it crosses the field.
+      final gx = _windSweep * _size.width;
+      for (final w in _weeds) {
+        if (!w.pulled && w.x < gx) {
+          w.pulled = true;
+          w.pullAge = 0;
+        }
+      }
+      for (final b in _bugs) {
+        if (!b.dead && b.x < gx && b.y < _groundY * 0.72) {
+          b.dead = true;
+          b.deathAge = 0;
+        }
+      }
+    }
+    if (_irrigTimer > 0) {
+      _irrigTimer = (_irrigTimer - dt).clamp(0.0, _kIrrigDuration);
+    }
+    if (_autoTimer > 0) {
+      _autoTimer = (_autoTimer - dt).clamp(0.0, _kAutoDuration);
+      _autoCd -= dt;
+      if (_autoCd <= 0) {
+        final ripe = _firstRipe();
+        if (ripe != null) {
+          _harvestPotato(ripe, fromAuto: true);
+          _autoCd = _kAutoInterval;
+        } else {
+          _autoCd = 0.2;
+        }
+      }
+    }
+  }
+
+  _Potato? _firstRipe() {
+    _Potato? best;
+    for (final p in _potatoes) {
+      if (!p.ripe) continue;
+      if (best == null || p.ripeFlashAge > best.ripeFlashAge) best = p;
+    }
+    return best;
+  }
+
+  void _buy(_ShopItem item) {
+    if (_cash < item.cost) return;
+    _cash -= item.cost;
+    item.buyFlash = 1.0;
+    _shakeIntensity = max(_shakeIntensity, 3.0);
+    final cx = item.rect.center.dx;
+    switch (item.kind) {
+      case _Upgrade.pesticide:
+        _pestTimer = _kPestDuration;
+        for (final b in _bugs) {
+          if (!b.dead) {
+            b.dead = true;
+            b.deathAge = 0;
+          }
+        }
+        _spawnParticles(
+            Offset(_size.width * 0.5, _groundY * 0.45), const Color(0xFF7CB342),
+            count: 18);
+        _spawnPopup(_size.width * 0.5, _groundY * 0.4, 'BUGS CLEARED',
+            const Color(0xFF8BC34A),
+            scale: 1.2);
+        break;
+      case _Upgrade.wind:
+        _windTimer = _kWindDuration;
+        _windSweep = 0;
+        _spawnParticles(Offset(0, _groundY * 0.5), Colors.white,
+            count: 16, speed: 200);
+        _spawnPopup(_size.width * 0.5, _groundY * 0.4, 'GUST!', _kWaterBurst,
+            scale: 1.2);
+        break;
+      case _Upgrade.irrigation:
+        _irrigTimer = _kIrrigDuration;
+        _spawnPopup(_size.width * 0.5, _groundY + 24, 'IRRIGATION ON', _kWater,
+            scale: 1.1);
+        break;
+      case _Upgrade.autoCollect:
+        _autoTimer = _kAutoDuration;
+        _autoCd = 0;
+        _spawnPopup(_size.width * 0.5, _groundY * 0.4, 'FARMHAND HIRED',
+            Potatuhs.gold,
+            scale: 1.1);
+        break;
+    }
+    _spawnParticles(Offset(cx, _playBottom), item.color, count: 10);
+  }
+
+  // ---- cash banking ---------------------------------------------------------
+
+  void _updateCash(double dt) {
+    if (_cash > 0) {
+      final bank = min(_cash, _kCashBankRate * dt);
+      _cash -= bank;
+      _bankAccum += bank * _kCashScoreWorth;
+      final whole = _bankAccum.floor();
+      if (whole > 0) {
+        widget.session.addScore(whole);
+        _bankAccum -= whole;
+      }
+      _bankPulse = (0.5 + 0.5 * sin(_elapsed * 6)).toDouble();
+    } else {
+      _bankPulse = 0;
+    }
+  }
+
+  // ---- directive ------------------------------------------------------------
 
   void _computeDirective(double dt) {
     _Directive? best;
@@ -415,7 +605,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
     final w = _size.width;
 
-    // 1) Failing channel (circulation about to stall). Most-empty channel.
+    // 1) Failing channel circulation.
     int worstCh = -1;
     double worstFlow = 1.0;
     for (int i = 0; i < _channels.length; i++) {
@@ -424,21 +614,20 @@ class _FarmPanicGameState extends State<FarmPanicGame>
         worstCh = i;
       }
     }
-    if (worstCh >= 0 && worstFlow < 0.45) {
-      // urgency rises as flow approaches 0
+    if (worstCh >= 0 && worstFlow < 0.45 && _irrigTimer <= 0) {
       final u = (1.0 - worstFlow / 0.45).clamp(0.0, 1.0) * 0.82;
       consider(_Directive(
         kind: _ActionKind.swipeChannel,
-        verb: 'SWIPE!',
-        color: _kRootFlow,
+        verb: 'SWIPE TO FLOW',
+        color: _kWater,
         urgency: u,
         target: Offset(w * 0.5, _channelY(worstCh)),
         targetRadius: 40,
-        countdown: worstFlow.clamp(0.0, 1.0), // ring drains as flow drains
+        countdown: worstFlow.clamp(0.0, 1.0),
       ));
     }
 
-    // 2) Weed about to damage crop. Oldest unpulled weed.
+    // 2) Weed about to damage crop.
     _Weed? oldestWeed;
     for (final weed in _weeds) {
       if (weed.pulled) continue;
@@ -446,20 +635,18 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     }
     if (oldestWeed != null) {
       final frac = (oldestWeed.age / _kWeedLifeMax).clamp(0.0, 1.0);
-      // grows from a baseline so weeds always read as a real task
-      final u = (0.45 + 0.5 * frac).clamp(0.0, 1.0);
       consider(_Directive(
         kind: _ActionKind.pullWeed,
-        verb: 'YANK WEED!',
+        verb: 'TAP TO YANK',
         color: _kWeedColor,
-        urgency: u,
+        urgency: (0.45 + 0.5 * frac).clamp(0.0, 1.0),
         target: Offset(oldestWeed.x, oldestWeed.y),
-        targetRadius: 30,
+        targetRadius: 28,
         countdown: (1.0 - frac).clamp(0.0, 1.0),
       ));
     }
 
-    // 3) Bug about to break through the ground line. Lowest (closest) live bug.
+    // 3) Bug nearing the ground line.
     _Bug? nearestBug;
     for (final bug in _bugs) {
       if (bug.dead) continue;
@@ -468,35 +655,26 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     if (nearestBug != null) {
       final breach = _groundY * _kBugDamageThresh;
       final frac = (nearestBug.y / breach).clamp(0.0, 1.0);
-      final u = (0.4 + 0.55 * frac).clamp(0.0, 1.0);
       consider(_Directive(
         kind: _ActionKind.swatBug,
-        verb: 'SWIPE BUG!',
+        verb: 'SWIPE THE BUG',
         color: _kBugColor,
-        urgency: u,
+        urgency: (0.4 + 0.55 * frac).clamp(0.0, 1.0),
         target: Offset(nearestBug.x, nearestBug.y),
         targetRadius: 30,
         countdown: (1.0 - frac).clamp(0.0, 1.0),
       ));
     }
 
-    // 4) Ripe potato ready to harvest (big reward, not a failure). Pick the one
-    //    that has been ripe longest.
-    _Potato? bestRipe;
-    for (final p in _potatoes) {
-      if (!p.ripe) continue;
-      if (bestRipe == null || p.ripeFlashAge > bestRipe.ripeFlashAge) {
-        bestRipe = p;
-      }
-    }
+    // 4) Ripe potato ready to harvest (big reward).
+    _Potato? bestRipe = _firstRipe();
     if (bestRipe != null) {
-      // reward urgency ramps the longer it sits unharvested
       final u = (0.5 + 0.3 * (bestRipe.ripeFlashAge / 5.0)).clamp(0.0, 0.86);
       final px = bestRipe.x * w;
-      final tipY = _groundY - (20.0 + 45.0);
+      final tipY = _groundY - _stalkHeight(bestRipe) - 6;
       consider(_Directive(
         kind: _ActionKind.harvest,
-        verb: 'HARVEST!',
+        verb: 'TAP TO HARVEST',
         color: _kHarvestReady,
         urgency: u,
         target: Offset(px, tipY),
@@ -505,7 +683,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       ));
     }
 
-    // 5) Water burst (rare flood power-up) — strong nudge while it's live.
+    // 5) Water burst flood power-up.
     _WaterBurst? wb;
     for (final b in _waterBursts) {
       if (b.collected) continue;
@@ -516,7 +694,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       final frac = (wb.age / 5.5).clamp(0.0, 1.0);
       consider(_Directive(
         kind: _ActionKind.flood,
-        verb: 'FLOOD! SWIPE',
+        verb: 'SWIPE THE FLOOD',
         color: _kWaterBurst,
         urgency: (0.5 + 0.25 * frac).clamp(0.0, 0.78),
         target: Offset(wb.x, wb.y),
@@ -525,7 +703,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       ));
     }
 
-    // 6) Floating cash token — low-priority grab.
+    // 6) Cash token grab.
     _Token? tok;
     for (final t in _tokens) {
       if (t.banked) continue;
@@ -536,36 +714,35 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       final frac = (tok.age / 4.5).clamp(0.0, 1.0);
       consider(_Directive(
         kind: _ActionKind.grabToken,
-        verb: 'GRAB \$!',
+        verb: 'TAP THE CASH',
         color: _kTokenColor,
         urgency: (0.32 + 0.2 * frac).clamp(0.0, 0.6),
         target: Offset(tok.x, tok.y),
-        targetRadius: 26,
+        targetRadius: 24,
         countdown: (1.0 - frac).clamp(0.0, 1.0),
       ));
     }
 
-    // Fallback so the banner is never empty early-game: nudge swiping.
     best ??= _Directive(
       kind: _ActionKind.swipeChannel,
-      verb: 'SWIPE TO GROW!',
-      color: _kRootFlow,
+      verb: 'SWIPE TO FLOW',
+      color: _kWater,
       urgency: 0.2,
       target: _channels.isNotEmpty ? Offset(w * 0.5, _channelY(0)) : null,
       targetRadius: 40,
       countdown: null,
     );
 
-    // Pop the banner when the directed action changes.
     if (best!.kind != _lastDirectiveKind) {
       _directivePop = 1.0;
       _lastDirectiveKind = best!.kind;
     } else {
       _directivePop = (_directivePop - dt * 3.2).clamp(0.0, 1.0);
     }
-
     _directive = best;
   }
+
+  // ---- per-frame updates ----------------------------------------------------
 
   void _updateShake(double dt) {
     if (_shakeIntensity > 0) {
@@ -577,39 +754,29 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   void _updateSwipeGuide(double dt) {
     if (_swipeGuideDone) return;
     _swipeGuideAge += dt;
-    // Show for 3s, then check if player has swiped — guide dismisses after first swipe
     if (_swipeGuideAge > 3.5) _swipeGuideDone = true;
   }
 
   void _updateHints(double dt) {
-    // Tick active hint
     if (_activeHint != null) {
       _activeHint!.age += dt;
       if (_activeHint!.age > _kHintShowDuration) _activeHint = null;
-      return; // one hint at a time
+      return;
     }
-
-    // Cooldown check
     if (_elapsed - _lastHintTime < _kMidHintCooldown) return;
-    // Only hint after the initial swipe guide is done and game is mid-way
     if (_elapsed < 5.0) return;
 
-    // Trigger 1: player hasn't swiped underground in a while → channel swipe hint
     final noSwipe = (_elapsed - _lastSwipeTime) > _kNoSwipeHintTime;
     final lowFlow = _avgFlow < _kCircStallThresh;
-    if (noSwipe || (lowFlow && _elapsed > 10)) {
+    if (_irrigTimer <= 0 && (noSwipe || (lowFlow && _elapsed > 10))) {
       _showHint(_HintKind.channelSwipe);
       return;
     }
-
-    // Trigger 2: one or more ripe potatoes that player hasn't harvested in >4s
-    final hasRipe = _potatoes.any((p) => p.ripe && p.ripeFlashAge > 4.0);
-    if (hasRipe) {
+    if (_potatoes.any((p) => p.ripe && p.ripeFlashAge > 4.0) &&
+        _autoTimer <= 0) {
       _showHint(_HintKind.harvestTap);
       return;
     }
-
-    // Trigger 3: player scoring low and weeds piling up
     if (_weeds.where((w) => !w.pulled).length >= 2 && _score < 80) {
       _showHint(_HintKind.weedTap);
     }
@@ -623,43 +790,39 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   void _updateChannels(double dt) {
     final decay = _flowDecay(_elapsed);
     for (final ch in _channels) {
-      ch.flow = (ch.flow - decay * dt).clamp(0.0, 1.0);
+      if (_irrigTimer > 0) {
+        ch.flow = (ch.flow + 0.7 * dt).clamp(0.0, 1.0); // auto-water
+      } else {
+        ch.flow = (ch.flow - decay * dt).clamp(0.0, 1.0);
+      }
+      ch.phase += (35 + 150 * ch.flow) * dt; // visual flow speed ∝ flow
     }
   }
 
   void _updatePotatoes(double dt) {
-    final avg = _avgFlow;
-
+    final avg = _irrigTimer > 0 ? max(_avgFlow, 0.85) : _avgFlow;
     if (avg > 0.25) {
       final growBonus = avg * _kPotatoGrowRate * dt;
-      // Drip score proportional to growth (makes the circulation feel productive)
-      final dripPts = (growBonus * _potatoes.where((p) => !p.ripe).length * _combo * 2).round();
-      if (dripPts > 0) widget.session.addScore(dripPts);
-
       for (final p in _potatoes) {
         if (p.ripe) {
-          // Keep ripe flash timer ticking
           if (p.ripeFlash) p.ripeFlashAge += dt;
           continue;
         }
         p.growth = (p.growth + growBonus * 0.06).clamp(0.0, 1.0);
         if (p.growth >= 1.0) {
-          // Potato just ripened
           p.ripeFlash = true;
           p.ripeFlashAge = 0;
           _spawnParticles(
-              Offset(p.x * _size.width, _groundY - 20), _kPotatoGold,
-              count: 14);
-          _spawnPopup(p.x * _size.width, _groundY - 30, 'READY! TAP',
-              _kHarvestReady,
-              scale: 1.2);
+              Offset(p.x * _size.width, _groundY - 18), _kPotatoGold,
+              count: 12);
+          _spawnPopup(
+              p.x * _size.width, _groundY - 30, 'READY!', _kHarvestReady,
+              scale: 1.15);
         }
       }
     } else if (avg < 0.12) {
       for (final p in _potatoes) {
-        if (!p.ripe) {
-          p.growth = (p.growth - 0.004 * dt).clamp(0.0, 1.0);
-        }
+        if (!p.ripe) p.growth = (p.growth - 0.004 * dt).clamp(0.0, 1.0);
       }
     }
   }
@@ -667,7 +830,6 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   void _updateBugs(double dt) {
     final speed = _bugSpeed(_elapsed);
     final groundLine = _groundY;
-
     for (int i = _bugs.length - 1; i >= 0; i--) {
       final bug = _bugs[i];
       if (bug.dead) {
@@ -675,13 +837,11 @@ class _FarmPanicGameState extends State<FarmPanicGame>
         if (bug.deathAge > 0.5) _bugs.removeAt(i);
         continue;
       }
-      // Fast bugs (tier 1) move faster
       final spd = bug.tier == 1 ? speed * 1.55 : speed;
       bug.y += spd * dt;
       bug.x += bug.dx * dt;
       if (bug.x < 0) bug.dx = bug.dx.abs();
       if (bug.x > _size.width) bug.dx = -bug.dx.abs();
-
       if (bug.y >= groundLine * _kBugDamageThresh) {
         bug.dead = true;
         widget.session.addScore(_kBugDamageScore);
@@ -702,13 +862,12 @@ class _FarmPanicGameState extends State<FarmPanicGame>
         continue;
       }
       w.age += dt;
-      // Weed damages if it lingers too long (12s)
-      if (w.age > 12.0) {
-        w.pulled = true; // kill without points
+      if (w.age > _kWeedLifeMax) {
+        w.pulled = true;
         widget.session.addScore(_kWeedDamage);
         _combo = 1;
         _shakeIntensity = 4;
-        _spawnPopup(w.x, w.y - 20, '$_kWeedDamage WEED DAMAGE', _kDanger);
+        _spawnPopup(w.x, w.y - 20, '$_kWeedDamage', _kDanger);
       }
     }
   }
@@ -722,7 +881,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
         continue;
       }
       tok.age += dt;
-      tok.y -= 28.0 * dt;
+      tok.y -= 26.0 * dt;
       if (tok.age > 4.5) _tokens.removeAt(i);
     }
   }
@@ -742,6 +901,9 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
   void _updateParticles(double dt) {
     _particles.removeWhere((p) => !p.step(dt));
+    if (_particles.length > 140) {
+      _particles.removeRange(0, _particles.length - 140);
+    }
   }
 
   void _updatePopups(double dt) {
@@ -750,61 +912,65 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       _popups[i].y -= 38 * dt;
       if (_popups[i].age > _kPopupLifetime) _popups.removeAt(i);
     }
+    if (_popups.length > 10) _popups.removeRange(0, _popups.length - 10);
   }
+
+  // ---- spawning -------------------------------------------------------------
 
   void _spawnBugs(double dt) {
     _bugTimer -= dt;
-    if (_bugTimer <= 0) {
-      _bugTimer = _bugInterval(_elapsed) + _rng.nextDouble() * 0.4;
-      // Escalate bug tier over time (compressed for the 30s round)
-      int tier = 0;
-      if (_elapsed > 15 && _rng.nextDouble() < 0.35) tier = 1; // fast
-      if (_elapsed > 22 && _rng.nextDouble() < 0.2) tier = 2; // armored
-      _bugs.add(_Bug(
-        x: 20 + _rng.nextDouble() * (_size.width - 40),
-        y: -12,
-        dx: (_rng.nextDouble() - 0.5) * 50,
-        tier: tier,
-      ));
-    }
+    if (_bugTimer > 0) return;
+    final slow = _windTimer > 0 ? _kWindSlowMult : 1.0;
+    _bugTimer = (_bugInterval(_elapsed) + _rng.nextDouble() * 0.4) * slow;
+    if (_pestTimer > 0) return; // suppressed
+    if (_bugs.where((b) => !b.dead).length >= _kBugMaxAlive) return;
+    int tier = 0;
+    final f = _elapsed / _round;
+    if (f > 0.45 && _rng.nextDouble() < 0.35) tier = 1;
+    if (f > 0.70 && _rng.nextDouble() < 0.2) tier = 2;
+    _bugs.add(_Bug(
+      x: 20 + _rng.nextDouble() * (_size.width - 40),
+      y: -12,
+      dx: (_rng.nextDouble() - 0.5) * 50,
+      tier: tier,
+    ));
   }
 
   void _spawnWeeds(double dt) {
     _weedTimer -= dt;
-    if (_weedTimer <= 0) {
-      _weedTimer = _weedInterval(_elapsed) + _rng.nextDouble() * 1.0;
-      final weedX = 24.0 + _rng.nextDouble() * (_size.width - 48);
-      // Weeds appear near the ground line (just above it)
-      _weeds.add(_Weed(
-        x: weedX,
-        y: _groundY - 18 - _rng.nextDouble() * 30,
-      ));
-    }
+    if (_weedTimer > 0) return;
+    final slow = _windTimer > 0 ? _kWindSlowMult : 1.0;
+    _weedTimer = (_weedInterval(_elapsed) + _rng.nextDouble() * 1.0) * slow;
+    if (_weeds.where((w) => !w.pulled).length >= _kWeedMaxAlive) return;
+    _weeds.add(_Weed(
+      x: 24.0 + _rng.nextDouble() * (_size.width - 48),
+      y: _groundY - 16 - _rng.nextDouble() * 26,
+      seed: _rng.nextDouble() * pi * 2,
+    ));
   }
 
   void _spawnTokens(double dt) {
     _tokenTimer -= dt;
-    if (_tokenTimer <= 0) {
-      _tokenTimer = _tokenInterval(_elapsed) + _rng.nextDouble() * 0.8;
-      _tokens.add(_Token(
-        x: 30 + _rng.nextDouble() * (_size.width - 60),
-        y: _groundY - 10,
-      ));
-    }
+    if (_tokenTimer > 0) return;
+    _tokenTimer = _tokenInterval(_elapsed) + _rng.nextDouble() * 0.8;
+    if (_tokens.where((t) => !t.banked).length >= _kTokenMaxAlive) return;
+    final rich = _rng.nextDouble() < _kRichTokenChance;
+    _tokens.add(_Token(
+      x: 30 + _rng.nextDouble() * (_size.width - 60),
+      y: _groundY - 10,
+      value: rich ? _kRichTokenCash : _kTokenCash,
+    ));
   }
 
   void _spawnWaterBursts(double dt) {
     _waterBurstTimer -= dt;
-    if (_waterBurstTimer <= 0) {
-      _waterBurstTimer = _kWaterBurstSpawnBase * (0.8 + _rng.nextDouble() * 0.4);
-      // Pick a random channel Y to spawn near
-      final chIdx = _rng.nextInt(_kChannelCount);
-      final cy = _channelY(chIdx);
-      _waterBursts.add(_WaterBurst(
-        x: _size.width * (0.2 + _rng.nextDouble() * 0.6),
-        y: cy,
-      ));
-    }
+    if (_waterBurstTimer > 0) return;
+    _waterBurstTimer = _kWaterBurstSpawnBase * (0.8 + _rng.nextDouble() * 0.4);
+    final chIdx = _rng.nextInt(_kChannelCount);
+    _waterBursts.add(_WaterBurst(
+      x: _size.width * (0.2 + _rng.nextDouble() * 0.6),
+      y: _channelY(chIdx),
+    ));
   }
 
   void _checkScoreFlash(double dt) {
@@ -815,7 +981,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _scoreFlash = (_scoreFlash - dt * 4).clamp(0.0, 1.0);
   }
 
-  // ---- particles / popups ---------------------------------------------------
+  // ---- fx helpers -----------------------------------------------------------
 
   void _spawnParticles(Offset at, Color color,
       {int count = 12, double speed = 130}) {
@@ -827,56 +993,61 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _popups.add(_Popup(x: x, y: y, text: text, color: color, scale: scale));
   }
 
-  // ---- combo ----------------------------------------------------------------
+  void _advanceCombo() => _combo = (_combo + 1).clamp(1, _kComboMultMax);
 
-  void _advanceCombo() {
-    _combo = (_combo + 1).clamp(1, _kComboMultMax);
-  }
+  double _stalkHeight(_Potato p) => 22 + p.growth.clamp(0.0, 1.0) * 48;
 
-  // ---- gesture handling -----------------------------------------------------
+  // ---- gestures -------------------------------------------------------------
 
   void _onPointerDown(Offset pos) {
     if (!widget.session.isRunning) return;
 
+    // Shop bar owns the bottom strip.
+    if (pos.dy >= _playBottom) {
+      for (final item in _shop) {
+        if (item.rect.contains(pos)) {
+          _buy(item);
+          return;
+        }
+      }
+      return;
+    }
+
     if (pos.dy < _groundY) {
-      // Above-ground: try token tap, weed tap, ripe potato harvest tap
       _tryBankToken(pos);
       _tryPullWeed(pos);
       _tryHarvestPotato(pos);
-    }
-
-    if (pos.dy >= _groundY) {
+    } else {
       _activeChannel = _nearestChannel(pos);
+      final ch = _channels[_activeChannel!];
+      ch.handle = (pos.dx / _size.width).clamp(0.0, 1.0);
+      _tryCollectWaterBurst(pos);
     }
   }
 
   void _onPointerMove(Offset pos, Offset delta) {
     if (_phase != _Phase.playing) return;
+    if (pos.dy >= _playBottom) return;
 
-    // Underground swipe — fill channels + collect water bursts
     if (pos.dy >= _groundY && _activeChannel != null) {
       final ch = _channels[_activeChannel!];
       final chY = _channelY(_activeChannel!);
       if ((pos.dy - chY).abs() < _kSwipeHitRadius) {
         final speed = delta.distance;
         ch.flow = (ch.flow + _kSwipeFlowGain * speed / 200.0).clamp(0.0, 1.0);
+        ch.handle = (pos.dx / _size.width).clamp(0.0, 1.0);
         _lastSwipeTime = _elapsed;
-        // Dismiss the swipe guide on first use
         if (!_swipeGuideDone) _swipeGuideDone = true;
       }
-      // Collect water burst if swiping near it
       _tryCollectWaterBurst(pos);
     }
 
-    // Above-ground: horizontal swipe near a bug → blow it away
     if (pos.dy < _groundY && delta.dx.abs() > _kBugSwipeDx) {
       _tryKillBug(pos);
     }
   }
 
-  void _onPointerUp(Offset pos) {
-    _activeChannel = null;
-  }
+  void _onPointerUp(Offset pos) => _activeChannel = null;
 
   void _tryBankToken(Offset pos) {
     for (int i = _tokens.length - 1; i >= 0; i--) {
@@ -886,9 +1057,8 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       final dy = tok.y - pos.dy;
       if (sqrt(dx * dx + dy * dy) < _kTokenRadius * 2.2) {
         tok.banked = true;
-        final pts = _kTokenPoints * _combo;
-        widget.session.addScore(pts);
-        _spawnPopup(tok.x, tok.y, '+$pts', _kTokenColor, scale: 1.1);
+        _cash += tok.value;
+        _spawnPopup(tok.x, tok.y, '+\$${tok.value}', _kTokenColor, scale: 1.1);
         _spawnParticles(Offset(tok.x, tok.y), _kTokenColor, count: 10);
         _advanceCombo();
         break;
@@ -906,7 +1076,8 @@ class _FarmPanicGameState extends State<FarmPanicGame>
         w.pulled = true;
         final pts = _kWeedPoints * _combo;
         widget.session.addScore(pts);
-        _spawnPopup(w.x, w.y - 10, '+$pts YANKED', _kWeedColor, scale: 1.1);
+        _cash += _kWeedCash;
+        _spawnPopup(w.x, w.y - 10, '+$pts', _kWeedColor, scale: 1.1);
         _spawnParticles(Offset(w.x, w.y), _kWeedColor, count: 8);
         _advanceCombo();
         break;
@@ -918,28 +1089,29 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     for (final p in _potatoes) {
       if (!p.ripe) continue;
       final px = p.x * _size.width;
-      // Tap target is the stalk tip above ground
-      final stalkH = 20.0 + 45.0;
-      final tipX = px;
-      final tipY = _groundY - stalkH;
-      final dx = tipX - pos.dx;
+      final tipY = _groundY - _stalkHeight(p);
+      final dx = px - pos.dx;
       final dy = tipY - pos.dy;
       if (sqrt(dx * dx + dy * dy) < _kHarvestTapRadius * 2.5) {
-        // Harvest!
-        final pts = _kHarvestPoints * _combo;
-        widget.session.addScore(pts);
-        _spawnPopup(px, tipY - 10, '+$pts HARVESTED!', _kPotatoGold, scale: 1.4);
-        _spawnParticles(Offset(px, tipY), _kPotatoGold,
-            count: 18, speed: 150);
-        _advanceCombo();
-        // Reset potato
-        p.growth = 0.08;
-        p.ripeFlash = false;
-        p.ripeFlashAge = 0;
-        p.x = 0.05 + _rng.nextDouble() * 0.9;
+        _harvestPotato(p);
         break;
       }
     }
+  }
+
+  void _harvestPotato(_Potato p, {bool fromAuto = false}) {
+    final px = p.x * _size.width;
+    final tipY = _groundY - _stalkHeight(p);
+    final pts = _kHarvestPoints * (fromAuto ? 1 : _combo);
+    widget.session.addScore(pts);
+    _cash += _kHarvestCash;
+    _spawnPopup(px, tipY - 10, fromAuto ? '+$pts' : '+$pts!', _kPotatoGold,
+        scale: fromAuto ? 1.0 : 1.4);
+    _spawnParticles(Offset(px, tipY), _kPotatoGold, count: 16, speed: 150);
+    if (!fromAuto) _advanceCombo();
+    p.growth = 0.06 + _rng.nextDouble() * 0.06;
+    p.ripeFlash = false;
+    p.ripeFlashAge = 0;
   }
 
   void _tryKillBug(Offset pos) {
@@ -954,12 +1126,12 @@ class _FarmPanicGameState extends State<FarmPanicGame>
           bug.dead = true;
           final pts = _kBugPoints * (bug.tier + 1) * _combo;
           widget.session.addScore(pts);
-          _spawnPopup(bug.x, bug.y, '+$pts', _kGreen);
+          _cash += _kSwatCash;
+          _spawnPopup(bug.x, bug.y, '+$pts', _kLeaf);
           _spawnParticles(Offset(bug.x, bug.y), _kBugColor, count: 10);
           _advanceCombo();
         } else {
-          // Armored bug — flash but stays alive
-          _spawnPopup(bug.x, bug.y, 'HIT!', _kGreen, scale: 0.9);
+          _spawnPopup(bug.x, bug.y, 'HIT!', _kLeaf, scale: 0.9);
           _spawnParticles(Offset(bug.x, bug.y), Colors.orange, count: 5);
         }
         break;
@@ -973,17 +1145,16 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       if (wb.collected) continue;
       final dx = wb.x - pos.dx;
       final dy = wb.y - pos.dy;
-      if (sqrt(dx * dx + dy * dy) < 36) {
+      if (sqrt(dx * dx + dy * dy) < 38) {
         wb.collected = true;
-        // Flood all channels with bonus flow
         for (final ch in _channels) {
           ch.flow = (ch.flow + _kWaterBurstFlowBoost).clamp(0.0, 1.0);
         }
         final pts = _kWaterBurstPoints * _combo;
         widget.session.addScore(pts);
-        _spawnPopup(wb.x, wb.y, '+$pts FLOOD!', _kWaterBurst, scale: 1.2);
-        _spawnParticles(Offset(wb.x, wb.y), _kWaterBurst,
-            count: 16, speed: 140);
+        _cash += _kBurstCash;
+        _spawnPopup(wb.x, wb.y, '+$pts FLOOD', _kWaterBurst, scale: 1.2);
+        _spawnParticles(Offset(wb.x, wb.y), _kWaterBurst, count: 16, speed: 140);
         _advanceCombo();
         break;
       }
@@ -994,8 +1165,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     int best = 0;
     double bestDist = double.infinity;
     for (int i = 0; i < _channels.length; i++) {
-      final cy = _channelY(i);
-      final dist = (pos.dy - cy).abs();
+      final dist = (pos.dy - _channelY(i)).abs();
       if (dist < bestDist) {
         bestDist = dist;
         best = i;
@@ -1006,8 +1176,32 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
   double _channelY(int idx) {
     if (_size == Size.zero) return 0;
-    final ch = _channels[idx];
-    return _groundY + ch.yFrac * _soilZoneH * 0.85;
+    return _groundY + _channels[idx].yFrac * _soilZoneH;
+  }
+
+  void _layoutShop(Size size) {
+    const pad = 8.0;
+    const gap = 6.0;
+    final n = _shop.length;
+    final top = size.height - _kShopBarH + 6;
+    final h = _kShopBarH - 12;
+    final bw = (size.width - pad * 2 - gap * (n - 1)) / n;
+    for (int i = 0; i < n; i++) {
+      _shop[i].rect = Rect.fromLTWH(pad + i * (bw + gap), top, bw, h);
+    }
+  }
+
+  double _upgradeTimer(_Upgrade u) {
+    switch (u) {
+      case _Upgrade.pesticide:
+        return _pestTimer / _kPestDuration;
+      case _Upgrade.wind:
+        return _windTimer / _kWindDuration;
+      case _Upgrade.irrigation:
+        return _irrigTimer / _kIrrigDuration;
+      case _Upgrade.autoCollect:
+        return _autoTimer / _kAutoDuration;
+    }
   }
 
   // ---- build ----------------------------------------------------------------
@@ -1016,39 +1210,53 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (ctx, box) {
       _size = Size(box.maxWidth, box.maxHeight);
+      _layoutShop(_size);
       return Listener(
         onPointerDown: (e) => _onPointerDown(e.localPosition),
-        onPointerMove: (e) =>
-            _onPointerMove(e.localPosition, e.localDelta),
+        onPointerMove: (e) => _onPointerMove(e.localPosition, e.localDelta),
         onPointerUp: (e) => _onPointerUp(e.localPosition),
         child: ClipRect(
-          child: CustomPaint(
-            painter: _FarmPanicPainter(
-              phase: _phase,
-              elapsed: _elapsed,
-              gameTime: _kGameDuration,
-              score: _score,
-              combo: _combo,
-              scoreFlash: _scoreFlash,
-              channels: _channels,
-              potatoes: _potatoes,
-              bugs: _bugs,
-              weeds: _weeds,
-              tokens: _tokens,
-              waterBursts: _waterBursts,
-              particles: _particles,
-              popups: _popups,
-              shakeIntensity: _shakeIntensity,
-              groundY: _groundY,
-              channelYs:
-                  List.generate(_channels.length, (i) => _channelY(i)),
-              activeHint: _activeHint,
-              swipeGuideAge: _swipeGuideAge,
-              swipeGuideDone: _swipeGuideDone,
-              directive: _directive,
-              directivePop: _directivePop,
+          child: RepaintBoundary(
+            child: CustomPaint(
+              painter: _FarmPanicPainter(
+                elapsed: _elapsed,
+                round: _round,
+                score: _score,
+                combo: _combo,
+                cash: _cash.round(),
+                bankPulse: _bankPulse,
+                scoreFlash: _scoreFlash,
+                channels: _channels,
+                potatoes: _potatoes,
+                bugs: _bugs,
+                weeds: _weeds,
+                tokens: _tokens,
+                waterBursts: _waterBursts,
+                particles: _particles,
+                popups: _popups,
+                shakeIntensity: _shakeIntensity,
+                groundY: _groundY,
+                playBottom: _playBottom,
+                soilZoneH: _soilZoneH,
+                channelYs:
+                    List.generate(_channels.length, (i) => _channelY(i)),
+                stalkHeights:
+                    List.generate(_potatoes.length, (i) => _stalkHeight(_potatoes[i])),
+                activeHint: _activeHint,
+                swipeGuideAge: _swipeGuideAge,
+                swipeGuideDone: _swipeGuideDone,
+                directive: _directive,
+                directivePop: _directivePop,
+                shop: _shop,
+                shopTimers: {
+                  for (final s in _shop) s.kind: _upgradeTimer(s.kind)
+                },
+                windTimer: _windTimer,
+                windSweep: _windSweep,
+                irrigActive: _irrigTimer > 0,
+              ),
+              size: Size.infinite,
             ),
-            size: Size.infinite,
           ),
         ),
       );
@@ -1056,12 +1264,14 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   }
 }
 
-// ---- painter ---------------------------------------------------------------
+// ===========================================================================
+// Painter — the whole field in one pass.
+// ===========================================================================
 
 class _FarmPanicPainter extends CustomPainter {
-  final _Phase phase;
-  final double elapsed, gameTime, shakeIntensity, groundY, scoreFlash;
-  final int score, combo;
+  final double elapsed, round, shakeIntensity, groundY, playBottom, soilZoneH;
+  final double scoreFlash, bankPulse;
+  final int score, combo, cash;
   final List<_Channel> channels;
   final List<_Potato> potatoes;
   final List<_Bug> bugs;
@@ -1071,18 +1281,24 @@ class _FarmPanicPainter extends CustomPainter {
   final List<FxParticle> particles;
   final List<_Popup> popups;
   final List<double> channelYs;
+  final List<double> stalkHeights;
   final _Hint? activeHint;
   final double swipeGuideAge;
   final bool swipeGuideDone;
   final _Directive? directive;
   final double directivePop;
+  final List<_ShopItem> shop;
+  final Map<_Upgrade, double> shopTimers;
+  final double windTimer, windSweep;
+  final bool irrigActive;
 
   _FarmPanicPainter({
-    required this.phase,
     required this.elapsed,
-    required this.gameTime,
+    required this.round,
     required this.score,
     required this.combo,
+    required this.cash,
+    required this.bankPulse,
     required this.scoreFlash,
     required this.channels,
     required this.potatoes,
@@ -1094,17 +1310,26 @@ class _FarmPanicPainter extends CustomPainter {
     required this.popups,
     required this.shakeIntensity,
     required this.groundY,
+    required this.playBottom,
+    required this.soilZoneH,
     required this.channelYs,
+    required this.stalkHeights,
     required this.activeHint,
     required this.swipeGuideAge,
     required this.swipeGuideDone,
     required this.directive,
     required this.directivePop,
+    required this.shop,
+    required this.shopTimers,
+    required this.windTimer,
+    required this.windSweep,
+    required this.irrigActive,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Shake transform
+    if (size.width <= 0 || size.height <= 0) return;
+
     if (shakeIntensity > 0) {
       canvas.save();
       canvas.translate(
@@ -1113,395 +1338,138 @@ class _FarmPanicPainter extends CustomPainter {
       );
     }
 
-    _drawAboveGround(canvas, size);
-    _drawGroundLine(canvas, size);
-    _drawUnderground(canvas, size);
+    _drawSky(canvas, size);
+    _drawSoil(canvas, size);
+    _drawGroundRidge(canvas, size);
+    for (int i = 0; i < channels.length; i++) {
+      _drawChannel(canvas, size, i);
+    }
+    _drawUndergroundTubers(canvas, size);
+    for (int i = 0; i < potatoes.length; i++) {
+      _drawPlant(canvas, size, i);
+    }
     _drawBugs(canvas, size);
     _drawWeeds(canvas, size);
     _drawTokens(canvas, size);
     _drawWaterBursts(canvas, size);
+    if (windTimer > 0) _drawWind(canvas, size);
     FxBurst.paint(canvas, particles);
-    _drawSpotlight(canvas, size); // ← spotlight the most-urgent target
+    _drawTargetCue(canvas, size); // affordance-aware (swipe arrows / tap ring)
     _drawPopups(canvas, size);
     _drawVignette(canvas, size);
-    _drawHUD(canvas, size);
-    _drawDirectiveBanner(canvas, size); // ← "DO THIS NOW" banner
+    _drawCashHud(canvas, size);
+    _drawComboBadge(canvas, size);
+    _drawDirectiveBanner(canvas, size);
     _drawSwipeGuide(canvas, size);
     _drawHintBanner(canvas, size);
+    _drawShop(canvas, size);
 
     if (shakeIntensity > 0) canvas.restore();
   }
 
-  // ---- vignette (frames the action, adds depth) -----------------------------
+  // ---- helpers --------------------------------------------------------------
 
-  void _drawVignette(Canvas canvas, Size size) {
-    if (size.width <= 0 || size.height <= 0) return;
-    final r = size.longestSide * 0.75;
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()
-        ..shader = RadialGradient(
-          center: Alignment.center,
-          radius: 0.9,
-          colors: [
-            const Color(0x00000000),
-            const Color(0x00000000),
-            Colors.black.withValues(alpha: 0.34),
-          ],
-          stops: const [0.0, 0.62, 1.0],
-        ).createShader(Rect.fromCircle(
-            center: Offset(size.width / 2, size.height / 2), radius: r)),
-    );
-  }
-
-  // ---- spotlight on the single most-urgent target ---------------------------
-
-  void _drawSpotlight(Canvas canvas, Size size) {
-    final d = directive;
-    if (d == null || d.target == null || d.targetRadius == null) return;
-    final c = d.target!;
-    if (!c.dx.isFinite || !c.dy.isFinite) return;
-    final baseR = d.targetRadius!;
-    // The more urgent, the tighter / faster / brighter the pulse.
-    final pulse = 0.5 + 0.5 * sin(elapsed * (6 + 6 * d.urgency));
-    final ringR = baseR + 6 + pulse * (4 + 6 * d.urgency);
-    final alpha = (0.35 + 0.5 * d.urgency).clamp(0.0, 0.95);
-
-    // Soft glow halo so the eye snaps to it.
-    canvas.drawCircle(
-      c,
-      ringR + 4,
-      Paint()
-        ..color = d.color.withValues(alpha: alpha * 0.22)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
-    );
-
-    // Pulsing focus ring.
-    canvas.drawCircle(
-      c,
-      ringR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5 + 1.5 * d.urgency
-        ..color = d.color.withValues(alpha: alpha),
-    );
-
-    // Countdown arc — drains as the target approaches failure.
-    final cd = d.countdown;
-    if (cd != null && cd.isFinite) {
-      final frac = cd.clamp(0.0, 1.0);
-      final arcR = ringR + 7;
-      final rect = Rect.fromCircle(center: c, radius: arcR);
-      // track
-      canvas.drawArc(
-        rect,
-        -pi / 2,
-        2 * pi,
-        false,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.5
-          ..color = Colors.white.withValues(alpha: 0.10),
-      );
-      // remaining (turns red as it empties)
-      final cdColor = Color.lerp(_kDanger, d.color, frac)!;
-      canvas.drawArc(
-        rect,
-        -pi / 2,
-        2 * pi * frac,
-        false,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3.0
-          ..strokeCap = StrokeCap.round
-          ..color = cdColor.withValues(alpha: 0.9),
-      );
-    }
-
-    // Down-pointing chevron above the target so it reads as "here".
-    final chevY = c.dy - ringR - 14;
-    if (chevY > 4) {
-      final chevAlpha = (0.55 + 0.4 * pulse) * alpha;
-      final path = Path()
-        ..moveTo(c.dx - 7, chevY - 5)
-        ..lineTo(c.dx, chevY + 3)
-        ..lineTo(c.dx + 7, chevY - 5);
-      canvas.drawPath(
-        path,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3
-          ..strokeCap = StrokeCap.round
-          ..strokeJoin = StrokeJoin.round
-          ..color = d.color.withValues(alpha: chevAlpha.clamp(0.0, 1.0)),
-      );
-    }
-  }
-
-  // ---- the big "DO THIS NOW" directive banner -------------------------------
-
-  void _drawDirectiveBanner(Canvas canvas, Size size) {
-    final d = directive;
-    if (d == null || size.width <= 0) return;
-
-    // Position: a pill near the top, clear of the host's score/timer chrome
-    // (host owns the very top — we sit just below it, centered).
-    final cx = size.width / 2;
-    final cy = (size.height * 0.085).clamp(34.0, 84.0);
-
-    // Urgency drives colour intensity + a heartbeat pulse.
-    final beat = 0.5 + 0.5 * sin(elapsed * (5 + 5 * d.urgency));
-    final pop = directivePop;
-    final scale = 1.0 + 0.12 * pop + 0.04 * beat * d.urgency;
-
-    final verb = d.verb;
+  void _glyph(Canvas canvas, String s, Offset center, double size,
+      {double alpha = 1.0}) {
     final tp = TextPainter(
       text: TextSpan(
-        text: verb,
-        style: TextStyle(
-          fontFamily: Potatuhs.displayFont,
-          fontSize: 17,
-          fontWeight: FontWeight.w900,
-          color: Colors.white,
-        ),
+        text: s,
+        style: TextStyle(fontSize: size, color: Colors.white.withValues(alpha: alpha)),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-
-    // Guard the clamp: on a tiny viewport `size.width - 24` can fall below the
-    // 120 floor, and num.clamp throws if hi < lo (black-screen bug class).
-    final pillHi = (size.width - 24).clamp(40.0, double.infinity);
-    final pillLo = pillHi < 120.0 ? pillHi : 120.0;
-    final pillW = (tp.width + 44).clamp(pillLo, pillHi);
-    final pillH = 34.0;
-
-    canvas.save();
-    canvas.translate(cx, cy);
-    canvas.scale(scale);
-    canvas.translate(-cx, -cy);
-
-    final pillRect = Rect.fromCenter(
-        center: Offset(cx, cy), width: pillW, height: pillH);
-    final pillRRect =
-        RRect.fromRectAndRadius(pillRect, const Radius.circular(17));
-
-    // Glow halo behind the pill (stronger with urgency).
-    canvas.drawRRect(
-      pillRRect,
-      Paint()
-        ..color = d.color.withValues(alpha: (0.25 + 0.4 * d.urgency) * (0.6 + 0.4 * beat))
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
-    );
-    // Pill body.
-    canvas.drawRRect(
-      pillRRect,
-      Paint()
-        ..shader = ui.Gradient.linear(
-          Offset(cx, cy - pillH / 2),
-          Offset(cx, cy + pillH / 2),
-          [
-            Color.lerp(const Color(0xFF0D1A12), d.color, 0.30)!,
-            Color.lerp(const Color(0xFF0A0F0B), d.color, 0.12)!,
-          ],
-        ),
-    );
-    // Bright urgency rim.
-    canvas.drawRRect(
-      pillRRect,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.6 + 1.2 * d.urgency
-        ..color = d.color.withValues(alpha: 0.55 + 0.4 * beat),
-    );
-
-    // A small leading "dot" marker in the action colour.
-    final dotX = cx - pillW / 2 + 16;
-    GameFx.orb(canvas, Offset(dotX, cy), 5, d.color, glow: 0.8 + 0.6 * beat);
-
-    // Verb text.
-    tp.paint(canvas, Offset(cx - tp.width / 2 + 8, cy - tp.height / 2));
-
-    canvas.restore();
+    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
   }
 
-  // ---- above-ground zone ----------------------------------------------------
+  /// A row of chevrons sliding from left→right along a horizontal span — the
+  /// universal "this flows / swipe this way" read. Used for water channels and
+  /// the directive's swipe cue.
+  void _flowChevrons(Canvas canvas, double x0, double x1, double y,
+      double scrollPx, Color color, double alpha,
+      {double sz = 7, double gap = 22, double stroke = 2.6}) {
+    if (alpha <= 0 || x1 <= x0) return;
+    final off = scrollPx % gap;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = color.withValues(alpha: alpha.clamp(0.0, 1.0));
+    for (double x = x0 - gap + off; x < x1 + gap; x += gap) {
+      final cx = x.clamp(x0, x1);
+      if (cx <= x0 || cx >= x1) continue;
+      canvas.drawPath(
+        Path()
+          ..moveTo(cx - sz, y - sz * 0.72)
+          ..lineTo(cx, y)
+          ..lineTo(cx - sz, y + sz * 0.72),
+        paint,
+      );
+    }
+  }
 
-  void _drawAboveGround(Canvas canvas, Size size) {
-    // Sky gradient with a hint of sienna (Potatuhs brand)
+  // ---- sky ------------------------------------------------------------------
+
+  void _drawSky(Canvas canvas, Size size) {
     canvas.drawRect(
       Rect.fromLTWH(0, 0, size.width, groundY),
       Paint()
         ..shader = ui.Gradient.linear(
           Offset.zero,
           Offset(0, groundY),
-          [_kSkyTop, _kSkyBot, const Color(0xFF1B2A1C)],
-          [0.0, 0.65, 1.0],
+          [_kSkyTop, _kSkyMid, _kSkyHorizon],
+          [0.0, 0.62, 1.0],
         ),
     );
 
-    // Slow drifting motes in sky
-    final motePaint = Paint();
-    for (int i = 0; i < 18; i++) {
+    // Warm low sun + bloom.
+    final sunX = size.width * 0.82;
+    final sunY = groundY * 0.20;
+    final bloomR = (groundY * 0.95).clamp(8.0, size.height);
+    canvas.drawCircle(
+      Offset(sunX, sunY),
+      bloomR,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          Potatuhs.gold.withValues(alpha: 0.18),
+          Potatuhs.orange.withValues(alpha: 0.05),
+          const Color(0x00000000),
+        ], stops: const [
+          0.0,
+          0.45,
+          1.0,
+        ]).createShader(Rect.fromCircle(center: Offset(sunX, sunY), radius: bloomR)),
+    );
+    GameFx.orb(canvas, Offset(sunX, sunY), 12, Potatuhs.gold,
+        glow: 0.6, specular: true);
+
+    // Drifting motes / pollen.
+    final mote = Paint();
+    for (int i = 0; i < 14; i++) {
       final seed = i * 1.618;
-      final x =
-          (size.width * ((seed * 0.513) % 1.0) + elapsed * (3 + i % 4)) %
-              size.width;
-      final y = groundY * ((seed * 0.271) % 0.9);
+      final x = (size.width * ((seed * 0.513) % 1.0) + elapsed * (3 + i % 4)) %
+          size.width;
+      final y = groundY * ((seed * 0.271) % 0.85);
       final tw = 0.15 + 0.2 * (0.5 + 0.5 * sin(elapsed * 0.8 + seed));
-      motePaint.color = Colors.white.withValues(alpha: tw * 0.18);
-      canvas.drawCircle(Offset(x, y), 1.0 + (i % 3) * 0.3, motePaint);
+      mote.color = Potatuhs.gold.withValues(alpha: tw * 0.18);
+      canvas.drawCircle(Offset(x, y), 1.0 + (i % 3) * 0.3, mote);
     }
 
-    // Warm sun bloom behind the sky — gives the flat gradient depth.
-    if (groundY > 0) {
-      final sunX = size.width * 0.82;
-      final sunY = groundY * 0.14;
-      final bloomR =
-          (groundY * 0.9).clamp(8.0, size.height.clamp(8.0, double.infinity));
-      canvas.drawCircle(
-        Offset(sunX, sunY),
-        bloomR,
-        Paint()
-          ..shader = RadialGradient(colors: [
-            Potatuhs.gold.withValues(alpha: 0.16),
-            Potatuhs.orange.withValues(alpha: 0.04),
-            const Color(0x00000000),
-          ], stops: const [
-            0.0,
-            0.45,
-            1.0,
-          ]).createShader(Rect.fromCircle(
-              center: Offset(sunX, sunY), radius: bloomR)),
-      );
-      // Sun orb
-      GameFx.orb(canvas, Offset(sunX, sunY), 11, Potatuhs.gold,
-          glow: 0.7, specular: true);
-      // Subtle distant hills silhouette for depth.
-      final hillPath = Path()..moveTo(0, groundY);
-      final hillTop = groundY - (groundY * 0.10).clamp(6.0, 40.0);
-      hillPath.lineTo(0, groundY - 4);
-      for (double x = 0; x <= size.width; x += size.width / 6) {
-        final hy = hillTop + sin(x * 0.012) * 6;
-        hillPath.lineTo(x, hy);
-      }
-      hillPath.lineTo(size.width, groundY);
-      hillPath.close();
-      canvas.drawPath(
-        hillPath,
-        Paint()..color = const Color(0xFF0E1A10).withValues(alpha: 0.5),
-      );
+    // Rolling hills for depth.
+    final hill = Path()..moveTo(0, groundY);
+    final hillTop = groundY - (groundY * 0.12).clamp(6.0, 44.0);
+    for (double x = 0; x <= size.width; x += size.width / 6) {
+      hill.lineTo(x, hillTop + sin(x * 0.012) * 7);
     }
-
-    // Stalks / leaves above ground
-    for (final p in potatoes) {
-      _drawStalk(canvas, size, p);
-    }
-
-    // Zone label (fades quickly)
-    if (elapsed < 2.5) {
-      final alpha = (1.0 - elapsed / 2.5).clamp(0.0, 1.0);
-      GameFx.text(
-        canvas,
-        'SWIPE BUGS • TAP WEEDS • HARVEST PLANTS',
-        Offset(size.width / 2, groundY * 0.87),
-        10,
-        Colors.white.withValues(alpha: alpha * 0.45),
-      );
-    }
+    hill.lineTo(size.width, groundY);
+    hill.close();
+    canvas.drawPath(hill, Paint()..color = const Color(0xFF12200F).withValues(alpha: 0.6));
   }
 
-  void _drawStalk(Canvas canvas, Size size, _Potato p) {
-    final px = p.x * size.width;
-    final growClamped = p.growth.clamp(0.0, 1.0);
-    final stalkH = 20 + growClamped * 45;
-    final sway = sin(elapsed * 1.4 + p.x * 8) * 3;
+  // ---- soil -----------------------------------------------------------------
 
-    final stalkColor = Color.lerp(
-        const Color(0xFF5D4037), _kGreen, growClamped)!;
-
-    canvas.drawLine(
-      Offset(px + sway * 0.3, groundY),
-      Offset(px + sway, groundY - stalkH),
-      Paint()
-        ..color = stalkColor
-        ..strokeWidth = 2.5
-        ..strokeCap = StrokeCap.round,
-    );
-
-    if (growClamped > 0.2) {
-      canvas.drawLine(
-        Offset(px + sway * 0.6, groundY - stalkH * 0.55),
-        Offset(px - 7 + sway, groundY - stalkH * 0.75),
-        Paint()
-          ..color = _kGreen.withValues(alpha: growClamped.clamp(0.2, 0.85))
-          ..strokeWidth = 1.5
-          ..strokeCap = StrokeCap.round,
-      );
-    }
-    if (growClamped > 0.5) {
-      canvas.drawLine(
-        Offset(px + sway * 0.4, groundY - stalkH * 0.35),
-        Offset(px + 7 + sway * 0.5, groundY - stalkH * 0.5),
-        Paint()
-          ..color = _kGreen.withValues(alpha: growClamped.clamp(0.2, 0.85))
-          ..strokeWidth = 1.5
-          ..strokeCap = StrokeCap.round,
-      );
-    }
-
-    // Ripe potato glow at stalk tip — pulsing, tapable
-    if (p.ripe) {
-      final pulse = 0.5 + 0.5 * sin(elapsed * 8 + p.x * 5);
-      final tipX = px + sway;
-      final tipY = groundY - stalkH;
-      // Outer glow
-      canvas.drawCircle(
-        Offset(tipX, tipY),
-        16 + pulse * 6,
-        Paint()
-          ..color = _kHarvestReady.withValues(alpha: 0.25 * pulse)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
-      );
-      GameFx.orb(canvas, Offset(tipX, tipY), 12 + pulse * 3, _kHarvestReady,
-          glow: 0.8 * pulse);
-      // "TAP" hint on the orb
-      GameFx.text(
-        canvas,
-        'TAP',
-        Offset(tipX, tipY),
-        7,
-        Colors.white.withValues(alpha: 0.85),
-      );
-    }
-  }
-
-  // ---- ground line ----------------------------------------------------------
-
-  void _drawGroundLine(Canvas canvas, Size size) {
-    final glowAlpha = 0.22 + 0.1 * sin(elapsed * 2.5);
-    canvas.drawLine(
-      Offset(0, groundY),
-      Offset(size.width, groundY),
-      Paint()
-        ..color = _kRootFlow.withValues(alpha: glowAlpha)
-        ..strokeWidth = 2.5
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
-    );
-    canvas.drawLine(
-      Offset(0, groundY),
-      Offset(size.width, groundY),
-      Paint()
-        ..color = Colors.white.withValues(alpha: 0.07)
-        ..strokeWidth = 1,
-    );
-  }
-
-  // ---- underground zone -----------------------------------------------------
-
-  void _drawUnderground(Canvas canvas, Size size) {
+  void _drawSoil(Canvas canvas, Size size) {
     final soilH = size.height - groundY;
-
-    // Soil gradient
     canvas.drawRect(
       Rect.fromLTWH(0, groundY, size.width, soilH),
       Paint()
@@ -1511,111 +1479,335 @@ class _FarmPanicPainter extends CustomPainter {
           [_kSoilTop, _kSoilBot],
         ),
     );
-
-    // Subtle soil texture motes
-    final soilPaint = Paint();
-    for (int i = 0; i < 22; i++) {
+    // Horizontal strata bands.
+    for (int b = 1; b <= 3; b++) {
+      final y = groundY + soilH * (b / 4.0);
+      canvas.drawLine(
+        Offset(0, y),
+        Offset(size.width, y),
+        Paint()
+          ..color = Colors.black.withValues(alpha: 0.10)
+          ..strokeWidth = 2,
+      );
+    }
+    // Pebbles.
+    final peb = Paint();
+    for (int i = 0; i < 26; i++) {
       final seed = i * 2.37;
       final mx = size.width * ((seed * 0.618) % 1.0);
       final my = groundY + soilH * ((seed * 0.314) % 0.95);
-      soilPaint.color =
-          Colors.black.withValues(alpha: 0.08 + 0.05 * sin(seed));
-      canvas.drawCircle(Offset(mx, my), 1.5 + (i % 4) * 0.5, soilPaint);
-    }
-
-    // Draw channels
-    for (int i = 0; i < channels.length; i++) {
-      _drawChannel(canvas, size, i);
-    }
-
-    // Underground potato orbs
-    for (final p in potatoes) {
-      final px = p.x * size.width;
-      final py = groundY + soilH * 0.30;
-      final r = 5.0 + p.growth * 11;
-      final baseColor = Color.lerp(_kPotatoDark, _kPotatoGold, p.growth)!;
-      GameFx.orb(canvas, Offset(px, py), r, baseColor,
-          glow: p.growth * 0.8, specular: true);
-    }
-
-    // Zone label (fades fast)
-    if (elapsed < 2.5) {
-      final alpha = (1.0 - elapsed / 2.5).clamp(0.0, 1.0);
-      GameFx.text(
-        canvas,
-        'SWIPE CHANNELS ↔ TO CIRCULATE',
-        Offset(size.width / 2, groundY + soilH * 0.08),
-        10,
-        Colors.white.withValues(alpha: alpha * 0.45),
-      );
+      final dark = i.isEven;
+      peb.color = (dark ? Colors.black : _kSoilRidge)
+          .withValues(alpha: dark ? 0.10 : 0.16);
+      canvas.drawCircle(Offset(mx, my), 1.4 + (i % 4) * 0.5, peb);
     }
   }
+
+  void _drawGroundRidge(Canvas canvas, Size size) {
+    // A textured soil lip at the surface — furrow rows + warm highlight.
+    canvas.drawRect(
+      Rect.fromLTWH(0, groundY - 4, size.width, 8),
+      Paint()..color = _kSoilRidge.withValues(alpha: 0.55),
+    );
+    canvas.drawLine(
+      Offset(0, groundY - 4),
+      Offset(size.width, groundY - 4),
+      Paint()
+        ..color = Potatuhs.sienna.withValues(alpha: 0.35)
+        ..strokeWidth = 1.5,
+    );
+    final furrow = Paint()
+      ..color = Colors.black.withValues(alpha: 0.18)
+      ..strokeWidth = 1.5;
+    for (double x = 0; x < size.width; x += 16) {
+      canvas.drawLine(Offset(x, groundY + 1), Offset(x + 7, groundY + 1), furrow);
+    }
+  }
+
+  // ---- water channels (THE swipe affordance) --------------------------------
 
   void _drawChannel(Canvas canvas, Size size, int i) {
     final ch = channels[i];
     final cy = channelYs[i];
+    final flow = ch.flow;
+    final low = flow < 0.30 && !irrigActive;
 
-    // Pipe track
-    canvas.drawLine(
-      Offset(0, cy),
-      Offset(size.width, cy),
+    // Trough — a recessed soil capsule.
+    final trough = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+          center: Offset(size.width / 2, cy),
+          width: size.width - 8,
+          height: _kChannelH),
+      const Radius.circular(_kChannelH / 2),
+    );
+    canvas.drawRRect(trough, Paint()..color = _kTrough);
+    canvas.drawRRect(
+      trough,
       Paint()
-        ..color = _kRootPipe.withValues(alpha: 0.25)
-        ..strokeWidth = 7
-        ..strokeCap = StrokeCap.round,
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.black.withValues(alpha: 0.4),
     );
 
-    // Animated flow dashes
-    if (ch.flow > 0.05) {
-      final flowAlpha = ch.flow * 0.85;
-      final dashOffset = (elapsed * 65) % 22.0;
-      for (double x = -22 + dashOffset; x < size.width; x += 22) {
-        final xStart = x.clamp(0.0, size.width);
-        final xEnd = (x + 11).clamp(0.0, size.width);
-        if (xEnd > xStart) {
-          canvas.drawLine(
-            Offset(xStart, cy),
-            Offset(xEnd, cy),
-            Paint()
-              ..color = _kRootFlow.withValues(alpha: flowAlpha)
-              ..strokeWidth = 3.5
-              ..strokeCap = StrokeCap.round,
-          );
-        }
-      }
-    }
-
-    // Flow meter at left edge
-    const mW = 6.0;
-    const mH = 26.0;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(2, cy - mH / 2, mW, mH), const Radius.circular(3)),
-      Paint()..color = Colors.white.withValues(alpha: 0.06),
+    // Water body — coverage by flow (the "level"). Brighter & wider with flow.
+    final innerL = 6.0;
+    final innerR = size.width - 6.0;
+    final span = innerR - innerL;
+    final coverage = innerL + span * (0.12 + 0.88 * flow);
+    final waterRect = RRect.fromRectAndRadius(
+      Rect.fromLTRB(innerL, cy - _kChannelH / 2 + 3, coverage,
+          cy + _kChannelH / 2 - 3),
+      const Radius.circular(5),
     );
     canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(2, cy - mH / 2 + mH * (1 - ch.flow), mW, mH * ch.flow),
-          const Radius.circular(3)),
+      waterRect,
       Paint()
-        ..color = (ch.flow > 0.35 ? _kRootFlow : _kDanger)
-            .withValues(alpha: 0.75),
+        ..shader = ui.Gradient.linear(
+          Offset(0, cy - _kChannelH / 2),
+          Offset(0, cy + _kChannelH / 2),
+          [
+            Color.lerp(_kWaterDeep, _kWater, 0.7)!.withValues(alpha: 0.35 + 0.5 * flow),
+            _kWaterDeep.withValues(alpha: 0.30 + 0.45 * flow),
+          ],
+        ),
     );
 
-    // Low-flow warning pulse on pipe
-    if (ch.flow < 0.18) {
-      final pulse = 0.3 + 0.22 * sin(elapsed * 13 + i);
-      canvas.drawLine(
-        Offset(0, cy),
-        Offset(size.width, cy),
+    // Flowing chevrons — the unmistakable "water is moving →" read. Density and
+    // brightness scale with flow; they slide along at ch.phase.
+    _flowChevrons(canvas, innerL + 4, coverage - 4, cy, ch.phase,
+        Colors.white, (0.25 + 0.6 * flow).clamp(0.0, 0.85),
+        sz: 6, gap: 20, stroke: 2.4);
+
+    // Direction arrowheads pinned at both ends so the channel always reads as
+    // a left→right current even at rest.
+    final endA = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = _kWater.withValues(alpha: 0.5);
+    canvas.drawPath(
+      Path()
+        ..moveTo(innerR - 9, cy - 4)
+        ..lineTo(innerR - 3, cy)
+        ..lineTo(innerR - 9, cy + 4),
+      endA,
+    );
+
+    // Draggable "current handle" — a paddle bead you push sideways. Bobs gently;
+    // clearly a grab-and-drag control, not a tap dot.
+    final hx = innerL + span * ch.handle;
+    final bob = sin(elapsed * 3 + ch.handleSeed) * 2.0;
+    final hy = cy + bob;
+    final handleColor = low ? _kDanger : _kWater;
+    // grip body
+    final grip = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(hx, hy), width: 16, height: _kChannelH + 6),
+      const Radius.circular(7),
+    );
+    canvas.drawRRect(grip,
+        Paint()..color = Color.lerp(handleColor, Colors.white, 0.15)!.withValues(alpha: 0.92));
+    canvas.drawRRect(
+        grip,
         Paint()
-          ..color = _kDanger.withValues(alpha: pulse * 0.3)
-          ..strokeWidth = 5,
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = Colors.white.withValues(alpha: 0.7));
+    // grip ribs
+    for (int r = -1; r <= 1; r++) {
+      canvas.drawLine(
+        Offset(hx + r * 3.5, hy - 5),
+        Offset(hx + r * 3.5, hy + 5),
+        Paint()
+          ..color = Colors.black.withValues(alpha: 0.30)
+          ..strokeWidth = 1.4,
       );
+    }
+    // side "‹ ›" drag arrows on the handle
+    final dragA = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..color = Colors.white.withValues(alpha: low ? 0.95 : 0.6);
+    final ax = 13.0 + (low ? 2.0 + 1.5 * sin(elapsed * 9) : 0.0);
+    canvas.drawPath(
+      Path()
+        ..moveTo(hx - ax + 4, hy - 4)
+        ..lineTo(hx - ax, hy)
+        ..lineTo(hx - ax + 4, hy + 4),
+      dragA,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(hx + ax - 4, hy - 4)
+        ..lineTo(hx + ax, hy)
+        ..lineTo(hx + ax - 4, hy + 4),
+      dragA,
+    );
+
+    // Low-flow teaching: a ghost hand demonstrating the swipe + a label.
+    if (low) {
+      final cycle = (elapsed * 0.8) % 1.0;
+      final ghx = innerL + span * (0.22 + 0.56 * cycle);
+      canvas.drawCircle(
+          Offset(ghx, cy), 9, Paint()..color = Colors.white.withValues(alpha: 0.5));
+      _flowChevrons(canvas, innerL + 6, innerR - 6, cy, elapsed * 90,
+          _kDanger, 0.4 + 0.3 * sin(elapsed * 8),
+          sz: 7, gap: 26, stroke: 2.6);
     }
   }
 
-  // ---- bugs -----------------------------------------------------------------
+  // ---- underground tubers ---------------------------------------------------
+
+  void _drawUndergroundTubers(Canvas canvas, Size size) {
+    final soilH = size.height - groundY;
+    for (final p in potatoes) {
+      final px = p.x * size.width;
+      final py = groundY + soilH * 0.22;
+      final r = 4.0 + p.growth * 10;
+      final col = Color.lerp(_kPotatoDark, _kPotatoGold, p.growth)!;
+      // root threads to the nearest channel
+      canvas.drawLine(
+        Offset(px, py + r),
+        Offset(px, py + r + 14),
+        Paint()
+          ..color = _kLeafDark.withValues(alpha: 0.35)
+          ..strokeWidth = 1.2,
+      );
+      GameFx.orb(canvas, Offset(px, py), r, col,
+          glow: p.ripe ? 0.7 : p.growth * 0.4, specular: true);
+    }
+  }
+
+  // ---- potato plants (above ground, readable ripeness) ----------------------
+
+  void _drawPlant(Canvas canvas, Size size, int idx) {
+    final p = potatoes[idx];
+    final px = p.x * size.width;
+    final g = p.growth.clamp(0.0, 1.0);
+    final stalkH = stalkHeights[idx];
+    final sway = sin(elapsed * 1.4 + p.sway) * (2.5 + g * 2);
+    final baseX = px;
+    final topX = px + sway;
+    final topY = groundY - stalkH;
+
+    // little soil mound at the base
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(baseX, groundY - 1), width: 18 + g * 8, height: 7),
+      Paint()..color = _kSoilRidge.withValues(alpha: 0.5),
+    );
+
+    // main stem (greens as it matures)
+    final stemColor = Color.lerp(const Color(0xFF6E4A2A), _kLeaf, g)!;
+    canvas.drawLine(
+      Offset(baseX, groundY),
+      Offset(topX, topY + 6),
+      Paint()
+        ..color = stemColor
+        ..strokeWidth = 2.6 + g * 1.4
+        ..strokeCap = StrokeCap.round,
+    );
+
+    // leaves — count grows with maturity, fan out around the stem
+    final leaves = (2 + (g * 5)).round();
+    for (int i = 0; i < leaves; i++) {
+      final f = (i + 1) / (leaves + 1);
+      final ly = groundY - stalkH * f;
+      final side = i.isEven ? 1.0 : -1.0;
+      final lx = px + sway * f;
+      final leafLen = (8 + g * 9) * (0.7 + 0.4 * f);
+      final c = Color.lerp(_kLeafDark, _kLeaf, (g * 0.6 + f * 0.4).clamp(0.0, 1.0))!;
+      final tipX = lx + side * leafLen;
+      final tipY = ly - leafLen * 0.5;
+      final path = Path()
+        ..moveTo(lx, ly)
+        ..quadraticBezierTo(lx + side * leafLen * 0.5, ly - leafLen * 0.1, tipX, tipY)
+        ..quadraticBezierTo(
+            lx + side * leafLen * 0.45, ly - leafLen * 0.05, lx, ly + 1.5);
+      canvas.drawPath(path, Paint()..color = c);
+      canvas.drawLine(Offset(lx, ly), Offset(tipX, tipY),
+          Paint()..color = c.withValues(alpha: 0.5)..strokeWidth = 0.8);
+    }
+
+    // flowering near ripeness (potato blossoms)
+    if (g > 0.75 && !p.ripe) {
+      final bloom = ((g - 0.75) / 0.25).clamp(0.0, 1.0);
+      for (int b = 0; b < 3; b++) {
+        final a = b * 2.1 + elapsed * 0.5;
+        final fx = topX + cos(a) * 7;
+        final fy = topY + 4 + sin(a) * 4;
+        canvas.drawCircle(Offset(fx, fy), 2.4 * bloom,
+            Paint()..color = const Color(0xFFE6D6F2).withValues(alpha: 0.85 * bloom));
+        canvas.drawCircle(Offset(fx, fy), 0.9 * bloom,
+            Paint()..color = Potatuhs.gold.withValues(alpha: bloom));
+      }
+    }
+
+    // growth ring above the plant — shows progress to ripe at a glance
+    if (!p.ripe) {
+      final ringC = Offset(topX, topY - 8);
+      const rr = 7.0;
+      canvas.drawArc(Rect.fromCircle(center: ringC, radius: rr), -pi / 2, 2 * pi,
+          false,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..color = Colors.white.withValues(alpha: 0.14));
+      canvas.drawArc(Rect.fromCircle(center: ringC, radius: rr), -pi / 2,
+          2 * pi * g, false,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..strokeCap = StrokeCap.round
+            ..color = (g < 0.5
+                    ? const Color(0xFFFFB300)
+                    : Color.lerp(const Color(0xFFFFEE58), _kLeaf, g))!
+                .withValues(alpha: 0.85));
+    }
+
+    // RIPE: a glowing golden tuber pops up at the tip — pulsing, tappable.
+    if (p.ripe) {
+      final pulse = 0.5 + 0.5 * sin(elapsed * 7 + p.sway);
+      final tipX = topX;
+      final tipY = topY;
+      // pop offset so it "lifts" out of the foliage
+      final lift = 3 + pulse * 3;
+      final tc = Offset(tipX, tipY - lift);
+      // glow
+      canvas.drawCircle(tc, 16 + pulse * 5,
+          Paint()
+            ..color = _kHarvestReady.withValues(alpha: 0.22 * pulse)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9));
+      // tap ring (affordance: this is a TAP target)
+      canvas.drawCircle(tc, 15 + pulse * 3,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.0
+            ..color = _kHarvestReady.withValues(alpha: 0.55 + 0.35 * pulse));
+      // tuber body (egg-shaped golden potato)
+      final body = Rect.fromCenter(center: tc, width: 22, height: 16);
+      canvas.drawOval(
+        body,
+        Paint()
+          ..shader = RadialGradient(
+            center: const Alignment(-0.3, -0.4),
+            colors: [
+              Color.lerp(_kPotatoGold, Colors.white, 0.4)!,
+              _kPotatoGold,
+              Color.lerp(_kPotatoGold, Colors.black, 0.35)!,
+            ],
+            stops: const [0.0, 0.55, 1.0],
+          ).createShader(body),
+      );
+      // potato eyes
+      final eye = Paint()..color = const Color(0xFF7A4E13).withValues(alpha: 0.6);
+      canvas.drawCircle(tc.translate(-4, 1), 1.3, eye);
+      canvas.drawCircle(tc.translate(3, -2), 1.1, eye);
+    }
+  }
+
+  // ---- bugs (swipe affordance: motion smear) --------------------------------
 
   void _drawBugs(Canvas canvas, Size size) {
     for (final bug in bugs) {
@@ -1627,30 +1819,33 @@ class _FarmPanicPainter extends CustomPainter {
           canvas.drawCircle(
             Offset(bug.x + cos(a) * r, bug.y + sin(a) * r),
             2.5 * (1 - t).clamp(0.0, 1.0),
-            Paint()
-              ..color = _kBugColor.withValues(alpha: (1 - t).clamp(0.0, 1.0) * 0.8),
+            Paint()..color = _kBugColor.withValues(alpha: (1 - t).clamp(0.0, 1.0) * 0.8),
           );
         }
         continue;
       }
       final wobble = sin(elapsed * 18 + bug.x * 0.03) * 1.5;
-      // Tier-based appearance
       final bodyColor = bug.tier == 2
-          ? const Color(0xFF607D8B) // armored = steely
+          ? const Color(0xFF7E8C94)
           : bug.tier == 1
-              ? const Color(0xFFFF9800) // fast = orange
+              ? const Color(0xFFFF9800)
               : _kBugColor;
       final bodyW = 14.0 + bug.tier * 3.0;
       final bodyH = 10.0 + bug.tier * 2.0;
 
-      // Bug body as layered orb-ish oval
-      canvas.drawCircle(
-        Offset(bug.x, bug.y + wobble),
-        bodyW * 0.55,
-        Paint()
-          ..color = bodyColor.withValues(alpha: 0.22)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
-      );
+      // directional motion smear — signals "swipe me"
+      final dir = bug.dx.sign;
+      for (int s = 1; s <= 2; s++) {
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset(bug.x - dir * s * 5, bug.y + wobble),
+              width: bodyW - s * 2,
+              height: bodyH - s * 1.5),
+          Paint()..color = bodyColor.withValues(alpha: 0.12 / s),
+        );
+      }
+
+      // body
       canvas.drawOval(
         Rect.fromCenter(
             center: Offset(bug.x, bug.y + wobble), width: bodyW, height: bodyH),
@@ -1664,12 +1859,9 @@ class _FarmPanicPainter extends CustomPainter {
             ],
             stops: const [0.0, 0.55, 1.0],
           ).createShader(Rect.fromCenter(
-              center: Offset(bug.x, bug.y + wobble),
-              width: bodyW,
-              height: bodyH)),
+              center: Offset(bug.x, bug.y + wobble), width: bodyW, height: bodyH)),
       );
-
-      // Legs
+      // legs
       for (int leg = 0; leg < 3; leg++) {
         final lx = bug.x + (leg - 1) * 4.0;
         canvas.drawLine(
@@ -1680,30 +1872,11 @@ class _FarmPanicPainter extends CustomPainter {
             ..strokeWidth = 1.2,
         );
       }
-      // Antennae
-      canvas.drawLine(
-        Offset(bug.x - 3, bug.y - 4 + wobble),
-        Offset(bug.x - 7, bug.y - 10 + wobble),
-        Paint()
-          ..color = bodyColor.withValues(alpha: 0.5)
-          ..strokeWidth = 0.8,
-      );
-      canvas.drawLine(
-        Offset(bug.x + 3, bug.y - 4 + wobble),
-        Offset(bug.x + 7, bug.y - 10 + wobble),
-        Paint()
-          ..color = bodyColor.withValues(alpha: 0.5)
-          ..strokeWidth = 0.8,
-      );
-      // Eyes
-      canvas.drawCircle(
-          Offset(bug.x - 3, bug.y - 2 + wobble), 2,
+      // eyes
+      canvas.drawCircle(Offset(bug.x - 3, bug.y - 2 + wobble), 2,
           Paint()..color = Colors.red.withValues(alpha: 0.9));
-      canvas.drawCircle(
-          Offset(bug.x + 3, bug.y - 2 + wobble), 2,
+      canvas.drawCircle(Offset(bug.x + 3, bug.y - 2 + wobble), 2,
           Paint()..color = Colors.red.withValues(alpha: 0.9));
-
-      // Armor ring for tier 2
       if (bug.tier == 2) {
         canvas.drawOval(
           Rect.fromCenter(
@@ -1719,7 +1892,7 @@ class _FarmPanicPainter extends CustomPainter {
     }
   }
 
-  // ---- weeds ----------------------------------------------------------------
+  // ---- weeds (tap affordance: pulsing ring) ---------------------------------
 
   void _drawWeeds(Canvas canvas, Size size) {
     for (final w in weeds) {
@@ -1731,65 +1904,63 @@ class _FarmPanicPainter extends CustomPainter {
           canvas.drawCircle(
             Offset(w.x + cos(a) * r, w.y + sin(a) * r),
             2.0 * (1 - t),
-            Paint()
-              ..color = _kWeedColor.withValues(alpha: (1 - t) * 0.8),
+            Paint()..color = _kWeedColor.withValues(alpha: (1 - t) * 0.8),
           );
         }
         continue;
       }
+      final lifeFrac = (w.age / _kWeedLifeMax).clamp(0.0, 1.0);
+      final sway = sin(elapsed * 2.1 + w.seed) * 2.5;
+      final pulse = 0.5 + 0.5 * sin(elapsed * 5 + w.seed);
 
-      final lifeFrac = (w.age / 12.0).clamp(0.0, 1.0);
-      final urgency = lifeFrac > 0.6
-          ? (0.5 + 0.5 * sin(elapsed * 12 + w.x))
-          : 1.0;
-      final weedSway = sin(elapsed * 2.1 + w.x * 3) * 2.5;
+      // tap ring (dashed) — clearly says "tap me"
+      final ringCol = lifeFrac > 0.6
+          ? Color.lerp(_kWeedColor, _kDanger, (lifeFrac - 0.6) / 0.4)!
+          : _kWeedColor;
+      _dashedRing(canvas, Offset(w.x, w.y - 6), 18 + pulse * 2, ringCol,
+          0.4 + 0.4 * pulse);
 
-      // Weed glow
-      canvas.drawCircle(
-        Offset(w.x, w.y),
-        18,
-        Paint()
-          ..color = _kWeedColor.withValues(alpha: 0.12 * urgency)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
-      );
-
-      // Weed stem
+      // spiky weed
       canvas.drawLine(
-        Offset(w.x + weedSway * 0.3, w.y + 10),
-        Offset(w.x + weedSway, w.y - 22),
+        Offset(w.x + sway * 0.3, w.y + 10),
+        Offset(w.x + sway, w.y - 22),
         Paint()
-          ..color = _kWeedColor.withValues(alpha: 0.8)
+          ..color = _kWeedColor.withValues(alpha: 0.85)
           ..strokeWidth = 2.2
           ..strokeCap = StrokeCap.round,
       );
-      // Spiky leaves
       for (int j = -1; j <= 1; j += 2) {
-        canvas.drawLine(
-          Offset(w.x + weedSway * 0.5, w.y - 8),
-          Offset(w.x + j * 11 + weedSway, w.y - 16),
-          Paint()
-            ..color = _kWeedColor.withValues(alpha: 0.75)
-            ..strokeWidth = 1.5
-            ..strokeCap = StrokeCap.round,
-        );
-      }
-
-      // Danger indicator when close to expiring
-      if (lifeFrac > 0.6) {
-        final dangerAlpha = 0.3 * urgency;
-        canvas.drawCircle(
-          Offset(w.x, w.y),
-          22,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5
-            ..color = _kDanger.withValues(alpha: dangerAlpha),
-        );
+        for (int k = 1; k <= 2; k++) {
+          canvas.drawLine(
+            Offset(w.x + sway * 0.5, w.y - 4 - k * 6),
+            Offset(w.x + j * (8 + k * 3) + sway, w.y - 10 - k * 7),
+            Paint()
+              ..color = Color.lerp(_kWeedColor, _kLeafDark, 0.2)!.withValues(alpha: 0.8)
+              ..strokeWidth = 1.6
+              ..strokeCap = StrokeCap.round,
+          );
+        }
       }
     }
   }
 
-  // ---- tokens ---------------------------------------------------------------
+  void _dashedRing(Canvas canvas, Offset c, double r, Color color, double alpha) {
+    const segs = 12;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = color.withValues(alpha: alpha.clamp(0.0, 1.0));
+    final rot = elapsed * 1.2;
+    for (int i = 0; i < segs; i++) {
+      if (i.isOdd) continue;
+      final a0 = rot + i / segs * 2 * pi;
+      final a1 = a0 + (2 * pi / segs) * 0.6;
+      canvas.drawArc(Rect.fromCircle(center: c, radius: r), a0, a1 - a0, false, paint);
+    }
+  }
+
+  // ---- cash tokens ----------------------------------------------------------
 
   void _drawTokens(Canvas canvas, Size size) {
     for (final tok in tokens) {
@@ -1807,26 +1978,18 @@ class _FarmPanicPainter extends CustomPainter {
         continue;
       }
       final expireFrac = tok.age / 4.5;
-      GameFx.orb(
-        canvas,
-        Offset(tok.x, tok.y),
-        _kTokenRadius,
-        _kTokenColor,
-        glow: 0.8 * (1 - expireFrac * 0.6),
-      );
-      // Coin label
-      GameFx.text(
-        canvas,
-        '\$',
-        Offset(tok.x, tok.y),
-        13,
-        Colors.white.withValues(alpha: 0.9),
-        weight: FontWeight.w900,
-      );
+      final pulse = 0.5 + 0.5 * sin(elapsed * 5 + tok.x);
+      // tap ring
+      _dashedRing(canvas, Offset(tok.x, tok.y), _kTokenRadius + 3 + pulse * 2,
+          _kTokenColor, 0.5 * (1 - expireFrac * 0.5));
+      // gold coin
+      GameFx.orb(canvas, Offset(tok.x, tok.y), _kTokenRadius * 0.8, _kTokenColor,
+          glow: 0.7 * (1 - expireFrac * 0.5));
+      _glyph(canvas, '\$', Offset(tok.x, tok.y), 15);
     }
   }
 
-  // ---- water bursts ---------------------------------------------------------
+  // ---- water bursts (swipe affordance) --------------------------------------
 
   void _drawWaterBursts(Canvas canvas, Size size) {
     for (final wb in waterBursts) {
@@ -1844,16 +2007,116 @@ class _FarmPanicPainter extends CustomPainter {
         continue;
       }
       final pulse = 0.6 + 0.4 * sin(elapsed * 7 + wb.x);
-      GameFx.orb(canvas, Offset(wb.x, wb.y), 16, _kWaterBurst,
-          glow: 0.9 * pulse);
-      // Swipe arrow hint on the burst
-      GameFx.text(
-        canvas,
-        '↔',
-        Offset(wb.x, wb.y + 20),
-        9,
-        Colors.white.withValues(alpha: 0.6),
+      GameFx.orb(canvas, Offset(wb.x, wb.y), 15, _kWaterBurst, glow: 0.9 * pulse);
+      // radiating swipe chevrons left + right
+      _flowChevrons(canvas, wb.x + 14, wb.x + 40, wb.y, elapsed * 120,
+          Colors.white, 0.6 * pulse, sz: 6, gap: 12, stroke: 2.2);
+      canvas.save();
+      canvas.translate(wb.x * 2, 0);
+      canvas.scale(-1, 1);
+      _flowChevrons(canvas, wb.x + 14, wb.x + 40, wb.y, elapsed * 120,
+          Colors.white, 0.6 * pulse, sz: 6, gap: 12, stroke: 2.2);
+      canvas.restore();
+    }
+  }
+
+  // ---- wind sweep -----------------------------------------------------------
+
+  void _drawWind(Canvas canvas, Size size) {
+    final gx = windSweep * size.width;
+    final bandW = size.width * 0.18;
+    canvas.drawRect(
+      Rect.fromLTWH(gx - bandW, 0, bandW, groundY),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(gx - bandW, 0),
+          Offset(gx, 0),
+          [_kWaterBurst.withValues(alpha: 0.0), _kWaterBurst.withValues(alpha: 0.22)],
+        ),
+    );
+    final streak = Paint()
+      ..color = Colors.white.withValues(alpha: 0.5)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (int i = 0; i < 6; i++) {
+      final y = groundY * (0.15 + 0.7 * (i / 5));
+      final x = gx - (i % 3) * 18.0;
+      canvas.drawLine(Offset(x - 22, y), Offset(x, y), streak);
+    }
+  }
+
+  // ---- affordance-aware target cue ------------------------------------------
+  // SWIPE targets → directional arrows/track. TAP targets → pulsing ring.
+  // This makes the directive REINFORCE the affordances instead of always
+  // drawing a click-style bullseye (the old water-channel complaint).
+
+  void _drawTargetCue(Canvas canvas, Size size) {
+    final d = directive;
+    if (d == null || d.target == null || d.targetRadius == null) return;
+    final c = d.target!;
+    if (!c.dx.isFinite || !c.dy.isFinite) return;
+    final swipe = _isSwipeAction(d.kind);
+    final alpha = (0.4 + 0.5 * d.urgency).clamp(0.0, 0.95);
+
+    if (swipe) {
+      // A horizontal swipe track centered on the target — big sliding arrows.
+      final half = (d.targetRadius! + 26).clamp(30.0, size.width * 0.35);
+      final x0 = (c.dx - half).clamp(6.0, size.width - 12);
+      final x1 = (c.dx + half).clamp(12.0, size.width - 6);
+      // track glow line
+      canvas.drawLine(
+        Offset(x0, c.dy),
+        Offset(x1, c.dy),
+        Paint()
+          ..color = d.color.withValues(alpha: alpha * 0.25)
+          ..strokeWidth = 10
+          ..strokeCap = StrokeCap.round,
       );
+      _flowChevrons(canvas, x0, x1, c.dy, elapsed * 150, d.color, alpha,
+          sz: 9, gap: 18, stroke: 3.0);
+    } else {
+      // TAP cue — a pulsing focus ring + down chevron.
+      final pulse = 0.5 + 0.5 * sin(elapsed * (6 + 6 * d.urgency));
+      final ringR = d.targetRadius! + 6 + pulse * (4 + 6 * d.urgency);
+      canvas.drawCircle(
+        c,
+        ringR,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5 + 1.5 * d.urgency
+          ..color = d.color.withValues(alpha: alpha),
+      );
+      final cd = d.countdown;
+      if (cd != null && cd.isFinite) {
+        final frac = cd.clamp(0.0, 1.0);
+        final rect = Rect.fromCircle(center: c, radius: ringR + 6);
+        canvas.drawArc(rect, -pi / 2, 2 * pi, false,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.5
+              ..color = Colors.white.withValues(alpha: 0.10));
+        canvas.drawArc(rect, -pi / 2, 2 * pi * frac, false,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 3
+              ..strokeCap = StrokeCap.round
+              ..color = Color.lerp(_kDanger, d.color, frac)!.withValues(alpha: 0.9));
+      }
+      final chevY = c.dy - ringR - 12;
+      if (chevY > 4) {
+        canvas.drawPath(
+          Path()
+            ..moveTo(c.dx - 7, chevY - 5)
+            ..lineTo(c.dx, chevY + 3)
+            ..lineTo(c.dx + 7, chevY - 5),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 3
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..color = d.color.withValues(alpha: (0.6 + 0.35 * pulse) * alpha),
+        );
+      }
     }
   }
 
@@ -1863,112 +2126,165 @@ class _FarmPanicPainter extends CustomPainter {
     for (final p in popups) {
       final alpha = (1 - p.age / _kPopupLifetime).clamp(0.0, 1.0);
       final sz = (14.0 * p.scale).clamp(10.0, 22.0);
-      GameFx.text(
-        canvas,
-        p.text,
-        Offset(p.x, p.y),
-        sz,
-        p.color.withValues(alpha: alpha),
-        glow: 0.55 * alpha,
-      );
+      GameFx.text(canvas, p.text, Offset(p.x, p.y), sz,
+          p.color.withValues(alpha: alpha),
+          glow: 0.5 * alpha);
     }
   }
 
-  // ---- HUD ------------------------------------------------------------------
+  // ---- vignette -------------------------------------------------------------
 
-  void _drawHUD(Canvas canvas, Size size) {
-    const barY = 9.0;
-    const barH = 5.0;
+  void _drawVignette(Canvas canvas, Size size) {
+    final r = size.longestSide * 0.75;
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = RadialGradient(
+          center: Alignment.center,
+          radius: 0.9,
+          colors: const [Color(0x00000000), Color(0x00000000), Color(0x55000000)],
+          stops: const [0.0, 0.62, 1.0],
+        ).createShader(Rect.fromCircle(
+            center: Offset(size.width / 2, size.height / 2), radius: r)),
+    );
+  }
 
-    // Combo badge (game-specific HUD — kept)
-    if (combo > 1) {
-      final comboAlpha = 0.65 + 0.3 * sin(elapsed * 8);
-      // Mini badge bg
-      final badgeCenter = Offset(size.width * 0.78, 24);
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-            Rect.fromCenter(center: badgeCenter, width: 40, height: 20),
-            const Radius.circular(10)),
-        Paint()
-          ..color = Potatuhs.orange.withValues(alpha: 0.2 * comboAlpha),
-      );
-      GameFx.text(
-        canvas,
-        'x$combo',
-        badgeCenter,
-        13,
-        Potatuhs.gold.withValues(alpha: comboAlpha),
-        glow: 0.5 * comboAlpha,
-      );
-    }
+  // ---- cash HUD -------------------------------------------------------------
 
-    // Low-flow warning label
-    double totalFlow = 0;
-    for (final ch in channels) totalFlow += ch.flow;
-    final avg = channels.isEmpty ? 0.0 : totalFlow / channels.length;
-    if (avg < 0.15 && elapsed > 5) {
-      final urgency = 0.5 + 0.5 * sin(elapsed * 10);
-      GameFx.text(
-        canvas,
-        '⚠ CIRCULATION LOW',
-        Offset(size.width / 2, barY + barH + 16),
-        10,
-        _kDanger.withValues(alpha: urgency * 0.85),
-      );
+  void _drawCashHud(Canvas canvas, Size size) {
+    // Game-owned currency chip (host owns score/timer up top). Top-left.
+    final pad = const Offset(12, 12);
+    final w = 96.0;
+    final h = 30.0;
+    final rect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(pad.dx, pad.dy, w, h), const Radius.circular(15));
+    canvas.drawRRect(rect, Paint()..color = const Color(0xCC120D08));
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Potatuhs.gold.withValues(alpha: 0.45 + 0.3 * bankPulse),
+    );
+    // coin
+    final coinC = Offset(pad.dx + 16, pad.dy + h / 2);
+    GameFx.orb(canvas, coinC, 8, Potatuhs.gold, glow: 0.4);
+    _glyph(canvas, '\$', coinC, 10, alpha: 0.95);
+    // amount
+    GameFx.text(canvas, '$cash', Offset(pad.dx + 56, pad.dy + h / 2), 15,
+        Potatuhs.textPrimary,
+        weight: FontWeight.w900);
+    // banking indicator
+    if (bankPulse > 0.05) {
+      GameFx.text(canvas, '▲', Offset(pad.dx + w - 11, pad.dy + h / 2), 9,
+          _kLeaf.withValues(alpha: 0.5 + 0.5 * bankPulse));
     }
   }
 
-  // ---- swipe guide (initial onboarding animation) ---------------------------
+  void _drawComboBadge(Canvas canvas, Size size) {
+    if (combo <= 1) return;
+    final a = 0.65 + 0.3 * sin(elapsed * 8);
+    final center = Offset(size.width - 34, 27);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromCenter(center: center, width: 44, height: 22),
+          const Radius.circular(11)),
+      Paint()..color = Potatuhs.orange.withValues(alpha: 0.22 * a),
+    );
+    GameFx.text(canvas, 'x$combo', center, 13,
+        Potatuhs.gold.withValues(alpha: a),
+        glow: 0.5 * a);
+  }
+
+  // ---- directive banner -----------------------------------------------------
+
+  void _drawDirectiveBanner(Canvas canvas, Size size) {
+    final d = directive;
+    if (d == null) return;
+    final cx = size.width / 2;
+    final cy = (size.height * 0.085).clamp(30.0, 84.0);
+    final beat = 0.5 + 0.5 * sin(elapsed * (5 + 5 * d.urgency));
+    final scale = 1.0 + 0.12 * directivePop + 0.04 * beat * d.urgency;
+
+    final tp = TextPainter(
+      text: TextSpan(
+        text: d.verb,
+        style: TextStyle(
+          fontFamily: Potatuhs.displayFont,
+          fontSize: 15,
+          fontWeight: FontWeight.w900,
+          color: Colors.white,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    final pillHi = (size.width - 24).clamp(40.0, double.infinity);
+    final pillLo = pillHi < 130.0 ? pillHi : 130.0;
+    final pillW = (tp.width + 52).clamp(pillLo, pillHi);
+    const pillH = 32.0;
+
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.scale(scale);
+    canvas.translate(-cx, -cy);
+
+    final pillRRect = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(cx, cy), width: pillW, height: pillH),
+        const Radius.circular(16));
+    canvas.drawRRect(
+      pillRRect,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(cx, cy - pillH / 2),
+          Offset(cx, cy + pillH / 2),
+          [
+            Color.lerp(const Color(0xFF0D1A12), d.color, 0.30)!,
+            Color.lerp(const Color(0xFF0A0F0B), d.color, 0.12)!,
+          ],
+        ),
+    );
+    canvas.drawRRect(
+      pillRRect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6 + 1.2 * d.urgency
+        ..color = d.color.withValues(alpha: 0.55 + 0.4 * beat),
+    );
+    // leading affordance glyph: ↔ for swipe, ◎ for tap
+    final isSw = _isSwipeAction(d.kind);
+    GameFx.text(canvas, isSw ? '↔' : '◎', Offset(cx - pillW / 2 + 18, cy), 14,
+        d.color, glow: 0.6 * beat);
+    tp.paint(canvas, Offset(cx - tp.width / 2 + 10, cy - tp.height / 2));
+    canvas.restore();
+  }
+
+  // ---- intro swipe guide ----------------------------------------------------
 
   void _drawSwipeGuide(Canvas canvas, Size size) {
     if (swipeGuideDone || swipeGuideAge < 0.3) return;
-
-    // Show an animated hand/arrow swiping along the first channel
     final alpha =
         (swipeGuideAge < 1.0 ? swipeGuideAge : (3.5 - swipeGuideAge) / 2.5)
             .clamp(0.0, 1.0);
     if (alpha <= 0) return;
-
-    // Channel 0 Y
-    final ch0Y = channels.isNotEmpty ? channelYs[0] : size.height * 0.65;
-
-    // Animated swipe progress: 0→1 over 1.5s cycle
+    final ch0Y = channelYs.isNotEmpty ? channelYs[0] : size.height * 0.65;
     final cycle = (swipeGuideAge % 1.5) / 1.5;
     final swipeX = size.width * 0.25 + cycle * size.width * 0.5;
-
-    // Swipe line
-    canvas.drawLine(
-      Offset(size.width * 0.25, ch0Y),
-      Offset(swipeX, ch0Y),
-      Paint()
-        ..color = _kWaterBurst.withValues(alpha: alpha * 0.6)
-        ..strokeWidth = 4
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
-    );
-
-    // Finger dot
-    GameFx.orb(canvas, Offset(swipeX, ch0Y), 10,
-        Colors.white.withValues(alpha: alpha * 0.85),
-        glow: 0.5 * alpha);
-
-    // Arrow label above the swipe
-    GameFx.text(
-      canvas,
-      '← SWIPE CHANNELS →',
-      Offset(size.width / 2, ch0Y - 22),
-      10,
-      Colors.white.withValues(alpha: alpha * 0.75),
-    );
+    _flowChevrons(canvas, size.width * 0.2, size.width * 0.8, ch0Y,
+        swipeGuideAge * 140, _kWater, alpha * 0.6, sz: 8, gap: 20, stroke: 2.8);
+    canvas.drawCircle(Offset(swipeX, ch0Y), 10,
+        Paint()..color = Colors.white.withValues(alpha: alpha * 0.85));
+    GameFx.text(canvas, 'SWIPE TO MAKE WATER FLOW',
+        Offset(size.width / 2, ch0Y - 24), 10,
+        Colors.white.withValues(alpha: alpha * 0.8));
   }
 
-  // ---- mid-game hint banner -------------------------------------------------
+  // ---- mid-game hint --------------------------------------------------------
 
   void _drawHintBanner(Canvas canvas, Size size) {
     if (activeHint == null) return;
     final hint = activeHint!;
     final t = hint.age / _kHintShowDuration;
-    // Fade in over 0.3s, fade out in last 0.4s
     final fadeIn = (hint.age / 0.3).clamp(0.0, 1.0);
     final fadeOut = t > 0.6 ? (1.0 - (t - 0.6) / 0.4).clamp(0.0, 1.0) : 1.0;
     final alpha = fadeIn * fadeOut;
@@ -1977,54 +2293,113 @@ class _FarmPanicPainter extends CustomPainter {
     String line1, line2;
     switch (hint.kind) {
       case _HintKind.channelSwipe:
-        line1 = '← SWIPE THE UNDERGROUND CHANNELS →';
-        line2 = 'Keep circulation flowing to grow potatoes!';
+        line1 = 'SWIPE THE UNDERGROUND CHANNELS';
+        line2 = 'Drag the current sideways — keep water flowing!';
         break;
       case _HintKind.harvestTap:
-        line1 = '🥔 TAP THE GLOWING PLANT TIP';
+        line1 = 'TAP THE GLOWING GOLD POTATO';
         line2 = 'Harvest ripe potatoes for big points!';
         break;
       case _HintKind.weedTap:
-        line1 = '🌿 TAP THE WEEDS TO PULL THEM';
+        line1 = 'TAP THE WEEDS TO YANK THEM';
         line2 = 'They damage your crop if ignored!';
         break;
     }
 
-    final bannerH = 50.0;
-    final bannerY = size.height * 0.44 - bannerH / 2;
-
-    // Banner bg
+    const bannerH = 50.0;
+    final bannerY = size.height * 0.42 - bannerH / 2;
+    final r = RRect.fromRectAndRadius(
+        Rect.fromLTWH(16, bannerY, size.width - 32, bannerH),
+        const Radius.circular(10));
+    canvas.drawRRect(r, Paint()..color = _kHintBg.withValues(alpha: alpha * 0.92));
     canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(16, bannerY, size.width - 32, bannerH),
-          const Radius.circular(10)),
-      Paint()..color = _kHintBg.withValues(alpha: alpha * 0.92),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(16, bannerY, size.width - 32, bannerH),
-          const Radius.circular(10)),
+      r,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.2
-        ..color = _kWaterBurst.withValues(alpha: alpha * 0.4),
+        ..color = _kWater.withValues(alpha: alpha * 0.4),
+    );
+    GameFx.text(canvas, line1, Offset(size.width / 2, bannerY + 16), 11,
+        Colors.white.withValues(alpha: alpha * 0.95));
+    GameFx.text(canvas, line2, Offset(size.width / 2, bannerY + 34), 9,
+        Potatuhs.textSecondary.withValues(alpha: alpha * 0.7));
+  }
+
+  // ---- shop bar -------------------------------------------------------------
+
+  void _drawShop(Canvas canvas, Size size) {
+    // backing strip
+    canvas.drawRect(
+      Rect.fromLTWH(0, playBottom, size.width, _kShopBarH),
+      Paint()..color = const Color(0xE6100B07),
+    );
+    canvas.drawLine(
+      Offset(0, playBottom),
+      Offset(size.width, playBottom),
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.25)
+        ..strokeWidth = 1.4,
     );
 
-    GameFx.text(
-      canvas,
-      line1,
-      Offset(size.width / 2, bannerY + 16),
-      11,
-      Colors.white.withValues(alpha: alpha * 0.95),
-      display: false,
-    );
-    GameFx.text(
-      canvas,
-      line2,
-      Offset(size.width / 2, bannerY + 34),
-      9,
-      Potatuhs.textSecondary.withValues(alpha: alpha * 0.7),
-    );
+    for (final item in shop) {
+      final rect = item.rect;
+      if (rect == Rect.zero) continue;
+      final affordable = cash >= item.cost;
+      final active = (shopTimers[item.kind] ?? 0) > 0.001;
+      final rr = RRect.fromRectAndRadius(rect, const Radius.circular(11));
+
+      // body
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..color = affordable
+              ? Color.lerp(const Color(0xFF1B140C), item.color, 0.16)!
+              : const Color(0xFF181410),
+      );
+      // active fill (remaining duration) sweeps up from the bottom
+      if (active) {
+        final frac = (shopTimers[item.kind] ?? 0).clamp(0.0, 1.0);
+        final fh = rect.height * frac;
+        canvas.save();
+        canvas.clipRRect(rr);
+        canvas.drawRect(
+          Rect.fromLTWH(rect.left, rect.bottom - fh, rect.width, fh),
+          Paint()..color = item.color.withValues(alpha: 0.22),
+        );
+        canvas.restore();
+      }
+      // buy flash
+      if (item.buyFlash > 0) {
+        canvas.drawRRect(rr,
+            Paint()..color = Colors.white.withValues(alpha: 0.5 * item.buyFlash));
+      }
+      // border
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = affordable ? 1.8 : 1.0
+          ..color = affordable
+              ? item.color.withValues(
+                  alpha: 0.7 + 0.3 * (active ? (0.5 + 0.5 * sin(elapsed * 6)) : 1.0))
+              : Colors.white.withValues(alpha: 0.10),
+      );
+
+      final cx = rect.center.dx;
+      final iconY = rect.top + rect.height * 0.34;
+      _glyph(canvas, item.glyph, Offset(cx, iconY), 18,
+          alpha: affordable ? 1.0 : 0.4);
+      // label
+      GameFx.text(canvas, item.label, Offset(cx, rect.top + rect.height * 0.66),
+          9,
+          (affordable ? Potatuhs.textPrimary : Potatuhs.textFaint),
+          weight: FontWeight.w800);
+      // cost
+      GameFx.text(canvas, '\$${item.cost}',
+          Offset(cx, rect.bottom - 9), 10,
+          affordable ? Potatuhs.gold : Potatuhs.textFaint.withValues(alpha: 0.6),
+          weight: FontWeight.w900);
+    }
   }
 
   @override

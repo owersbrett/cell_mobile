@@ -530,8 +530,48 @@ class _BoardScreenState extends State<_BoardScreen> {
   /// board doesn't snap back to 1× every time a token takes a step.
   final TransformationController _boardTransform = TransformationController();
 
+  /// One-time flag so we frame the board (center + initial zoom) on first
+  /// layout, then leave the camera under the player's control.
+  bool _framed = false;
+  _BoardGeometry? _geo;
+  Size? _viewport;
+
+  /// The board space currently open in the tap-to-inspect sheet, if any.
+  int? _inspecting;
+
+  /// How zoomed-in the board opens / re-frames to. Above 1.0 so the tiles land
+  /// comfortably spaced instead of crammed; the player can pinch out to 0.5×.
+  static const double _frameZoom = 1.45;
+
   PartyController get controller => widget.controller;
   PartyActions get actions => widget.actions;
+
+  /// Stash the resolved geometry each layout and frame the board the first time.
+  void _onBoardLayout(_BoardGeometry geo, Size viewport) {
+    _geo = geo;
+    _viewport = viewport;
+    if (!_framed) {
+      _framed = true;
+      _centerOn(controller.currentPlayer.position);
+    }
+  }
+
+  /// Re-center the camera on the active player at the framing zoom.
+  void _reframeOnActive() => _centerOn(controller.currentPlayer.position);
+
+  /// Point the camera at board space [index] at [_frameZoom]. No-op until the
+  /// board has laid out at least once (geometry/viewport known).
+  void _centerOn(int index) {
+    final geo = _geo;
+    final viewport = _viewport;
+    if (geo == null || viewport == null) return;
+    final target = geo.nodeCenter(index);
+    const z = _frameZoom;
+    _boardTransform.value = Matrix4.identity()
+      ..translateByDouble(viewport.width / 2 - target.dx * z,
+          viewport.height / 2 - target.dy * z, 0, 1)
+      ..scaleByDouble(z, z, z, 1);
+  }
 
   @override
   void initState() {
@@ -614,18 +654,32 @@ class _BoardScreenState extends State<_BoardScreen> {
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
-                    child: _BoardView(
-                      controller: controller,
-                      positionOf: (p) => p.position,
-                      highlightPlayer: controller.currentPlayer.index,
-                      transformController: _boardTransform,
-                      viewScale: _boardTransform.value.getMaxScaleOnAxis(),
+                    child: GestureDetector(
+                      onDoubleTap: _reframeOnActive,
+                      child: _BoardView(
+                        controller: controller,
+                        positionOf: (p) => p.position,
+                        highlightPlayer: controller.currentPlayer.index,
+                        transformController: _boardTransform,
+                        viewScale: _boardTransform.value.getMaxScaleOnAxis(),
+                        onLayout: _onBoardLayout,
+                        onTapSpace: (space, i) =>
+                            setState(() => _inspecting = i),
+                        inspectedIndex: _inspecting,
+                      ),
                     ),
                   ),
                 ),
                 _turnPanel(),
               ],
             ),
+            if (_inspecting != null)
+              _SpaceInspector(
+                space: controller.board[_inspecting!],
+                index: _inspecting!,
+                controller: controller,
+                onClose: () => setState(() => _inspecting = null),
+              ),
             // Online non-interactive overlay: the board renders read-only;
             // action buttons in the turn panel are hidden (see _turnPanel), and
             // a hint is shown at the bottom.
@@ -1131,23 +1185,31 @@ class _BoardScreenState extends State<_BoardScreen> {
                   fontFamily: _kFont, fontSize: 13, color: Colors.white54),
             ),
           const SizedBox(height: 10),
+          Text(
+            controller.currentPlayerIndex < controller.players.length - 1
+                ? 'NEXT UP · ${controller.players[controller.currentPlayerIndex + 1].name.toUpperCase()}'
+                : 'MINI-GAME ROUND NEXT',
+            style: const TextStyle(
+                fontFamily: _kFont,
+                fontSize: 10,
+                letterSpacing: 1.5,
+                color: Colors.white38),
+          ),
+          const SizedBox(height: 8),
           GestureDetector(
             onTap: actions.confirmSpace,
             child: Container(
               height: 46,
               width: double.infinity,
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.10),
+                color: p.color.withValues(alpha: 0.18),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white30),
+                border: Border.all(color: p.color.withValues(alpha: 0.7)),
               ),
-              child: Center(
+              child: const Center(
                 child: Text(
-                  controller.currentPlayerIndex <
-                          controller.players.length - 1
-                      ? 'NEXT PLAYER'
-                      : 'MINI-GAME TIME!',
-                  style: const TextStyle(
+                  'COMPLETE TURN',
+                  style: TextStyle(
                       fontFamily: _kFont,
                       fontSize: 15,
                       fontWeight: FontWeight.bold,
@@ -1454,6 +1516,145 @@ class _BoardScreenState extends State<_BoardScreen> {
 // cutting across the open middle. Tokens slide node-to-node around the loop.
 // ---------------------------------------------------------------------------
 
+/// Structured "what is this tile" data for the tap-to-inspect sheet.
+typedef _SpaceInfo = ({String region, String title, String effect, IconData icon, Color color});
+
+_SpaceInfo _inspectSpace(PartyController c, BoardSpace space, int index) {
+  final sec = c.sectionOf(space);
+  final region = c.gameMap != null ? sec.name : '';
+  final lane = space.isShortcut ? ' · risky shortcut lane' : '';
+  final isAnchor =
+      c.gameMap != null && space.order == c.board.length - 1;
+  if (isAnchor) {
+    return (
+      region: region,
+      title: 'The Anchor',
+      effect: 'The finish line + potato market — buy a potato for '
+          '$kPotatoPrice paydirt.',
+      icon: Icons.flag,
+      color: const Color(0xFFD7A86E),
+    );
+  }
+  switch (space.type) {
+    case SpaceType.gain:
+      return (region: region, title: 'Paydirt Space$lane',
+          effect: 'Land here: +5 paydirt.',
+          icon: Icons.add, color: const Color(0xFF81C784));
+    case SpaceType.lose:
+      return (region: region, title: 'Entropy Space$lane',
+          effect: 'Land here: −5 paydirt (a Void Shield blocks it).',
+          icon: Icons.remove, color: const Color(0xFFE57373));
+    case SpaceType.powerUp:
+      final pu = sec.powerUp;
+      final theme = sec.powerUpTheme;
+      final name = theme != null ? '${pu.label} · $theme' : pu.label;
+      return (region: region, title: '$name$lane',
+          effect: 'Pick it up to use on your turn: ${pu.description}.',
+          icon: Icons.bolt, color: const Color(0xFFFFD54F));
+    case SpaceType.event:
+      return (region: region, title: 'Event Space$lane',
+          effect: 'Triggers a random cosmic event.',
+          icon: Icons.help_outline, color: const Color(0xFF80DEEA));
+    case SpaceType.shop:
+      return (region: region, title: 'Potato Market',
+          effect: 'Spend $kPotatoPrice paydirt for a potato.',
+          icon: Icons.storefront, color: const Color(0xFFD7A86E));
+    case SpaceType.cardCommon:
+      return (region: region, title: 'Tater Card$lane',
+          effect: 'Draw a common card — usually upside.',
+          icon: Icons.style, color: const Color(0xFF80DEEA));
+    case SpaceType.cardWild:
+      return (region: region, title: 'Void Card$lane',
+          effect: 'Draw a wild card — big swings, can hurt.',
+          icon: Icons.auto_awesome, color: const Color(0xFFCE93D8));
+  }
+}
+
+/// Bottom card that explains the tapped tile — "what happens if you land here".
+class _SpaceInspector extends StatelessWidget {
+  final BoardSpace space;
+  final int index;
+  final PartyController controller;
+  final VoidCallback onClose;
+
+  const _SpaceInspector({
+    required this.space,
+    required this.index,
+    required this.controller,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final info = _inspectSpace(controller, space, index);
+    return Positioned(
+      left: 12,
+      right: 12,
+      bottom: 12,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 8, 14),
+          decoration: BoxDecoration(
+            color: const Color(0xF21A1A24),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: info.color.withValues(alpha: 0.6)),
+            boxShadow: Potatuhs.glow(info.color, strength: 0.22, blur: 14),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: info.color.withValues(alpha: 0.18),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: info.color.withValues(alpha: 0.7)),
+                ),
+                child: Icon(info.icon, color: info.color, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (info.region.isNotEmpty)
+                      Text(info.region.toUpperCase(),
+                          style: Potatuhs.label(
+                              size: 9.5, color: info.color)),
+                    Text(info.title,
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white)),
+                    const SizedBox(height: 3),
+                    Text(info.effect,
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 12.5,
+                            height: 1.3,
+                            color: Colors.white70)),
+                  ],
+                ),
+              ),
+              GestureDetector(
+                onTap: onClose,
+                child: const Padding(
+                  padding: EdgeInsets.all(6),
+                  child: Icon(Icons.close, color: Colors.white38, size: 18),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _BoardView extends StatelessWidget {
   final PartyController controller;
   final int Function(PartyPlayer) positionOf;
@@ -1464,24 +1665,56 @@ class _BoardView extends StatelessWidget {
   /// keep a constant on-screen size as the board zooms.
   final double viewScale;
 
+  /// Fires once per layout with the resolved board geometry and the viewport
+  /// size, so the owning state can frame the board (center + initial zoom) the
+  /// first time and re-center on a double-tap instead of snapping to a blank
+  /// fit. Stateless here keeps the heavy geometry where it's computed.
+  final void Function(_BoardGeometry geo, Size viewport)? onLayout;
+
+  /// Called when a tile is tapped — opens the tap-to-inspect sheet.
+  final void Function(BoardSpace space, int index)? onTapSpace;
+
+  /// The space currently being inspected (highlighted on the board), if any.
+  final int? inspectedIndex;
+
   const _BoardView({
     required this.controller,
     required this.positionOf,
     required this.highlightPlayer,
     required this.transformController,
     required this.viewScale,
+    this.onLayout,
+    this.onTapSpace,
+    this.inspectedIndex,
   });
+
+  /// How much larger than the viewport the board canvas is. A roomier canvas
+  /// spreads the tiles apart in absolute terms; you pan/zoom across it rather
+  /// than cramming all 88 spaces into one screen.
+  static const double kCanvasSpread = 1.8;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final viewport = Size(constraints.maxWidth, constraints.maxHeight);
+        // The board lives on a canvas larger than the viewport so the tiles get
+        // real breathing room; you pan/zoom across it.
+        final canvas = Size(
+            viewport.width * kCanvasSpread, viewport.height * kCanvasSpread);
         final geo = _BoardGeometry(
-          Size(constraints.maxWidth, constraints.maxHeight),
+          canvas,
           spaces: controller.board,
           useXY: controller.gameMap != null,
           scale: viewScale,
         );
+
+        // Hand the geometry back so the owner can frame the board once.
+        if (onLayout != null) {
+          final cb = onLayout!;
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => cb(geo, viewport));
+        }
 
         // Group tokens by node so co-located tokens fan out around it.
         final tokensAt = <int, List<PartyPlayer>>{};
@@ -1492,20 +1725,17 @@ class _BoardView extends StatelessWidget {
         final startCenter = geo.nodeCenter(0);
 
         // Pinch to zoom + drag to pan the board; nodes, links and tokens scale
-        // with the zoom. Double-tap resets to the full board. The transform is
-        // held by the parent state so it survives the frequent step-by-step
-        // rebuilds. Tapping a space (per-node tooltip) works at any zoom.
-        return GestureDetector(
-          onDoubleTap: () =>
-              transformController.value = Matrix4.identity(),
-          child: InteractiveViewer(
+        // with the zoom. Double-tap re-frames on the active player. The
+        // transform is held by the parent state so it survives the frequent
+        // step-by-step rebuilds. Tapping a space opens the inspector sheet.
+        return InteractiveViewer(
             transformationController: transformController,
-            minScale: 0.6,
+            minScale: 0.5,
             maxScale: 5.0,
-            boundaryMargin: const EdgeInsets.all(160),
+            boundaryMargin: const EdgeInsets.all(240),
             child: SizedBox(
-              width: constraints.maxWidth,
-              height: constraints.maxHeight,
+              width: canvas.width,
+              height: canvas.height,
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
@@ -1541,7 +1771,6 @@ class _BoardView extends StatelessWidget {
               ],
               ),
             ),
-          ),
         );
       },
     );
@@ -1612,23 +1841,19 @@ class _BoardView extends StatelessWidget {
         break;
     }
 
+    final isInspected = inspectedIndex == index;
+    // A bigger invisible hit-target than the dot so crowded tiles stay tappable.
+    final hit = max(r * 2, 30.0);
     return Positioned(
-      left: center.dx - r,
-      top: center.dy - r,
-      child: Tooltip(
-        message: _spaceDescription(space),
-        triggerMode: TooltipTriggerMode.tap,
-        preferBelow: false,
-        margin: const EdgeInsets.symmetric(horizontal: 16),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-        decoration: BoxDecoration(
-          color: Potatuhs.inkPanel,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Potatuhs.gold.withValues(alpha: 0.6)),
-          boxShadow: Potatuhs.glow(Potatuhs.gold, strength: 0.2, blur: 10),
-        ),
-        textStyle: const TextStyle(
-            fontFamily: _kFont, fontSize: 12, color: Colors.white, height: 1.35),
+      left: center.dx - hit / 2,
+      top: center.dy - hit / 2,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => onTapSpace?.call(space, index),
+        child: SizedBox(
+          width: hit,
+          height: hit,
+          child: Center(
         child: Container(
           width: r * 2,
           height: r * 2,
@@ -1639,14 +1864,17 @@ class _BoardView extends StatelessWidget {
                 const Color(0xFF0B0B12)),
             shape: BoxShape.circle,
             border: Border.all(
-              color: isStart || isShop
-                  ? color
-                  : color.withValues(alpha: space.isShortcut ? 0.7 : 0.55),
-              width: isStart || isShop ? 1.8 : 1.2,
+              color: isInspected
+                  ? Colors.white
+                  : isStart || isShop
+                      ? color
+                      : color.withValues(alpha: space.isShortcut ? 0.7 : 0.55),
+              width: isInspected ? 2.6 : (isStart || isShop ? 1.8 : 1.2),
             ),
             boxShadow: [
               BoxShadow(
-                  color: color.withValues(alpha: isShop ? 0.5 : 0.30),
+                  color: (isInspected ? Colors.white : color)
+                      .withValues(alpha: isInspected ? 0.6 : (isShop ? 0.5 : 0.30)),
                   blurRadius: isShop ? 14 : 9),
             ],
           ),
@@ -1654,42 +1882,10 @@ class _BoardView extends StatelessWidget {
               size: r * (isShop ? 1.1 : 0.95),
               color: iconColor.withValues(alpha: 0.9)),
         ),
+          ),
+        ),
       ),
     );
-  }
-
-  /// What landing on [space] does — shown as a tap tooltip on the tile.
-  String _spaceDescription(BoardSpace space) {
-    final lane = space.isShortcut ? ' · risky shortcut lane' : '';
-    final sec = controller.sectionOf(space);
-    // On the new maps, lead with the region name so a tap tells you where you
-    // are as well as what the space does.
-    final region = controller.gameMap != null ? '${sec.name}\n' : '';
-    final isAnchor = controller.gameMap != null &&
-        space.order == controller.board.length - 1;
-    if (isAnchor) {
-      return '${region}THE ANCHOR\nThe finish line + potato shop — buy a potato '
-          'for $kPotatoPrice paydirt.';
-    }
-    switch (space.type) {
-      case SpaceType.gain:
-        return '${region}Paydirt space$lane\nLand here: +5 paydirt.';
-      case SpaceType.lose:
-        return '${region}Entropy space$lane\nLand here: −5 paydirt (a Void Shield blocks it).';
-      case SpaceType.powerUp:
-        final pu = sec.powerUp;
-        final theme = sec.powerUpTheme;
-        final name = theme != null ? '${pu.label} · $theme' : pu.label;
-        return '$region$name$lane\nPick it up to use on your turn: ${pu.description}.';
-      case SpaceType.event:
-        return '${region}Event space$lane\nTriggers a random cosmic event.';
-      case SpaceType.shop:
-        return '${region}Potato Market\nSpend $kPotatoPrice paydirt for a potato.';
-      case SpaceType.cardCommon:
-        return '${region}Tater Card$lane\nDraw a common card — usually upside.';
-      case SpaceType.cardWild:
-        return '${region}Void Card$lane\nDraw a wild card — big swings, can hurt.';
-    }
   }
 
   List<Widget> _tokens(

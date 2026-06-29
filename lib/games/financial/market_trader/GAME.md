@@ -19,8 +19,10 @@ labelled with its exact cash/share effect.
 
 ## Feature 0 — Batch sizing (the core fix)
 A SIZE control sets the share count for every action. Stepper (−/+), one-tap lot presets (1 / 5 / 25),
-and MAX (largest lot the available cash can afford at the current limit). A LIMIT slider sets how far
-below market (0–18%) a buy order rests. BUY/SELL/PLACE buttons all carry the live lot in their label.
+and MAX (largest lot the available cash can afford at the live **market** price — sized to market so a
+market BUY *and* a resting LIMIT order both stay affordable; MAX never leaves a trade button greyed). A
+LIMIT slider sets how far below market (0–18%) a buy order rests. BUY/SELL/PLACE buttons all carry the
+live lot in their label.
 
 ## Feature 1 — Orders & reserves
 - **PLACE LIMIT BUY** — reserves `lot × limit` cash (moves AVAILABLE → RESERVED) and rests an order.
@@ -86,8 +88,12 @@ P&L at the buzzer wins.
   `_placeOrder` reserves cash, `_fillOrders` (checked on every price step) converts reserved cash to
   shares at the limit, `_cancelOrder`/`_cancelAllOrders` refund minus a 1% fee. `_sell` realizes P&L
   and calls `_syncScore`, which pushes the delta to `session.addScore` so the session score tracks the
-  running realized total.
-- **Registry note:** the `market_trader` spec in `mini_game_registry.dart` currently imports
-  `financial/financial_trading/financial_trading_game.dart`. To ship THIS file, switch that import to
-  `financial/market_trader/market_trader.dart` (both declare `FinancialTradingGame`, so only the import
-  line changes — the builder call is unchanged).
+  running realized total. (Cancel/sell are guarded on `session.isRunning`; reserved cash is clamped at
+  ≥ 0 so float drift can't leak a phantom reserve.)
+- **Registry:** `mini_game_registry.dart` imports this file (`financial/market_trader/market_trader.dart`)
+  and builds it via `FinancialTradingGame(session: session)`. This is the shipped Financial-scale game.
+- **Render budget:** the sim steps every frame, but the widget tree only rebuilds at `_kMtRenderHz`
+  (20 Hz) — or immediately on a discrete event (fill / news / cooldown-ready). The chart, particles and
+  atmosphere are drawn by `Listenable`-driven `CustomPainter`s (the chart repaints only when a sample is
+  appended or the order set changes), so the big control tree is never rebuilt 60×/sec. This keeps the
+  game off the app's render-overload / black-screen path.
