@@ -1,0 +1,717 @@
+// SuperpositionV2Game — "Superposition v2" (collapse at the crest).
+//
+// UX-passed alternative to `superposition`. Same lesson — a qubit lives in a
+// SUPERPOSITION of |↑⟩ and |↓⟩, its probability P↑ = ½ + ½·sin(phase) sweeps
+// 0→1, MEASURING collapses it to one definite state, and two qubits collapse
+// JOINTLY (amplitudes multiply). Score unit stays `collapses`.
+//
+// What changed vs the original (per the teardown):
+//
+//  1. HONEST RNG NO LONGER PUNISHES PERFECT PLAY.
+//     The original rolled `_rng.nextDouble() < pUp` on EVERY measure, so a
+//     player who timed a 95% read still lost ~1-in-20 — luck rode on top of
+//     skill and head-to-head results carried noise. Now there is a LOCK ZONE: a
+//     glowing cap around the target pole (P(target) ≥ _kGuarantee). Measure with
+//     the vector INSIDE the lock zone and the favorable outcome is GUARANTEED —
+//     perfect timing is never robbed. Your SCORE then scales with the exact
+//     probability you dared to hold for (the crest is worth more than the lip of
+//     the zone), so the skill is "ride the wave to its peak," pure timing.
+//     The gamble lesson survives for risk-takers: measure BELOW the lock zone
+//     and it is an honest weighted collapse — a real coin-flip you chose to take
+//     because the window was tightening.
+//
+//  2. THE SPHERE CARRIES THE READ (it was decoration before).
+//     The state vector's tip height now IS P(target): it reaches toward the
+//     glowing target pole as the wave crests. The uncertainty CLOUD at the tip
+//     is sized by the real variance P(1−P) — fat and fuzzy at the 50/50 equator,
+//     collapsing to a sharp point at the crest, so the sphere literally shows
+//     "more certain near the pole." The lock zone is drawn ON the sphere as a
+//     glowing cap, and the whole sphere pulses when the vector enters it. The
+//     most-painted element is now the functional one; the thin meter is a
+//     secondary confirm, not the primary read.
+//
+//  3. CLIMAX — the COINCIDENCE CASCADE (last 12s, host clock).
+//     A second qubit joins for the finish, phases drift at different rates, and
+//     the oscillation accelerates — so a moment where BOTH vectors sit in their
+//     lock zones at once is rare and brief. The joint multiplier is huge, the
+//     sphere set flares, and the arc peaks on a frantic both-in-lock scramble
+//     instead of just ending.
+//
+// Self-contained module. Imports only the framework session + shared FX/theme.
+// One Ticker → one CustomPainter. All geometry guarded finite. <80s round.
+// ═══════════════════════════════════════════════════════════════════════════
+
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+
+import 'package:cell_mobile/games/fx.dart';
+import 'package:cell_mobile/games/mini_game.dart';
+import 'package:cell_mobile/theme/potatuhs.dart';
+
+// ── Feel constants ────────────────────────────────────────────────────────────
+const Color _kUp = Color(0xFF7C9CFF); // |↑⟩ — cool blue
+const Color _kDown = Color(0xFFCE93D8); // |↓⟩ — violet
+const Color _kAccent = Color(0xFF7272AB); // glaucous — multiverse accent
+const Color _kGood = Color(0xFF69F0AE);
+const Color _kLock = Color(0xFF7CFFB0); // lock-zone glow
+const Color _kBad = Color(0xFFFF6E6E);
+const Color _kInk = Color(0xFF07060D);
+
+/// Base angular speed of the wavefunction (rad/s) at level 1.
+const double _kBaseOmega = 1.45;
+
+/// Added to omega per level (oscillation accelerates → narrower windows).
+const double _kOmegaStep = 0.30;
+const double _kOmegaCap = 4.3;
+
+/// Extra omega during the coincidence-cascade climax.
+const double _kClimaxOmegaBoost = 0.9;
+
+/// Favorable collapses per difficulty level.
+const int _kFavPerLevel = 4;
+
+/// Level at which a second qubit joins the system (mid-game taste).
+const int _kTwoQubitLevel = 5;
+
+/// P(target) at or above which a measurement is GUARANTEED to land — the lock
+/// zone. This is the change that stops RNG from punishing perfect timing.
+const double _kGuarantee = 0.86;
+
+/// How long the collapsed (definite) state is held before a fresh superposition.
+const double _kCollapseHold = 0.5;
+
+/// Idle oscillation speed during the calm ready / countdown state.
+const double _kIdleOmega = 0.6;
+
+/// Remaining-time window (ms) that triggers the two-qubit coincidence climax.
+const int _kClimaxMs = 12000;
+
+class SuperpositionV2Game extends StatefulWidget {
+  final MiniGameSession session;
+  const SuperpositionV2Game({super.key, required this.session});
+
+  @override
+  State<SuperpositionV2Game> createState() => _SuperpositionV2GameState();
+}
+
+class _SuperpositionV2GameState extends State<SuperpositionV2Game>
+    with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
+  final math.Random _rng = math.Random();
+
+  // ── Wavefunction state (index 0 & 1 are the two possible qubits) ───────────
+  final List<double> _phase = [0.0, math.pi];
+  final List<bool> _target = [true, true]; // true = want |↑⟩
+  final List<bool> _outUp = [true, true]; // last measured outcome
+  final List<bool> _landed = [true, true]; // whether each landed its target
+  final List<bool> _wasLock = [false, false]; // measured inside lock zone?
+  int _n = 1; // active qubit count this round
+
+  // ── Progress ───────────────────────────────────────────────────────────────
+  int _favorable = 0;
+  int _streak = 0;
+  bool _climax = false;
+
+  // ── Collapse state machine ──────────────────────────────────────────────────
+  double _collapseT = 0.0; // >0 ⇒ showing a definite (collapsed) state
+  bool? _lastAllLand; // result tint for the collapse flash
+  double _lockPulse = 0.0; // 0..1, swells while a vector sits in its lock zone
+
+  // ── Juice ───────────────────────────────────────────────────────────────────
+  double _flashGood = 0.0;
+  double _flashBad = 0.0;
+  double _idle = 0.0; // ambient clock for background drift
+  final List<FxParticle> _parts = [];
+  final List<FxPop> _pops = [];
+
+  int get _level => (1 + _favorable ~/ _kFavPerLevel).clamp(1, 9);
+  double get _omega {
+    final base = math.min(_kOmegaCap, _kBaseOmega + (_level - 1) * _kOmegaStep);
+    return _climax ? base + _kClimaxOmegaBoost : base;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _respawn();
+    _ticker = createTicker(_onTick)..start();
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  void _onTick(Duration elapsed) {
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.05);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
+
+    final running = widget.session.isRunning;
+    _idle += dt;
+
+    // Host owns the clock — read remaining to drive the final-stretch climax.
+    final remMs = widget.session.remaining.inMilliseconds;
+    final climaxNow = running && remMs > 0 && remMs <= _kClimaxMs;
+    if (climaxNow && !_climax) {
+      _climax = true;
+      // Snap to the two-qubit cascade on the next fresh superposition.
+      if (_collapseT == 0) _respawn();
+    }
+
+    if (_collapseT > 0) {
+      // Wavefunction frozen at its collapsed (definite) outcome.
+      _collapseT = math.max(0.0, _collapseT - dt);
+      if (_collapseT == 0 && running) _respawn();
+    } else {
+      // Oscillate. Faster while playing, gentle while idle/countdown.
+      final w = running ? _omega : _kIdleOmega;
+      for (var i = 0; i < 2; i++) {
+        // Second qubit drifts at a different rate → aligned windows are rare.
+        _phase[i] += w * (i == 1 ? 0.83 : 1.0) * dt;
+        if (_phase[i] > 2 * math.pi) _phase[i] -= 2 * math.pi;
+      }
+    }
+
+    // Lock pulse swells when the live vector is parked in its lock zone.
+    final anyLock = _collapseT == 0 && running && _allInLock();
+    _lockPulse = (anyLock ? _lockPulse + dt * 3.2 : _lockPulse - dt * 4.0)
+        .clamp(0.0, 1.0);
+
+    _flashGood = math.max(0.0, _flashGood - dt * 2.6);
+    _flashBad = math.max(0.0, _flashBad - dt * 3.0);
+
+    _parts.removeWhere((p) => !p.step(dt));
+    _pops.removeWhere((p) => !p.step(dt));
+
+    setState(() {});
+  }
+
+  double _pUp(int i) => 0.5 + 0.5 * math.sin(_phase[i]);
+  double _pTarget(int i) => _target[i] ? _pUp(i) : (1 - _pUp(i));
+
+  /// True only when EVERY active qubit's probability sits in the lock zone.
+  bool _allInLock() {
+    for (var i = 0; i < _n; i++) {
+      if (_pTarget(i) < _kGuarantee) return false;
+    }
+    return true;
+  }
+
+  void _measure(Size size) {
+    if (!widget.session.isRunning || _collapseT > 0) return;
+
+    double joint = 1.0;
+    bool allLand = true;
+    bool allLock = true;
+    for (var i = 0; i < _n; i++) {
+      final pT = _pTarget(i);
+      final inLock = pT >= _kGuarantee;
+      // GUARANTEE inside the lock zone; honest weighted collapse below it.
+      final landed = inLock || _rng.nextDouble() < pT;
+      _wasLock[i] = inLock;
+      _landed[i] = landed;
+      // Outcome glyph: a landed measure shows the target pole; a missed gamble
+      // shows the opposite pole (decohered to the wrong state).
+      _outUp[i] = landed ? _target[i] : !_target[i];
+      if (!landed) allLand = false;
+      if (!inLock) allLock = false;
+      joint *= pT;
+    }
+
+    final centers = _spheres(size);
+    if (allLand) {
+      // Score the PROBABILITY you achieved (no binary lucky/unlucky). Holding
+      // for the crest (joint→1) is worth meaningfully more than the lock lip.
+      final base = _n == 2 ? 320.0 : 120.0;
+      final quality = math.pow(joint.clamp(0.0, 1.0), _n == 2 ? 1.3 : 1.6)
+          .toDouble();
+      final climaxMult = (_n == 2 && _climax) ? 1.5 : 1.0;
+      final streakBonus = _streak * (_n == 2 ? 8 : 5);
+      final pts = (base * quality * climaxMult).round() + streakBonus;
+      widget.session.addScore(pts);
+      _favorable++;
+      _streak++;
+      widget.session.noteStreak(_streak);
+      _flashGood = allLock ? 1.0 : 0.7;
+      for (var i = 0; i < _n; i++) {
+        _parts.addAll(FxBurst.spawn(centers[i], allLock ? _kLock : _kGood,
+            count: allLock ? 18 : 12, speed: 160));
+      }
+      _pops.add(FxPop(
+        Offset(size.width / 2, size.height * 0.28),
+        _n == 2 ? 'COINCIDENCE +$pts' : '+$pts',
+        allLock ? _kLock : _kGood,
+      ));
+    } else {
+      // A gamble below the lock zone that didn't pay — decohered.
+      _streak = 0;
+      _flashBad = 1.0;
+      _pops.add(FxPop(
+        Offset(size.width / 2, size.height * 0.28),
+        'DECOHERED',
+        _kBad,
+      ));
+    }
+    _lastAllLand = allLand;
+    _collapseT = _kCollapseHold;
+    _lockPulse = 0.0;
+  }
+
+  void _respawn() {
+    _n = (_climax || _level >= _kTwoQubitLevel) ? 2 : 1;
+    for (var i = 0; i < 2; i++) {
+      _phase[i] = _rng.nextDouble() * 2 * math.pi;
+      _target[i] = _rng.nextBool();
+    }
+    _lastAllLand = null;
+  }
+
+  /// Centers of the active spheres for the current size.
+  List<Offset> _spheres(Size size) {
+    final cy = size.height * 0.44;
+    if (_n == 1) return [Offset(size.width / 2, cy)];
+    final dx = size.width * 0.24;
+    return [Offset(size.width / 2 - dx, cy), Offset(size.width / 2 + dx, cy)];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final size = Size(constraints.maxWidth, constraints.maxHeight);
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (_) => _measure(size),
+        child: ClipRect(
+          child: CustomPaint(
+            size: size,
+            painter: _SuperpositionV2Painter(
+              phase: List<double>.from(_phase),
+              target: List<bool>.from(_target),
+              outUp: List<bool>.from(_outUp),
+              landed: List<bool>.from(_landed),
+              wasLock: List<bool>.from(_wasLock),
+              n: _n,
+              collapsed: _collapseT > 0,
+              collapseT: _collapseT,
+              lastAllLand: _lastAllLand,
+              lockPulse: _lockPulse,
+              flashGood: _flashGood,
+              flashBad: _flashBad,
+              idle: _idle,
+              level: _level,
+              streak: _streak,
+              climax: _climax,
+              running: widget.session.isRunning,
+              parts: _parts,
+              pops: _pops,
+            ),
+          ),
+        ),
+      );
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _SuperpositionV2Painter extends CustomPainter {
+  final List<double> phase;
+  final List<bool> target;
+  final List<bool> outUp;
+  final List<bool> landed;
+  final List<bool> wasLock;
+  final int n;
+  final bool collapsed;
+  final double collapseT;
+  final bool? lastAllLand;
+  final double lockPulse;
+  final double flashGood;
+  final double flashBad;
+  final double idle;
+  final int level;
+  final int streak;
+  final bool climax;
+  final bool running;
+  final List<FxParticle> parts;
+  final List<FxPop> pops;
+
+  _SuperpositionV2Painter({
+    required this.phase,
+    required this.target,
+    required this.outUp,
+    required this.landed,
+    required this.wasLock,
+    required this.n,
+    required this.collapsed,
+    required this.collapseT,
+    required this.lastAllLand,
+    required this.lockPulse,
+    required this.flashGood,
+    required this.flashBad,
+    required this.idle,
+    required this.level,
+    required this.streak,
+    required this.climax,
+    required this.running,
+    required this.parts,
+    required this.pops,
+  });
+
+  double _pUp(int i) => 0.5 + 0.5 * math.sin(phase[i]);
+  double _pTarget(int i) => target[i] ? _pUp(i) : (1 - _pUp(i));
+
+  List<Offset> _spheres(Size size) {
+    final cy = size.height * 0.44;
+    if (n == 1) return [Offset(size.width / 2, cy)];
+    final dx = size.width * 0.24;
+    return [Offset(size.width / 2 - dx, cy), Offset(size.width / 2 + dx, cy)];
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = _kInk);
+    GameFx.atmosphere(canvas, size, climax ? _kLock : _kAccent, idle,
+        motes: climax ? 34 : 26);
+
+    final centers = _spheres(size);
+    final r = math.min(size.width / (n == 1 ? 3.4 : 5.4), size.height * 0.20);
+
+    _paintHeader(canvas, size);
+    for (var i = 0; i < n; i++) {
+      _paintQubit(canvas, centers[i], r, i);
+    }
+    _paintLockMeter(canvas, size);
+    _paintMeasurePrompt(canvas, size);
+
+    FxBurst.paint(canvas, parts);
+    for (final p in pops) {
+      p.paint(canvas);
+    }
+
+    // Full-screen collapse flash.
+    if (flashGood > 0.25) {
+      canvas.drawRect(Offset.zero & size,
+          Paint()..color = _kGood.withValues(alpha: (flashGood - 0.25) * 0.32));
+    }
+    if (flashBad > 0.25) {
+      canvas.drawRect(Offset.zero & size,
+          Paint()..color = _kBad.withValues(alpha: (flashBad - 0.25) * 0.30));
+    }
+  }
+
+  // ── Header: instruction + level/streak ─────────────────────────────────────
+  void _paintHeader(Canvas canvas, Size size) {
+    GameFx.text(
+      canvas,
+      climax
+          ? 'COINCIDENCE — LAND BOTH IN THE LOCK ZONE'
+          : 'RIDE THE WAVE INTO THE GLOWING LOCK ZONE',
+      Offset(size.width / 2, 22),
+      12,
+      climax ? _kLock : Potatuhs.textSecondary,
+      weight: FontWeight.w700,
+      glow: climax ? 0.6 : 0,
+    );
+    GameFx.text(canvas, 'LV $level', Offset(28, 18), 11, _kAccent,
+        weight: FontWeight.w800);
+    if (streak >= 2) {
+      GameFx.text(canvas, '🔥$streak', Offset(size.width - 26, 18), 12, _kGood,
+          weight: FontWeight.w800);
+    }
+  }
+
+  // ── One Bloch-style qubit sphere — now the functional read ─────────────────
+  void _paintQubit(Canvas canvas, Offset c, double r, int i) {
+    final pT = _pTarget(i);
+    final wantUp = target[i];
+    final targetColor = wantUp ? _kUp : _kDown;
+    final dirY = wantUp ? -1.0 : 1.0; // toward the target pole
+    final inLock = !collapsed && pT >= _kGuarantee;
+
+    // Vertical position of the vector tip for a given P(target).
+    double tipYFor(double p) => c.dy + dirY * r * 0.92 * (2 * p - 1);
+
+    // Sphere shell + inner glow.
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = (inLock ? _kLock : _kAccent)
+            .withValues(alpha: inLock ? 0.7 : 0.5),
+    );
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          (inLock ? _kLock : _kAccent)
+              .withValues(alpha: 0.10 + 0.14 * lockPulse * (inLock ? 1 : 0)),
+          _kAccent.withValues(alpha: 0.0),
+        ]).createShader(Rect.fromCircle(center: c, radius: r)),
+    );
+    // Equator ellipse (the 50/50 line).
+    canvas.drawOval(
+      Rect.fromCenter(center: c, width: r * 2, height: r * 0.5),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = Colors.white.withValues(alpha: 0.12),
+    );
+    // Vertical axis.
+    canvas.drawLine(
+      Offset(c.dx, c.dy - r),
+      Offset(c.dx, c.dy + r),
+      Paint()
+        ..strokeWidth = 1.0
+        ..color = Colors.white.withValues(alpha: 0.10),
+    );
+
+    // ── LOCK ZONE cap: the guaranteed-collapse band hugging the target pole.
+    if (!collapsed) {
+      final zoneStart = tipYFor(_kGuarantee); // inner edge of the zone
+      final pole = tipYFor(1.0);
+      final glow = inLock ? (0.5 + 0.5 * lockPulse) : 0.28;
+      canvas.drawLine(
+        Offset(c.dx, zoneStart),
+        Offset(c.dx, pole),
+        Paint()
+          ..strokeWidth = inLock ? 13 : 9
+          ..strokeCap = StrokeCap.round
+          ..color = _kLock.withValues(alpha: 0.16 * glow)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, inLock ? 9 : 6),
+      );
+      canvas.drawLine(
+        Offset(c.dx, zoneStart),
+        Offset(c.dx, pole),
+        Paint()
+          ..strokeWidth = 3.0
+          ..strokeCap = StrokeCap.round
+          ..color = _kLock.withValues(alpha: 0.35 + 0.45 * glow),
+      );
+    }
+
+    final upPole = Offset(c.dx, c.dy - r);
+    final downPole = Offset(c.dx, c.dy + r);
+    _paintPole(canvas, upPole, '↑', _kUp, wantUp, wantUp && inLock);
+    _paintPole(canvas, downPole, '↓', _kDown, !wantUp, !wantUp && inLock);
+
+    if (collapsed) {
+      // Definite, collapsed state: crisp vector snapped to the measured pole.
+      final landedUp = outUp[i];
+      final tip = landedUp ? upPole : downPole;
+      final ok = landed[i];
+      final col = ok ? (wasLock[i] ? _kLock : _kGood) : _kBad;
+      canvas.drawLine(
+        c,
+        tip,
+        Paint()
+          ..strokeWidth = 4.5
+          ..strokeCap = StrokeCap.round
+          ..color = col,
+      );
+      GameFx.orb(canvas, tip, 9, col, glow: 1.2);
+      final ringT = 1.0 - (collapseT / _kCollapseHold);
+      canvas.drawCircle(
+        c,
+        r * (0.3 + ringT * 0.9),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5 * (1 - ringT)
+          ..color = col.withValues(alpha: 0.6 * (1 - ringT)),
+      );
+    } else {
+      // Live superposition — the vector tip height IS P(target).
+      final tipY = tipYFor(pT);
+      final wob = math.sin(phase[i] * 1.7) * r * 0.16;
+
+      // Ghost trail conveys the sweep.
+      for (var g = 5; g >= 1; g--) {
+        final ph = phase[i] - g * 0.16 * (i == 1 ? 0.83 : 1.0);
+        final pUpG = 0.5 + 0.5 * math.sin(ph);
+        final pTG = wantUp ? pUpG : (1 - pUpG);
+        final wobG = math.sin(ph * 1.7) * r * 0.16;
+        canvas.drawLine(
+          c,
+          Offset(c.dx + wobG, tipYFor(pTG)),
+          Paint()
+            ..strokeWidth = 3.0
+            ..strokeCap = StrokeCap.round
+            ..color = targetColor.withValues(alpha: 0.09 * (6 - g)),
+        );
+      }
+
+      // Live vector.
+      final tip = Offset(c.dx + wob, tipY);
+      final vecCol = inLock ? _kLock : targetColor;
+      canvas.drawLine(
+        c,
+        tip,
+        Paint()
+          ..strokeWidth = inLock ? 4.0 : 3.4
+          ..strokeCap = StrokeCap.round
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.2)
+          ..color = vecCol.withValues(alpha: 0.95),
+      );
+
+      // Uncertainty cloud — sized by the REAL variance P(1−P): fat at the
+      // 50/50 equator, collapsing to a sharp point at the crest. The sphere
+      // now shows the physics ("more certain near the pole").
+      final variance = (pT * (1 - pT)).clamp(0.0, 0.25); // max 0.25 at p=0.5
+      final unc = variance / 0.25; // 0..1
+      canvas.drawCircle(
+        tip,
+        4 + 12 * unc,
+        Paint()
+          ..color = vecCol.withValues(alpha: 0.18 + 0.32 * unc)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 7 * unc),
+      );
+
+      // P(target) readout under the sphere (secondary confirm).
+      final near = pT >= _kGuarantee;
+      GameFx.text(
+        canvas,
+        near ? 'LOCK · ${(pT * 100).round()}%' : 'P(target) ${(pT * 100).round()}%',
+        Offset(c.dx, c.dy + r + 22),
+        13,
+        near ? _kLock : Potatuhs.textSecondary,
+        weight: FontWeight.w800,
+        glow: near ? 0.7 : 0,
+      );
+    }
+  }
+
+  void _paintPole(Canvas canvas, Offset p, String glyph, Color color,
+      bool isTarget, bool lit) {
+    if (isTarget) {
+      canvas.drawCircle(
+        p,
+        lit ? 20 : 16,
+        Paint()
+          ..color = (lit ? _kLock : color).withValues(alpha: lit ? 0.7 : 0.55)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lit ? 11 : 9),
+      );
+      canvas.drawCircle(
+        p,
+        10,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0
+          ..color = lit ? _kLock : color,
+      );
+    }
+    canvas.drawCircle(p, 5, Paint()..color = color.withValues(alpha: 0.9));
+    GameFx.text(canvas, glyph, p, 13, Colors.white, weight: FontWeight.w900);
+  }
+
+  // ── Lock meter (secondary confirm of the joint read) ───────────────────────
+  void _paintLockMeter(Canvas canvas, Size size) {
+    if (collapsed) return;
+    final w = size.width * 0.74;
+    final left = (size.width - w) / 2;
+    final y = size.height * 0.80;
+    const h = 14.0;
+    final rect = Rect.fromLTWH(left, y, w, h);
+    final rr = RRect.fromRectAndRadius(rect, const Radius.circular(7));
+
+    canvas.drawRRect(rr, Paint()..color = const Color(0xFF15131F));
+
+    // The lock band: the guaranteed zone where measuring is safe.
+    final zoneLeft = left + w * _kGuarantee;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(zoneLeft, y, w * (1 - _kGuarantee), h),
+          const Radius.circular(7)),
+      Paint()..color = _kLock.withValues(alpha: 0.20),
+    );
+
+    // Joint P(all targets) across active qubits.
+    double joint = 1.0;
+    for (var i = 0; i < n; i++) {
+      joint *= _pTarget(i);
+    }
+    final inLock = joint >= _kGuarantee;
+    final fillW = w * joint;
+    if (fillW > 2) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(left, y, fillW, h), const Radius.circular(7)),
+        Paint()
+          ..color = (inLock ? _kLock : Color.lerp(_kBad, _kGood, joint)!)
+              .withValues(alpha: 0.92),
+      );
+    }
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = (inLock ? _kLock : Colors.white).withValues(alpha: 0.22),
+    );
+    GameFx.text(
+      canvas,
+      n == 2 ? 'JOINT AMPLITUDE → LOCK' : 'AMPLITUDE → LOCK',
+      Offset(size.width / 2, y - 14),
+      10,
+      Potatuhs.textFaint,
+      weight: FontWeight.w700,
+    );
+  }
+
+  // ── Bottom prompt ───────────────────────────────────────────────────────────
+  void _paintMeasurePrompt(Canvas canvas, Size size) {
+    final y = size.height * 0.92;
+    if (!running) {
+      GameFx.text(
+        canvas,
+        'Tap MEASURE when the vector enters the glowing LOCK zone',
+        Offset(size.width / 2, y),
+        13,
+        Potatuhs.textSecondary,
+        weight: FontWeight.w700,
+      );
+      return;
+    }
+    // Live lock state of the joint read.
+    double joint = 1.0;
+    for (var i = 0; i < n; i++) {
+      joint *= _pTarget(i);
+    }
+    final inLock = !collapsed && joint >= _kGuarantee;
+
+    final String msg;
+    final Color col;
+    if (collapsed) {
+      msg = lastAllLand == true ? 'COLLAPSED' : 'DECOHERED';
+      col = lastAllLand == true ? _kGood : _kBad;
+    } else if (inLock) {
+      msg = n == 2 ? 'BOTH LOCKED — MEASURE!' : 'LOCK — MEASURE!';
+      col = _kLock;
+    } else {
+      msg = 'TAP TO MEASURE';
+      col = _kAccent;
+    }
+    final pulse = collapsed
+        ? 0.5
+        : (inLock ? (0.75 + 0.25 * math.sin(idle * 9)) : (0.7 + 0.3 * math.sin(idle * 4)));
+    GameFx.text(
+      canvas,
+      msg,
+      Offset(size.width / 2, y),
+      inLock ? 18 : 16,
+      col.withValues(alpha: pulse.clamp(0.0, 1.0)),
+      display: true,
+      weight: FontWeight.w900,
+      glow: inLock ? 0.9 : 0.6,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SuperpositionV2Painter old) => true;
+}

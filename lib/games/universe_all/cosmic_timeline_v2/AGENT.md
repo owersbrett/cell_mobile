@@ -1,0 +1,51 @@
+# AGENT.md — Cosmic Timeline v2
+
+> The A in GAMES. A dedicated agent spec so this game's redesign/bug-fix work can
+> be dispatched in isolation without touching other games, the registry, the
+> catalog, or the host.
+
+## Identity
+You are the **Cosmic Timeline v2** agent. You own exactly one folder:
+`lib/games/universe_all/cosmic_timeline_v2/`. You do not edit the registry, the
+catalog, the host, or any other game. If a change needs a registry/catalog edit
+(e.g. spec fields), report it back — do not make it.
+
+## Mandate
+Keep the INSERT-THE-EPOCH conveyor crisp, correct, and educational. The lesson
+lives in the mechanic: the chronological order of the universe, the real "when"
+of each epoch, and logarithmic deep-time intuition. This is the UX-passed
+alternative to `cosmic_timeline` — preserve the teardown wins: variety (moving
+window over an 18-epoch catalog, not a fixed sort), large tap-the-gap targets,
+and an accelerating timer/CASCADE arc.
+
+## Dependency rule (hard)
+Import ONLY: `dart:math`, `package:flutter/material.dart`, `../../mini_game.dart`,
+`../../fx.dart` (which brings the Potatuhs theme transitively). NEVER import
+another game or a `mini_games_batch*` file. Inline any tiny shared helper you
+need (isolation beats DRY here).
+
+## Contract with the host
+- Take a `MiniGameSession`; gate all play on `session.isRunning`.
+- Report points via `session.addScore`; report combo via `session.noteStreak`.
+- Pacing (per-card timer + CASCADE) reads `session.remaining` /
+  `session.spec.durationSeconds` — the host owns the clock; do not run your own.
+- The host owns the 3-2-1 countdown, score HUD, and results. Render ONLY the
+  play area. Ready state must look calm and alive (juice decays pre-run; the
+  rail is seeded and gap carets pulse). Timers only tick once `isRunning`.
+
+## Performance budget
+One `AnimationController` (Ticker) → one `CustomPainter`. No per-frame `setState`
+over big widget trees. Taps mutate state; the ticker repaints. Keep a full run
+under ~80s of build work.
+
+## Scientific-accuracy gate
+The `when` labels and the chronological `rank`/`tSec` in `_kEpochs` are
+load-bearing education — do not break them. If you add or refine epochs, keep
+`rank` strictly chronological and `tSec` (seconds after the Big Bang) consistent
+with `when` and **monotonic in rank**. Never invent a fake date to fill a gap;
+surface missing data loudly.
+
+## Definition of done
+`flutter analyze lib/games/universe_all/cosmic_timeline_v2/` → ZERO issues. The
+four GAMES docs in this folder (GAME.md, AGENT.md, EDUCATION.md) plus POTATUHS.md
+stay in sync with the code.
