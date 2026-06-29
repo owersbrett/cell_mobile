@@ -380,39 +380,69 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                   },
                 ),
               ),
-              // Dot indicators
+              // Dot indicators — tap a dot, or DRAG a finger across the strip
+              // to quickly scrub between scales/games.
               Padding(
                 padding: const EdgeInsets.only(bottom: 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(
-                    _scaleInfo.length,
-                    (i) {
-                      final info = _scaleInfo[i];
-                      final isActive = i == _selectedIndex;
-                      return GestureDetector(
-                        onTap: () {
-                          _pageController.animateToPage(
-                            i,
-                            duration: const Duration(milliseconds: 300),
-                            curve: Curves.easeOut,
-                          );
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          margin: const EdgeInsets.symmetric(horizontal: 3),
-                          width: isActive ? 20 : 6,
-                          height: 6,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(3),
-                            color: isActive
-                                ? info.color
-                                : Colors.white24,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final n = _scaleInfo.length;
+                    final width = constraints.maxWidth;
+                    // Map a finger x-position over the strip to a page index
+                    // (even segments — generous hit area) and hop there.
+                    void scrub(double dx, {bool animate = false}) {
+                      if (n == 0 || width <= 0 || !_pageController.hasClients) {
+                        return;
+                      }
+                      final i = (dx / width * n).floor().clamp(0, n - 1);
+                      if (i == _selectedIndex) return;
+                      if (animate) {
+                        _pageController.animateToPage(
+                          i,
+                          duration: const Duration(milliseconds: 250),
+                          curve: Curves.easeOut,
+                        );
+                      } else {
+                        _pageController.jumpToPage(i);
+                      }
+                    }
+
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapUp: (d) =>
+                          scrub(d.localPosition.dx, animate: true),
+                      onHorizontalDragStart: (d) =>
+                          scrub(d.localPosition.dx),
+                      onHorizontalDragUpdate: (d) =>
+                          scrub(d.localPosition.dx),
+                      // Taller transparent band so the thin dots are easy to grab.
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: List.generate(
+                            n,
+                            (i) {
+                              final info = _scaleInfo[i];
+                              final isActive = i == _selectedIndex;
+                              return AnimatedContainer(
+                                duration: const Duration(milliseconds: 200),
+                                margin:
+                                    const EdgeInsets.symmetric(horizontal: 3),
+                                width: isActive ? 20 : 6,
+                                height: 6,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(3),
+                                  color:
+                                      isActive ? info.color : Colors.white24,
+                                ),
+                              );
+                            },
                           ),
                         ),
-                      );
-                    },
-                  ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ],

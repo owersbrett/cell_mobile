@@ -11,7 +11,6 @@ import 'arcade/organ_quiz.dart';
 import 'arcade/molecule_mixer.dart';
 import 'nothings/bit_memory/bit_memory_game.dart';
 import 'somethings/whose_idea/whose_idea_game.dart';
-import 'infinities/count_forever/count_forever.dart';
 import 'supply_chain/delivery/delivery_game.dart';
 import 'universe_all/everything/everything.dart';
 import 'organism/harvest/harvest_game.dart';
@@ -256,29 +255,6 @@ class MiniGameRegistry {
       accent: const Color(0xFF66BB6A),
       icon: Icons.grass,
       builder: (context, session) => OrganismHarvestGame(session: session),
-    ),
-    MiniGameSpec(
-      id: 'infinity_counter',
-      name: 'Count Forever',
-      scale: BioScale.infinities,
-      tagline: 'Tap past every limit',
-      rules: [
-        'Tap to count up. Every tap moves you toward the next tier — even when the world is flipped.',
-        'At 10 you get an AUTO-CLICKER that taps for you. Higher tiers let you pick: faster helper, more per tap…',
-        'At tier 3+ you can FLIP THE WORLD — reverse everyone\'s direction (taps count DOWN) for a fat bonus.',
-        'A flipped world resolves by parity: flip it again to set it right.',
-      ],
-      howToWin: 'Highest count when time runs out wins.',
-      durationSeconds: 60,
-      scoreUnit: 'count',
-      humanMax: 600,
-      // Tuned to humanMax: ~200 = casual tapping, ~400 = consistent tier-stacking,
-      // ~600 = optimal helper+tap-value play. Feeds the results-screen stars.
-      starThresholds: const [200, 400, 600],
-      enabled: true,
-      accent: const Color(0xFF5C6BC0),
-      icon: Icons.all_inclusive,
-      builder: (context, session) => CountForeverGame(session: session),
     ),
     MiniGameSpec(
       id: 'mitosis_rush',

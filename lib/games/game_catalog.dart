@@ -347,17 +347,6 @@ class GameCatalog {
       icon: Icons.translate,
       specId: 'everything',
     ),
-    // ---- infinities ----
-    CatalogGame(
-      id: 'infinity_counter',
-      name: 'Count Forever',
-      tagline: 'Tap past every limit',
-      scale: BioScale.infinities,
-      rank: GameRank.c,
-      accent: Color(0xFF5C6BC0),
-      icon: Icons.all_inclusive,
-      specId: 'infinity_counter',
-    ),
   ];
 
   /// Every game on [scale], ordered by rank (S→C→unranked), then name.
