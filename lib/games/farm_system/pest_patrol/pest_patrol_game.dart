@@ -36,21 +36,28 @@ const double _kBarH = 74.0; // predator/spray selection bar (bottom)
 const double _kCropRowH = 58.0; // crop band the pests nibble at
 
 // Pests
-const int _kPestMaxAlive = 16;
-const double _kPestSpeedBase = 24.0; // px/s downward at t=0
-const double _kPestSpeedScale = 1.9; // ×base at t=duration
+const int _kPestMaxAlive = 28; // headroom for descending swarms
+const double _kPestSpeedBase = 34.0; // px/s downward at t=0
+const double _kPestSpeedScale = 2.3; // ×base at t=duration
 const double _kPestSwayAmp = 16.0;
 const double _kPestNibble = 0.085; // crop-health/sec while at the crops
 const double _kPestRadius = 12.0;
-const double _kSpawnBase = 1.6; // seconds between spawns at t=0
-const double _kSpawnMin = 0.5; // at t=duration
+const double _kSpawnBase = 1.2; // seconds between trickle spawns at t=0
+const double _kSpawnMin = 0.32; // at t=duration
+
+// Swarms — clustered waves that descend together (the real pressure).
+const double _kSwarmFirstDelay = 4.5; // grace before the first wave
+const double _kSwarmIntervalMax = 7.0; // seconds between waves at t=0
+const double _kSwarmIntervalMin = 3.2; // at t=duration
+const int _kSwarmSizeMin = 3; // pests per wave at t=0
+const int _kSwarmSizeMax = 8; // at t=duration
 
 // Beneficials (released predators)
 const int _kBenMaxAlive = 8;
 const double _kBenSpeed = 230.0;
 const double _kBenLife = 5.0;
 const double _kBenEatRadius = 24.0;
-const double _kDeployCooldown = 0.32; // global throttle so deploys feel deliberate
+const double _kDeployCooldown = 1.05; // summoning is a rationed, deliberate act
 
 // Pollinators (bees) — purely there to be harmed by pesticide
 const int _kPollinatorCount = 4;
@@ -230,6 +237,7 @@ class _PestPatrolGameState extends State<PestPatrolGame>
   int _streak = 0;
 
   double _spawnTimer = _kSpawnBase;
+  double _swarmTimer = _kSwarmFirstDelay;
   double _dividendTimer = 0;
   double _deployCd = 0;
   double _sprayCd = 0;
@@ -257,6 +265,12 @@ class _PestPatrolGameState extends State<PestPatrolGame>
   double get _spawnInterval =>
       (_kSpawnBase - (_kSpawnBase - _kSpawnMin) * _progress)
           .clamp(_kSpawnMin, _kSpawnBase);
+
+  double get _swarmInterval =>
+      _kSwarmIntervalMax - (_kSwarmIntervalMax - _kSwarmIntervalMin) * _progress;
+
+  int get _swarmSize =>
+      (_kSwarmSizeMin + (_kSwarmSizeMax - _kSwarmSizeMin) * _progress).round();
 
   int get _liveBens => _bens.where((b) => !b.leaving).length;
   int get _liveBees => _bees.where((b) => !b.dead).length;
@@ -309,6 +323,7 @@ class _PestPatrolGameState extends State<PestPatrolGame>
     _combo = 1;
     _streak = 0;
     _spawnTimer = _kSpawnBase * 0.6;
+    _swarmTimer = _kSwarmFirstDelay;
     _dividendTimer = 0;
     _deployCd = 0;
     _sprayCd = 0;
@@ -342,6 +357,7 @@ class _PestPatrolGameState extends State<PestPatrolGame>
 
     if (running) {
       _spawn(dt);
+      _spawnSwarm(dt);
       _decayResistance(dt);
       _payDividend(dt);
     }
@@ -514,6 +530,33 @@ class _PestPatrolGameState extends State<PestPatrolGame>
     ));
   }
 
+  /// A descending SWARM — a cluster of pests that drops in together, staggered
+  /// in height so it cascades down the field as one wave. This is the main
+  /// pressure: the lone-trickle alone is too easy to keep up with.
+  void _spawnSwarm(double dt) {
+    _swarmTimer -= dt;
+    if (_swarmTimer > 0) return;
+    _swarmTimer = _swarmInterval;
+    final available = _kPestMaxAlive - _pests.where((p) => !p.dead).length;
+    if (available <= 0) return;
+    final count = math.min(_swarmSize, available);
+    if (count <= 0) return;
+
+    // Spread the wave across most of the width with jitter; stagger start
+    // heights so it reads as a descending swarm, not a single rank.
+    final margin = 18.0;
+    final span = (_size.width - margin * 2).clamp(1.0, double.infinity);
+    for (var i = 0; i < count; i++) {
+      final frac = count == 1 ? 0.5 : i / (count - 1);
+      final x = (margin + frac * span + (_rng.nextDouble() - 0.5) * 34)
+          .clamp(margin, _size.width - margin);
+      final y = -12.0 - _rng.nextDouble() * 70;
+      _pests.add(_Pest(x, y, _randomPestType(), _rng.nextDouble() * math.pi * 2));
+    }
+    _shake = math.max(_shake, 5);
+    _popup(_size.width / 2, _cropLineY * 0.45, 'SWARM!', _kDanger, scale: 1.3);
+  }
+
   /// Pest variety unlocks as the round accelerates: aphids → +mites → +
   /// caterpillars, so the player must keep switching to the matching predator.
   _PestType _randomPestType() {
@@ -558,7 +601,11 @@ class _PestPatrolGameState extends State<PestPatrolGame>
   }
 
   void _deploy(_BenType type, Offset pos) {
-    if (_deployCd > 0) return;
+    if (_deployCd > 0) {
+      // Summon is on cooldown — nudge so the tap isn't silently swallowed.
+      _shake = math.max(_shake, 2);
+      return;
+    }
     if (_liveBens >= _kBenMaxAlive) {
       _shake = math.max(_shake, 3);
       return;
@@ -925,6 +972,10 @@ class _PestPatrolPainter extends CustomPainter {
 
   void _drawPredButton(Canvas canvas, _BenType type, Rect r) {
     final selected = state.selectedView == type;
+    // Deploy cooldown is global across all three predators — every button shows
+    // the same sweep so the player can see when the next summon is ready.
+    final cd = state.deployCdView;
+    final onCd = cd > 0;
     final color = _benColor(type);
     final pad = const EdgeInsets.all(6);
     final inner = pad.deflateRect(r);
@@ -933,25 +984,39 @@ class _PestPatrolPainter extends CustomPainter {
         Paint()
           ..color = selected
               ? color.withValues(alpha: 0.28)
-              : Colors.white.withValues(alpha: 0.05));
+              : Colors.white.withValues(alpha: onCd ? 0.03 : 0.05));
     canvas.drawRRect(
         RRect.fromRectAndRadius(inner, const Radius.circular(12)),
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = selected ? 2.2 : 1.2
-          ..color = color.withValues(alpha: selected ? 0.95 : 0.4));
+          ..color =
+              color.withValues(alpha: selected ? 0.95 : (onCd ? 0.25 : 0.4)));
     final cx = r.center.dx;
-    _glyph(canvas, _benGlyph(type), Offset(cx - 14, r.top + 26), 22);
+    final dim = onCd ? 0.4 : 1.0;
+    _glyph(canvas, _benGlyph(type), Offset(cx - 14, r.top + 26), 22, alpha: dim);
     // prey swatch — teaches the pairing right on the button
     final prey = _prey(type);
     canvas.drawCircle(Offset(cx + 12, r.top + 22), 6,
-        Paint()..color = _pestColor(prey));
+        Paint()..color = _pestColor(prey).withValues(alpha: dim));
     canvas.drawLine(Offset(cx - 2, r.top + 22), Offset(cx + 5, r.top + 22),
         Paint()
-          ..color = Colors.white60
+          ..color = Colors.white60.withValues(alpha: dim)
           ..strokeWidth = 1.4);
     _glyph(canvas, _benName(type), Offset(cx, r.bottom - 12), 9,
-        color: selected ? color : Colors.white70);
+        color: (selected ? color : Colors.white70).withValues(alpha: dim));
+    if (onCd) {
+      final frac = (cd / _kDeployCooldown).clamp(0.0, 1.0);
+      canvas.drawArc(
+          Rect.fromCircle(center: Offset(cx - 14, r.top + 26), radius: 16),
+          -math.pi / 2,
+          math.pi * 2 * frac,
+          false,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..color = color.withValues(alpha: 0.7));
+    }
   }
 
   void _drawSprayButton(Canvas canvas, Rect r) {
@@ -1024,6 +1089,7 @@ extension _StateView on _PestPatrolGameState {
   double get cropLineYView => _cropLineY;
   double get barTopView => _barTop;
   double get sprayCdView => _sprayCd;
+  double get deployCdView => _deployCd;
   bool get isRunningView => widget.session.isRunning;
   _BenType? get selectedView => _selected;
   List<_Pest> get pestsView => _pests;

@@ -215,17 +215,6 @@ class GameCatalog {
       icon: Icons.quiz,
       specId: 'organ_rush',
     ),
-    // ---- organSystem ----
-    CatalogGame(
-      id: 'organ_system',
-      name: 'System Link',
-      tagline: 'Wire the organ systems together',
-      scale: BioScale.organSystem,
-      rank: GameRank.b,
-      accent: Color(0xFF26C6DA),
-      icon: Icons.account_tree,
-      specId: 'organ_system',
-    ),
     // ---- organism ----
     CatalogGame(
       id: 'organism_harvest',
@@ -236,17 +225,6 @@ class GameCatalog {
       accent: Color(0xFFFFCA28),
       icon: Icons.agriculture,
       specId: 'harvest',
-    ),
-    // ---- ecosystem ----
-    CatalogGame(
-      id: 'potato_rush',
-      name: 'Potato Rush',
-      tagline: 'Keep the ecosystem in balance',
-      scale: BioScale.ecosystem,
-      rank: GameRank.c,
-      accent: Color(0xFF66BB6A),
-      icon: Icons.park,
-      specId: 'potato_rush',
     ),
     // ---- farmSystem ----
     CatalogGame(
@@ -650,8 +628,6 @@ class GameCatalog {
     CatalogGame(id: 'reflex', name: 'Reflex', tagline: 'Fire before the damage lands', scale: BioScale.organSystem, rank: GameRank.b, accent: Color(0xFFC6FF00), icon: Icons.bolt, specId: 'reflex'),
     // organism
     CatalogGame(id: 'life_cycle', name: 'Life Cycle', tagline: 'Call the next stage of life', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFFE16416), icon: Icons.cyclone, specId: 'life_cycle'),
-    CatalogGame(id: 'homeostasis', name: 'Homeostasis', tagline: 'Keep every system in its safe band', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFF4DD0E1), icon: Icons.thermostat, specId: 'homeostasis'),
-    CatalogGame(id: 'forage', name: 'Forage', tagline: 'Eat to live — but moving spends energy', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFF7CC576), icon: Icons.pets, specId: 'forage'),
     // ecosystem
     CatalogGame(id: 'food_web', name: 'Food Web', tagline: 'Wire energy up the pyramid', scale: BioScale.ecosystem, rank: GameRank.b, accent: Color(0xFF7CB342), icon: Icons.account_tree, specId: 'food_web'),
     CatalogGame(id: 'predator_prey', name: 'Predator & Prey', tagline: 'Keep the boom-bust cycle alive', scale: BioScale.ecosystem, rank: GameRank.b, accent: Color(0xFF6FCF6B), icon: Icons.pets, specId: 'predator_prey'),
@@ -708,7 +684,7 @@ class GameCatalog {
     CatalogGame(id: 'quantum_foam_v2', name: 'Quantum Foam v2', tagline: 'Harvest borrowed energy at its fleeting peak', scale: BioScale.nothings, rank: GameRank.b, accent: Color(0xFF9B6DFF), icon: Icons.blur_on, specId: 'quantum_foam_v2'),
     CatalogGame(id: 'bubbles_v2', name: 'Bubbles v2', tagline: 'Harvest ripe pocket universes; defuse the collisions you can\'t outrun', scale: BioScale.multiverseAll, rank: GameRank.b, accent: Color(0xFF8B5CF6), icon: Icons.bubble_chart, specId: 'bubbles_v2'),
     CatalogGame(id: 'body_map_v2', name: 'Body Map v2', tagline: 'Place each organ where it lives — before it fades', scale: BioScale.organ, rank: GameRank.b, accent: Color(0xFFB23A48), icon: Icons.accessibility_new, specId: 'body_map_v2'),
-    CatalogGame(id: 'homeostasis_v2', name: 'Homeostasis v2', tagline: 'Keep every system in the green at once', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFF4DD0E1), icon: Icons.tune, specId: 'homeostasis_v2'),
+    CatalogGame(id: 'homeostasis', name: 'Homeostasis', tagline: 'Keep every system in the green at once', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFF4DD0E1), icon: Icons.tune, specId: 'homeostasis'),
     CatalogGame(id: 'pattern_lock_v2', name: 'Pattern Lock v2', tagline: 'Read the rule. Lock in what comes next.', scale: BioScale.somethings, rank: GameRank.b, accent: Color(0xFFE1C916), icon: Icons.lock_outline_rounded, specId: 'pattern_lock_v2'),
     CatalogGame(id: 'standard_model_v2', name: 'Standard Model v2', tagline: 'Sort every particle into its family — fast', scale: BioScale.particles, rank: GameRank.b, accent: Color(0xFF7C4DFF), icon: Icons.bubble_chart, specId: 'standard_model_v2'),
     CatalogGame(id: 'decay_chain_v2', name: 'Decay Chain v2', tagline: 'Catch real decay products — refuse the ✗ impostor', scale: BioScale.particles, rank: GameRank.b, accent: Color(0xFF7CFC2E), icon: Icons.scatter_plot, specId: 'decay_chain_v2'),
@@ -716,7 +692,7 @@ class GameCatalog {
     CatalogGame(id: 'heartbeat_v2', name: 'Heartbeat v2', tagline: 'Pump in order, on the lub-dub', scale: BioScale.organ, rank: GameRank.b, accent: Color(0xFFE5484D), icon: Icons.favorite, specId: 'heartbeat_v2'),
     CatalogGame(id: 'tissue_type_v2', name: 'Tissue Type v2', tagline: 'Read the slide — name the tissue, no pauses', scale: BioScale.tissue, rank: GameRank.b, accent: Color(0xFFD81B60), icon: Icons.biotech_rounded, specId: 'tissue_type_v2'),
     CatalogGame(id: 'reflex_v2', name: 'Reflex Gate v2', tagline: 'React on orange, hold on teal', scale: BioScale.organSystem, rank: GameRank.b, accent: Color(0xFFC6FF00), icon: Icons.flash_on, specId: 'reflex_v2'),
-    CatalogGame(id: 'forage_v2', name: 'Forage v2', tagline: 'Eat to live — see what every move costs', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFF7CC576), icon: Icons.pets, specId: 'forage_v2'),
+    CatalogGame(id: 'forage', name: 'Forage', tagline: 'Eat to live — see what every move costs', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFF7CC576), icon: Icons.pets, specId: 'forage'),
     CatalogGame(id: 'converge_v2', name: 'Converge v2', tagline: 'Read an infinite sum before it shows its hand', scale: BioScale.infinities, rank: GameRank.b, accent: Color(0xFF4DD0E1), icon: Icons.all_inclusive, specId: 'converge_v2'),
   ];
 

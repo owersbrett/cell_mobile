@@ -280,7 +280,14 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
     final accent = game.accent;
     final rank = RankStore.rankFor(game);
     final hasNote = RankStore.hasNote(game.id);
-    return Container(
+    // Tapping anywhere on the tile launches the game — same as the play button.
+    // The nested rank-badge / RATE / play gesture handlers win the gesture
+    // arena, so they keep rating/playing with no double-trigger; only the
+    // previously-dead name/scale area now also launches play.
+    return GestureDetector(
+      onTap: () => _play(game),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
       margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
@@ -360,6 +367,7 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
             tooltip: 'Play',
           ),
         ],
+      ),
       ),
     );
   }

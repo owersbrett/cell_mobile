@@ -177,6 +177,22 @@ class _PredatorPreyGameState extends State<PredatorPreyGame>
     return _apexOn ? base && _apex > _kFloor : base;
   }
 
+  // ── Live scoring readout (makes "how do I score" legible) ──────────────────
+  bool get _alive =>
+      _prey > _kFloor &&
+      _pred > _kFloor &&
+      (!_apexOn || _apex > _kFloor * 0.5);
+
+  /// Points/second RIGHT NOW: 0 if a species has collapsed, the survival rate
+  /// while both are alive, the survival+balance rate while in the band.
+  double get _scoreRate {
+    if (!_alive) return 0;
+    return _kAliveRate + (_inBalance ? _kBalanceRate : 0);
+  }
+
+  String get _scoreState =>
+      !_alive ? 'COLLAPSE' : (_inBalance ? 'BALANCED' : 'SURVIVING');
+
   /// The four-phase cycle, read off the population derivatives — this is the
   /// teaching readout that names what is happening RIGHT NOW.
   String get _phaseLabel {
@@ -559,6 +575,13 @@ class _PredatorPreyGameState extends State<PredatorPreyGame>
           textAlign: TextAlign.center,
           style: Potatuhs.body(size: 11.5, color: Potatuhs.textSecondary),
         ),
+        const SizedBox(height: 8),
+        Text(
+          'SCORE: +4/sec while both survive — TRIPLED to +12/sec\n'
+          'while both sit in the green BALANCE ZONE. Hold balance.',
+          textAlign: TextAlign.center,
+          style: Potatuhs.body(size: 10.5, color: _kPrey),
+        ),
       ]),
     );
   }
@@ -578,6 +601,7 @@ class _EcoPainter extends CustomPainter {
     _paintGraph(canvas, r);
 
     _paintHeader(canvas, size, r);
+    _paintScoreReadout(canvas, r);
 
     // FX overlay.
     for (final p in s._pops) {
@@ -614,6 +638,27 @@ class _EcoPainter extends CustomPainter {
     if (s._apexOn) chip(_kApex, s._apex.round());
     chip(_kPred, s._pred.round());
     chip(_kPrey, s._prey.round());
+  }
+
+  // The "how do I score" teacher: a live pts/sec chip that turns green and
+  // ~triples while BALANCED, so the player learns balance = the real points.
+  void _paintScoreReadout(Canvas canvas, Rect r) {
+    if (!s.widget.session.isRunning) return;
+    final rate = s._scoreRate;
+    final state = s._scoreState;
+    final col = rate <= 0 ? _kRed : (s._inBalance ? _kPrey : Potatuhs.gold);
+    final label = '$state  ·  +${rate.round()}/s';
+
+    final center = Offset(r.center.dx, r.top + 16);
+    GameFx.text(canvas, label, center, 13, col,
+        weight: FontWeight.w800, glow: 0.5);
+    final hint = rate <= 0
+        ? 'a species collapsed — no points'
+        : (s._inBalance
+            ? 'hold the band — ${s._balanceTime.floor()}s'
+            : 'steer both lines into their zone to TRIPLE points');
+    GameFx.text(canvas, hint, center.translate(0, 15), 8.5,
+        col.withValues(alpha: 0.7));
   }
 
   void _paintGraph(Canvas canvas, Rect r) {
@@ -666,6 +711,25 @@ class _EcoPainter extends CustomPainter {
         _kRed.withValues(alpha: 0.55));
     GameFx.text(canvas, 'EXTINCTION', Offset(r.left + 40, fY - 8), 8,
         _kRed.withValues(alpha: 0.85));
+
+    // Balance target zones — where each line should sit to earn the BONUS. Draw
+    // as a faint band per species so the player can SEE the goal, not guess it.
+    if (s.widget.session.isRunning) {
+      void band(double eq, Color col) {
+        final top = yOf(eq * 2.6);
+        final bot = yOf(eq * 0.4);
+        canvas.drawRect(Rect.fromLTRB(r.left, top, r.right, bot),
+            Paint()..color = col.withValues(alpha: 0.06));
+        final cy = yOf(eq);
+        _dashed(canvas, Offset(r.left, cy), Offset(r.right, cy),
+            col.withValues(alpha: 0.30));
+      }
+
+      band(s._preyEq, _kPrey);
+      band(s._predEq, _kPred);
+      GameFx.text(canvas, 'balance zone', Offset(r.right - 44, yOf(s._preyEq) - 7),
+          7.5, _kPrey.withValues(alpha: 0.7));
+    }
 
     // Refuge tint — the whole field reads "protected" while active.
     if (s._protectActive > 0) {

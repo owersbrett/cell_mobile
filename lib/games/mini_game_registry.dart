@@ -56,13 +56,11 @@ import 'organ/body_map/body_map_game.dart';
 import 'organ_system/circulate/circulate_game.dart';
 import 'atoms/half_life/half_life_game.dart';
 import 'organ_system/digest/digest_game.dart';
-import 'organism/homeostasis/homeostasis_game.dart';
 import 'molecular/phase_change/phase_change_game.dart';
 import 'organism/life_cycle/life_cycle_game.dart';
 import 'organ_system/reflex/reflex_game.dart';
 import 'molecular/bond_lab/bond_lab_game.dart';
 import 'ecosystem/food_web/food_web_game.dart';
-import 'organism/forage/forage_game.dart';
 import 'atoms/isotopes/isotopes_game.dart';
 import 'atoms/electron_shells/electron_shells_game.dart';
 import 'ecosystem/nutrient_cycle/nutrient_cycle_game.dart';
@@ -132,8 +130,6 @@ import 'multiverse/reality_merge/reality_merge_game.dart';
 import 'financial/market_trader/market_trader.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/games/mitosis_rush_game.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/games/tissue_layer_game.dart';
-import 'package:cell_mobile/views/screens/mini_game_page/games/organ_system_game.dart';
-import 'package:cell_mobile/views/screens/mini_game_page/games/potato_rush_game.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/games/farm_panic_game.dart';
 import 'mini_game.dart';
 
@@ -446,44 +442,6 @@ class MiniGameRegistry {
       accent: const Color(0xFF42A5F5),
       icon: Icons.layers,
       builder: (context, session) => TissueLayerGame(session: session),
-    ),
-    MiniGameSpec(
-      id: 'organ_system',
-      name: 'System Link',
-      scale: BioScale.organSystem,
-      tagline: 'Wire the organ systems together',
-      rules: [
-        'Route resources to the organs that need them before their health drains.',
-        'Each delivery scores; chain them for a combo.',
-        'Squish pests before they reach a node.',
-        'Keep every organ alive — lose one and the round ends.',
-      ],
-      howToWin: 'Most points when time runs out wins.',
-      durationSeconds: 60,
-      scoreUnit: 'deliveries',
-      enabled: true,
-      accent: const Color(0xFF26C6DA),
-      icon: Icons.account_tree,
-      builder: (context, session) => OrganSystemGame(session: session),
-    ),
-    MiniGameSpec(
-      id: 'potato_rush',
-      name: 'Potato Rush',
-      scale: BioScale.ecosystem,
-      tagline: 'Keep the ecosystem in balance',
-      rules: [
-        'A fast gauntlet of micro-challenges — read each prompt and react.',
-        'Clear a round to score and jump to the next, faster one.',
-        'Three misses and the run is over.',
-        'Survive the speed-up as long as you can.',
-      ],
-      howToWin: 'Most rounds cleared when time runs out wins.',
-      durationSeconds: 45,
-      scoreUnit: 'rounds',
-      enabled: true,
-      accent: const Color(0xFF66BB6A),
-      icon: Icons.park,
-      builder: (context, session) => PotatoRushGame(session: session),
     ),
     MiniGameSpec(
       id: 'farm_panic',
@@ -1065,6 +1023,7 @@ class MiniGameRegistry {
       icon: Icons.grading,
       humanMax: 850,
       starThresholds: const [300, 550, 800],
+      legendFrames: sortSpudsLegendFrames,
       builder: (context, session) => SortSpudsGame(session: session),
     ),
     MiniGameSpec(
@@ -1177,16 +1136,16 @@ class MiniGameRegistry {
       id: 'pollination',
       name: 'Pollination Dash',
       scale: BioScale.farmSystem,
-      tagline: 'Carry pollen flower to flower before the blooms wilt',
+      tagline: 'Pollinate for honey, then bank it at the hive — before the hornets do',
       rules: [
-        'Drag to steer the bee — it flies toward your finger.',
-        'Touch a flower to pick up its pollen.',
-        'Touch ANOTHER flower of the same color to pollinate it and set fruit.',
-        'Chain same-color flowers for a combo; dodge pesticide clouds and wind.',
+        'TAP flowers to route the bee — tap rapidly to fly faster.',
+        'Tap a flower to load pollen, then a SAME-color flower to pollinate it.',
+        'Pollinating fills your honey — fly to the HIVE to deposit + score it.',
+        'The more honey you carry, the more hornets swarm — bank it before they sting!',
       ],
-      howToWin: 'Most fruit set when time runs out wins.',
+      howToWin: 'Most honey deposited when time runs out wins.',
       durationSeconds: 60,
-      scoreUnit: 'fruit set',
+      scoreUnit: 'honey',
       enabled: true,
       accent: const Color(0xFFEF5DA8),
       icon: Icons.local_florist,
@@ -1510,27 +1469,6 @@ class MiniGameRegistry {
       builder: (context, session) => DigestGame(session: session),
     ),
     MiniGameSpec(
-      id: 'homeostasis',
-      name: 'Homeostasis',
-      scale: BioScale.organism,
-      tagline: 'Keep every system in its safe band at once',
-      rules: [
-        'Each gauge drifts — watch the needle leave the green band.',
-        'Tap ▼ to lower or ▲ to raise the matching response.',
-        'Too high → SWEAT / PEE / INSULIN · too low → SHIVER / DRINK / GLUCAGON.',
-        'Pull a system back in-band: +25 · all in-band at once: balance bonus.',
-      ],
-      howToWin: 'Most balance when time runs out — score for every second all systems stay in-band.',
-      durationSeconds: 50,
-      scoreUnit: 'balance',
-      enabled: true,
-      accent: const Color(0xFF4DD0E1),
-      icon: Icons.thermostat,
-      humanMax: 600,
-      starThresholds: const [200, 380, 540],
-      builder: (context, session) => HomeostasisGame(session: session),
-    ),
-    MiniGameSpec(
       id: 'phase_change',
       name: 'Phase Change',
       scale: BioScale.molecular,
@@ -1677,40 +1615,19 @@ class MiniGameRegistry {
       builder: (context, session) => IsotopesGame(session: session),
     ),
     MiniGameSpec(
-      id: 'forage',
-      name: 'Forage',
-      scale: BioScale.organism,
-      tagline: 'Eat to live — but every move spends what you eat',
-      rules: const [
-        'Drag to steer your animal — moving spends energy.',
-        'Eat food to refill energy (and bank it as score).',
-        'A meal that gives more than it cost to reach is EFFICIENT — chain them.',
-        'Rest between bites; dodge predators. Run empty and you starve.',
-      ],
-      howToWin: 'Bank the most energy when time runs out wins.',
-      durationSeconds: 50,
-      scoreUnit: 'energy',
-      enabled: true,
-      accent: const Color(0xFF7CC576),
-      icon: Icons.pets,
-      humanMax: 600,
-      starThresholds: const [200, 400, 600],
-      builder: (context, session) => ForageGame(session: session),
-    ),
-    MiniGameSpec(
       id: 'nutrient_cycle',
       name: 'Nutrient Cycle',
       scale: BioScale.ecosystem,
-      tagline: 'Route the atom round the loop — matter cycles, energy flows',
+      tagline: 'Route the atom to the lit target — matter cycles, energy flows',
       rules: const [
-        'Tap the next reservoir in the cycle: +1.',
-        'Only named processes are valid moves.',
-        'Close a full loop: +5.',
-        'Keep moving — the FLOW meter drains.',
+        'A GOLD target reservoir lights up — route the atom to it.',
+        'Tap a connected pool; only named processes are valid moves (+1 each).',
+        'Reach the target: +5, then a new target lights up.',
+        'Branches mean a wrong turn loops you back — keep the FLOW meter up.',
       ],
-      howToWin: 'Cycle the most matter before time runs out.',
+      howToWin: 'Deliver the most matter to targets before time runs out.',
       durationSeconds: 50,
-      scoreUnit: 'transfers',
+      scoreUnit: 'cycled',
       enabled: true,
       accent: const Color(0xFF6FBF73),
       icon: Icons.recycling,
@@ -1742,14 +1659,14 @@ class MiniGameRegistry {
       id: 'predator_prey',
       name: 'Predator & Prey',
       scale: BioScale.ecosystem,
-      tagline: 'Keep the boom-bust cycle alive — don\'t let either species crash to zero',
+      tagline: 'Hold the populations in balance — the longer the higher you score',
       rules: const [
-        'Hares (prey) breed; lynx (predators) starve without them.',
-        'Watch the two-line graph swing: prey boom, predators boom, prey crash…',
-        'Release or cull each species; PROTECT a patch for a refuge.',
-        'Keep BOTH (then the hawks too) off zero and near balance.',
+        'Release or cull hares & lynx (and PROTECT a patch) to steer the graph.',
+        'Score +4/sec while BOTH survive — TRIPLED to +12/sec while in the balance zone.',
+        'Keep every line inside its green balance band; a crash to zero costs −40.',
+        'It is NOT about most critters — it is time held alive AND balanced.',
       ],
-      howToWin: 'Most TIME with both species alive and in balance when time runs out wins.',
+      howToWin: 'Most points — score by holding both species alive and balanced.',
       durationSeconds: 50,
       scoreUnit: 'balance',
       enabled: true,
@@ -2706,8 +2623,8 @@ class MiniGameRegistry {
       builder: (context, session) => BodyMapV2Game(session: session),
     ),
     MiniGameSpec(
-      id: 'homeostasis_v2',
-      name: 'Homeostasis v2',
+      id: 'homeostasis',
+      name: 'Homeostasis',
       scale: BioScale.organism,
       tagline: 'Keep every system in the green at once',
       rules: const [
@@ -2874,8 +2791,8 @@ class MiniGameRegistry {
       builder: (context, session) => ReflexV2Game(session: session),
     ),
     MiniGameSpec(
-      id: 'forage_v2',
-      name: 'Forage v2',
+      id: 'forage',
+      name: 'Forage',
       scale: BioScale.organism,
       tagline: 'Eat to live — see what every move costs',
       rules: const [

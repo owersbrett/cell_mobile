@@ -7,27 +7,28 @@ import '../../fx.dart';
 import '../../mini_game.dart';
 import '../../../theme/potatuhs.dart';
 
-/// Nutrient Cycle — "Route the Matter Round the Loop".
+/// Nutrient Cycle — "Route the Matter to the Target".
 ///
-/// An ecosystem-scale game about biogeochemical CYCLES: carbon, water, and
-/// nitrogen. One atom of an element sits in a RESERVOIR (a ring of pools —
-/// atmosphere, plant, animal, soil, …). The player TAPS the reservoir the atom
-/// should travel to next; a tap is only valid if there's a real PROCESS edge
-/// between the two pools (photosynthesis, respiration, evaporation, fixation …).
+/// An ecosystem-scale game about biogeochemical CYCLES: carbon, water, nitrogen,
+/// phosphorus and decomposition (recycling). One atom of an element sits in a
+/// RESERVOIR (a ring of pools — atmosphere, plant, animal, soil, …). A TARGET
+/// reservoir lights up GOLD; the player TAPS connected reservoirs to ROUTE the
+/// atom there. A tap is only valid if there's a real PROCESS edge between the
+/// two pools (photosynthesis, respiration, weathering, fixation …).
 ///
-/// Valid transfers move the atom along, score, and keep the cycle FLOWING.
-/// Closing a full loop pays a bonus — the atom is never consumed, it just
-/// cycles. A "flow" meter quietly drains: keep making valid moves or the cycle
-/// STALLS (streak resets). Tapping a pool with no process from the current one
-/// is a DEAD END — it stalls too.
+/// Reaching the lit target pays a bonus and lights a NEW target — so the game is
+/// navigation, not aimless circling. Because nodes BRANCH (a pool can lead two
+/// ways), choosing the wrong direction means looping back around to reach the
+/// target. Every valid transfer also scores and keeps the cycle FLOWING; a
+/// "flow" meter quietly drains, so keep matter moving or the cycle STALLS.
 ///
-/// This is the lesson lived in the mechanic: **matter cycles (it's conserved
-/// and keeps going round), while energy flows one way and dissipates** — which
-/// is why the flow meter only ever drains and must be re-fed by moving matter.
+/// This is the lesson lived in the mechanic: **matter cycles (it's conserved and
+/// keeps going round), while energy flows one way and dissipates** — which is why
+/// the flow meter only ever drains and must be re-fed by moving matter.
 ///
-/// Accelerate: the flow drains faster, and after a couple of loops the whole
-/// element switches (carbon → water → nitrogen → …) so the player has to read a
-/// new cycle map under more time pressure.
+/// Accelerate: the flow drains faster, and after a few deliveries the whole
+/// element switches (carbon → water → nitrogen → phosphorus → decomposition → …)
+/// so the player reads a new cycle map under more time pressure.
 ///
 /// The host owns the clock, 3-2-1 countdown, score HUD and results; this widget
 /// renders only the play area and reports through the session.
@@ -43,12 +44,12 @@ class NutrientCycleGame extends StatefulWidget {
 const double _kTransferRun = 0.20; // seconds for the atom to slide an edge (play)
 const double _kTransferIdle = 0.75; // slower, calmer slide during the preview
 const double _kIdlePause = 0.35; // pause at a node between auto-steps (preview)
-const int _kLoopBonus = 5; // score for closing a full loop
+const int _kDeliveryBonus = 5; // score for reaching the lit target
 const double _kFlowGain = 0.42; // flow restored per valid transfer
 const double _kFlowDecayBase = 0.075; // flow lost / sec early in the round
 const double _kFlowDecayRamp = 0.20; // extra flow loss / sec by the end
 const double _kStallPenalty = 0.20; // flow lost on a dead-end tap
-const int _kLoopsPerCycle = 2; // loops before the element switches
+const int _kTargetsPerCycle = 3; // deliveries before the element switches
 
 class _Reservoir {
   final String name; // "ATMOSPHERE"
@@ -74,7 +75,7 @@ class _Cycle {
   const _Cycle(this.element, this.symbol, this.color, this.nodes, this.edges);
 }
 
-// ── The three cycles (each a closed loop with a branch) ───────────────────────
+// ── The cycles (each a closed loop with branches so routing has choices) ──────
 const _Cycle _kCarbon = _Cycle(
   'CARBON',
   'C',
@@ -136,7 +137,58 @@ const _Cycle _kNitrogen = _Cycle(
   ],
 );
 
-const List<_Cycle> _kCycles = [_kCarbon, _kWater, _kNitrogen];
+// Phosphorus — the cycle with NO atmospheric/gas phase (that's the lesson): it
+// moves rock → soil → life → soil and very slowly back to rock.
+const _Cycle _kPhosphorus = _Cycle(
+  'PHOSPHORUS',
+  'P',
+  Color(0xFFE39A3B),
+  [
+    _Reservoir('ROCK', 'phosphate', Icons.landscape),
+    _Reservoir('SOIL', 'P ions', Icons.terrain),
+    _Reservoir('PLANT', 'DNA / ATP', Icons.grass),
+    _Reservoir('ANIMAL', 'bone', Icons.pets),
+  ],
+  [
+    _Edge(0, 1, 'weathering'),
+    _Edge(1, 2, 'uptake'),
+    _Edge(2, 3, 'feeding'),
+    _Edge(2, 1, 'leaf litter'),
+    _Edge(3, 1, 'excretion'),
+    _Edge(1, 0, 'sedimentation'),
+  ],
+);
+
+// Decomposition — the recycling loop: dead matter is broken down by fungi &
+// bacteria into soil nutrients that feed new growth, which dies and returns.
+const _Cycle _kDecomposition = _Cycle(
+  'DECOMPOSITION',
+  '♻',
+  Color(0xFFB5894E),
+  [
+    _Reservoir('DEAD MATTER', 'detritus', Icons.compost),
+    _Reservoir('FUNGI', 'hyphae', Icons.spa),
+    _Reservoir('BACTERIA', 'microbes', Icons.bubble_chart),
+    _Reservoir('SOIL', 'nutrients', Icons.terrain),
+    _Reservoir('PLANT', 'new growth', Icons.grass),
+  ],
+  [
+    _Edge(0, 1, 'colonization'),
+    _Edge(0, 2, 'decay'),
+    _Edge(1, 3, 'mineralization'),
+    _Edge(2, 3, 'mineralization'),
+    _Edge(3, 4, 'uptake'),
+    _Edge(4, 0, 'death'),
+  ],
+);
+
+const List<_Cycle> _kCycles = [
+  _kCarbon,
+  _kWater,
+  _kNitrogen,
+  _kPhosphorus,
+  _kDecomposition,
+];
 
 class _Pop {
   Offset pos;
@@ -162,11 +214,10 @@ class _NutrientCycleGameState extends State<NutrientCycleGame>
   double _transferT = 1.0; // 1 = settled at a node; <1 = sliding an edge
   double _transferDur = _kTransferRun;
 
-  // Loop / score bookkeeping.
-  int _loopStartNode = 0;
-  int _stepsThisLoop = 0;
-  int _loops = 0;
-  int _loopsSinceSwitch = 0;
+  // Target / score bookkeeping.
+  int _target = 1; // the lit reservoir to route the atom to
+  int _deliveries = 0;
+  int _deliveriesSinceSwitch = 0;
   int _streak = 0;
 
   // Flow ("energy") meter — drains, must be re-fed by moving matter.
@@ -227,16 +278,42 @@ class _NutrientCycleGameState extends State<NutrientCycleGame>
     _fromNode = 0;
     _toNode = 0;
     _transferT = 1.0;
-    _loopStartNode = 0;
-    _stepsThisLoop = 0;
-    _loops = 0;
-    _loopsSinceSwitch = 0;
+    _deliveries = 0;
+    _deliveriesSinceSwitch = 0;
     _streak = 0;
     _flow = 1.0;
     _elapsed = 0;
     _pops.clear();
     _fx.clear();
     _recomputeLayout();
+    _pickTarget();
+  }
+
+  /// Pick a fresh target: a reachable node, preferring ones ≥2 steps away so
+  /// reaching it takes real routing (and a branch choice), not one tap.
+  void _pickTarget() {
+    final n = _cycle.nodes.length;
+    final dist = List<int>.filled(n, -1);
+    final q = <int>[_current];
+    dist[_current] = 0;
+    var head = 0;
+    while (head < q.length) {
+      final u = q[head++];
+      for (final e in _cycle.edges) {
+        if (e.from == u && dist[e.to] < 0) {
+          dist[e.to] = dist[u] + 1;
+          q.add(e.to);
+        }
+      }
+    }
+    final far = [for (var i = 0; i < n; i++) if (i != _current && dist[i] >= 2) i];
+    final reach = [for (var i = 0; i < n; i++) if (i != _current && dist[i] > 0) i];
+    final pool = far.isNotEmpty
+        ? far
+        : (reach.isNotEmpty
+            ? reach
+            : [for (var i = 0; i < n; i++) if (i != _current) i]);
+    _target = pool[_rng.nextInt(pool.length)];
   }
 
   // ── Simulation ──────────────────────────────────────────────────────────────
@@ -316,37 +393,38 @@ class _NutrientCycleGameState extends State<NutrientCycleGame>
     _streak += 1;
     widget.session.noteStreak(_streak);
     _flow = math.min(1.0, _flow + _kFlowGain);
-    _stepsThisLoop += 1;
 
     final at = _nodeCenter(_current);
     _pops.add(_Pop(at.translate(0, -_nodeR - 12), '+1', _cycle.color, size: 14));
     _fx.addAll(FxBurst.spawn(at, _cycle.color, count: 6, speed: 70, size: 2.4));
 
-    // Closed-loop bonus: the atom returned to where this loop began.
-    if (_current == _loopStartNode && _stepsThisLoop >= _cycle.nodes.length - 1) {
-      widget.session.addScore(_kLoopBonus);
-      _loops += 1;
-      _loopsSinceSwitch += 1;
-      _stepsThisLoop = 0;
-      _pops.add(_Pop(_center.translate(0, -6), 'LOOP +$_kLoopBonus',
-          _cycle.color,
-          size: 20, life: 1.1));
-      _fx.addAll(FxBurst.spawn(at, _cycle.color, count: 14, speed: 130));
-      if (_loopsSinceSwitch >= _kLoopsPerCycle) _switchCycle();
+    // Reached the lit target — deliver, score the bonus, light a new target.
+    if (_current == _target) {
+      widget.session.addScore(_kDeliveryBonus);
+      _deliveries += 1;
+      _deliveriesSinceSwitch += 1;
+      _pops.add(_Pop(at.translate(0, -_nodeR - 26), 'DELIVERED +$_kDeliveryBonus',
+          Potatuhs.gold,
+          size: 18, life: 1.1));
+      _fx.addAll(FxBurst.spawn(at, Potatuhs.gold, count: 16, speed: 140));
+      if (_deliveriesSinceSwitch >= _kTargetsPerCycle) {
+        _switchCycle();
+      } else {
+        _pickTarget();
+      }
     }
   }
 
   void _switchCycle() {
     _cycleIdx = (_cycleIdx + 1) % _kCycles.length;
     _current = 0;
-    _loopStartNode = 0;
-    _stepsThisLoop = 0;
-    _loopsSinceSwitch = 0;
+    _deliveriesSinceSwitch = 0;
     _transferT = 1.0;
     _flow = math.min(1.0, _flow + 0.25);
     _recomputeLayout();
-    _pops.add(_Pop(_center.translate(0, -_h * 0.34), 'NEW CYCLE — ${_cycle.element}',
-        _cycle.color,
+    _pickTarget();
+    _pops.add(_Pop(_center.translate(0, -_h * 0.34),
+        'NEW CYCLE — ${_cycle.element}', _cycle.color,
         size: 16, life: 1.3));
   }
 
@@ -424,7 +502,7 @@ class _NutrientCyclePainter extends CustomPainter {
     }
 
     _paintFlowMeter(canvas, size, cycle);
-    _paintHeader(canvas, size, cycle);
+    _paintHeader(canvas, size, cycle, running);
 
     // Edges first (under the nodes). All faint; outgoing-from-current brighter.
     final reachable = <int>{for (final e in s._outgoing(s._current)) e.to};
@@ -435,7 +513,7 @@ class _NutrientCyclePainter extends CustomPainter {
     // Nodes.
     for (var i = 0; i < cycle.nodes.length; i++) {
       _paintNode(canvas, i, cycle, i == s._current, reachable.contains(i),
-          running);
+          i == s._target, running);
     }
 
     // The travelling atom.
@@ -477,12 +555,23 @@ class _NutrientCyclePainter extends CustomPainter {
         size: 9, color: Colors.white.withValues(alpha: 0.4), align: 1);
   }
 
-  void _paintHeader(Canvas canvas, Size size, _Cycle cycle) {
+  void _paintHeader(Canvas canvas, Size size, _Cycle cycle, bool running) {
     _text(canvas, '${cycle.element} CYCLE', Offset(size.width / 2, 40),
         size: 16, color: cycle.color, align: 0, bold: true);
-    _text(canvas, 'matter cycles · energy flows',
-        Offset(size.width / 2, 56),
-        size: 9.5, color: Colors.white.withValues(alpha: 0.4), align: 0);
+    if (running) {
+      // The explicit objective — what makes the goal legible.
+      _text(
+          canvas,
+          '▸ DELIVER TO  ${cycle.nodes[s._target].name}',
+          Offset(size.width / 2, 58),
+          size: 11,
+          color: Potatuhs.gold,
+          align: 0,
+          bold: true);
+    } else {
+      _text(canvas, 'matter cycles · energy flows', Offset(size.width / 2, 56),
+          size: 9.5, color: Colors.white.withValues(alpha: 0.4), align: 0);
+    }
   }
 
   // ── Edge: faint line; the current node's options brighten + name the process ─
@@ -533,14 +622,33 @@ class _NutrientCyclePainter extends CustomPainter {
 
   // ── Reservoir node ──────────────────────────────────────────────────────────
   void _paintNode(Canvas canvas, int i, _Cycle cycle, bool current,
-      bool reachable, bool running) {
+      bool reachable, bool target, bool running) {
     final c = s._nodeCenter(i);
     final res = cycle.nodes[i];
     final pulse = 0.5 + 0.5 * math.sin(s._t * 3 + i);
 
-    // Subtle reachable-from-here hint ring (keeps the flow moving for newcomers;
-    // the process labels are the real teacher).
-    if (reachable && running) {
+    // The lit TARGET — a gold beacon so the objective is unmissable.
+    if (target && running) {
+      final tp = 0.5 + 0.5 * math.sin(s._t * 5);
+      canvas.drawCircle(
+        c,
+        s._nodeR + 16,
+        Paint()
+          ..color = Potatuhs.gold.withValues(alpha: 0.14 + 0.08 * tp)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+      );
+      canvas.drawCircle(
+        c,
+        s._nodeR + 7 + tp * 4,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.6
+          ..color = Potatuhs.gold.withValues(alpha: 0.55 + 0.4 * tp),
+      );
+      _text(canvas, 'TARGET', c.translate(0, -s._nodeR - 14),
+          size: 8.5, color: Potatuhs.gold, align: 0, bold: true);
+    } else if (reachable && running) {
+      // Subtle reachable-from-here hint ring.
       canvas.drawCircle(
         c,
         s._nodeR + 5 + pulse * 2,
@@ -604,7 +712,7 @@ class _NutrientCyclePainter extends CustomPainter {
     if (!running) {
       _text(
         canvas,
-        'Tap the next reservoir in the cycle — keep the matter flowing',
+        'Route the atom to the GOLD target — keep the matter flowing',
         Offset(size.width / 2, size.height - 14),
         size: 11,
         color: Colors.white.withValues(alpha: 0.55),
@@ -613,8 +721,8 @@ class _NutrientCyclePainter extends CustomPainter {
       );
       return;
     }
-    _text(canvas, 'LOOPS  ${s._loops}', Offset(16, size.height - 14),
-        size: 11, color: cycle.color, align: -1, bold: true);
+    _text(canvas, 'DELIVERED  ${s._deliveries}', Offset(16, size.height - 14),
+        size: 11, color: Potatuhs.gold, align: -1, bold: true);
     if (s._streak >= 3) {
       _text(canvas, 'x${s._streak} flow', Offset(size.width - 16, size.height - 14),
           size: 11, color: Potatuhs.gold, align: 1, bold: true);

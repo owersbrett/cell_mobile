@@ -22,8 +22,8 @@ const List<String> kUxPassGames = [
   'bond_lab', 'ph_balance', 'phase_change',
   // organSystem
   'digest', 'circulate', 'reflex',
-  // organism
-  'life_cycle', 'homeostasis', 'forage',
+  // organism (homeostasis + forage judged → v2 promoted to canonical id)
+  'life_cycle',
   // ecosystem
   'food_web', 'predator_prey', 'nutrient_cycle',
   // nothings

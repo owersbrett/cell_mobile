@@ -398,7 +398,14 @@ class _HomeostasisV2GameState extends State<HomeostasisV2Game>
 
     const trackTop = 70.0;
     const btnH = 54.0;
-    final trackBottom = (_h - btnH - 18).clamp(trackTop + 60, _h);
+    // At the densest level the columns get too narrow for two side-by-side
+    // buttons, so STACK them vertically (▲ raise on top, ▼ lower below) — each
+    // then gets the full column width instead of cramming half of it.
+    final stacked = n >= 4;
+    const stackBtnH = 46.0;
+    const stackGap = 6.0;
+    final btnAreaH = stacked ? (stackBtnH * 2 + stackGap) : btnH;
+    final trackBottom = (_h - btnAreaH - 18).clamp(trackTop + 50, _h);
     final colW = _w / n;
     final lerpAmt = math.min(1.0, dt * 6.0);
 
@@ -411,11 +418,20 @@ class _HomeostasisV2GameState extends State<HomeostasisV2Game>
       final trackW = (colW * 0.18).clamp(20.0, 56.0);
       g.track = Rect.fromLTWH(
           cx - trackW / 2, trackTop, trackW, trackBottom - trackTop);
-      final bw = (colW * 0.40).clamp(50.0, 150.0);
-      const gap = 8.0;
-      final by = _h - btnH - 8;
-      g.lowerBtn = Rect.fromLTWH(cx - bw - gap / 2, by, bw, btnH);
-      g.raiseBtn = Rect.fromLTWH(cx + gap / 2, by, bw, btnH);
+
+      if (stacked) {
+        final bw = (colW * 0.82).clamp(46.0, 150.0);
+        final topY = _h - btnAreaH - 8;
+        g.raiseBtn = Rect.fromLTWH(cx - bw / 2, topY, bw, stackBtnH);
+        g.lowerBtn = Rect.fromLTWH(
+            cx - bw / 2, topY + stackBtnH + stackGap, bw, stackBtnH);
+      } else {
+        final bw = (colW * 0.40).clamp(50.0, 150.0);
+        const gap = 8.0;
+        final by = _h - btnH - 8;
+        g.lowerBtn = Rect.fromLTWH(cx - bw - gap / 2, by, bw, btnH);
+        g.raiseBtn = Rect.fromLTWH(cx + gap / 2, by, bw, btnH);
+      }
     }
   }
 

@@ -84,6 +84,13 @@ const double _kPredFearDrain = 9.0; // energy/s at the edge of contact
 const double _kPredBite = 18.0; // energy lost on a contact bite
 const double _kPredInvuln = 1.1; // i-frames after a bite
 const double _kPredHomingPeak = 0.7; // max homing weight at t=end
+// Predators now have HEALTH — drag to move, TAP a predator to chip it down.
+const double _kPredHealthEarly = 3.0; // taps to down a predator, early
+const double _kPredHealthPeak = 5.0; // tougher late in the round
+const double _kChipDamage = 1.0; // damage dealt per tap
+const int _kPredKillScore = 12; // score for downing a predator
+const double _kPredRespawn = 2.6; // seconds before a downed predator is replaced
+const double _kChipTapSlop = 16.0; // tap forgiveness around a predator's body
 
 // Ledger (the v2 surfacing layer — read-only over the same economy)
 const double _kLedgerRef = _kFoodValueMax; // break-even reference for the bar
@@ -118,7 +125,12 @@ class _Predator {
   double heading;
   double speed;
   double phase;
-  _Predator(this.pos, this.heading, this.speed, this.phase);
+  final double maxHealth;
+  double health;
+  double hitFlash; // 1 → 0 white flash when chipped
+  _Predator(this.pos, this.heading, this.speed, this.phase, this.maxHealth)
+      : health = maxHealth,
+        hitFlash = 0;
 }
 
 class _RepaintNotifier extends ChangeNotifier {
@@ -155,6 +167,7 @@ class _ForageV2GameState extends State<ForageV2Game>
   double _energy = _kStartEnergy;
   double _invuln = 0;
   double _flinch = 0;
+  double _predSpawnTimer = 0; // gates predator respawn so kills earn relief
 
   // Collapse (starve → recover)
   bool _collapsed = false;
@@ -236,6 +249,7 @@ class _ForageV2GameState extends State<ForageV2Game>
     _energy = _kStartEnergy;
     _invuln = 0;
     _flinch = 0;
+    _predSpawnTimer = 0;
     _collapsed = false;
     _collapseTimer = 0;
     _collapseFlash = 0;
@@ -276,11 +290,15 @@ class _ForageV2GameState extends State<ForageV2Game>
   }
 
   _Predator _spawnPredator() {
+    final hp = (_kPredHealthEarly +
+            (_kPredHealthPeak - _kPredHealthEarly) * _progress)
+        .roundToDouble();
     return _Predator(
       _randomPoint(awayFrom: _pos, minDist: 200),
       _rng.nextDouble() * math.pi * 2,
       _kPredSpeedEarly + _rng.nextDouble() * 24,
       _rng.nextDouble() * math.pi * 2,
+      hp,
     );
   }
 
@@ -419,14 +437,18 @@ class _ForageV2GameState extends State<ForageV2Game>
     // ── Predators — energy OUT (fear drain + bites) ──────────────────────────
     final wantPred =
         prog < _kPredStartProgress ? 0 : (_kPredCountPeak * prog).round();
-    while (_predators.length < wantPred) {
+    // Timer-gated respawn so downing a predator actually buys breathing room.
+    if (_predSpawnTimer > 0) _predSpawnTimer -= dt;
+    if (_predators.length < wantPred && _predSpawnTimer <= 0) {
       _predators.add(_spawnPredator());
+      _predSpawnTimer = _kPredRespawn;
     }
     final predSpeedMult = 1.0 +
         (_kPredSpeedPeak / _kPredSpeedEarly - 1.0) * prog;
     final homing = (prog * _kPredHomingPeak).clamp(0.0, _kPredHomingPeak);
     for (final v in _predators) {
       v.phase += dt * 3;
+      if (v.hitFlash > 0) v.hitFlash = math.max(0, v.hitFlash - dt * 3);
       v.heading += (_rng.nextDouble() - 0.5) * 2.0 * dt;
       var dir = Offset.fromDirection(v.heading);
       if (homing > 0) {
@@ -574,7 +596,7 @@ class _ForageV2GameState extends State<ForageV2Game>
 
   // ─── Gestures ───────────────────────────────────────────────────────────────
 
-  void _onDown(DragDownDetails d) {
+  void _onPanStart(DragStartDetails d) {
     if (!widget.session.isRunning || _collapsed) return;
     _target = d.localPosition;
   }
@@ -586,6 +608,48 @@ class _ForageV2GameState extends State<ForageV2Game>
 
   void _onEnd(DragEndDetails d) => _target = null;
   void _onCancel() => _target = null;
+
+  /// TAP a predator to chip its health. Drag still moves the animal; a discrete
+  /// tap that lands on a predator deals chip damage instead of moving.
+  void _onTapUp(TapUpDetails d) {
+    if (!widget.session.isRunning || _collapsed) return;
+    final v = _predatorAt(d.localPosition);
+    if (v != null) _chip(v);
+  }
+
+  _Predator? _predatorAt(Offset p) {
+    _Predator? best;
+    var bestD = _kPredRadius + _kChipTapSlop;
+    for (final v in _predators) {
+      final d = (v.pos - p).distance;
+      if (d < bestD) {
+        bestD = d;
+        best = v;
+      }
+    }
+    return best;
+  }
+
+  void _chip(_Predator v) {
+    v.health -= _kChipDamage;
+    v.hitFlash = 1.0;
+    // Small knockback away from the animal so chipping reads as a hit.
+    final away = v.pos - _pos;
+    if (away.distance > 1) v.pos += (away / away.distance) * 6;
+    if (v.health <= 0) {
+      _predators.remove(v);
+      session_.addScore(_kPredKillScore);
+      _pops.add(FxPop(
+          v.pos.translate(0, -22), '+$_kPredKillScore PREDATOR DOWN', _kEnergyHigh));
+      _spawn(v.pos, _kEnergyHigh, count: 16, speed: 150);
+      // Give the field a beat before the next one arrives.
+      if (_predSpawnTimer < _kPredRespawn) _predSpawnTimer = _kPredRespawn;
+    } else {
+      _pops.add(FxPop(v.pos.translate(0, -16),
+          '-${_kChipDamage.round()}', Colors.white));
+      _spawn(v.pos, _kPredColor, count: 6, speed: 90);
+    }
+  }
 
   // ─── Build ──────────────────────────────────────────────────────────────────
 
@@ -600,7 +664,8 @@ class _ForageV2GameState extends State<ForageV2Game>
       }
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onPanDown: _onDown,
+        onTapUp: _onTapUp,
+        onPanStart: _onPanStart,
         onPanUpdate: _onUpdate,
         onPanEnd: _onEnd,
         onPanCancel: _onCancel,
@@ -779,6 +844,34 @@ class _ForageV2Painter extends CustomPainter {
       final eye = Paint()..color = Colors.white.withValues(alpha: 0.9);
       canvas.drawCircle(v.pos + fwd + perp, 2.4, eye);
       canvas.drawCircle(v.pos + fwd - perp, 2.4, eye);
+
+      // Health ring — tap to chip it down. Background track + a fill arc that
+      // drains and reddens as the predator takes damage.
+      final frac = (v.health / v.maxHealth).clamp(0.0, 1.0);
+      final ringR = _kPredRadius + 5;
+      final ringRect = Rect.fromCircle(center: v.pos, radius: ringR);
+      canvas.drawArc(ringRect, 0, math.pi * 2, false,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.4
+            ..color = Colors.black.withValues(alpha: 0.35));
+      if (frac > 0) {
+        final hpCol = Color.lerp(_kEnergyLow, _kEnergyHigh, frac)!;
+        canvas.drawArc(ringRect, -math.pi / 2, math.pi * 2 * frac, false,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.4
+              ..strokeCap = StrokeCap.round
+              ..color = hpCol);
+      }
+      // White hit-flash on a chip.
+      if (v.hitFlash > 0) {
+        canvas.drawCircle(
+          v.pos,
+          _kPredRadius + 2,
+          Paint()..color = Colors.white.withValues(alpha: 0.6 * v.hitFlash),
+        );
+      }
     }
   }
 
@@ -978,7 +1071,7 @@ class _ForageV2Painter extends CustomPainter {
     );
     GameFx.text(
       canvas,
-      'Eat to gain energy · moving spends it · watch the cost ledger',
+      'Drag to forage · TAP a predator to chip it down · mind the cost ledger',
       Offset(size.width / 2, size.height * 0.5 + 44),
       13,
       Colors.white.withValues(alpha: 0.75),

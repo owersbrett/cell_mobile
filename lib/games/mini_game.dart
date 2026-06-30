@@ -88,6 +88,22 @@ class MiniGameSession extends ChangeNotifier {
 typedef MiniGameBuilder = Widget Function(
     BuildContext context, MiniGameSession session);
 
+/// Paints ONE manual/legend card into [size] using a game's OWN rendering
+/// primitives. The point of the visual manual is that it shows the LITERAL
+/// components a player meets in play (a graded spud, a defect tell, a bin) —
+/// drawn by the same code the game uses — rather than an abstract diagram or a
+/// line of text. Keep these cheap and self-contained: they render statically in
+/// the intro carousel, not every frame.
+typedef LegendPainter = void Function(Canvas canvas, Size size);
+
+/// One card in a game's visual manual carousel, shown by [MiniGameHost] on the
+/// intro screen. [paint] draws a real in-game component; [caption] names it.
+class LegendFrame {
+  final String caption;
+  final LegendPainter paint;
+  const LegendFrame({required this.caption, required this.paint});
+}
+
 /// Declarative description of a mini-game: identity, rules, scoring and the
 /// widget that plays it. One spec serves both Explore (solo score attack)
 /// and Party mode (pass-and-play, highest score wins the round).
@@ -129,6 +145,15 @@ class MiniGameSpec {
   /// Tune per game by playtest.
   final List<int> starThresholds;
 
+  /// Optional visual manual: captioned cards, each drawn by the game's OWN
+  /// render code, shown as a swipeable/auto-advancing carousel on the intro.
+  /// Empty = the host falls back to the text [rules] bullets.
+  final List<LegendFrame> legendFrames;
+
+  /// Optional live attract-mode demo, shown as the final manual card on its own
+  /// throwaway session. Null = the slot is reserved but unused for this game.
+  final MiniGameBuilder? demoBuilder;
+
   const MiniGameSpec({
     required this.id,
     required this.name,
@@ -144,5 +169,7 @@ class MiniGameSpec {
     required this.builder,
     this.humanMax = 0,
     this.starThresholds = const [],
+    this.legendFrames = const [],
+    this.demoBuilder,
   });
 }

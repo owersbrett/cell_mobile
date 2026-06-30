@@ -59,6 +59,10 @@ The app uses BLoC (Business Logic Component) pattern with flutter_bloc for state
 - **Organelles Data** (`lib/data/organelles.dart`): Contains information about cell organelles
 - **Organelle Model** (`lib/models/organelle.dart`): Data model for organelles
 
+### Shared rendering
+- **Potato renderer** (`lib/games/potato.dart`): `PotatoArt` — the CANONICAL way to draw a potato (lumpy silhouette + warm radial gradient + skin rim + eyes). Any game/screen that draws a potato should call `PotatoArt.paint`/`.path`/`.drawEyes` rather than hand-rolling an oval, so the spud looks identical everywhere. The file is deliberately **self-contained** (only Flutter + dart:math, no project imports) so it can be copied verbatim into other Potatuhs Flutter apps (e.g. sod_tori) that need potatoes. Change the potato look HERE, nowhere else. First consumer: Farm Panic (`mini_game_page/games/farm_panic_game.dart`).
+- **Game FX** (`lib/games/fx.dart`): `GameFx` — shared premium-rendering toolkit (orbs, atmosphere, glow) for mini-game painters.
+
 ## Native Platform Configuration
 
 ### iOS Splash Screen

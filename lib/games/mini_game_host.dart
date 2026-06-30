@@ -501,7 +501,13 @@ class _IntroView extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-          Container(
+          // Visual manual: games that ship `legendFrames` (or a demo) get a
+          // carousel of their REAL components instead of a flat text list. Games
+          // that don't fall back to the bullet rules below — no regressions.
+          if (spec.legendFrames.isNotEmpty || spec.demoBuilder != null)
+            _LegendCarousel(spec: spec, accent: accent)
+          else
+            Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.05),
@@ -1247,4 +1253,210 @@ class _BigButtonState extends State<_BigButton> {
       ),
     );
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual carousel — shown on the intro when a game ships `legendFrames`
+// (and/or a `demoBuilder`). Each card is drawn by the game's OWN render code, so
+// the manual shows the literal components a player will meet, not a text list.
+// Auto-advances and is swipeable; the `howToWin` line stays pinned beneath it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _LegendCarousel extends StatefulWidget {
+  final MiniGameSpec spec;
+  final Color accent;
+  const _LegendCarousel({required this.spec, required this.accent});
+
+  @override
+  State<_LegendCarousel> createState() => _LegendCarouselState();
+}
+
+class _LegendCarouselState extends State<_LegendCarousel> {
+  final PageController _controller = PageController();
+  Timer? _auto;
+  int _page = 0;
+
+  // Reserved demo slot: a game may ship a live attract-mode demo as the last
+  // card. It runs on its own throwaway session so it never touches real score.
+  MiniGameSession? _demoSession;
+
+  List<LegendFrame> get _frames => widget.spec.legendFrames;
+  bool get _hasDemo => widget.spec.demoBuilder != null;
+  int get _pageCount => _frames.length + (_hasDemo ? 1 : 0);
+
+  @override
+  void initState() {
+    super.initState();
+    if (_hasDemo) _demoSession = MiniGameSession(spec: widget.spec);
+    if (_pageCount > 1) {
+      _auto = Timer.periodic(const Duration(milliseconds: 3200), (_) {
+        if (!mounted || !_controller.hasClients) return;
+        final next = (_page + 1) % _pageCount;
+        _controller.animateToPage(
+          next,
+          duration: const Duration(milliseconds: 450),
+          curve: Curves.easeInOut,
+        );
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _auto?.cancel();
+    _controller.dispose();
+    _demoSession?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = widget.accent;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'HOW TO PLAY',
+            style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.5,
+                color: accent),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 168,
+            child: PageView.builder(
+              controller: _controller,
+              onPageChanged: (i) => setState(() => _page = i),
+              itemCount: _pageCount,
+              itemBuilder: (context, i) {
+                if (_hasDemo && i == _pageCount - 1) return _demoCard();
+                return _frameCard(_frames[i]);
+              },
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (_pageCount > 1)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (int i = 0; i < _pageCount; i++)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 220),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: i == _page ? 18 : 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: i == _page
+                          ? accent
+                          : Colors.white.withValues(alpha: 0.25),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+              ],
+            ),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.emoji_events, color: accent, size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  widget.spec.howToWin,
+                  style: TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: accent),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _frameCard(LegendFrame f) {
+    return Column(
+      children: [
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              width: double.infinity,
+              color: Colors.black.withValues(alpha: 0.35),
+              child: CustomPaint(
+                painter: _LegendFramePainter(f.paint),
+                size: Size.infinite,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          f.caption,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+              fontFamily: _kFont, fontSize: 13, color: Colors.white, height: 1.2),
+        ),
+      ],
+    );
+  }
+
+  Widget _demoCard() {
+    return Column(
+      children: [
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              width: double.infinity,
+              color: Colors.black.withValues(alpha: 0.35),
+              child: widget.spec.demoBuilder!(context, _demoSession!),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Live demo',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+              fontFamily: _kFont,
+              fontSize: 13,
+              color: widget.accent,
+              fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
+  }
+}
+
+class _LegendFramePainter extends CustomPainter {
+  final LegendPainter fn;
+  _LegendFramePainter(this.fn);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (!size.width.isFinite ||
+        !size.height.isFinite ||
+        size.shortestSide <= 0) {
+      return;
+    }
+    fn(canvas, size);
+  }
+
+  @override
+  bool shouldRepaint(covariant _LegendFramePainter oldDelegate) =>
+      oldDelegate.fn != fn;
 }

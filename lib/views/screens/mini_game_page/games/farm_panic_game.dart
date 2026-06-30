@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:cell_mobile/games/mini_game.dart';
 import '../../../../games/fx.dart';
+import '../../../../games/potato.dart';
 import '../../../../theme/potatuhs.dart';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,25 @@ const double _kFlowDecayScale = 0.26;
 const double _kSwipeFlowGain = 0.62;
 const double _kSwipeHitRadius = 34.0;
 const double _kChannelH = 16.0; // visual trough thickness
+// A freshly-watered field stays satisfied for a short, randomized "hold" window
+// (1..4s — similar across fields so they don't all come due in lockstep) before
+// it starts draining and demands irrigation again.
+const double _kHoldMin = 1.0;
+const double _kHoldMax = 4.0;
+const double _kHoldRefillAt = 0.85; // flow at/above which a field re-earns its window
+// ...but only after it has genuinely lapsed (dropped this low) since its last
+// window — otherwise a perpetually-topped field would never drain.
+const double _kHoldLapseAt = 0.45;
+
+// Escalating weather/pest events — punctuated stress that ramps over the round.
+// Each event telegraphs a warning, then the effect lands. They start a few
+// seconds in and recur on a SHRINKING interval (rare+mild early, frequent+harsh
+// late) so the panic genuinely builds with the clock.
+const double _kEventFirstAt = 11.0; // no events before this (let the player settle)
+const double _kEventWarn = 2.0; // telegraph lead time before the effect lands
+const double _kEventHold = 2.0; // banner lingers this long after it lands
+const double _kEventIntervalEarly = 17.0;
+const double _kEventIntervalLate = 6.5;
 
 // Crops
 const double _kPotatoGrowRate = 5.5;
@@ -149,9 +169,22 @@ class _Channel {
   final double yFrac;
   double flow;
   double phase = 0; // chevron scroll, advances with flow
-  double handle = 0.5; // 0..1 draggable-current position
+  double handle = 0.5; // 0..1 draggable-current position (rides the water edge)
   double handleSeed;
-  _Channel(this.yFrac, this.flow, this.handleSeed);
+  double hold; // seconds left in the "satisfied" window before draining resumes
+  double holdSpan; // the window to reset to once the field is re-watered to full
+  bool lapsed = false; // has it dropped low enough since its last window to re-earn one?
+  _Channel(this.yFrac, this.flow, this.handleSeed, this.hold, this.holdSpan);
+}
+
+enum _EventKind { drought, pestilence }
+
+class _FarmEvent {
+  final _EventKind kind;
+  final double warn; // telegraph lead time before the effect lands
+  double age = 0;
+  bool fired = false; // has the effect been applied (warning → active)
+  _FarmEvent(this.kind, this.warn);
 }
 
 class _Potato {
@@ -303,6 +336,12 @@ class _FarmPanicGameState extends State<FarmPanicGame>
   final List<_Popup> _popups = [];
   double _shakeIntensity = 0;
 
+  // Weather/pest events
+  _FarmEvent? _event;
+  _EventKind? _lastEventKind;
+  double _eventTimer = _kEventFirstAt;
+  double _eventFlash = 0; // 0..1 full-field flash decaying after an event lands
+
   // Gesture
   int? _activeChannel;
   double _lastSwipeTime = -999;
@@ -358,6 +397,8 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       (_kWeedSpawnBase - (_kWeedSpawnBase - _kWeedSpawnMin) * (t / _round))
           .clamp(_kWeedSpawnMin, _kWeedSpawnBase);
   double _flowDecay(double t) => _kFlowDecayBase + _kFlowDecayScale * (t / _round);
+  // A satisfied window: 1..4s, similar across fields but individually random.
+  double _freshHold() => _kHoldMin + _rng.nextDouble() * (_kHoldMax - _kHoldMin);
   double _tokenInterval(double t) =>
       (_kTokenBubbleRate - _kTokenBubbleAccel * t).clamp(2.0, _kTokenBubbleRate);
 
@@ -422,11 +463,18 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
     _channels.clear();
     for (int i = 0; i < _kChannelCount; i++) {
-      _channels.add(_Channel(
+      final flow0 = 0.35 + _rng.nextDouble() * 0.25;
+      final span = _freshHold();
+      final ch = _Channel(
         0.16 + 0.78 * i / (_kChannelCount - 1),
-        0.35 + _rng.nextDouble() * 0.25,
+        flow0,
         _rng.nextDouble() * pi * 2,
-      ));
+        // Stagger the first demand so fields don't all come due at once.
+        span * (0.3 + _rng.nextDouble() * 0.7),
+        span,
+      );
+      ch.handle = 0.12 + 0.88 * flow0; // start the grip on the water's edge
+      _channels.add(ch);
     }
 
     _potatoes.clear();
@@ -442,6 +490,11 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _weedTimer = _kWeedSpawnBase * 0.6;
     _tokenTimer = _kTokenBubbleRate * 0.25;
     _waterBurstTimer = _kWaterBurstSpawnBase * 0.5;
+
+    _event = null;
+    _lastEventKind = null;
+    _eventTimer = _kEventFirstAt;
+    _eventFlash = 0;
 
     _phase = _Phase.playing;
   }
@@ -462,6 +515,7 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       _updateCash(dt);
       _updateSwipeGuide(dt);
       _updateHints(dt);
+      _updateEvents(dt);
       _updateChannels(dt);
       _updatePotatoes(dt);
       _updateBugs(dt);
@@ -787,42 +841,155 @@ class _FarmPanicGameState extends State<FarmPanicGame>
     _lastHintTime = _elapsed;
   }
 
+  // ---- weather/pest events --------------------------------------------------
+
+  void _updateEvents(double dt) {
+    if (_eventFlash > 0) _eventFlash = (_eventFlash - dt * 1.6).clamp(0.0, 1.0);
+
+    final ev = _event;
+    if (ev != null) {
+      ev.age += dt;
+      if (!ev.fired && ev.age >= ev.warn) {
+        ev.fired = true;
+        _fireEvent(ev.kind);
+      }
+      if (ev.fired && ev.age >= ev.warn + _kEventHold) {
+        _event = null;
+        _eventTimer = _nextEventInterval();
+      }
+      return;
+    }
+
+    if (_elapsed < _kEventFirstAt) return;
+    _eventTimer -= dt;
+    if (_eventTimer <= 0) _event = _FarmEvent(_pickEvent(), _kEventWarn);
+  }
+
+  // Interval shrinks as the round runs: rare early, relentless late.
+  double _nextEventInterval() {
+    final t = (_elapsed / _round).clamp(0.0, 1.0);
+    final base =
+        _kEventIntervalEarly + (_kEventIntervalLate - _kEventIntervalEarly) * t;
+    return base * (0.8 + _rng.nextDouble() * 0.4);
+  }
+
+  // Vary the entropy — avoid the same event twice running when we can.
+  _EventKind _pickEvent() {
+    var pick = _rng.nextBool() ? _EventKind.drought : _EventKind.pestilence;
+    if (pick == _lastEventKind && _rng.nextBool()) {
+      pick = pick == _EventKind.drought
+          ? _EventKind.pestilence
+          : _EventKind.drought;
+    }
+    _lastEventKind = pick;
+    return pick;
+  }
+
+  void _fireEvent(_EventKind kind) {
+    _eventFlash = 1.0;
+    _shakeIntensity = max(_shakeIntensity, 9);
+    final t = (_elapsed / _round).clamp(0.0, 1.0);
+    final cx = _size.width / 2;
+    final cy = _groundY + _soilZoneH * 0.5;
+    switch (kind) {
+      case _EventKind.drought:
+        // Every channel instantly runs dry — scramble to re-irrigate. (Active
+        // irrigation auto-refills over the next seconds, softening the blow.)
+        for (final ch in _channels) {
+          ch.flow = 0.0;
+          ch.hold = 0.0;
+          ch.lapsed = true;
+        }
+        _spawnPopup(cx, cy, 'DROUGHT!', _kDanger, scale: 1.6);
+        for (int i = 0; i < 5; i++) {
+          _spawnParticles(Offset(_size.width * (i + 0.5) / 5, _groundY + 14),
+              const Color(0xFFC9A24B), count: 6, speed: 80);
+        }
+        break;
+      case _EventKind.pestilence:
+        // A swarm descends all at once — bigger the later it strikes. Pesticide
+        // (the PEST upgrade) shields the field, so the warning is a buy cue.
+        if (_pestTimer > 0) {
+          _spawnPopup(cx, cy, 'SWARM REPELLED!', _kHarvestReady, scale: 1.3);
+          break;
+        }
+        final swarm = (5 + 6 * t).round();
+        for (int i = 0; i < swarm; i++) {
+          final tier = (t > 0.6 && _rng.nextDouble() < 0.3) ? 1 : 0;
+          _bugs.add(_Bug(
+            x: 16 + _rng.nextDouble() * (_size.width - 32),
+            y: -12 - _rng.nextDouble() * 70, // staggered entry from above
+            dx: (_rng.nextDouble() - 0.5) * 60,
+            tier: tier,
+          ));
+        }
+        _spawnPopup(cx, cy, 'PEST SWARM!', _kDanger, scale: 1.5);
+        break;
+    }
+  }
+
   void _updateChannels(double dt) {
     final decay = _flowDecay(_elapsed);
-    for (final ch in _channels) {
+    for (int i = 0; i < _channels.length; i++) {
+      final ch = _channels[i];
       if (_irrigTimer > 0) {
         ch.flow = (ch.flow + 0.7 * dt).clamp(0.0, 1.0); // auto-water
+        ch.hold = ch.holdSpan; // the upgrade keeps every field satisfied
+      } else if (ch.hold > 0) {
+        ch.hold -= dt; // satisfied window — the field holds its water, no drain
       } else {
-        ch.flow = (ch.flow - decay * dt).clamp(0.0, 1.0);
+        ch.flow = (ch.flow - decay * dt).clamp(0.0, 1.0); // demand is back
+      }
+      // Once a field drops low it has "lapsed" and may re-earn a window.
+      if (ch.flow < _kHoldLapseAt) ch.lapsed = true;
+      // Re-watering a lapsed field (near) full grants a fresh, random window.
+      // The lapse gate is what stops a topped-off field from holding forever.
+      if (ch.flow >= _kHoldRefillAt && ch.hold <= 0 && ch.lapsed) {
+        ch.holdSpan = _freshHold();
+        ch.hold = ch.holdSpan;
+        ch.lapsed = false;
+      }
+      // The grip rides the water's leading edge: it slides back as the field
+      // drains, and forward as it fills. While the player is dragging this
+      // channel, their finger owns the grip (see _onPointerMove); on release it
+      // re-binds to the level here.
+      if (_activeChannel != i) {
+        final target = 0.12 + 0.88 * ch.flow;
+        ch.handle += (target - ch.handle) * (1 - exp(-6 * dt));
       }
       ch.phase += (35 + 150 * ch.flow) * dt; // visual flow speed ∝ flow
     }
   }
 
   void _updatePotatoes(double dt) {
-    final avg = _irrigTimer > 0 ? max(_avgFlow, 0.85) : _avgFlow;
-    if (avg > 0.25) {
-      final growBonus = avg * _kPotatoGrowRate * dt;
-      for (final p in _potatoes) {
-        if (p.ripe) {
-          if (p.ripeFlash) p.ripeFlashAge += dt;
-          continue;
-        }
-        p.growth = (p.growth + growBonus * 0.06).clamp(0.0, 1.0);
-        if (p.growth >= 1.0) {
-          p.ripeFlash = true;
-          p.ripeFlashAge = 0;
-          _spawnParticles(
-              Offset(p.x * _size.width, _groundY - 18), _kPotatoGold,
-              count: 12);
-          _spawnPopup(
-              p.x * _size.width, _groundY - 30, 'READY!', _kHarvestReady,
-              scale: 1.15);
-        }
+    final avg = _irrigTimer > 0 ? max(_avgFlow, 0.9) : _avgFlow;
+    // Growth tracks how watered the fields are: a GENTLE taper as they drain
+    // through the watered range, then an ABRUPT collapse (and slight shrink)
+    // once they run nearly dry.
+    double mul;
+    if (avg >= 0.25) {
+      mul = 0.5 + 0.5 * ((avg - 0.25) / 0.75); // 0.25→half … 1.0→full
+    } else if (avg >= 0.10) {
+      mul = 0.5 * ((avg - 0.10) / 0.15); // 0.25→half knees down to 0.10→0
+    } else {
+      mul = -0.18; // bone dry: potatoes back off
+    }
+    final rate = _kPotatoGrowRate * mul * 0.06 * dt;
+    for (final p in _potatoes) {
+      if (p.ripe) {
+        if (p.ripeFlash) p.ripeFlashAge += dt;
+        continue;
       }
-    } else if (avg < 0.12) {
-      for (final p in _potatoes) {
-        if (!p.ripe) p.growth = (p.growth - 0.004 * dt).clamp(0.0, 1.0);
+      p.growth = (p.growth + rate).clamp(0.0, 1.0);
+      if (rate > 0 && p.growth >= 1.0) {
+        p.ripeFlash = true;
+        p.ripeFlashAge = 0;
+        _spawnParticles(
+            Offset(p.x * _size.width, _groundY - 18), _kPotatoGold,
+            count: 12);
+        _spawnPopup(
+            p.x * _size.width, _groundY - 30, 'READY!', _kHarvestReady,
+            scale: 1.15);
       }
     }
   }
@@ -844,10 +1011,32 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       if (bug.x > _size.width) bug.dx = -bug.dx.abs();
       if (bug.y >= groundLine * _kBugDamageThresh) {
         bug.dead = true;
-        widget.session.addScore(_kBugDamageScore);
         _combo = 1;
         _shakeIntensity = 6;
-        _spawnPopup(bug.x, groundLine - 20, '$_kBugDamageScore', _kDanger);
+        // The bug reaches the row and STEALS the nearest crop outright (100%):
+        // whatever that potato had grown is gone. Swat bugs or lose the harvest.
+        _Potato? target;
+        double best = double.infinity;
+        for (final p in _potatoes) {
+          final d = (p.x * _size.width - bug.x).abs();
+          if (d < best) {
+            best = d;
+            target = p;
+          }
+        }
+        if (target != null && target.growth > 0.02) {
+          final wasRipe = target.ripe;
+          final tx = target.x * _size.width;
+          target.growth = 0.0;
+          target.ripeFlash = false;
+          target.ripeFlashAge = 0;
+          _spawnPopup(tx, groundLine - 24, wasRipe ? 'STOLEN!' : 'EATEN!',
+              _kDanger, scale: 1.2);
+          _spawnParticles(
+              Offset(tx, groundLine - 14), _kPotatoDark, count: 14, speed: 130);
+        }
+        widget.session.addScore(_kBugDamageScore);
+        _spawnPopup(bug.x, groundLine - 40, '$_kBugDamageScore', _kDanger);
         _spawnParticles(Offset(bug.x, bug.y), _kDanger, count: 8);
       }
     }
@@ -1254,6 +1443,8 @@ class _FarmPanicGameState extends State<FarmPanicGame>
                 windTimer: _windTimer,
                 windSweep: _windSweep,
                 irrigActive: _irrigTimer > 0,
+                event: _event,
+                eventFlash: _eventFlash,
               ),
               size: Size.infinite,
             ),
@@ -1291,6 +1482,8 @@ class _FarmPanicPainter extends CustomPainter {
   final Map<_Upgrade, double> shopTimers;
   final double windTimer, windSweep;
   final bool irrigActive;
+  final _FarmEvent? event;
+  final double eventFlash;
 
   _FarmPanicPainter({
     required this.elapsed,
@@ -1324,6 +1517,8 @@ class _FarmPanicPainter extends CustomPainter {
     required this.windTimer,
     required this.windSweep,
     required this.irrigActive,
+    required this.event,
+    required this.eventFlash,
   });
 
   @override
@@ -1362,9 +1557,98 @@ class _FarmPanicPainter extends CustomPainter {
     _drawDirectiveBanner(canvas, size);
     _drawSwipeGuide(canvas, size);
     _drawHintBanner(canvas, size);
+    _drawEventBanner(canvas, size);
     _drawShop(canvas, size);
 
     if (shakeIntensity > 0) canvas.restore();
+  }
+
+  // ---- weather/pest event banner --------------------------------------------
+
+  void _drawEventBanner(Canvas canvas, Size size) {
+    // Full-field red flash the instant an event lands.
+    if (eventFlash > 0) {
+      canvas.drawRect(Offset.zero & size,
+          Paint()..color = _kDanger.withValues(alpha: 0.22 * eventFlash));
+    }
+    final ev = event;
+    if (ev == null) return;
+
+    final warning = !ev.fired;
+    final drought = ev.kind == _EventKind.drought;
+    final label = drought
+        ? (warning ? 'DROUGHT WARNING' : 'DROUGHT')
+        : (warning ? 'PEST SWARM INCOMING' : 'PEST SWARM');
+    final accent = drought ? const Color(0xFFE8A53A) : _kDanger;
+    final pulse = 0.5 + 0.5 * sin(elapsed * (warning ? 9 : 5));
+
+    final tp = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 16,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 1.4,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    final bw = tp.width + 56;
+    final bh = tp.height + 16;
+    final cx = size.width / 2;
+    final top = groundY * 0.34;
+    final rect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(cx, top), width: bw, height: bh),
+      const Radius.circular(10),
+    );
+    // glow → backing → pulsing border
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..color = accent.withValues(alpha: 0.30 + 0.25 * pulse)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+    );
+    canvas.drawRRect(
+        rect, Paint()..color = Colors.black.withValues(alpha: 0.58));
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0 + 1.6 * pulse
+        ..color = accent.withValues(alpha: 0.6 + 0.4 * pulse),
+    );
+
+    // warning triangles flanking the label
+    void triangle(double tx) {
+      final s = 6.0;
+      canvas.drawPath(
+        Path()
+          ..moveTo(tx, top - s)
+          ..lineTo(tx + s, top + s)
+          ..lineTo(tx - s, top + s)
+          ..close(),
+        Paint()..color = accent.withValues(alpha: 0.85 + 0.15 * pulse),
+      );
+    }
+
+    triangle(cx - tp.width / 2 - 16);
+    triangle(cx + tp.width / 2 + 16);
+    tp.paint(canvas, Offset(cx - tp.width / 2, top - tp.height / 2));
+
+    // countdown bar under the warning so the brace can be timed
+    if (warning) {
+      final frac = ((ev.warn - ev.age) / ev.warn).clamp(0.0, 1.0);
+      final barW = bw - 16;
+      final by = top + bh / 2 + 5;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(cx - barW / 2, by, barW * frac, 3),
+            const Radius.circular(2)),
+        Paint()..color = accent.withValues(alpha: 0.85),
+      );
+    }
   }
 
   // ---- helpers --------------------------------------------------------------
@@ -1675,8 +1959,17 @@ class _FarmPanicPainter extends CustomPainter {
           ..color = _kLeafDark.withValues(alpha: 0.35)
           ..strokeWidth = 1.2,
       );
-      GameFx.orb(canvas, Offset(px, py), r, col,
-          glow: p.ripe ? 0.7 : p.growth * 0.4, specular: true);
+      PotatoArt.paint(
+        canvas,
+        center: Offset(px, py),
+        rx: r * 1.05,
+        ry: r * 0.82,
+        seed: p.sway,
+        color: col,
+        glow: p.ripe ? 0.6 : p.growth * 0.4,
+        eyes: p.growth > 0.4,
+        eyeColor: const Color(0xFF5A3A12).withValues(alpha: 0.55),
+      );
     }
   }
 
@@ -1785,25 +2078,15 @@ class _FarmPanicPainter extends CustomPainter {
             ..style = PaintingStyle.stroke
             ..strokeWidth = 2.0
             ..color = _kHarvestReady.withValues(alpha: 0.55 + 0.35 * pulse));
-      // tuber body (egg-shaped golden potato)
-      final body = Rect.fromCenter(center: tc, width: 22, height: 16);
-      canvas.drawOval(
-        body,
-        Paint()
-          ..shader = RadialGradient(
-            center: const Alignment(-0.3, -0.4),
-            colors: [
-              Color.lerp(_kPotatoGold, Colors.white, 0.4)!,
-              _kPotatoGold,
-              Color.lerp(_kPotatoGold, Colors.black, 0.35)!,
-            ],
-            stops: const [0.0, 0.55, 1.0],
-          ).createShader(body),
+      // tuber body — a lumpy golden potato (wider than tall, irregular outline)
+      PotatoArt.paint(
+        canvas,
+        center: tc,
+        rx: 12.0,
+        ry: 9.0,
+        seed: p.sway,
+        color: _kPotatoGold,
       );
-      // potato eyes
-      final eye = Paint()..color = const Color(0xFF7A4E13).withValues(alpha: 0.6);
-      canvas.drawCircle(tc.translate(-4, 1), 1.3, eye);
-      canvas.drawCircle(tc.translate(3, -2), 1.1, eye);
     }
   }
 

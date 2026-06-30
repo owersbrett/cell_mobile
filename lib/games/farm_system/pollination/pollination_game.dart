@@ -1,24 +1,30 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // PollinationGame — "Pollination Dash"  (scale: BioScale.farmSystem)
-// Steer a BEE around a meadow, carrying pollen from flower to matching flower.
-// Touch a flower of one species to LOAD its pollen, then sweep through OTHER
-// flowers of the SAME species to POLLINATE them — each pollinated bloom sets
-// fruit (a little potato) and scores. Quick flower-to-flower visits build a
-// combo. Blooms WILT on a timer, so speed matters. Pesticide clouds strip your
-// pollen and break the combo; wind gusts shove the bee off course. Difficulty
-// ramps over the 60s round: more flowers, more species, faster wilt, more hazards.
+// TAP flowers to route the BEE through them. Touch a flower of one species to
+// LOAD its pollen, then visit OTHER flowers of the SAME species to POLLINATE
+// them — each pollinated bloom sets fruit (a little potato) and fills your
+// HONEY meter. Carry honey to the HIVE and deposit it to BANK the score.
+//
+// The skill is the ROUTE: tap flowers in an order that chains same-species
+// visits with little backtracking. TAP RAPIDLY and the bee flies faster.
+//
+// THE RISK IS THE HOARD: PREDATORS (hornets) swoop in and chase the bee, and
+// they get more aggressive the MORE honey you're carrying — so you're always
+// weighing "gather more" against "bank it before one catches me". A catch
+// SPILLS honey and breaks the chain. Predators don't linger; they swoop and go.
 //
 // THE EDUCATIONAL CORE IS THE MECHANIC: you only score by MOVING pollen BETWEEN
 // two different flowers of the same kind — exactly what a real pollinator does.
 //
 // HOST CONTRACT (MiniGameHost owns intro/countdown/score-HUD/timer/results):
-// this widget only runs scoring while widget.session.isRunning, reports points
-// via session.addScore(), and tracks the combo via session.noteStreak(). It
-// draws no timer, no score, no game-over — only its own in-play HUD.
+// this widget only runs scoring while widget.session.isRunning, banks points via
+// session.addScore() on deposit, and tracks the combo via session.noteStreak().
 //
-// PERFORMANCE: one Ticker drives every flower / the bee / hazards / FX into a
+// PERFORMANCE: one Ticker drives every flower / the bee / predators / FX into a
 // single CustomPainter. The widget tree is just LayoutBuilder → GestureDetector
-// → CustomPaint (no per-frame setState over a large tree).
+// → CustomPaint. CustomPaint is given an explicit size: Size.infinite (a
+// childless CustomPaint defaults to Size.zero and collapses under the host's
+// Column/Expanded — that was the old black-screen bug).
 //
 // Self-contained module: framework deps only (mini_game.dart, fx.dart,
 // theme/potatuhs.dart). Private helpers cannot collide across libraries.
@@ -37,12 +43,16 @@ import 'package:cell_mobile/theme/potatuhs.dart';
 // FEEL CONSTANTS — tune freely without touching game logic.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Bee steering (a "seek" toward the finger, with arrival damping + drag).
-const double _kBeeMaxSpeed = 540.0; // px/s top speed under steering
-const double _kBeeArriveRadius = 70.0; // px — slow down within this of finger
-const double _kBeeRadius = 13.0; // collision radius
-const double _kBeeSteerLerp = 0.00075; // seek responsiveness (lower = snappier)
-const double _kBeeDrag = 0.05; // velocity multiplier base (no input)
+// Bee movement (TAP to set a route target; rapid taps add speed).
+const double _kBeeBaseSpeed = 300.0; // px/s cruising toward the tapped target
+const double _kBeeBoostSpeed = 430.0; // extra px/s at full tap-boost
+const double _kBeeArrive = 34.0; // within this of the target, ease to a hover
+const double _kBeeRadius = 13.0;
+const double _kBeeAccel = 8.0; // seek responsiveness (higher = snappier)
+const double _kTapSnapRadius = 48.0; // a tap this near a bloom targets THAT bloom
+const double _kTapBoostGain = 0.34; // boost added per tap (0..1)
+const double _kBoostDecay = 0.85; // boost units lost per second
+const double _kTapImpulse = 130.0; // instant velocity nudge toward target per tap
 
 // Flowers
 const int _kMaxSlots = 14; // hard pool ceiling
@@ -57,23 +67,33 @@ const double _kWiltMaxHard = 3.4;
 
 // Combo
 const double _kComboWindow = 1.9; // seconds between visits to keep the chain
-const int _kComboCap = 15; // combo value past which bonus stops growing
-const int _kScoreBase = 10; // points per pollination, before combo bonus
-const int _kComboBonus = 4; // extra points per combo step
+const int _kComboCap = 15; // combo value past which the bonus stops growing
 
-// Hazards
-const int _kMaxClouds = 3; // pesticide clouds at full difficulty
-const double _kCloudHitCooldown = 1.1; // seconds between cloud penalties
-const double _kStunTime = 0.7; // seconds of woozy reduced control after a hit
-const double _kGustIntervalEasy = 7.0; // seconds between wind gusts (early)
-const double _kGustIntervalHard = 2.6; // seconds between wind gusts (late)
-const double _kGustStrEasy = 230.0; // gust shove (px/s, early)
-const double _kGustStrHard = 540.0; // gust shove (px/s, late)
-const double _kGustDur = 0.85; // seconds a gust pushes
+// Honey + hive
+const double _kHoneyBase = 1.0; // honey per pollination (before the combo bonus)
+const double _kHoneyComboStep = 0.5; // extra honey per combo step
+const double _kHoneyDanger = 14.0; // carried honey at which predators max out
+const double _kSpillFraction = 0.45; // honey lost when a predator catches you
+const Offset _kHiveFrac = Offset(0.5, 0.93); // hive sits below the flower field
+const double _kHiveRadius = 30.0;
+
+// Predators (hornets) — the honey-scaled threat. They don't linger.
+const int _kPredatorMax = 5;
+const double _kPredatorSpeedBase = 150.0; // px/s chase at zero honey
+const double _kPredatorSpeedHoney = 185.0; // extra px/s at danger honey
+const double _kPredatorLifeMin = 3.2; // short life — swoop and go
+const double _kPredatorLifeMax = 5.0;
+const double _kPredatorCatchR = 17.0;
+const double _kHoneyPerPredator = 4.0; // each N carried honey wants one more hornet
+const double _kPredatorSpawnEasy = 2.4; // seconds between spawns (calm)
+const double _kPredatorSpawnHard = 1.0; // (high honey / late round)
+const double _kPredatorHitCooldown = 1.0; // grace after a catch
 
 // ── Palette ──
 const Color _kLeaf = Color(0xFF6FA84B); // meadow green (atmosphere accent)
 const Color _kPotato = Color(0xFFC79A6A); // set-fruit potato color
+const Color _kHoney = Color(0xFFFFC23D); // honey gold
+const Color _kPredator = Color(0xFFB02E2E); // hornet red
 
 /// Flower species: each is one pollen "kind". Cross only same-color flowers.
 const List<Color> _kSpecies = [
@@ -113,13 +133,24 @@ class _Flower {
   });
 }
 
-/// A drifting pesticide cloud — fractional position + velocity, bounces in-bounds.
-class _Cloud {
-  Offset pos; // frac
-  Offset vel; // frac/s
-  final double radius; // frac of shortest side
+/// A pollen mote orbiting the bee while it carries pollen.
+class _PollenMote {
+  double angle;
+  final double radius;
+  double life;
+  _PollenMote(this.angle, this.radius, this.life);
+}
+
+/// A hornet — chases the bee, gets faster/more numerous with carried honey, and
+/// leaves quickly (short life). Px coordinates (transient; needn't survive resize).
+class _Predator {
+  Offset pos;
+  Offset vel;
+  double life; // counts down; <=0 → leaving
+  final double maxLife;
   double phase;
-  _Cloud(this.pos, this.vel, this.radius, this.phase);
+  bool leaving = false;
+  _Predator(this.pos, this.vel, this.life, this.maxLife, this.phase);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -146,15 +177,18 @@ class _PollinationGameState extends State<PollinationGame>
   Offset? _beePos; // px (null until first valid size)
   Offset _beeVel = Offset.zero;
   double _beeHeading = -math.pi / 2;
-  Offset? _target; // finger position (px) while steering
-  bool _steering = false;
+  Offset? _target; // tapped route target (px)
+  double _boost = 0.0; // 0..1 rapid-tap speed boost
   double _wingPhase = 0.0;
-  double _stun = 0.0; // woozy timer after a pesticide hit
+  double _stun = 0.0; // woozy timer after a catch
 
   // ── Pollen carried by the bee ──
   int _pollenType = -1; // -1 = none
   int _lastFlowerId = -1; // last flower touched (forces movement to score)
   final List<_PollenMote> _aura = []; // motes orbiting the bee when loaded
+
+  // ── Honey ──
+  double _honey = 0.0; // carried, un-deposited
 
   // ── Field ──
   final List<_Flower> _flowers = [];
@@ -164,19 +198,15 @@ class _PollinationGameState extends State<PollinationGame>
   int _combo = 0;
   double _comboTimer = 0.0;
 
-  // ── Hazards ──
-  final List<_Cloud> _clouds = [];
-  double _cloudCd = 0.0;
-  double _gustTimer = _kGustIntervalEasy;
-  Offset _windDir = Offset.zero;
-  double _windStr = 0.0;
-  double _windLeft = 0.0;
-  final List<Offset> _windStreaks = []; // frac anchor points for gust streaks
+  // ── Predators ──
+  final List<_Predator> _predators = [];
+  double _predSpawnTimer = 1.5;
+  double _hitCd = 0.0;
 
   // ── FX ──
   final List<FxParticle> _fx = [];
   final List<FxPop> _pops = [];
-  double _flash = 0.0; // pesticide screen flash, decays
+  double _flash = 0.0; // catch screen flash, decays
 
   @override
   void initState() {
@@ -200,9 +230,14 @@ class _PollinationGameState extends State<PollinationGame>
     return (elapsed / total).clamp(0.0, 1.0);
   }
 
+  double get _honeyNorm => (_honey / _kHoneyDanger).clamp(0.0, 1.0);
   int get _typeCount => (3 + _diff * 2).round().clamp(3, _kSpecies.length);
-  int get _activeCount => (5 + _diff * (_kMaxSlots - 5)).round().clamp(5, _kMaxSlots);
+  int get _activeCount =>
+      (5 + _diff * (_kMaxSlots - 5)).round().clamp(5, _kMaxSlots);
   double get _wiltMax => _lerp(_kWiltMaxEasy, _kWiltMaxHard, _diff);
+
+  Offset get _hivePx =>
+      Offset(_kHiveFrac.dx * _size.width, _kHiveFrac.dy * _size.height);
 
   // ── field layout — a stable golden-angle scatter ───────────────────────────
   void _buildField() {
@@ -214,7 +249,7 @@ class _PollinationGameState extends State<PollinationGame>
       var x = 0.5 + math.cos(a) * r * 0.92;
       var y = 0.5 + math.sin(a) * r * 0.86;
       x = x.clamp(0.10, 0.90);
-      y = y.clamp(0.14, 0.86);
+      y = y.clamp(0.14, 0.82); // leave the bottom strip clear for the hive
       _flowers.add(_Flower(
         id: _idCounter++,
         frac: Offset(x, y),
@@ -256,8 +291,9 @@ class _PollinationGameState extends State<PollinationGame>
     _updateFlowers(dt, running);
     _updateBee(dt, running);
     if (running) {
-      _updateHazards(dt);
+      _updatePredators(dt);
       _checkPollination();
+      _checkHive();
       _tickCombo(dt);
     }
     _updateFx(dt);
@@ -318,43 +354,40 @@ class _PollinationGameState extends State<PollinationGame>
     }
   }
 
-  // ── bee steering ───────────────────────────────────────────────────────────
+  // ── bee movement: seek the tapped target, faster under tap-boost ────────────
   void _updateBee(double dt, bool running) {
     if (_beePos == null || _size == Size.zero) return;
     var pos = _beePos!;
     var vel = _beeVel;
 
-    final control = _stun > 0 ? 0.32 : 1.0;
+    final control = _stun > 0 ? 0.4 : 1.0;
     if (_stun > 0) _stun = math.max(0.0, _stun - dt);
 
-    if (_steering && _target != null) {
+    if (_target != null) {
       final to = _target! - pos;
       final dist = to.distance;
-      if (dist > 0.01) {
+      if (dist > _kBeeArrive) {
         final dir = to / dist;
-        final arrive = (dist / _kBeeArriveRadius).clamp(0.0, 1.0);
-        final desired = dir * (_kBeeMaxSpeed * arrive);
-        // Seek: exponential approach toward the desired velocity.
-        final k = 1.0 - math.pow(_kBeeSteerLerp, dt * control).toDouble();
+        final speed = _kBeeBaseSpeed + _kBeeBoostSpeed * _boost;
+        final desired = dir * speed;
+        final k = 1.0 - math.exp(-_kBeeAccel * dt * control);
         vel = Offset.lerp(vel, desired, k)!;
+      } else {
+        // Arrived — ease to a hover at the target.
+        vel *= math.pow(0.015, dt).toDouble();
       }
-    } else {
-      // No input: gentle drag so the bee coasts to a hover.
-      vel *= math.pow(_kBeeDrag, dt).toDouble();
     }
 
-    // Wind gust shove.
-    if (_windLeft > 0) {
-      vel += _windDir * (_windStr * dt);
-    }
+    // Rapid-tap boost bleeds off over time.
+    _boost = math.max(0.0, _boost - _kBoostDecay * dt);
 
-    // Subtle bee wander when cruising.
+    // Subtle wander when cruising so the flight reads alive.
     if (vel.distance > 24) {
       final perp = Offset(-vel.dy, vel.dx) / vel.distance;
       vel += perp * (math.sin(_t * 9.0) * 16 * dt);
     }
 
-    final maxV = _kBeeMaxSpeed * 1.4;
+    final maxV = (_kBeeBaseSpeed + _kBeeBoostSpeed) * 1.15;
     if (vel.distance > maxV) vel = vel / vel.distance * maxV;
 
     pos += vel * dt;
@@ -399,83 +432,94 @@ class _PollinationGameState extends State<PollinationGame>
     _aura.removeWhere((a) => a.life > 1.6);
   }
 
-  // ── hazards ────────────────────────────────────────────────────────────────
-  void _updateHazards(double dt) {
-    if (_size == Size.zero) return;
-    if (_cloudCd > 0) _cloudCd -= dt;
+  // ── predators ──────────────────────────────────────────────────────────────
+  void _updatePredators(double dt) {
+    if (_size == Size.zero || _beePos == null) return;
+    if (_hitCd > 0) _hitCd -= dt;
 
-    // Maintain the cloud count for current difficulty.
-    final wanted = (_diff * _kMaxClouds).floor().clamp(0, _kMaxClouds);
-    while (_clouds.length < wanted) {
-      final edge = _rng.nextInt(4);
-      final p = switch (edge) {
-        0 => Offset(_rng.nextDouble(), -0.05),
-        1 => Offset(1.05, _rng.nextDouble()),
-        2 => Offset(_rng.nextDouble(), 1.05),
-        _ => Offset(-0.05, _rng.nextDouble()),
-      };
-      final ang = _rng.nextDouble() * math.pi * 2;
-      final spd = 0.05 + _rng.nextDouble() * 0.06 + _diff * 0.05;
-      _clouds.add(_Cloud(p, Offset(math.cos(ang), math.sin(ang)) * spd,
-          0.11 + _rng.nextDouble() * 0.05, _rng.nextDouble() * 6));
-    }
-    while (_clouds.length > wanted && _clouds.isNotEmpty) {
-      _clouds.removeLast();
+    // Spawn pressure scales with carried honey AND round difficulty.
+    _predSpawnTimer -= dt;
+    final wanted = ((_honey / _kHoneyPerPredator).floor() + (_diff > 0.6 ? 1 : 0))
+        .clamp(0, _kPredatorMax);
+    final alive = _predators.where((p) => !p.leaving).length;
+    if (_predSpawnTimer <= 0 && alive < wanted) {
+      _spawnPredator();
+      _predSpawnTimer = _lerp(_kPredatorSpawnEasy, _kPredatorSpawnHard,
+          math.max(_diff, _honeyNorm));
     }
 
-    final shortest = _size.shortestSide;
-    for (final c in _clouds) {
-      c.pos += c.vel * dt;
-      c.phase += dt;
-      // Bounce gently within an expanded box so they wander on/off screen.
-      if (c.pos.dx < -0.1 || c.pos.dx > 1.1) {
-        c.vel = Offset(-c.vel.dx, c.vel.dy);
-      }
-      if (c.pos.dy < -0.1 || c.pos.dy > 1.1) {
-        c.vel = Offset(c.vel.dx, -c.vel.dy);
-      }
-      // Collision with the bee.
-      if (_cloudCd <= 0 && _beePos != null) {
-        final cpx = Offset(c.pos.dx * _size.width, c.pos.dy * _size.height);
-        final rpx = c.radius * shortest;
-        if ((cpx - _beePos!).distance < rpx + _kBeeRadius) {
-          _hitByPesticide(cpx);
-        }
-      }
-    }
+    final speed = _kPredatorSpeedBase + _kPredatorSpeedHoney * _honeyNorm;
+    final center = Offset(_size.width / 2, _size.height / 2);
+    for (var i = _predators.length - 1; i >= 0; i--) {
+      final pr = _predators[i];
+      pr.phase += dt;
+      pr.life -= dt;
 
-    // Wind gusts.
-    _gustTimer -= dt;
-    if (_windLeft > 0) {
-      _windLeft -= dt;
-      if (_windLeft <= 0) _windStreaks.clear();
-    }
-    if (_gustTimer <= 0) {
-      final ang = _rng.nextDouble() * math.pi * 2;
-      _windDir = Offset(math.cos(ang), math.sin(ang));
-      _windStr = _lerp(_kGustStrEasy, _kGustStrHard, _diff);
-      _windLeft = _kGustDur;
-      _gustTimer = _lerp(_kGustIntervalEasy, _kGustIntervalHard, _diff);
-      _windStreaks
-        ..clear()
-        ..addAll(List.generate(
-            14, (_) => Offset(_rng.nextDouble(), _rng.nextDouble())));
+      if (!pr.leaving && pr.life <= 0) {
+        pr.leaving = true;
+        final away = pr.pos - center;
+        final n = away.distance;
+        pr.vel = n > 0 ? away / n * 240 : const Offset(0, -240);
+      }
+
+      if (pr.leaving) {
+        pr.pos += pr.vel * dt;
+        final off = pr.pos.dx < -60 ||
+            pr.pos.dx > _size.width + 60 ||
+            pr.pos.dy < -60 ||
+            pr.pos.dy > _size.height + 60;
+        if (off || pr.life < -1.6) _predators.removeAt(i);
+        continue;
+      }
+
+      // Chase the bee.
+      final to = _beePos! - pr.pos;
+      final d = to.distance;
+      if (d > 0.1) {
+        final desired = to / d * speed;
+        pr.vel = Offset.lerp(pr.vel, desired,
+            1.0 - math.pow(0.0025, dt).toDouble())!;
+      }
+      // Erratic hornet jitter.
+      pr.vel += Offset(math.cos(pr.phase * 7), math.sin(pr.phase * 6)) * (30 * dt);
+      pr.pos += pr.vel * dt;
+
+      if (_hitCd <= 0 && d < _kPredatorCatchR + _kBeeRadius) {
+        _catch(pr);
+      }
     }
   }
 
-  void _hitByPesticide(Offset at) {
-    _cloudCd = _kCloudHitCooldown;
-    _stun = _kStunTime;
+  void _spawnPredator() {
+    final edge = _rng.nextInt(4);
+    final p = switch (edge) {
+      0 => Offset(_rng.nextDouble() * _size.width, -22),
+      1 => Offset(_size.width + 22, _rng.nextDouble() * _size.height),
+      2 => Offset(_rng.nextDouble() * _size.width, _size.height + 22),
+      _ => Offset(-22, _rng.nextDouble() * _size.height),
+    };
+    final life = _lerp(_kPredatorLifeMin, _kPredatorLifeMax, _rng.nextDouble());
+    _predators.add(_Predator(p, Offset.zero, life, life, _rng.nextDouble() * 6));
+  }
+
+  void _catch(_Predator pr) {
+    _hitCd = _kPredatorHitCooldown;
+    _stun = 0.6;
     _flash = 1.0;
-    _pollenType = -1;
-    _lastFlowerId = -1;
-    _aura.clear();
-    if (_combo > 0) {
-      _combo = 0;
-      _pops.add(FxPop(_beePos ?? at, 'POLLEN LOST', _kLeaf));
+    final lost = _honey * _kSpillFraction;
+    _honey = math.max(0.0, _honey - lost);
+    if (_combo > 0) _combo = 0;
+    // Knock the bee away from the hornet.
+    if (_beePos != null) {
+      final away = _beePos! - pr.pos;
+      final n = away.distance;
+      if (n > 0) _beeVel += away / n * 280;
     }
-    _fx.addAll(FxBurst.spawn(_beePos ?? at, const Color(0xFFB7C66B),
-        count: 16, speed: 150, size: 4));
+    pr.leaving = true;
+    pr.life = math.min(pr.life, 0.4);
+    final at = _beePos ?? pr.pos;
+    _pops.add(FxPop(at, lost >= 1 ? '−${lost.round()} HONEY' : 'STUNG!', _kPredator));
+    _fx.addAll(FxBurst.spawn(at, _kHoney, count: 16, speed: 170, size: 4));
   }
 
   // ── combo decay ────────────────────────────────────────────────────────────
@@ -518,20 +562,33 @@ class _PollinationGameState extends State<PollinationGame>
 
     _combo++;
     _comboTimer = 0;
-    final pts = _kScoreBase + math.min(_combo, _kComboCap) * _kComboBonus;
-    widget.session.addScore(pts);
     widget.session.noteStreak(_combo);
 
+    // Pollination fills the HONEY meter (banked later at the hive), scaled by
+    // the chain — long same-species sweeps are worth far more honey.
+    final gain = _kHoneyBase + math.min(_combo, _kComboCap) * _kHoneyComboStep;
+    _honey += gain;
+
     final col = _kSpecies[f.type];
-    _fx.addAll(FxBurst.spawn(fp, col, count: 18, speed: 170, size: 4));
-    _fx.addAll(FxBurst.spawn(fp, _kPotato, count: 8, speed: 110, size: 3));
-    _pops.add(FxPop(fp, '+$pts', _kPotato));
+    _fx.addAll(FxBurst.spawn(fp, col, count: 16, speed: 160, size: 4));
+    _fx.addAll(FxBurst.spawn(fp, _kHoney, count: 8, speed: 110, size: 3));
+    _pops.add(FxPop(fp, '+${gain.toStringAsFixed(1)}🍯', _kHoney));
     if (_combo >= 3) {
       _pops.add(FxPop(fp.translate(0, -26), '${_combo}x CHAIN', col));
     }
-    // Pollen stays loaded (refreshed from this flower) so a same-species sweep
-    // keeps the chain alive.
+    // Pollen stays loaded (refreshed) so a same-species sweep keeps the chain.
     _pollenType = f.type;
+  }
+
+  // ── hive deposit ─────────────────────────────────────────────────────────-─
+  void _checkHive() {
+    if (_beePos == null || _size == Size.zero || _honey < 0.5) return;
+    if ((_hivePx - _beePos!).distance >= _kHiveRadius + _kBeeRadius) return;
+    final banked = _honey.round();
+    widget.session.addScore(banked);
+    _honey = 0;
+    _pops.add(FxPop(_hivePx.translate(0, -28), '+$banked DEPOSITED', _kHoney));
+    _fx.addAll(FxBurst.spawn(_hivePx, _kHoney, count: 22, speed: 160, size: 4));
   }
 
   // ── fx housekeeping ────────────────────────────────────────────────────────
@@ -541,20 +598,30 @@ class _PollinationGameState extends State<PollinationGame>
     _pops.removeWhere((p) => !p.step(dt));
   }
 
-  // ── input ──────────────────────────────────────────────────────────────────
-  void _onDown(DragDownDetails d) {
-    _steering = true;
-    _target = d.localPosition;
+  // ── input: TAP to route; rapid taps add speed ───────────────────────────────
+  void _onTapDown(TapDownDetails d) {
+    if (_size == Size.zero) return;
+    final p = d.localPosition;
+    // Snap to the nearest pollinatable bloom so a tap reads as "go to that one".
+    Offset target = p;
+    double best = _kTapSnapRadius;
+    for (final f in _flowers) {
+      if (!f.active || f.phase != _Phase.bloom || f.grow < 1.0) continue;
+      final fp = Offset(f.frac.dx * _size.width, f.frac.dy * _size.height);
+      final dd = (fp - p).distance;
+      if (dd < best) {
+        best = dd;
+        target = fp;
+      }
+    }
+    _target = target;
+    _boost = (_boost + _kTapBoostGain).clamp(0.0, 1.0);
+    if (_beePos != null) {
+      final to = target - _beePos!;
+      final n = to.distance;
+      if (n > 1) _beeVel += to / n * _kTapImpulse;
+    }
   }
-
-  void _onStart(DragStartDetails d) {
-    _steering = true;
-    _target = d.localPosition;
-  }
-
-  void _onUpdate(DragUpdateDetails d) => _target = d.localPosition;
-  void _onEnd(DragEndDetails _) => _steering = false;
-  void _onCancel() => _steering = false;
 
   // ── build ──────────────────────────────────────────────────────────────────
   @override
@@ -563,12 +630,9 @@ class _PollinationGameState extends State<PollinationGame>
       _size = Size(constraints.maxWidth, constraints.maxHeight);
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onPanDown: _onDown,
-        onPanStart: _onStart,
-        onPanUpdate: _onUpdate,
-        onPanEnd: _onEnd,
-        onPanCancel: _onCancel,
+        onTapDown: _onTapDown,
         child: CustomPaint(
+          size: Size.infinite,
           painter: _PollinationPainter(
             t: _t,
             flowers: _flowers,
@@ -576,12 +640,14 @@ class _PollinationGameState extends State<PollinationGame>
             beeHeading: _beeHeading,
             wingPhase: _wingPhase,
             stun: _stun,
+            boost: _boost,
+            target: _target,
             pollenType: _pollenType,
             aura: List<_PollenMote>.from(_aura),
-            clouds: _clouds,
-            windDir: _windDir,
-            windLeft: _windLeft,
-            windStreaks: _windStreaks,
+            predators: _predators,
+            honey: _honey,
+            honeyNorm: _honeyNorm,
+            hiveFrac: _kHiveFrac,
             fx: _fx,
             pops: _pops,
             flash: _flash,
@@ -592,14 +658,6 @@ class _PollinationGameState extends State<PollinationGame>
       );
     });
   }
-}
-
-/// A pollen mote orbiting the bee while it carries pollen.
-class _PollenMote {
-  double angle;
-  final double radius;
-  double life;
-  _PollenMote(this.angle, this.radius, this.life);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -613,12 +671,14 @@ class _PollinationPainter extends CustomPainter {
   final double beeHeading;
   final double wingPhase;
   final double stun;
+  final double boost;
+  final Offset? target;
   final int pollenType;
   final List<_PollenMote> aura;
-  final List<_Cloud> clouds;
-  final Offset windDir;
-  final double windLeft;
-  final List<Offset> windStreaks;
+  final List<_Predator> predators;
+  final double honey;
+  final double honeyNorm;
+  final Offset hiveFrac;
   final List<FxParticle> fx;
   final List<FxPop> pops;
   final double flash;
@@ -632,12 +692,14 @@ class _PollinationPainter extends CustomPainter {
     required this.beeHeading,
     required this.wingPhase,
     required this.stun,
+    required this.boost,
+    required this.target,
     required this.pollenType,
     required this.aura,
-    required this.clouds,
-    required this.windDir,
-    required this.windLeft,
-    required this.windStreaks,
+    required this.predators,
+    required this.honey,
+    required this.honeyNorm,
+    required this.hiveFrac,
     required this.fx,
     required this.pops,
     required this.flash,
@@ -647,14 +709,20 @@ class _PollinationPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (!size.width.isFinite ||
+        !size.height.isFinite ||
+        size.shortestSide <= 0) {
+      return;
+    }
     GameFx.atmosphere(canvas, size, _kLeaf, t, motes: 30);
 
-    _paintWindStreaks(canvas, size);
+    _paintHive(canvas, size);
+    _paintTargetMarker(canvas, size);
     for (final f in flowers) {
       _paintFlower(canvas, size, f);
     }
-    for (final c in clouds) {
-      _paintCloud(canvas, size, c);
+    for (final pr in predators) {
+      _paintPredator(canvas, pr);
     }
     _paintBee(canvas);
 
@@ -668,9 +736,56 @@ class _PollinationPainter extends CustomPainter {
     if (flash > 0) {
       canvas.drawRect(
         Offset.zero & size,
-        Paint()..color = const Color(0xFFB7C66B).withValues(alpha: 0.22 * flash),
+        Paint()..color = _kPredator.withValues(alpha: 0.20 * flash),
       );
     }
+  }
+
+  // ── hive ─────────────────────────────────────────────────────────────────-─
+  void _paintHive(Canvas canvas, Size size) {
+    final pos = Offset(hiveFrac.dx * size.width, hiveFrac.dy * size.height);
+    // Attractor glow that pulses brighter when you have honey to deposit.
+    final pull = 0.10 + 0.20 * honeyNorm + 0.05 * math.sin(t * 4);
+    canvas.drawCircle(
+      pos,
+      _kHiveRadius + 10,
+      Paint()
+        ..color = _kHoney.withValues(alpha: pull)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+    );
+    // Skep — stacked honey-gold domes.
+    const w = 46.0;
+    for (var i = 0; i < 4; i++) {
+      final ry = 9.0 - i * 1.2;
+      final cy = pos.dy + 10 - i * 9.0;
+      final tone = Color.lerp(const Color(0xFFE6A12E), _kHoney, i / 3)!;
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(pos.dx, cy), width: w - i * 7.0, height: ry * 2),
+        Paint()..color = tone,
+      );
+    }
+    // Entrance.
+    canvas.drawCircle(pos.translate(0, 8), 4,
+        Paint()..color = const Color(0xFF3A2A12));
+    GameFx.text(canvas, 'HIVE', pos.translate(0, 22), 9,
+        _kHoney.withValues(alpha: 0.9), weight: FontWeight.w800);
+  }
+
+  void _paintTargetMarker(Canvas canvas, Size size) {
+    final tg = target;
+    final bp = beePos;
+    if (tg == null || bp == null) return;
+    if ((tg - bp).distance < _kBeeArrive + 6) return;
+    final pulse = 0.5 + 0.5 * math.sin(t * 8);
+    canvas.drawCircle(
+      tg,
+      9 + pulse * 3,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8
+        ..color = _kHoney.withValues(alpha: 0.45 + 0.3 * pulse),
+    );
   }
 
   // ── flowers ────────────────────────────────────────────────────────────────
@@ -679,7 +794,6 @@ class _PollinationPainter extends CustomPainter {
     final pos = Offset(f.frac.dx * size.width, f.frac.dy * size.height);
     final col = _kSpecies[f.type];
 
-    // Short stem + leaf, for charm.
     final stemPaint = Paint()
       ..color = _kLeaf.withValues(alpha: 0.55)
       ..strokeWidth = 2.4
@@ -692,7 +806,6 @@ class _PollinationPainter extends CustomPainter {
       case _Phase.bud:
         {
           if (f.grow <= 0) {
-            // tiny sprout while waiting
             canvas.drawCircle(pos.translate(0, 6), 3,
                 Paint()..color = _kLeaf.withValues(alpha: 0.6));
           } else {
@@ -703,8 +816,6 @@ class _PollinationPainter extends CustomPainter {
         }
       case _Phase.bloom:
         {
-          // Wilt urgency: a thin ring drains, and the bloom desaturates as the
-          // window closes so the player can read time pressure at a glance.
           final urgency =
               f.wiltMax > 0 ? (f.wilt / f.wiltMax).clamp(0.0, 1.0) : 1.0;
           _drawWiltRing(canvas, pos, col, urgency);
@@ -715,12 +826,10 @@ class _PollinationPainter extends CustomPainter {
       case _Phase.fruit:
         {
           final fade = (1.0 - f.fade).clamp(0.0, 1.0);
-          // Petals fall away as fruit sets.
           if (fade > 0.05) {
             _drawBloom(canvas, pos, col, f, 1.0 + 0.15 * f.fruit,
                 alpha: fade * 0.5);
           }
-          // The set fruit — a little potato.
           final fr = 5.0 + 6.0 * f.fruit;
           GameFx.orb(canvas, pos, fr, _kPotato,
               glow: 1.1, rim: _kLeaf, specular: true);
@@ -739,7 +848,7 @@ class _PollinationPainter extends CustomPainter {
 
   void _drawBloom(Canvas canvas, Offset pos, Color col, _Flower f, double scale,
       {double alpha = 1.0}) {
-    final petals = 6;
+    const petals = 6;
     final wobble = math.sin(t * 1.6 + f.sway) * 0.06;
     final petalLen = 11.0 * scale;
     final petalW = 6.5 * scale;
@@ -758,7 +867,6 @@ class _PollinationPainter extends CustomPainter {
       );
       canvas.restore();
     }
-    // Center disc.
     final centerCol = Color.lerp(col, const Color(0xFFFFE08A), 0.6)!;
     canvas.drawCircle(
         pos, 5.0 * scale, Paint()..color = centerCol.withValues(alpha: alpha));
@@ -785,7 +893,6 @@ class _PollinationPainter extends CustomPainter {
         ..strokeCap = StrokeCap.round
         ..color = ringCol.withValues(alpha: 0.7),
     );
-    // soft attractor glow so blooms read as targets
     canvas.drawCircle(
       pos,
       20,
@@ -800,48 +907,81 @@ class _PollinationPainter extends CustomPainter {
     return Color.lerp(c, Color.from(alpha: 1, red: l, green: l, blue: l), 0.55)!;
   }
 
-  // ── pesticide cloud ────────────────────────────────────────────────────────
-  void _paintCloud(Canvas canvas, Size size, _Cloud c) {
-    final pos = Offset(c.pos.dx * size.width, c.pos.dy * size.height);
-    final rpx = c.radius * size.shortestSide;
-    const haze = Color(0xFFB7C66B); // sickly yellow-green
-    // Layered puffs for a billowing toxic cloud.
-    for (var i = 0; i < 5; i++) {
-      final a = c.phase + i * 1.3;
-      final off = Offset(math.cos(a) * rpx * 0.4, math.sin(a * 0.8) * rpx * 0.32);
-      canvas.drawCircle(
-        pos + off,
-        rpx * (0.55 + 0.12 * math.sin(a * 1.7)),
-        Paint()
-          ..color = haze.withValues(alpha: 0.12)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+  // ── predator (hornet) ────────────────────────────────────────────────────-─
+  void _paintPredator(Canvas canvas, _Predator pr) {
+    // Fade in over the first 0.3s of life and out while leaving.
+    final age = pr.maxLife - pr.life;
+    double a = 1.0;
+    if (age < 0.3) a = (age / 0.3).clamp(0.0, 1.0);
+    if (pr.leaving) a *= (1.0 + pr.life / 1.6).clamp(0.0, 1.0);
+    if (a <= 0) return;
+
+    final p = pr.pos;
+    final heading = pr.vel.distance > 6
+        ? math.atan2(pr.vel.dy, pr.vel.dx)
+        : -math.pi / 2;
+
+    // Menace glow grows with carried honey.
+    canvas.drawCircle(
+      p,
+      16,
+      Paint()
+        ..color = _kPredator.withValues(alpha: (0.16 + 0.18 * honeyNorm) * a)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+    );
+
+    canvas.save();
+    canvas.translate(p.dx, p.dy);
+    canvas.rotate(heading + math.pi / 2);
+
+    // Blur-fast wings.
+    final flap = math.sin(pr.phase * 40).abs();
+    final wing = Paint()
+      ..color = Colors.white.withValues(alpha: 0.35 * a)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+    for (final sgn in const [-1.0, 1.0]) {
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(sgn * 7, -2), width: 13, height: 5 + flap * 5),
+        wing,
       );
     }
-    canvas.drawCircle(
-      pos,
-      rpx,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..color = haze.withValues(alpha: 0.35),
-    );
-    // Skull-ish hazard dot in the middle.
-    canvas.drawCircle(
-        pos, 4, Paint()..color = const Color(0xFFD7E27A).withValues(alpha: 0.8));
-  }
 
-  void _paintWindStreaks(Canvas canvas, Size size) {
-    if (windLeft <= 0) return;
-    final alpha = (windLeft / _kGustDur).clamp(0.0, 1.0) * 0.5;
-    final paint = Paint()
-      ..color = Colors.white.withValues(alpha: alpha)
-      ..strokeWidth = 1.6
-      ..strokeCap = StrokeCap.round;
-    final len = 26.0 + 18 * (1 - windLeft / _kGustDur);
-    for (final s in windStreaks) {
-      final base = Offset(s.dx * size.width, s.dy * size.height);
-      canvas.drawLine(base, base + windDir * len, paint);
+    // Body — dark red with black bands.
+    final body = Rect.fromCenter(center: Offset.zero, width: 12, height: 18);
+    final rr = RRect.fromRectAndRadius(body, const Radius.circular(6));
+    canvas.drawRRect(
+        rr,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color(0xFFD24A30).withValues(alpha: a),
+              _kPredator.withValues(alpha: a),
+            ],
+          ).createShader(body));
+    final band = Paint()..color = const Color(0xFF1C1410).withValues(alpha: a);
+    canvas.save();
+    canvas.clipRRect(rr);
+    for (var i = 0; i < 3; i++) {
+      canvas.drawRect(Rect.fromLTWH(-7, -2.0 + i * 4.5, 14, 2.2), band);
     }
+    canvas.restore();
+
+    // Stinger.
+    canvas.drawPath(
+      Path()
+        ..moveTo(-2, 9)
+        ..lineTo(2, 9)
+        ..lineTo(0, 15)
+        ..close(),
+      Paint()..color = const Color(0xFF1C1410).withValues(alpha: a),
+    );
+    // Head.
+    canvas.drawCircle(const Offset(0, -10), 3.6,
+        Paint()..color = const Color(0xFF1C1410).withValues(alpha: a));
+    canvas.restore();
   }
 
   // ── bee ────────────────────────────────────────────────────────────────────
@@ -849,7 +989,6 @@ class _PollinationPainter extends CustomPainter {
     final p = beePos;
     if (p == null) return;
 
-    // Carried-pollen aura.
     if (pollenType >= 0) {
       final col = _kSpecies[pollenType];
       canvas.drawCircle(
@@ -867,19 +1006,31 @@ class _PollinationPainter extends CustomPainter {
       }
     }
 
+    // Speed-lines when boosting hard, behind the bee.
+    if (boost > 0.25 && beeHeading.isFinite) {
+      final back = Offset(math.cos(beeHeading), math.sin(beeHeading));
+      final paint = Paint()
+        ..color = _kHoney.withValues(alpha: 0.30 * boost)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round;
+      for (var i = 0; i < 3; i++) {
+        final o = p - back * (10.0 + i * 8.0);
+        canvas.drawLine(o, o - back * (8 + 6 * boost), paint);
+      }
+    }
+
     // Soft shadow.
-    canvas.drawCircle(p.translate(0, 14),
-        9, Paint()..color = Colors.black.withValues(alpha: 0.18)
+    canvas.drawCircle(p.translate(0, 14), 9,
+        Paint()..color = Colors.black.withValues(alpha: 0.18)
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
 
     canvas.save();
     canvas.translate(p.dx, p.dy);
-    canvas.rotate(beeHeading + math.pi / 2); // sprite drawn nose-up
+    canvas.rotate(beeHeading + math.pi / 2);
     if (stun > 0) {
-      canvas.rotate(math.sin(t * 30) * 0.25 * stun); // woozy wobble
+      canvas.rotate(math.sin(t * 30) * 0.25 * stun);
     }
 
-    // Wings (flapping ellipses).
     final flap = (math.sin(wingPhase) * 0.5 + 0.5);
     final wingPaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.45)
@@ -894,9 +1045,8 @@ class _PollinationPainter extends CustomPainter {
       canvas.restore();
     }
 
-    // Body — striped abdomen.
-    final bodyRect = Rect.fromCenter(
-        center: Offset.zero, width: 14, height: 20);
+    final bodyRect =
+        Rect.fromCenter(center: Offset.zero, width: 14, height: 20);
     final rrect = RRect.fromRectAndRadius(bodyRect, const Radius.circular(7));
     canvas.drawRRect(
       rrect,
@@ -922,7 +1072,6 @@ class _PollinationPainter extends CustomPainter {
           ..strokeWidth = 1.2
           ..color = const Color(0xFF2A2018).withValues(alpha: 0.7));
 
-    // Head + antennae.
     canvas.drawCircle(const Offset(0, -11), 4.2,
         Paint()..color = const Color(0xFF2A2018));
     final ant = Paint()
@@ -935,54 +1084,82 @@ class _PollinationPainter extends CustomPainter {
     canvas.restore();
   }
 
-  // ── in-play HUD (carried pollen + combo) ───────────────────────────────────
+  // ── in-play HUD (carried pollen + honey meter + combo) ──────────────────────
   void _paintHud(Canvas canvas, Size size) {
-    // Carried pollen chip, top-left.
     const pad = 14.0;
+    // Carried pollen chip, top-left.
     final chipCenter = const Offset(pad + 12, pad + 12);
     canvas.drawCircle(
-      chipCenter,
-      13,
-      Paint()..color = Potatuhs.inkPanel.withValues(alpha: 0.8),
-    );
+        chipCenter, 13, Paint()..color = Potatuhs.inkPanel.withValues(alpha: 0.8));
     canvas.drawCircle(
-      chipCenter,
-      13,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..color = Colors.white.withValues(alpha: 0.12),
-    );
+        chipCenter,
+        13,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = Colors.white.withValues(alpha: 0.12));
     if (pollenType >= 0) {
       GameFx.orb(canvas, chipCenter, 7, _kSpecies[pollenType], glow: 1.0);
     } else {
-      GameFx.text(canvas, '?', chipCenter, 12,
-          Potatuhs.textFaint, weight: FontWeight.w800);
+      GameFx.text(canvas, '?', chipCenter, 12, Potatuhs.textFaint,
+          weight: FontWeight.w800);
     }
     GameFx.text(canvas, 'POLLEN', chipCenter.translate(40, 0), 10,
         Potatuhs.textSecondary, weight: FontWeight.w700);
 
+    // Honey meter, top-right. Fills with carried honey; reddens near danger.
+    const barW = 96.0;
+    final right = size.width - pad;
+    final barRect =
+        Rect.fromLTWH(right - barW, pad + 6, barW, 8);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(barRect, const Radius.circular(4)),
+      Paint()..color = Colors.black.withValues(alpha: 0.4),
+    );
+    final fillCol = Color.lerp(_kHoney, _kPredator, honeyNorm * 0.85)!;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(right - barW, pad + 6, barW * honeyNorm, 8),
+          const Radius.circular(4)),
+      Paint()..color = fillCol,
+    );
+    GameFx.text(
+        canvas,
+        '${honey.round()}🍯',
+        Offset(right - barW - 16, pad + 10),
+        12,
+        _kHoney,
+        weight: FontWeight.w800);
+    if (honeyNorm > 0.6) {
+      // Danger nudge: predators are coming — bank it.
+      GameFx.text(
+          canvas,
+          'DEPOSIT!',
+          Offset(right - barW / 2, pad + 24),
+          9,
+          _kPredator.withValues(alpha: 0.6 + 0.4 * math.sin(t * 8)),
+          weight: FontWeight.w800);
+    }
+
     // Combo meter, top-center, only while chaining.
     if (combo >= 2) {
       final c = Offset(size.width / 2, pad + 14);
-      GameFx.text(canvas, '${combo}x', c, 20,
-          _kPotato, display: true, glow: 0.6);
-      // chain-life bar
-      final barW = 60.0;
-      final bar = Rect.fromCenter(
-          center: c.translate(0, 16), width: barW, height: 4);
+      GameFx.text(canvas, '${combo}x', c, 20, _kHoney, display: true, glow: 0.6);
+      const cBarW = 60.0;
       canvas.drawRRect(
-        RRect.fromRectAndRadius(bar, const Radius.circular(2)),
+        RRect.fromRectAndRadius(
+            Rect.fromCenter(center: c.translate(0, 16), width: cBarW, height: 4),
+            const Radius.circular(2)),
         Paint()..color = Colors.white.withValues(alpha: 0.12),
       );
       canvas.drawRRect(
         RRect.fromRectAndRadius(
             Rect.fromCenter(
-                center: c.translate(-barW / 2 + barW * comboFrac / 2, 16),
-                width: barW * comboFrac,
+                center: c.translate(-cBarW / 2 + cBarW * comboFrac / 2, 16),
+                width: cBarW * comboFrac,
                 height: 4),
             const Radius.circular(2)),
-        Paint()..color = _kPotato.withValues(alpha: 0.85),
+        Paint()..color = _kHoney.withValues(alpha: 0.85),
       );
     }
   }
