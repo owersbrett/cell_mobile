@@ -14,7 +14,9 @@ abstract class PartyActions {
   void advanceStep();
   void choosePath(int next);
   void buyPotato();
+  void buyItem(PowerUp item);
   void skipPotato();
+  void chooseCardOption(int option);
   void useItem(PowerUp item);
   void useAtp(int plus);
   void recordMiniScore(int score);
@@ -42,7 +44,11 @@ class LocalActions implements PartyActions {
   @override
   void buyPotato() => c.buyPotato();
   @override
+  void buyItem(PowerUp item) => c.buyItem(item);
+  @override
   void skipPotato() => c.skipPotato();
+  @override
+  void chooseCardOption(int option) => c.chooseCardOption(option);
   @override
   void useItem(PowerUp item) => c.useItem(item);
   @override
@@ -79,7 +85,13 @@ class OnlineActions implements PartyActions {
   @override
   void buyPotato() => net.act(PartyInputKind.buyPotato);
   @override
+  void buyItem(PowerUp item) =>
+      net.act(PartyInputKind.buyItem, value: item.index);
+  @override
   void skipPotato() => net.act(PartyInputKind.skipPotato);
+  @override
+  void chooseCardOption(int option) =>
+      net.act(PartyInputKind.chooseCardOption, value: option);
   @override
   void useItem(PowerUp item) =>
       net.act(PartyInputKind.useItem, value: item.index);

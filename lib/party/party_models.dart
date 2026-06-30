@@ -72,12 +72,15 @@ extension PartyModeInfo on PartyMode {
 /// One armed power-up effect. Power-ups arm automatically when picked up
 /// and fire at the next relevant moment — no inventory management.
 enum PowerUp {
-  voidShield, // Nothing — blocks your next paydirt loss
-  spark, // Something — +4 paydirt when used
+  voidShield, // Nothing — blocks your next diamonds loss
+  spark, // Something — +4 diamonds when used
   accelerator, // Particles — your next roll uses two dice
   strongBond, // Atoms — blocks the next swap/steal event against you
-  catalyst, // Molecules — your next mini-game paydirt award is doubled
+  catalyst, // Molecules — your next mini-game diamonds award is doubled
   mitochondria, // Organelles — +3 added to your next roll
+  // APPENDED (index-stable): new buyable/grantable items. The input log
+  // serializes useItem by PowerUp.index, so new values go at the END.
+  loadedDice, // your next roll counts DOUBLE
 }
 
 extension PowerUpInfo on PowerUp {
@@ -95,23 +98,27 @@ extension PowerUpInfo on PowerUp {
         return 'CATALYST';
       case PowerUp.mitochondria:
         return 'MITOCHONDRIA';
+      case PowerUp.loadedDice:
+        return 'LOADED DICE';
     }
   }
 
   String get description {
     switch (this) {
       case PowerUp.voidShield:
-        return 'Blocks your next paydirt loss';
+        return 'Blocks your next diamonds loss';
       case PowerUp.spark:
-        return '+4 paydirt';
+        return '+4 diamonds';
       case PowerUp.accelerator:
         return 'Next roll uses two dice';
       case PowerUp.strongBond:
         return 'Blocks the next swap or steal against you';
       case PowerUp.catalyst:
-        return 'Next mini-game paydirt award doubled';
+        return 'Next mini-game diamonds award doubled';
       case PowerUp.mitochondria:
         return '+3 on your next roll';
+      case PowerUp.loadedDice:
+        return 'Your next roll counts double';
     }
   }
 
@@ -129,9 +136,39 @@ extension PowerUpInfo on PowerUp {
         return Icons.science;
       case PowerUp.mitochondria:
         return Icons.battery_charging_full;
+      case PowerUp.loadedDice:
+        return Icons.casino_outlined;
     }
   }
 }
+
+/// The items a player can BUY at a market or be GRANTED by a card. The six
+/// scale power-ups plus the new buyables. (voidShield/strongBond also arrive
+/// free on power-up tiles; here they have a price too.)
+const List<PowerUp> kItemShop = [
+  PowerUp.loadedDice,
+  PowerUp.accelerator,
+  PowerUp.mitochondria,
+  PowerUp.spark,
+  PowerUp.voidShield,
+  PowerUp.strongBond,
+  PowerUp.catalyst,
+];
+
+/// Diamond price per buyable item.
+const Map<PowerUp, int> kItemPrices = {
+  PowerUp.spark: 8,
+  PowerUp.voidShield: 10,
+  PowerUp.strongBond: 10,
+  PowerUp.mitochondria: 10,
+  PowerUp.loadedDice: 12,
+  PowerUp.accelerator: 14,
+  PowerUp.catalyst: 14,
+};
+
+/// Cheapest thing on a market shelf — the threshold for the shop to open as you
+/// pass it (potato is [kPotatoPrice]; the cheapest item undercuts it).
+const int kMinShopPrice = 8;
 
 /// One of the six scale-themed territories on the board.
 class BoardSection {
@@ -209,7 +246,7 @@ enum SpaceType { gain, lose, powerUp, event, shop, cardCommon, cardWild }
 /// the filibuster loop's circuit so stallers can keep passing it).
 const int kShopIndex = 47;
 
-/// Paydirt price of one potato.
+/// Diamond price of one potato.
 const int kPotatoPrice = 20;
 
 /// How many power-up items a player can carry at once.
@@ -297,7 +334,7 @@ const List<BoardBranch> kBoardBranches = [
   BoardBranch(forkIndex: 31, mergeIndex: 37, spaceIndices: [58, 59]),
   BoardBranch(forkIndex: 39, mergeIndex: 45, spaceIndices: [60, 61]),
   // Filibuster loop: merges BACKWARD past the Potato Market (shop 47), letting
-  // a player orbit the shop and stall for paydirt instead of lapping.
+  // a player orbit the shop and stall for diamonds instead of lapping.
   BoardBranch(forkIndex: 50, mergeIndex: 44, spaceIndices: [62, 63]),
 ];
 
@@ -399,10 +436,12 @@ class PartyPlayer {
 
   // Board state
   int position = 0;
-  int paydirt = 0; // in-game currency, earned in mini-games & on the board
+  // The two primary drivers: diamonds (the spendable in-game currency, earned in
+  // mini-games & on the board, spent at the market) and potatoes (the win
+  // condition). Diamonds break potato ties.
+  int diamonds = 0;
   int potatoes = 0; // bought at the Potato Market — most potatoes wins
   int atp = 0; // energy currency, trickles in each turn, spent to boost rolls
-  int diamonds = 0; // collected along the path; convert via the end-game award
 
   // Per-player stats for the end-game superlative potato awards (MAPS_SPEC).
   int roundWins = 0;
@@ -426,6 +465,7 @@ class PartyPlayer {
   bool accelerator = false;
   bool catalyst = false;
   bool mitochondria = false;
+  bool loadedDice = false;
 
   PartyPlayer({
     required this.index,
@@ -441,6 +481,7 @@ class PartyPlayer {
         if (accelerator) PowerUp.accelerator,
         if (catalyst) PowerUp.catalyst,
         if (mitochondria) PowerUp.mitochondria,
+        if (loadedDice) PowerUp.loadedDice,
       ];
 }
 

@@ -5,6 +5,7 @@ import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:flutter/foundation.dart';
 
 import 'maps/game_map.dart';
+import 'maps/ops.dart';
 import 'party_models.dart';
 
 /// One recorded player decision. Deterministic transitions (walking a step,
@@ -19,6 +20,9 @@ enum PartyInputKind {
   useItem,
   useAtp, // spend ATP to boost the roll (value = +1/+2/+3)
   beginWalk, // leave the roll-result panel and start walking
+  // APPENDED (index-stable; toJson serializes by .index): keep at the END.
+  chooseCardOption, // pick option A/B on a decision card (value = option index)
+  buyItem, // buy an item at the market (value = PowerUp.index)
 }
 
 /// Where the match's randomness comes from.
@@ -67,12 +71,13 @@ enum PartyPhase {
   rollResult, // dice shown; optional +1 ATP boost, then MOVE
   moving, // token steps along the path, one space per UI tick
   chooseBranch, // standing at a fork: the player picks a direction
-  shopOffer, // passing the Potato Market with enough paydirt: buy or pass
+  shopOffer, // passing the market: buy a potato or an item, or pass
+  cardDecision, // a decision card was drawn: pick option A or B
   spaceResolved, // effect shown, waiting for CONTINUE
   minigameIntro, // round's game revealed
   passPhone, // hand the phone to the next contestant
   minigamePlaying, // MiniGameHost active
-  minigameResults, // ranking + paydirt awards
+  minigameResults, // ranking + diamonds awards
   gameOver,
 }
 
@@ -105,14 +110,27 @@ class MiniGameStanding {
 class TeamStanding {
   final int teamIndex;
   final int potatoes;
-  final int paydirt;
-  const TeamStanding(this.teamIndex, this.potatoes, this.paydirt);
+  final int diamonds;
+  const TeamStanding(this.teamIndex, this.potatoes, this.diamonds);
+}
+
+/// A mischief op (the Peeler / the Masher) roaming the board. Each round it
+/// robs the leader and relocates, CARRYING the loot; a player who reaches its
+/// tile snatches the stash back. Only present on [GameMap] boards.
+class OpToken {
+  final Op op;
+  int position;
+  int diamonds = 0; // loot carried, reclaimable by catching it
+  int potatoes = 0;
+  OpToken(this.op, this.position);
+
+  bool get hasLoot => diamonds > 0 || potatoes > 0;
 }
 
 /// Pass-and-play board game loop. Each round every player rolls and walks
 /// the path (choosing directions at forks, buying potatoes at the market),
-/// then everyone plays the same randomly chosen mini-game and paydirt is
-/// awarded by rank. Most potatoes after the final round wins (paydirt
+/// then everyone plays the same randomly chosen mini-game and diamonds is
+/// awarded by rank. Most potatoes after the final round wins (diamonds
 /// breaks ties); team modes count the team's combined haul.
 class PartyController extends ChangeNotifier {
   PartyController({
@@ -142,6 +160,13 @@ class PartyController extends ChangeNotifier {
         teamIndex: mode.teamOf(i),
         character: charIdx,
       ));
+    }
+    // The mischief crew works the GameMap boards; legacy loop has none. Seed
+    // them at distinct tiles so they read as separate threats from the start.
+    if (gameMap != null) {
+      final n = board.length;
+      ops.add(OpToken(kPeeler, (n * 0.34).floor()));
+      ops.add(OpToken(kMasher, (n * 0.67).floor()));
     }
     _beginTurn(); // first player's energy trickle
   }
@@ -235,6 +260,11 @@ class PartyController extends ChangeNotifier {
   final List<PartyPlayer> players = [];
   late final List<BoardSpace> board = gameMap?.spaces ?? buildBoard();
 
+  /// The mischief crew roaming this board (Peeler + Masher). Empty on the
+  /// legacy loop; present on every [GameMap]. They rob the leader each round
+  /// and players chase them down to recover the loot.
+  final List<OpToken> ops = [];
+
   /// Map-aware section lookup — the new maps carry their own 8–10 sections, the
   /// legacy board uses the fixed [kBoardSections].
   BoardSection sectionOf(BoardSpace s) => gameMap?.sectionOf(s) ?? s.section;
@@ -243,6 +273,10 @@ class PartyController extends ChangeNotifier {
   int round = 1;
   int currentPlayerIndex = 0;
   TurnResult? lastTurn;
+
+  /// The card currently drawn on a cardCommon/cardWild tile — held while a
+  /// decision card waits for the player's A/B choice, and shown on the reveal.
+  Card? currentCard;
 
   /// Steps still to walk this turn; the UI calls [advanceStep] per tick.
   int stepsRemaining = 0;
@@ -261,6 +295,15 @@ class PartyController extends ChangeNotifier {
   MiniGameSpec? currentSpec;
   final List<MiniGameStanding> standings = [];
   String? _lastSpecId;
+
+  /// True on the final round when the map has a boss: the closing mini-game is
+  /// the BOSS round — top scorer earns a potato, lowest scorer loses one.
+  bool isBossRound = false;
+
+  /// The boss op presiding over the current boss round (null otherwise).
+  Op? get currentBoss => isBossRound && (gameMap?.bosses.isNotEmpty ?? false)
+      ? gameMap!.bosses.first
+      : null;
 
   PartyPlayer get currentPlayer => players[currentPlayerIndex];
 
@@ -314,6 +357,11 @@ class PartyController extends ChangeNotifier {
     }
 
     stepsRemaining = dice.reduce((a, b) => a + b) + bonus;
+    if (p.loadedDice) {
+      stepsRemaining *= 2;
+      turnLog.add('LOADED DICE — the roll counts DOUBLE!');
+      p.loadedDice = false;
+    }
     lastTurn = TurnResult(
       playerIndex: p.index,
       dice: dice,
@@ -417,17 +465,20 @@ class PartyController extends ChangeNotifier {
     p.position = next;
     p.stepsTaken++;
     stepsRemaining--;
+    _catchOps(p, next);
     // Lap bonus only on the legacy loop (the maps are linear, not a ring).
     if (gameMap == null && next == 0) {
-      p.paydirt += 5;
-      turnLog.add('${p.name} completed a lap of existence: +5 paydirt.');
+      p.diamonds += 5;
+      turnLog.add('${p.name} completed a lap of existence: +5 diamonds.');
     }
-    // Passing (or landing on) a market with enough paydirt pauses the walk for
+    // Passing (or landing on) a market with enough diamonds pauses the walk for
     // a purchase decision. Legacy uses the fixed shop index; maps use the type.
     final atShop = gameMap == null
         ? next == kShopIndex
         : board[next].type == SpaceType.shop;
-    if (atShop && p.paydirt >= kPotatoPrice) {
+    // Open the market if the player can afford anything on the shelf — a potato
+    // or the cheapest item.
+    if (atShop && p.diamonds >= kMinShopPrice) {
       phase = PartyPhase.shopOffer;
       notifyListeners();
       return;
@@ -440,10 +491,10 @@ class PartyController extends ChangeNotifier {
     assert(phase == PartyPhase.shopOffer);
     inputLog.add(const PartyInput(PartyInputKind.buyPotato));
     final p = currentPlayer;
-    p.paydirt -= kPotatoPrice;
+    p.diamonds -= kPotatoPrice;
     p.potatoes++;
     turnLog.add(
-        '${p.name} bought a POTATO for $kPotatoPrice paydirt! (${p.potatoes} total)');
+        '${p.name} bought a POTATO for $kPotatoPrice diamonds! (${p.potatoes} total)');
     phase = PartyPhase.moving;
     _finishStep();
   }
@@ -470,7 +521,12 @@ class PartyController extends ChangeNotifier {
         p.position = to;
       }
       _resolveSpace(p, board[p.position], turnLog);
-      phase = PartyPhase.spaceResolved;
+      // A decision card pauses for the player's choice; otherwise the space is
+      // resolved. _resolveSpace leaves the phase at [moving] unless it set a
+      // pause (cardDecision), so only advance when it didn't.
+      if (phase == PartyPhase.moving) {
+        phase = PartyPhase.spaceResolved;
+      }
     }
     notifyListeners();
   }
@@ -491,16 +547,16 @@ class PartyController extends ChangeNotifier {
   void _resolveSpace(PartyPlayer p, BoardSpace space, List<String> log) {
     switch (space.type) {
       case SpaceType.gain:
-        p.paydirt += 5;
-        log.add('${p.name} landed on a paydirt space: +5 paydirt.');
+        p.diamonds += 5;
+        log.add('${p.name} landed on a diamonds space: +5 diamonds.');
         break;
       case SpaceType.lose:
         if (p.voidShield) {
           p.voidShield = false;
           log.add("${p.name}'s VOID SHIELD absorbed the loss!");
         } else {
-          p.paydirt = max(0, p.paydirt - 5);
-          log.add('${p.name} hit an entropy space: −5 paydirt.');
+          p.diamonds = max(0, p.diamonds - 5);
+          log.add('${p.name} hit an entropy space: −5 diamonds.');
         }
         break;
       case SpaceType.powerUp:
@@ -513,13 +569,13 @@ class PartyController extends ChangeNotifier {
         // The purchase offer already fired while stepping in; landing here
         // just means the walk ended at the market.
         log.add('${p.name} is at the Potato Market '
-            '(potatoes cost $kPotatoPrice paydirt).');
+            '(potatoes cost $kPotatoPrice diamonds).');
         break;
       case SpaceType.cardCommon:
+        _drawCard(p, CardDeck.common, log);
+        break;
       case SpaceType.cardWild:
-        // TODO(maps): draw from the Tater (common) / Void (wild) deck. Until the
-        // card engine lands, a card tile resolves as a generic event.
-        _runEvent(p, log);
+        _drawCard(p, CardDeck.wild, log);
         break;
     }
   }
@@ -547,7 +603,7 @@ class PartyController extends ChangeNotifier {
     inputLog.add(PartyInput(PartyInputKind.useItem, item.index));
     switch (item) {
       case PowerUp.spark:
-        p.paydirt += 4;
+        p.diamonds += 4;
         break;
       case PowerUp.accelerator:
         p.accelerator = true;
@@ -564,7 +620,11 @@ class PartyController extends ChangeNotifier {
       case PowerUp.strongBond:
         p.strongBond = true;
         break;
+      case PowerUp.loadedDice:
+        p.loadedDice = true;
+        break;
     }
+    p.itemsUsed++;
     notifyListeners();
   }
 
@@ -590,17 +650,17 @@ class PartyController extends ChangeNotifier {
           if (o.voidShield) {
             o.voidShield = false;
           } else {
-            o.paydirt = max(0, o.paydirt - loss);
+            o.diamonds = max(0, o.diamonds - loss);
           }
         }
         log.add(
-            'ENTROPY SURGE! Everyone loses 3 paydirt, the leader loses 6.');
+            'ENTROPY SURGE! Everyone loses 3 diamonds, the leader loses 6.');
         break;
       case 2: // Photosynthesis
         for (final o in players) {
-          o.paydirt += 3;
+          o.diamonds += 3;
         }
-        log.add('PHOTOSYNTHESIS! Everyone gains +3 paydirt.');
+        log.add('PHOTOSYNTHESIS! Everyone gains +3 diamonds.');
         break;
       case 3: // Wormhole — 5 hops forward (main option at any fork)
         for (var i = 0; i < 5; i++) {
@@ -621,15 +681,272 @@ class PartyController extends ChangeNotifier {
     }
   }
 
-  /// Leader = most potatoes, paydirt breaks ties.
+  /// Leader = most potatoes, diamonds breaks ties.
   bool _isLeader(PartyPlayer p) {
     for (final o in players) {
       if (o.potatoes > p.potatoes ||
-          (o.potatoes == p.potatoes && o.paydirt > p.paydirt)) {
+          (o.potatoes == p.potatoes && o.diamonds > p.diamonds)) {
         return false;
       }
     }
     return true;
+  }
+
+  // ------------------------------------------------------------------- ops
+
+  /// Whoever the ops prey on — the current leader (rubber-band: the crew robs
+  /// from the front). Deterministic, so replay reproduces the victim.
+  PartyPlayer? _opVictim() {
+    if (players.isEmpty) return null;
+    return players.reduce((a, b) => (b.potatoes > a.potatoes ||
+            (b.potatoes == a.potatoes && b.diamonds > a.diamonds))
+        ? b
+        : a);
+  }
+
+  /// Run the mischief crew's turn: each op robs the leader and relocates,
+  /// carrying the loot for players to chase. Called once at the top of each new
+  /// round. The relocation tile comes off the tape so online stays in sync.
+  void _runOps(List<String> log) {
+    for (final t in ops) {
+      final victim = _opVictim();
+      if (victim != null) {
+        if (t.op.id == kMasher.id &&
+            victim.potatoes > 0 &&
+            !victim.strongBond) {
+          victim.potatoes--;
+          t.potatoes++;
+          victim.stolenFromCount++;
+          log.add('${t.op.name} mashed a POTATO out of ${victim.name}!');
+        } else if (victim.strongBond) {
+          victim.strongBond = false;
+          log.add('${victim.name}\'s STRONG BOND fended off ${t.op.name}.');
+        } else {
+          final take = min(victim.diamonds, 10);
+          if (take > 0) {
+            victim.diamonds -= take;
+            t.diamonds += take;
+            victim.stolenFromCount++;
+            log.add('${t.op.name} skimmed $take diamonds from ${victim.name}!');
+          }
+        }
+      }
+      // Slink off to a new tile, loot in hand — go catch them.
+      t.position = _tape.next(board.length);
+    }
+  }
+
+  /// A player landing on (or passing through) an op's tile snatches back its
+  /// whole stash. Pure transfer — deterministic, no tape draw.
+  void _catchOps(PartyPlayer p, int tile) {
+    for (final t in ops) {
+      if (t.position != tile || !t.hasLoot) continue;
+      if (t.diamonds > 0) {
+        p.diamonds += t.diamonds;
+        turnLog.add(
+            '${p.name} caught ${t.op.name} — recovered ${t.diamonds} diamonds!');
+        t.diamonds = 0;
+      }
+      if (t.potatoes > 0) {
+        p.potatoes += t.potatoes;
+        turnLog.add(
+            '${p.name} wrenched ${t.potatoes} potato back from ${t.op.name}!');
+        t.potatoes = 0;
+      }
+    }
+  }
+
+  // ----------------------------------------------------------------- cards
+
+  /// Draws from the common (Tater) or wild (Void) deck and applies it. A
+  /// decision card pauses in [PartyPhase.cardDecision] for the player's A/B
+  /// pick; every other card resolves immediately. The draw index comes off the
+  /// tape so host and clients land on the same card.
+  void _drawCard(PartyPlayer p, CardDeck deck, List<String> log) {
+    final cards = deck == CardDeck.wild ? kWildDeck : kCommonDeck;
+    final card = cards[_tape.next(cards.length)];
+    currentCard = card;
+    final deckName = deck == CardDeck.wild ? 'VOID CARD' : 'TATER CARD';
+    log.add('$deckName — ${card.title}: ${card.text}');
+    if (card.isDecision) {
+      phase = PartyPhase.cardDecision; // _finishStep leaves this in place
+      return;
+    }
+    _applyCardEffects(p, card.effects, log);
+  }
+
+  /// Resolves a decision card: the player chose option [i].
+  void chooseCardOption(int i) {
+    assert(phase == PartyPhase.cardDecision);
+    final card = currentCard;
+    if (card == null || i < 0 || i >= card.options.length) return;
+    inputLog.add(PartyInput(PartyInputKind.chooseCardOption, i));
+    turnLog.add('${currentPlayer.name} chose: ${card.options[i].label}.');
+    _applyCardEffects(currentPlayer, card.options[i].effects, turnLog);
+    phase = PartyPhase.spaceResolved;
+    notifyListeners();
+  }
+
+  void _applyCardEffects(
+      PartyPlayer p, List<CardEffect> effects, List<String> log) {
+    for (final e in effects) {
+      _applyOneEffect(p, e, log);
+    }
+  }
+
+  void _applyOneEffect(PartyPlayer p, CardEffect e, List<String> log) {
+    final others = players.where((o) => o.index != p.index).toList();
+    switch (e.kind) {
+      case EffectKind.gainPaydirt:
+      case EffectKind.gainDiamonds:
+        p.diamonds += e.amount;
+        log.add('${p.name} +${e.amount} diamonds.');
+        break;
+      case EffectKind.losePaydirt:
+      case EffectKind.loseDiamonds:
+        final loss = min(p.diamonds, e.amount);
+        p.diamonds -= loss;
+        log.add('${p.name} −$loss diamonds.');
+        break;
+      case EffectKind.tithe:
+        var total = 0;
+        for (final o in others) {
+          final t = (o.diamonds * e.amount / 100).floor();
+          o.diamonds -= t;
+          total += t;
+        }
+        p.diamonds += total;
+        log.add('${p.name} collects $total diamonds in tithe.');
+        break;
+      case EffectKind.allLoseDiamonds:
+        for (final o in players) {
+          o.diamonds -= (o.diamonds * e.amount / 100).floor();
+        }
+        log.add('A void opens — everyone loses ${e.amount}% of their diamonds.');
+        break;
+      case EffectKind.gainItem:
+        final n = e.amount <= 0 ? 1 : e.amount;
+        for (var i = 0; i < n; i++) {
+          _grantRandomItem(p, log);
+        }
+        break;
+      case EffectKind.loseItem:
+        if (p.items.isNotEmpty) {
+          final it = p.items.removeAt(_tape.next(p.items.length));
+          log.add('${p.name} loses their ${it.label}.');
+        }
+        break;
+      case EffectKind.stealItem:
+        final haves = others.where((o) => o.items.isNotEmpty).toList();
+        if (p.items.length >= kMaxItems || haves.isEmpty) {
+          log.add('The Peeler finds nothing to lift.');
+        } else {
+          final victim = haves[_tape.next(haves.length)];
+          if (victim.strongBond) {
+            victim.strongBond = false;
+            log.add("${victim.name}'s STRONG BOND blocks the heist!");
+          } else {
+            final it = victim.items.removeAt(_tape.next(victim.items.length));
+            p.items.add(it);
+            victim.stolenFromCount++;
+            log.add('${p.name} lifts a ${it.label} from ${victim.name}!');
+          }
+        }
+        break;
+      case EffectKind.gainAtp:
+        p.atp += e.amount;
+        log.add('${p.name} +${e.amount} ATP.');
+        break;
+      case EffectKind.move:
+        _cardMove(p, e.amount, log);
+        break;
+      case EffectKind.teleport:
+        p.position = e.amount == 1 ? board.length - 1 : 0;
+        log.add('${p.name} teleports to '
+            '${e.amount == 1 ? 'the anchor' : 'the start'}.');
+        break;
+      case EffectKind.swapPaydirt:
+        if (others.isNotEmpty) {
+          final t = others[_tape.next(others.length)];
+          if (t.strongBond) {
+            t.strongBond = false;
+            log.add("${t.name}'s STRONG BOND holds — no swap.");
+          } else {
+            final tmp = p.diamonds;
+            p.diamonds = t.diamonds;
+            t.diamonds = tmp;
+            log.add('${p.name} swaps diamonds with ${t.name}.');
+          }
+        }
+        break;
+      case EffectKind.setEqualToLeader:
+        final lead = players.reduce((a, b) => (b.potatoes > a.potatoes ||
+                (b.potatoes == a.potatoes && b.diamonds > a.diamonds))
+            ? b
+            : a);
+        p.diamonds = lead.diamonds;
+        log.add('${p.name} mirrors the leader: ${lead.diamonds} diamonds.');
+        break;
+      case EffectKind.coinFlip:
+        if (_tape.next(2) == 0) {
+          log.add('Coin-flip — WIN!');
+          _applyCardEffects(p, e.win, log);
+        } else {
+          log.add('Coin-flip — lose.');
+          _applyCardEffects(p, e.lose, log);
+        }
+        break;
+      case EffectKind.gainPotato:
+        p.potatoes++;
+        log.add('${p.name} gains a POTATO!');
+        break;
+      case EffectKind.losePotato:
+        if (p.potatoes > 0) {
+          p.potatoes--;
+          log.add('${p.name} loses a potato.');
+        }
+        break;
+    }
+  }
+
+  void _grantRandomItem(PartyPlayer p, List<String> log) {
+    if (p.items.length >= kMaxItems) {
+      log.add("${p.name}'s pack is full — no room for the item.");
+      return;
+    }
+    final it = kItemShop[_tape.next(kItemShop.length)];
+    p.items.add(it);
+    log.add('${p.name} gains a ${it.label}.');
+  }
+
+  void _cardMove(PartyPlayer p, int delta, List<String> log) {
+    if (delta >= 0) {
+      for (var i = 0; i < delta; i++) {
+        final n = board[p.position].nexts;
+        if (n.isEmpty) break;
+        p.position = n.first;
+      }
+    } else {
+      p.position = gameMap == null
+          ? (p.position + delta + kMainLoopLength) % kMainLoopLength
+          : max(0, p.position + delta);
+    }
+    log.add('${p.name} moves ${delta >= 0 ? 'forward' : 'back'} ${delta.abs()}.');
+  }
+
+  /// Buys one held item at the market (alongside the potato purchase), then the
+  /// walk continues. A logged decision so replay stays faithful.
+  void buyItem(PowerUp item) {
+    assert(phase == PartyPhase.shopOffer);
+    final p = currentPlayer;
+    final price = kItemPrices[item] ?? 999;
+    if (p.diamonds < price || p.items.length >= kMaxItems) return;
+    inputLog.add(PartyInput(PartyInputKind.buyItem, item.index));
+    p.diamonds -= price;
+    p.items.add(item);
+    turnLog.add('${p.name} bought ${item.label} for $price diamonds.');
+    phase = PartyPhase.moving;
+    _finishStep();
   }
 
   // ------------------------------------------------------------- mini-games
@@ -638,6 +955,8 @@ class PartyController extends ChangeNotifier {
     currentSpec = _pickSpec();
     _lastSpecId = currentSpec!.id;
     standings.clear();
+    // The closing round is the boss showdown when the map fields a boss.
+    isBossRound = round >= totalRounds && (gameMap?.bosses.isNotEmpty ?? false);
     phase = PartyPhase.minigameIntro;
   }
 
@@ -742,7 +1061,26 @@ class PartyController extends ChangeNotifier {
         s.player.catalyst = false;
         s.award *= 2;
       }
-      s.player.paydirt += s.award;
+      s.player.diamonds += s.award;
+    }
+    if (isBossRound) _applyBossPotatoes();
+  }
+
+  /// Boss-round stakes: the top scorer(s) earn a potato; the lowest scorer(s)
+  /// lose one (never below zero). On an all-tie, everyone shares the top and no
+  /// one loses. Deterministic from the standings, so replay needs no extra draw.
+  void _applyBossPotatoes() {
+    if (standings.isEmpty) return;
+    final top =
+        standings.map((s) => s.score).reduce((a, b) => a > b ? a : b);
+    final bottom =
+        standings.map((s) => s.score).reduce((a, b) => a < b ? a : b);
+    for (final s in standings) {
+      if (s.score == top) {
+        s.player.potatoes++;
+      } else if (top != bottom && s.score == bottom) {
+        s.player.potatoes = max(0, s.player.potatoes - 1);
+      }
     }
   }
 
@@ -753,6 +1091,8 @@ class PartyController extends ChangeNotifier {
       phase = PartyPhase.gameOver;
     } else {
       round++;
+      turnLog.clear();
+      _runOps(turnLog); // the crew robs the leader and scatters the loot
       currentPlayerIndex = 0;
       phase = PartyPhase.turnStart;
       _beginTurn();
@@ -762,11 +1102,11 @@ class PartyController extends ChangeNotifier {
 
   // ---------------------------------------------------------------- results
 
-  /// Final placements, best first: potatoes, then paydirt, then position.
+  /// Final placements, best first: potatoes, then diamonds, then position.
   List<PartyPlayer> get finalPlayerRanking {
     final sorted = [...players]..sort((a, b) {
         if (b.potatoes != a.potatoes) return b.potatoes.compareTo(a.potatoes);
-        if (b.paydirt != a.paydirt) return b.paydirt.compareTo(a.paydirt);
+        if (b.diamonds != a.diamonds) return b.diamonds.compareTo(a.diamonds);
         return b.position.compareTo(a.position);
       });
     return sorted;
@@ -775,17 +1115,17 @@ class PartyController extends ChangeNotifier {
   /// Team totals, best first.
   List<TeamStanding> get finalTeamRanking {
     final potatoes = <int, int>{};
-    final paydirt = <int, int>{};
+    final diamonds = <int, int>{};
     for (final p in players) {
       potatoes[p.teamIndex] = (potatoes[p.teamIndex] ?? 0) + p.potatoes;
-      paydirt[p.teamIndex] = (paydirt[p.teamIndex] ?? 0) + p.paydirt;
+      diamonds[p.teamIndex] = (diamonds[p.teamIndex] ?? 0) + p.diamonds;
     }
     final standings = [
       for (final team in potatoes.keys)
-        TeamStanding(team, potatoes[team]!, paydirt[team]!),
+        TeamStanding(team, potatoes[team]!, diamonds[team]!),
     ]..sort((a, b) {
         if (b.potatoes != a.potatoes) return b.potatoes.compareTo(a.potatoes);
-        return b.paydirt.compareTo(a.paydirt);
+        return b.diamonds.compareTo(a.diamonds);
       });
     return standings;
   }
@@ -820,6 +1160,12 @@ class PartyController extends ChangeNotifier {
       case PartyInputKind.beginWalk:
         beginWalk();
         break;
+      case PartyInputKind.chooseCardOption:
+        chooseCardOption(input.value);
+        break;
+      case PartyInputKind.buyItem:
+        buyItem(PowerUp.values[input.value]);
+        break;
     }
   }
 
@@ -850,6 +1196,7 @@ class PartyController extends ChangeNotifier {
         case PartyPhase.rollResult:
         case PartyPhase.chooseBranch:
         case PartyPhase.shopOffer:
+        case PartyPhase.cardDecision:
         case PartyPhase.minigamePlaying:
         case PartyPhase.gameOver:
           return;
@@ -908,7 +1255,7 @@ class PartyController extends ChangeNotifier {
       if (p.position < 0 || p.position >= board.length) {
         throw StateError('${p.name} position out of range: ${p.position}');
       }
-      if (p.paydirt < 0) throw StateError('${p.name} has negative paydirt');
+      if (p.diamonds < 0) throw StateError('${p.name} has negative diamonds');
       if (p.atp < 0) throw StateError('${p.name} has negative ATP');
       if (p.potatoes < 0) throw StateError('${p.name} has negative potatoes');
     }

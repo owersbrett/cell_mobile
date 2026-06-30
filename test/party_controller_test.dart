@@ -117,7 +117,26 @@ void playLegalGame(PartyController c, Random choices) {
         c.choosePath(opts[choices.nextInt(opts.length)]);
         break;
       case PartyPhase.shopOffer:
-        choices.nextBool() ? c.buyPotato() : c.skipPotato();
+        // Sometimes buy a potato, sometimes an affordable item, sometimes skip —
+        // exercises buyItem in the input log so replay reproduces it.
+        final cur = c.currentPlayer;
+        final affordable = kItemShop
+            .where((it) => (kItemPrices[it] ?? 999) <= cur.diamonds)
+            .toList();
+        final r = choices.nextInt(3);
+        if (r == 0 && cur.diamonds >= kPotatoPrice) {
+          c.buyPotato();
+        } else if (r == 1 &&
+            affordable.isNotEmpty &&
+            cur.items.length < kMaxItems) {
+          c.buyItem(affordable[choices.nextInt(affordable.length)]);
+        } else {
+          c.skipPotato();
+        }
+        break;
+      case PartyPhase.cardDecision:
+        final opts = c.currentCard!.options;
+        c.chooseCardOption(choices.nextInt(opts.length));
         break;
       case PartyPhase.spaceResolved:
         c.confirmSpace();
@@ -171,7 +190,7 @@ void main() {
         for (var i = 0; i < original.players.length; i++) {
           final a = original.players[i], b = restored.players[i];
           expect(b.position, a.position, reason: '$mode player $i position');
-          expect(b.paydirt, a.paydirt, reason: '$mode player $i paydirt');
+          expect(b.diamonds, a.diamonds, reason: '$mode player $i diamonds');
           expect(b.potatoes, a.potatoes, reason: '$mode player $i potatoes');
         }
       }
@@ -218,7 +237,7 @@ void main() {
         for (var i = 0; i < host.players.length; i++) {
           final a = host.players[i], b = client.players[i];
           expect(b.position, a.position, reason: '$mode player $i position');
-          expect(b.paydirt, a.paydirt, reason: '$mode player $i paydirt');
+          expect(b.diamonds, a.diamonds, reason: '$mode player $i diamonds');
           expect(b.potatoes, a.potatoes, reason: '$mode player $i potatoes');
           expect(b.atp, a.atp, reason: '$mode player $i atp');
         }
@@ -301,31 +320,31 @@ void main() {
   });
 
   group('potato market', () {
-    test('buying a potato spends paydirt and banks a potato', () {
+    test('buying a potato spends diamonds and banks a potato', () {
       final c = makeController(random: _FixedRandom(0)); // rolls 1
       final p = c.currentPlayer;
       p.position = kShopIndex - 1;
-      p.paydirt = 50;
+      p.diamonds = 50;
       c.roll(); // step onto the market
       walkOut(c, buy: true);
       expect(p.potatoes, 1);
-      expect(p.paydirt, 50 - kPotatoPrice);
+      expect(p.diamonds, 50 - kPotatoPrice);
     });
 
     test('the market does not offer when the player is broke', () {
       final c = makeController(random: _FixedRandom(0));
       final p = c.currentPlayer;
       p.position = kShopIndex - 1;
-      p.paydirt = kPotatoPrice - 1;
+      p.diamonds = kPotatoPrice - 1;
       c.roll();
       walkOut(c); // never reaches a shopOffer (walkOut would buy=false anyway)
       expect(p.potatoes, 0);
-      expect(p.paydirt, kPotatoPrice - 1);
+      expect(p.diamonds, kPotatoPrice - 1);
     });
   });
 
   group('mini-game scoring', () {
-    test('FFA awards 10/6/4/2 paydirt by rank', () {
+    test('FFA awards 10/6/4/2 diamonds by rank', () {
       final c = makeController();
       playBoardPhase(c);
       playMiniGameRound(c, [50, 200, 100, 75]);
@@ -337,7 +356,7 @@ void main() {
       expect(award(0), 2);
     });
 
-    test('catalyst doubles the paydirt award once', () {
+    test('catalyst doubles the diamonds award once', () {
       final c = makeController();
       playBoardPhase(c);
       c.players[1].catalyst = true;
@@ -384,8 +403,8 @@ void main() {
       final restored = PartyController.fromSaveJson(
           json.decode(json.encode(c.toSaveJson())) as Map<String, dynamic>);
       for (var i = 0; i < c.players.length; i++) {
-        expect(restored.players[i].paydirt, c.players[i].paydirt,
-            reason: 'player $i paydirt');
+        expect(restored.players[i].diamonds, c.players[i].diamonds,
+            reason: 'player $i diamonds');
       }
     });
 
@@ -428,21 +447,21 @@ void main() {
   });
 
   group('winner', () {
-    test('final ranking is by potatoes, then paydirt', () {
+    test('final ranking is by potatoes, then diamonds', () {
       final c = makeController();
       c.players[0].potatoes = 1;
-      c.players[0].paydirt = 5;
+      c.players[0].diamonds = 5;
       c.players[1].potatoes = 0;
-      c.players[1].paydirt = 99;
+      c.players[1].diamonds = 99;
       c.players[2].potatoes = 2;
-      c.players[2].paydirt = 0;
+      c.players[2].diamonds = 0;
       c.players[3].potatoes = 0;
-      c.players[3].paydirt = 50;
+      c.players[3].diamonds = 50;
       final ranking = c.finalPlayerRanking;
       expect(ranking[0].index, 2); // 2 potatoes
       expect(ranking[1].index, 0); // 1 potato
-      expect(ranking[2].index, 1); // 0 potatoes, 99 paydirt
-      expect(ranking[3].index, 3); // 0 potatoes, 50 paydirt
+      expect(ranking[2].index, 1); // 0 potatoes, 99 diamonds
+      expect(ranking[3].index, 3); // 0 potatoes, 50 diamonds
     });
   });
 

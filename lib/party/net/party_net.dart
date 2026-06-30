@@ -297,6 +297,18 @@ class PartyNet extends ChangeNotifier {
           return true;
         }
         return false;
+      case PartyInputKind.buyItem:
+        if (c.phase == PartyPhase.shopOffer && slot == cur) {
+          c.buyItem(PowerUp.values[r.value]);
+          return true;
+        }
+        return false;
+      case PartyInputKind.chooseCardOption:
+        if (c.phase == PartyPhase.cardDecision && slot == cur) {
+          c.chooseCardOption(r.value);
+          return true;
+        }
+        return false;
       case PartyInputKind.skipPotato:
         if (c.phase == PartyPhase.shopOffer && slot == cur) {
           c.skipPotato();

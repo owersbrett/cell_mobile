@@ -114,7 +114,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
         uid: _uid!,
         name: name,
         mode: _mode,
-        rounds: 5,
+        rounds: 7, // a match ends on the 7th-round BOSS showdown
         mapId: _mapId,
       );
       PartySession.active = net;

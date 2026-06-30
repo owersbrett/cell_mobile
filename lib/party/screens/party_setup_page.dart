@@ -21,11 +21,12 @@ class PartySetupView extends StatefulWidget {
 
 class _PartySetupViewState extends State<PartySetupView> {
   PartyMode _mode = PartyMode.ffa4;
-  int _rounds = 5;
+  int _rounds = 7;
   late final List<String> _names =
       kCharacters.map((c) => c.name).toList();
 
-  static const _roundCounts = [3, 5, 8];
+  // The 7-round match ends on a BOSS round; 5 / 10 flank it for shorter/longer.
+  static const _roundCounts = [5, 7, 10];
   static const _roundLabels = ['QUICK', 'STANDARD', 'MARATHON'];
 
   /// Avatar for player [i]: the signed-in player (slot 0) uses their custom

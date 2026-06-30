@@ -12,6 +12,7 @@ import '../../theme/potatuhs.dart';
 import '../party_actions.dart';
 import '../../games/play_config.dart';
 import '../maps/game_map.dart';
+import '../maps/ops.dart';
 import '../party_controller.dart';
 import '../party_models.dart';
 import '../party_session_store.dart';
@@ -257,6 +258,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       case PartyPhase.moving:
       case PartyPhase.chooseBranch:
       case PartyPhase.shopOffer:
+      case PartyPhase.cardDecision:
       case PartyPhase.spaceResolved:
         return _BoardScreen(
           controller: c,
@@ -520,11 +522,23 @@ class _BoardScreen extends StatefulWidget {
   State<_BoardScreen> createState() => _BoardScreenState();
 }
 
-class _BoardScreenState extends State<_BoardScreen> {
+class _BoardScreenState extends State<_BoardScreen>
+    with SingleTickerProviderStateMixin {
   // The controller now moves tokens one space at a time; this timer just
   // paces the walk and pauses automatically at forks / the market.
   Timer? _stepTimer;
   bool _diceSettled = false;
+
+  /// Drives the dice TUMBLE — a presentation-only roll animation. The rolled
+  /// value is fixed by the controller's host-authoritative tape; this just
+  /// makes the reveal feel like a thrown die (cycling pip faces → settle bounce)
+  /// instead of a number popping into a box. Faces lock at 75% of the run; the
+  /// final quarter is the elastic settle.
+  late final AnimationController _diceCtrl;
+
+  /// Last phase [_syncMovement] saw, so we trigger the tumble exactly once on
+  /// the transition INTO rollResult rather than on every controller rebuild.
+  PartyPhase? _lastSyncPhase;
 
   /// Persistent across the frequent controller rebuilds so a pinch-zoom on the
   /// board doesn't snap back to 1× every time a token takes a step.
@@ -576,6 +590,14 @@ class _BoardScreenState extends State<_BoardScreen> {
   @override
   void initState() {
     super.initState();
+    _diceCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 720),
+    )..addStatusListener((s) {
+        if (s == AnimationStatus.completed && mounted) {
+          setState(() => _diceSettled = true);
+        }
+      });
     _boardTransform.addListener(_onZoom);
     _syncMovement();
   }
@@ -597,17 +619,26 @@ class _BoardScreenState extends State<_BoardScreen> {
   /// runs only while moving; it stops (and the dice reset) once the walk
   /// resolves, and pauses — without resetting the dice — at a fork or shop.
   void _syncMovement() {
-    if (controller.phase == PartyPhase.moving) {
+    final phase = controller.phase;
+    final entering = phase != _lastSyncPhase;
+    _lastSyncPhase = phase;
+    if (phase == PartyPhase.moving) {
+      // By the time we're walking the dice have settled (locked face shown).
+      if (!_diceCtrl.isCompleted) _diceCtrl.value = 1.0;
+      _diceSettled = true;
       _stepTimer ??= Timer.periodic(
           const Duration(milliseconds: 240), _onStepTick);
     } else {
       _stepTimer?.cancel();
       _stepTimer = null;
-      if (controller.phase == PartyPhase.rollResult) {
-        // Dice are revealed (and held) on the roll-result panel.
-        _diceSettled = true;
-      } else if (controller.phase != PartyPhase.chooseBranch &&
-          controller.phase != PartyPhase.shopOffer) {
+      if (phase == PartyPhase.rollResult) {
+        // Throw the dice: cycle pip faces, then settle on the rolled value.
+        if (entering) {
+          _diceSettled = false;
+          _diceCtrl.forward(from: 0);
+        }
+      } else if (phase != PartyPhase.chooseBranch &&
+          phase != PartyPhase.shopOffer) {
         _diceSettled = false;
       }
     }
@@ -634,6 +665,7 @@ class _BoardScreenState extends State<_BoardScreen> {
   @override
   void dispose() {
     _stepTimer?.cancel();
+    _diceCtrl.dispose();
     _boardTransform.dispose();
     super.dispose();
   }
@@ -787,11 +819,13 @@ class _BoardScreenState extends State<_BoardScreen> {
       case PartyPhase.chooseBranch:
         return "Fork in the road — $who, climb out or push deeper?";
       case PartyPhase.shopOffer:
-        return last ?? "The Potato Market! Cash in, $who?";
+        return last ?? "The market's open! Spend up, $who?";
+      case PartyPhase.cardDecision:
+        return last ?? "A card! $who, what'll it be?";
       case PartyPhase.spaceResolved:
         return last ?? "And $who sticks the landing.";
       case PartyPhase.minigameIntro:
-        return "Mini-game time — everybody plays for the paydirt!";
+        return "Mini-game time — everybody plays for the diamonds!";
       case PartyPhase.passPhone:
         return "Pass the phone — $who, you're on deck.";
       case PartyPhase.minigamePlaying:
@@ -855,7 +889,7 @@ class _BoardScreenState extends State<_BoardScreen> {
                 color: kTeamColors[teamRank[i].teamIndex],
                 name: kTeamNames[teamRank[i].teamIndex],
                 potatoes: teamRank[i].potatoes,
-                paydirt: teamRank[i].paydirt,
+                diamonds: teamRank[i].diamonds,
                 bold: true,
               ),
           for (var i = 0; i < ranked.length; i++)
@@ -864,7 +898,7 @@ class _BoardScreenState extends State<_BoardScreen> {
               color: ranked[i].color,
               name: ranked[i].name,
               potatoes: ranked[i].potatoes,
-              paydirt: ranked[i].paydirt,
+              diamonds: ranked[i].diamonds,
               atp: ranked[i].atp,
               highlight: ranked[i].index == controller.currentPlayer.index &&
                   controller.phase != PartyPhase.spaceResolved,
@@ -881,7 +915,7 @@ class _BoardScreenState extends State<_BoardScreen> {
     required Color color,
     required String name,
     required int potatoes,
-    required int paydirt,
+    required int diamonds,
     int? atp,
     bool highlight = false,
     bool bold = false,
@@ -945,7 +979,7 @@ class _BoardScreenState extends State<_BoardScreen> {
           const SizedBox(width: 4),
           Icon(Icons.savings, size: 11, color: _kAccent),
           const SizedBox(width: 2),
-          Text('$paydirt',
+          Text('$diamonds',
               style: const TextStyle(
                   fontFamily: _kFont,
                   fontSize: 11,
@@ -1078,7 +1112,8 @@ class _BoardScreenState extends State<_BoardScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              for (final d in turn.dice) _die(d, p.color),
+              for (var i = 0; i < turn.dice.length; i++)
+                _die(turn.dice[i], p.color, i),
               if (turn.rollBonus > 0)
                 Padding(
                   padding: const EdgeInsets.only(left: 8),
@@ -1130,7 +1165,8 @@ class _BoardScreenState extends State<_BoardScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              for (final d in turn.dice) _die(d, p.color),
+              for (var i = 0; i < turn.dice.length; i++)
+                _die(turn.dice[i], p.color, i),
               if (turn.rollBonus > 0)
                 Padding(
                   padding: const EdgeInsets.only(left: 8),
@@ -1158,6 +1194,8 @@ class _BoardScreenState extends State<_BoardScreen> {
       );
     } else if (phase == PartyPhase.chooseBranch) {
       child = _branchChoice(p);
+    } else if (phase == PartyPhase.cardDecision) {
+      child = _cardDecision(p);
     } else if (phase == PartyPhase.shopOffer) {
       child = _shopOffer(p);
     } else {
@@ -1345,7 +1383,7 @@ class _BoardScreenState extends State<_BoardScreen> {
           .firstWhere((b) => b.spaceIndices.contains(next));
       if (branch.mergeIndex < branch.forkIndex) {
         label = 'FILIBUSTER LOOP';
-        sub = 'Orbit the Potato Market — stall for paydirt';
+        sub = 'Orbit the Potato Market — stall for diamonds';
         icon = Icons.loop;
       } else {
         label = 'SHORTCUT LANE';
@@ -1402,12 +1440,14 @@ class _BoardScreenState extends State<_BoardScreen> {
   }
 
   Widget _shopOffer(PartyPlayer p) {
+    final potatoAfford = p.diamonds >= kPotatoPrice;
+    final packFull = p.items.length >= kMaxItems;
     return Column(
       key: const ValueKey('shop'),
       mainAxisSize: MainAxisSize.min,
       children: [
         const Text(
-          '🥔  POTATO MARKET  🥔',
+          '🥔  THE MARKET  🥔',
           style: TextStyle(
               fontFamily: _kFont,
               fontSize: 16,
@@ -1415,99 +1455,344 @@ class _BoardScreenState extends State<_BoardScreen> {
               letterSpacing: 1,
               color: Color(0xFFD7A86E)),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         Text(
-          'Buy a potato for $kPotatoPrice paydirt?',
+          '${p.diamonds} 💎  ·  ${p.potatoes} 🥔  ·  pack ${p.items.length}/$kMaxItems',
           style: const TextStyle(
-              fontFamily: _kFont, fontSize: 14, color: Colors.white),
+              fontFamily: _kFont, fontSize: 12, color: Colors.white60),
         ),
-        const SizedBox(height: 2),
-        Text(
-          'You have ${p.paydirt} paydirt · ${p.potatoes} potato'
-          '${p.potatoes == 1 ? '' : 'es'}',
-          style: const TextStyle(
-              fontFamily: _kFont, fontSize: 12, color: Colors.white54),
+        const SizedBox(height: 10),
+        // The win-condition buy: a potato.
+        GestureDetector(
+          onTap: potatoAfford ? actions.buyPotato : null,
+          child: Opacity(
+            opacity: potatoAfford ? 1 : 0.4,
+            child: Container(
+              width: double.infinity,
+              height: 46,
+              decoration: BoxDecoration(
+                color: const Color(0xFFD7A86E),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Center(
+                child: Text(
+                  'BUY POTATO  ·  $kPotatoPrice 💎',
+                  style: const TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                      letterSpacing: 1),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            packFull ? 'ITEMS · pack full' : 'ITEMS',
+            style: const TextStyle(
+                fontFamily: _kFont,
+                fontSize: 11,
+                letterSpacing: 1.5,
+                color: Colors.white38),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 7,
+          runSpacing: 7,
+          alignment: WrapAlignment.center,
+          children: [
+            for (final item in kItemShop) _shopItemButton(p, item, packFull),
+          ],
         ),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: GestureDetector(
-                onTap: actions.buyPotato,
-                child: Container(
-                  height: 50,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD7A86E),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: const Center(
-                    child: Text(
-                      'BUY POTATO',
-                      style: TextStyle(
-                          fontFamily: _kFont,
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
-                          letterSpacing: 1),
-                    ),
-                  ),
-                ),
+        GestureDetector(
+          onTap: actions.skipPotato,
+          child: Container(
+            width: double.infinity,
+            height: 42,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white30),
+            ),
+            child: const Center(
+              child: Text(
+                'LEAVE MARKET',
+                style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white70,
+                    letterSpacing: 1),
               ),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: GestureDetector(
-                onTap: actions.skipPotato,
-                child: Container(
-                  height: 50,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Colors.white30),
-                  ),
-                  child: const Center(
-                    child: Text(
-                      'SKIP',
-                      style: TextStyle(
-                          fontFamily: _kFont,
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white70,
-                          letterSpacing: 1),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ],
     );
   }
 
-  Widget _die(int value, Color color) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 12)
-        ],
-      ),
-      child: Center(
-        child: Text(
-          _diceSettled ? '$value' : '?',
-          style: const TextStyle(
-              fontFamily: _kFont,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              color: Colors.black),
+  /// A buyable item pill: icon, label, diamond price. Dimmed and inert when the
+  /// player can't afford it or their pack is full.
+  Widget _shopItemButton(PartyPlayer p, PowerUp item, bool packFull) {
+    final price = kItemPrices[item] ?? 999;
+    final enabled = !packFull && p.diamonds >= price;
+    return GestureDetector(
+      onTap: enabled ? () => actions.buyItem(item) : null,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.4,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Potatuhs.inkPanel,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+                color: Potatuhs.gold.withValues(alpha: 0.6), width: 1.3),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(item.icon, size: 18, color: Potatuhs.gold),
+              const SizedBox(height: 3),
+              Text(item.label,
+                  style: const TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white)),
+              Text('$price 💎',
+                  style: const TextStyle(
+                      fontFamily: _kFont, fontSize: 9, color: Colors.white60)),
+            ],
+          ),
         ),
       ),
     );
   }
+
+  /// A drawn DECISION card waiting on the player's A/B pick.
+  Widget _cardDecision(PartyPlayer p) {
+    final card = controller.currentCard;
+    if (card == null) {
+      // Defensive: shouldn't happen, but never strand the player.
+      return Column(
+        key: const ValueKey('cardless'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          PotatuhsButton(
+            label: 'CONTINUE',
+            display: true,
+            fill: p.color,
+            textColor: Colors.black,
+            onTap: () => actions.chooseCardOption(0),
+          ),
+        ],
+      );
+    }
+    final wild = card.deck == CardDeck.wild;
+    final accent = wild ? const Color(0xFF9B6DFF) : const Color(0xFF6FCF6B);
+    return Column(
+      key: const ValueKey('card'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          wild ? 'VOID CARD' : 'TATER CARD',
+          style: TextStyle(
+              fontFamily: _kFont,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 2,
+              color: accent),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          card.title,
+          style: const TextStyle(
+              fontFamily: _kFont,
+              fontSize: 17,
+              fontWeight: FontWeight.bold,
+              color: Colors.white),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          card.text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+              fontFamily: _kFont, fontSize: 12, color: Colors.white60),
+        ),
+        const SizedBox(height: 12),
+        for (var i = 0; i < card.options.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: GestureDetector(
+              onTap: () => actions.chooseCardOption(i),
+              child: Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: accent.withValues(alpha: 0.6)),
+                ),
+                child: Row(
+                  children: [
+                    Text(
+                      String.fromCharCode(65 + i), // A, B, …
+                      style: TextStyle(
+                          fontFamily: _kFont,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: accent),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        card.options[i].label,
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white),
+                      ),
+                    ),
+                    const Icon(Icons.chevron_right, color: Colors.white38),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// A single pip-face die. [index] varies the tumble phase so two dice don't
+  /// flip in lockstep. The animation is purely cosmetic — [value] is the rolled
+  /// number from the controller and is what shows once the throw settles.
+  Widget _die(int value, Color color, int index) {
+    return AnimatedBuilder(
+      animation: _diceCtrl,
+      builder: (context, _) {
+        final t = _diceCtrl.value;
+        // Faces lock at 75%; the last quarter is the elastic settle bounce.
+        final locked = _diceSettled || t >= 0.75;
+        final int face;
+        double scale;
+        double rot;
+        if (!locked) {
+          final u = t / 0.75; // 0..1 across the tumble
+          // Cycle pip faces fast, offset per die so they differ frame-to-frame.
+          face = 1 + (((t * 26).floor()) + index * 2) % 6;
+          scale = 0.86 + 0.14 * u;
+          rot = (1 - u) * 0.55 * sin(t * 46 + index); // diminishing wobble
+        } else {
+          face = value;
+          if (_diceSettled) {
+            scale = 1;
+          } else {
+            // Settle quarter (t 0.75..1): slam down with an elastic overshoot.
+            final u = ((t - 0.75) / 0.25).clamp(0.0, 1.0);
+            scale = 1 + 0.26 * (1 - Curves.elasticOut.transform(u));
+          }
+          rot = 0;
+        }
+        return Transform.rotate(
+          angle: rot,
+          child: Transform.scale(
+            scale: scale,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Colors.white, Color(0xFFE8E8EC)],
+                ),
+                borderRadius: BorderRadius.circular(10),
+                boxShadow: [
+                  BoxShadow(
+                      color: color.withValues(alpha: locked ? 0.55 : 0.35),
+                      blurRadius: locked ? 12 : 7),
+                ],
+              ),
+              child: CustomPaint(
+                painter: _DiePainter(face, color),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Paints the pip layout for a d6 face (1–6) — the dots that make a die read
+/// as a die. Pip color is tinted toward the player's accent.
+class _DiePainter extends CustomPainter {
+  final int face;
+  final Color accent;
+  const _DiePainter(this.face, this.accent);
+
+  // 3×3 grid slots a face lights up, in (col,row) with col/row ∈ {0,1,2}.
+  static const Map<int, List<List<int>>> _pips = {
+    1: [
+      [1, 1]
+    ],
+    2: [
+      [0, 0],
+      [2, 2]
+    ],
+    3: [
+      [0, 0],
+      [1, 1],
+      [2, 2]
+    ],
+    4: [
+      [0, 0],
+      [2, 0],
+      [0, 2],
+      [2, 2]
+    ],
+    5: [
+      [0, 0],
+      [2, 0],
+      [1, 1],
+      [0, 2],
+      [2, 2]
+    ],
+    6: [
+      [0, 0],
+      [2, 0],
+      [0, 1],
+      [2, 1],
+      [0, 2],
+      [2, 2]
+    ],
+  };
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final pips = _pips[face.clamp(1, 6)]!;
+    final r = size.width * 0.085;
+    final cols = [size.width * 0.28, size.width * 0.5, size.width * 0.72];
+    final rows = [size.height * 0.28, size.height * 0.5, size.height * 0.72];
+    final fill = Paint()
+      ..color = Color.lerp(Colors.black, accent, 0.35)!
+      ..style = PaintingStyle.fill;
+    for (final p in pips) {
+      canvas.drawCircle(Offset(cols[p[0]], rows[p[1]]), r, fill);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DiePainter old) =>
+      old.face != face || old.accent != accent;
 }
 
 // ---------------------------------------------------------------------------
@@ -1530,19 +1815,19 @@ _SpaceInfo _inspectSpace(PartyController c, BoardSpace space, int index) {
       region: region,
       title: 'The Anchor',
       effect: 'The finish line + potato market — buy a potato for '
-          '$kPotatoPrice paydirt.',
+          '$kPotatoPrice diamonds.',
       icon: Icons.flag,
       color: const Color(0xFFD7A86E),
     );
   }
   switch (space.type) {
     case SpaceType.gain:
-      return (region: region, title: 'Paydirt Space$lane',
-          effect: 'Land here: +5 paydirt.',
+      return (region: region, title: 'Diamond Space$lane',
+          effect: 'Land here: +5 diamonds.',
           icon: Icons.add, color: const Color(0xFF81C784));
     case SpaceType.lose:
       return (region: region, title: 'Entropy Space$lane',
-          effect: 'Land here: −5 paydirt (a Void Shield blocks it).',
+          effect: 'Land here: −5 diamonds (a Void Shield blocks it).',
           icon: Icons.remove, color: const Color(0xFFE57373));
     case SpaceType.powerUp:
       final pu = sec.powerUp;
@@ -1557,7 +1842,7 @@ _SpaceInfo _inspectSpace(PartyController c, BoardSpace space, int index) {
           icon: Icons.help_outline, color: const Color(0xFF80DEEA));
     case SpaceType.shop:
       return (region: region, title: 'Potato Market',
-          effect: 'Spend $kPotatoPrice paydirt for a potato.',
+          effect: 'Spend $kPotatoPrice diamonds for a potato.',
           icon: Icons.storefront, color: const Color(0xFFD7A86E));
     case SpaceType.cardCommon:
       return (region: region, title: 'Tater Card$lane',
@@ -1768,11 +2053,87 @@ class _BoardView extends StatelessWidget {
             ),
             for (final entry in tokensAt.entries)
               ..._tokens(geo, entry.key, entry.value),
+            // The mischief crew rides above the player tokens so a loot-carrying
+            // op is easy to spot and chase.
+            for (final op in controller.ops) _opToken(geo, op),
               ],
               ),
             ),
         );
       },
+    );
+  }
+
+  /// A roaming op token (the Peeler / the Masher). Sits just above its tile;
+  /// when carrying stolen loot it pulses red with a 💎/🥔 badge so players know
+  /// who to chase.
+  Widget _opToken(_BoardGeometry geo, OpToken op) {
+    final center = geo.nodeCenter(op.position);
+    final r = geo.nodeRadius * 0.5;
+    const danger = Color(0xFFE5484D);
+    final loot = op.hasLoot;
+    return AnimatedPositioned(
+      key: ValueKey('op_${op.op.id}'),
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeInOut,
+      // Perch on the upper rim of the tile so it doesn't hide the players.
+      left: center.dx - r,
+      top: center.dy - geo.nodeRadius - r,
+      child: SizedBox(
+        width: r * 2,
+        height: r * 2,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              width: r * 2,
+              height: r * 2,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: loot ? danger : Colors.white54,
+                    width: loot ? 2.5 : 1.5),
+                boxShadow: [
+                  BoxShadow(
+                      color: (loot ? danger : Colors.black)
+                          .withValues(alpha: loot ? 0.8 : 0.5),
+                      blurRadius: loot ? 10 : 4),
+                ],
+              ),
+              child: ClipOval(
+                child: Image.asset(
+                  op.op.asset,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const Icon(Icons.theater_comedy,
+                      color: danger, size: 18),
+                ),
+              ),
+            ),
+            if (loot)
+              Positioned(
+                right: -4,
+                top: -4,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: danger,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    op.potatoes > 0 ? '🥔${op.potatoes}' : '💎${op.diamonds}',
+                    style: const TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 8,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2262,7 +2623,9 @@ class _MiniGameIntroScreen extends StatelessWidget {
               const Spacer(),
               Center(
                 child: Text(
-                  'MINI-GAME ROUND ${controller.round}',
+                  controller.isBossRound
+                      ? 'FINAL ROUND ${controller.round}'
+                      : 'MINI-GAME ROUND ${controller.round}',
                   style: const TextStyle(
                       fontFamily: _kFont,
                       fontSize: 14,
@@ -2271,6 +2634,10 @@ class _MiniGameIntroScreen extends StatelessWidget {
                       color: Colors.white54),
                 ),
               ),
+              if (controller.isBossRound && controller.currentBoss != null) ...[
+                const SizedBox(height: 14),
+                _bossBanner(controller.currentBoss!),
+              ],
               const SizedBox(height: 14),
               Center(
                 child: Container(
@@ -2328,13 +2695,18 @@ class _MiniGameIntroScreen extends StatelessWidget {
               const SizedBox(height: 24),
               Center(
                 child: Text(
-                  'Everyone plays once. Paydirt goes to the best scores — '
-                  'spend it on potatoes at the market.',
+                  controller.isBossRound
+                      ? 'BOSS STAKES: the top scorer EARNS a potato — the '
+                          'lowest scorer LOSES one. Diamonds still pay out.'
+                      : 'Everyone plays once. Diamonds go to the best scores — '
+                          'spend them on potatoes at the market.',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontFamily: _kFont,
                       fontSize: 13,
-                      color: Colors.white70),
+                      color: controller.isBossRound
+                          ? const Color(0xFFFFB4A2)
+                          : Colors.white70),
                 ),
               ),
               if (kDebugMode) ...[
@@ -2399,6 +2771,65 @@ class _MiniGameIntroScreen extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// The boss showdown header — the op's portrait, name, and a "BOSS ROUND"
+  /// flag. Shown only on the final round when the map fields a boss.
+  Widget _bossBanner(Op boss) {
+    const danger = Color(0xFFE5484D);
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: danger.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: danger.withValues(alpha: 0.7), width: 1.5),
+          boxShadow: [
+            BoxShadow(color: danger.withValues(alpha: 0.35), blurRadius: 16),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.asset(
+                boss.asset,
+                width: 46,
+                height: 46,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) =>
+                    const Icon(Icons.whatshot, color: danger, size: 40),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'BOSS ROUND',
+                  style: TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 3,
+                      color: danger),
+                ),
+                Text(
+                  boss.name,
+                  style: const TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -2865,7 +3296,7 @@ class _PodiumScreen extends StatelessWidget {
                                     color: Colors.white),
                               ),
                               Text(
-                                '${t.paydirt} paydirt',
+                                '${t.diamonds} diamonds',
                                 style: const TextStyle(
                                     fontFamily: _kFont,
                                     fontSize: 11,
@@ -2928,7 +3359,7 @@ class _PodiumScreen extends StatelessWidget {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            '${p.paydirt}',
+                            '${p.diamonds}',
                             style: const TextStyle(
                                 fontFamily: _kFont,
                                 fontSize: 13,

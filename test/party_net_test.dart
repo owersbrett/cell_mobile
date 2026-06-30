@@ -60,9 +60,27 @@ Future<List<PartyNet>> _playNetworkedGame({
             value: opts[rng.nextInt(opts.length)]);
         break;
       case PartyPhase.shopOffer:
-        nets[cur].act(rng.nextBool()
-            ? PartyInputKind.buyPotato
-            : PartyInputKind.skipPotato);
+        // Buy a potato, an affordable item, or skip — drives buyItem over the
+        // wire so host/client convergence covers it.
+        final p = c.players[cur];
+        final affordable = kItemShop
+            .where((it) => (kItemPrices[it] ?? 999) <= p.diamonds)
+            .toList();
+        final r = rng.nextInt(3);
+        if (r == 0 && p.diamonds >= kPotatoPrice) {
+          nets[cur].act(PartyInputKind.buyPotato);
+        } else if (r == 1 &&
+            affordable.isNotEmpty &&
+            p.items.length < kMaxItems) {
+          nets[cur].act(PartyInputKind.buyItem,
+              value: affordable[rng.nextInt(affordable.length)].index);
+        } else {
+          nets[cur].act(PartyInputKind.skipPotato);
+        }
+        break;
+      case PartyPhase.cardDecision:
+        nets[cur].act(PartyInputKind.chooseCardOption,
+            value: rng.nextInt(c.currentCard!.options.length));
         break;
       case PartyPhase.minigamePlaying:
       case PartyPhase.passPhone:
@@ -188,6 +206,10 @@ void main() {
                 ? PartyInputKind.buyPotato
                 : PartyInputKind.skipPotato);
             break;
+          case PartyPhase.cardDecision:
+            nets[cur].act(PartyInputKind.chooseCardOption,
+                value: rng.nextInt(c.currentCard!.options.length));
+            break;
           case PartyPhase.minigamePlaying:
           case PartyPhase.passPhone:
             var s = 0;
@@ -221,7 +243,7 @@ void main() {
           for (var i = 0; i < host.players.length; i++) {
             final a = host.players[i], b = client.players[i];
             expect(b.position, a.position, reason: 'client $k player $i position');
-            expect(b.paydirt, a.paydirt, reason: 'client $k player $i paydirt');
+            expect(b.diamonds, a.diamonds, reason: 'client $k player $i diamonds');
             expect(b.potatoes, a.potatoes,
                 reason: 'client $k player $i potatoes');
             expect(b.atp, a.atp, reason: 'client $k player $i atp');
