@@ -1,6 +1,8 @@
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
+import 'package:cell_mobile/games/game_slug.dart';
 import 'package:cell_mobile/views/app_view_delegate.dart';
+import 'package:cell_mobile/views/screens/embed_game_page.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +27,11 @@ class MyApp extends StatelessWidget {
           message: details.exceptionAsString(),
         );
 
+    // iframe deep-link: if the app was opened at /{slug} for a known game, host
+    // JUST that game (chromeless). Null for the normal app / non-web / unknown
+    // slug — in which case the flow below is byte-for-byte unchanged.
+    final embedSpecId = GameSlug.embedSpecIdFromUrl();
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Explore The Cell',
@@ -37,7 +44,9 @@ class MyApp extends StatelessWidget {
           BlocProvider(create: (_) => ScaleExplorerBloc()),
         ],
         child: SafeArea(
-          child: const AppViewDelegate(),
+          child: embedSpecId != null
+              ? EmbedGamePage(specId: embedSpecId)
+              : const AppViewDelegate(),
         ),
       ),
     );

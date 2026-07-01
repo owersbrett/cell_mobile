@@ -36,8 +36,11 @@ dependencies:
   # Accelerometer access — used for shake-to-boost in arcade games.
   sensors_plus: ^6.0.0
 
-
-
+  # Clean path URLs on web (/farm-panic instead of /#/farm-panic) for the
+  # single-game iframe embeds. SDK package; safe to import on mobile (the call
+  # is kIsWeb-guarded), no-op there.
+  flutter_web_plugins:
+    sdk: flutter
 
   flutter:
     sdk: flutter

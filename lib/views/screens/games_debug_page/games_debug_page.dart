@@ -3,6 +3,7 @@ import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/games/game_catalog.dart';
+import 'package:cell_mobile/games/play_config.dart';
 import 'package:cell_mobile/games/rank_store.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/mini_game_page.dart';
@@ -97,11 +98,18 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
   void _play(CatalogGame game) {
     // Dispatch on the live context FIRST (capture the blocs), then pop — popping
     // first tears down this context so the events would no-op and we'd just land
-    // back on home. Changing the underlying screen, then popping the debug route,
-    // reveals the game's chooser.
+    // back on home. Change the underlying screen, then pop the console route.
     final scaleBloc = context.read<ScaleExplorerBloc>();
     final navBloc = context.read<NavigationBloc>();
     scaleBloc.add(SelectScale(game.scale));
+    // Launch THIS game directly — skip the per-scale "CHOOSE A GAME" list.
+    // Registry games launch by specId; a legacy game (no spec) falls back to
+    // the scale's top-ranked game.
+    if (game.specId != null) {
+      PlayConfig.autoLaunchSpecId = game.specId;
+    } else {
+      PlayConfig.autoLaunchTopGame = true;
+    }
     navBloc.add(NavigateToScreen(AppScreen.miniGame));
     Navigator.pop(context);
   }

@@ -197,16 +197,29 @@ class _Geo {
     final top = mk(h * 0.08, h * 0.235, h * 0.265, h * 0.45, 1.0);
     final bot = mk(h * 0.52, h * 0.675, h * 0.705, h * 0.89, 1.0);
 
-    // Lane 0 reflows single → top; lane 1 slides up from below + fades in.
-    final l0 = _lerpLane(single, top, split);
-    final slide = (1 - split) * h * 0.25;
+    // The reflow runs in two clean phases so the belts NEVER cross (the old
+    // single-`split` lerp let lane 1 slide UP through lane 0's still-lowered
+    // bins — that is the "stacking" overlap):
+    //   phase 1 (split 0 → 0.5): lane 0 reflows single → top. Belt slides up,
+    //                            bins shrink up and vacate the lower half.
+    //   phase 2 (split 0.5 → 1): lane 1 slides up from below the screen into the
+    //                            now-empty lower half and fades in.
+    // Because lane 1 only enters AFTER lane 0 has left, the two rows stay
+    // vertically separated at every split value — no co-location, ever.
+    final reflow = (split * 2).clamp(0.0, 1.0);
+    final enter = ((split - 0.5) * 2).clamp(0.0, 1.0);
+
+    final l0 = _lerpLane(single, top, reflow);
+    // At enter==0 the second lane sits fully below the visible area, then
+    // slides up into `bot` as `enter` → 1.
+    final slide = (1 - enter) * h * 0.32;
     final l1 = _Lane(
       bot.belt.translate(0, slide),
       bot.beltY + slide,
       [for (final r in bot.bins) r.translate(0, slide)],
-      split,
+      enter,
     );
-    final factY = _lerp(h * 0.575, h * 0.485, split);
+    final factY = _lerp(h * 0.575, h * 0.485, reflow);
     return _Geo._(w, h, left, right, factY, [l0, l1]);
   }
 
@@ -591,8 +604,10 @@ class _SortSpudsGameState extends State<SortSpudsGame>
   double get _defectVis =>
       _kDefectVisMax - (_kDefectVisMax - _kDefectVisMin) * _difficulty;
 
-  // Belts feeding spuds right now: 1 until the split fully forms, then 2.
-  int get _activeBelts => _split >= 1.0 ? 2 : 1;
+  // Belts feeding spuds right now: 1 until the second lane has nearly finished
+  // sliding into place (enter >= ~0.8), then 2 — so potatoes visibly ride the
+  // incoming belt in rather than popping in only once it is perfectly still.
+  int get _activeBelts => _split >= 0.9 ? 2 : 1;
 
   // ── Frame ─────────────────────────────────────────────────────────────────
   void _tick() {

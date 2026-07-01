@@ -34,8 +34,8 @@ const List<String> kUxPassGames = [
   'standard_model', 'decay_chain',
   // infinities
   'converge', 'hilberts_hotel',
-  // multiverseAll
-  'branch', 'superposition', 'bubbles',
+  // multiverseAll (superposition A/B resolved → v2 promoted to canonical)
+  'branch', 'bubbles',
   // universeAll
   'powers_of_ten', 'cosmic_timeline', 'constants',
 ];

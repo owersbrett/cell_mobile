@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'my_app.dart';
 
@@ -9,6 +11,8 @@ import 'firebase_bootstrap.dart';
 Future<void> mainCommon(String env) async {
   // Always call this if the main method is asynchronous
   WidgetsFlutterBinding.ensureInitialized();
+  // Clean /{slug} URLs on web for single-game iframe embeds. No-op on mobile.
+  if (kIsWeb) usePathUrlStrategy();
   // Load the JSON config into memory
   await SharedPreferences.getInstance();
 

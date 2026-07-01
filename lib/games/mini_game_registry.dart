@@ -69,7 +69,6 @@ import 'ecosystem/predator_prey/predator_prey_game.dart';
 import 'nothings/quantum_foam/quantum_foam_game.dart';
 import 'multiverse/bubbles/bubbles_game.dart';
 import 'nothings/the_wait/the_wait_game.dart';
-import 'multiverse/superposition/superposition_game.dart';
 import 'universe_all/cosmic_timeline/cosmic_timeline_game.dart';
 import 'particles/standard_model/standard_model_game.dart';
 import 'infinities/converge/converge_game.dart';
@@ -1739,27 +1738,6 @@ class MiniGameRegistry {
       builder: (context, session) => TheWaitGame(session: session),
     ),
     MiniGameSpec(
-      id: 'superposition',
-      name: 'Superposition',
-      scale: BioScale.multiverseAll,
-      tagline: 'Collapse the wavefunction at the perfect moment',
-      rules: [
-        'A qubit oscillates between |↑⟩ and |↓⟩ — odds sweep 0–100%.',
-        'The glowing pole is your target state.',
-        'Tap to MEASURE: collapse near 100% to land it.',
-        'Measure at 50/50 and it is a coin-flip.',
-      ],
-      howToWin: 'Most favorable collapses when time runs out wins.',
-      durationSeconds: 50,
-      scoreUnit: 'collapses',
-      enabled: true,
-      accent: const Color(0xFF7272AB),
-      icon: Icons.blur_on,
-      humanMax: 3000,
-      starThresholds: const [900, 1800, 2800],
-      builder: (context, session) => SuperpositionGame(session: session),
-    ),
-    MiniGameSpec(
       id: 'cosmic_timeline',
       name: 'Cosmic Timeline',
       scale: BioScale.universeAll,
@@ -2350,8 +2328,8 @@ class MiniGameRegistry {
       builder: (context, session) => PhaseChangeV2Game(session: session),
     ),
     MiniGameSpec(
-      id: 'superposition_v2',
-      name: 'Superposition v2',
+      id: 'superposition',
+      name: 'Superposition',
       scale: BioScale.multiverseAll,
       tagline: 'Ride the wave to the crest, then collapse it',
       rules: [

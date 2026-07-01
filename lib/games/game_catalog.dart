@@ -646,7 +646,6 @@ class GameCatalog {
     CatalogGame(id: 'hilberts_hotel', name: "Hilbert's Hotel", tagline: 'A full ∞ hotel — yet always room for more', scale: BioScale.infinities, rank: GameRank.b, accent: Color(0xFFE1C916), icon: Icons.hotel_rounded, specId: 'hilberts_hotel'),
     // multiverseAll
     CatalogGame(id: 'branch', name: 'Branch', tagline: 'Every choice splits the world', scale: BioScale.multiverseAll, rank: GameRank.b, accent: Color(0xFF54D1FF), icon: Icons.account_tree, specId: 'branch'),
-    CatalogGame(id: 'superposition', name: 'Superposition', tagline: 'Collapse the wavefunction at the right moment', scale: BioScale.multiverseAll, rank: GameRank.b, accent: Color(0xFF7272AB), icon: Icons.blur_on, specId: 'superposition'),
     CatalogGame(id: 'bubbles', name: 'Bubbles', tagline: 'Nucleate bubble universes in the inflating void', scale: BioScale.multiverseAll, rank: GameRank.b, accent: Color(0xFF8B5CF6), icon: Icons.bubble_chart, specId: 'bubbles'),
     // universeAll
     CatalogGame(id: 'powers_of_ten', name: 'Powers of Ten', tagline: 'Place each thing on the cosmic size ladder', scale: BioScale.universeAll, rank: GameRank.b, accent: Color(0xFF22D3EE), icon: Icons.zoom_out_map, specId: 'powers_of_ten'),
@@ -676,7 +675,7 @@ class GameCatalog {
     CatalogGame(id: 'cosmic_timeline_v2', name: 'Cosmic Timeline v2', tagline: 'Tap the gap where each cosmic epoch fits', scale: BioScale.universeAll, rank: GameRank.b, accent: Color(0xFF7C4DFF), icon: Icons.timeline, specId: 'cosmic_timeline_v2'),
     CatalogGame(id: 'transcribe_v2', name: 'Transcribe v2', tagline: 'Polymerase, then ribosome — DNA to mRNA to protein', scale: BioScale.cell, rank: GameRank.b, accent: Color(0xFF18C99A), icon: Icons.biotech, specId: 'transcribe_v2'),
     CatalogGame(id: 'bond_lab_v2', name: 'Bond Lab v2', tagline: 'Read the electronegativity — pick the bond', scale: BioScale.molecular, rank: GameRank.b, accent: Color(0xFF7E57C2), icon: Icons.hub, specId: 'bond_lab_v2'),
-    CatalogGame(id: 'superposition_v2', name: 'Superposition v2', tagline: 'Ride the wave to the crest, then collapse it', scale: BioScale.multiverseAll, rank: GameRank.b, accent: Color(0xFF7272AB), icon: Icons.blur_on, specId: 'superposition_v2'),
+    CatalogGame(id: 'superposition', name: 'Superposition', tagline: 'Ride the wave to the crest, then collapse it', scale: BioScale.multiverseAll, rank: GameRank.b, accent: Color(0xFF7272AB), icon: Icons.blur_on, specId: 'superposition'),
     CatalogGame(id: 'twitch_v2', name: 'Twitch v2', tagline: 'Fire on the beat — fuse twitches into tetanus before the muscle tires', scale: BioScale.tissue, rank: GameRank.b, accent: Color(0xFFE05260), icon: Icons.bolt, specId: 'twitch_v2'),
     CatalogGame(id: 'life_cycle_v2', name: 'Life Cycle v2', tagline: 'Walk the wheel — tap each next stage.', scale: BioScale.organism, rank: GameRank.b, accent: Color(0xFF69F0AE), icon: Icons.autorenew, specId: 'life_cycle_v2'),
     CatalogGame(id: 'food_web_v2', name: 'Food Web v2', tagline: 'Route energy up the pyramid before it drains', scale: BioScale.ecosystem, rank: GameRank.b, accent: Color(0xFF7CB342), icon: Icons.account_tree, specId: 'food_web_v2'),

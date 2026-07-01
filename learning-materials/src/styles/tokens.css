@@ -1,0 +1,48 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Brand tokens — MIRRORED from ~/Potatuhs/potatuhs-design/DESIGN.md (the SSOT).
+   Do NOT invent values here. If a value is wrong, fix DESIGN.md first, then
+   reflect it here. This is the Autumn (default) palette + the warm
+   neo-brutalist surface treatment (2px ink borders, hard offset shadows).
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Brand gradient stops */
+  --brand-start: #e16416; /* Fiery Orange */
+  --brand-mid: #e19816;   /* Morning Sienna */
+  --brand-end: #e1c916;   /* Golden Shade */
+
+  /* Structure */
+  --dark: #1c1917;        /* Ink Black — borders, text, shadows, dark bg */
+  --surface: #ffffff;     /* card surfaces */
+  --surface-warm: #fdf5eb;/* page background */
+  --muted: #666666;       /* secondary text */
+  --subtle: #999999;      /* tertiary text, labels */
+
+  /* Gradients */
+  --gradient-brand: linear-gradient(135deg, #e16416, #e19816 50%, #e1c916);
+  --gradient-hero: linear-gradient(160deg, #e16416 0%, #e19816 40%, #e1c916 100%);
+  --gradient-cta: linear-gradient(90deg, #e16416, #e19816);
+  --gradient-dark: linear-gradient(180deg, #1c1917, #1a1a0e);
+
+  /* Neo-brutalist surface treatment */
+  --border: 2px solid #1c1917;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --sh-card: 4px 4px 0 #1c1917;
+  --sh-card-hover: 7px 7px 0 #1c1917;
+  --sh-btn: 4px 4px 0 #1c1917;
+  --sh-btn-hover: 6px 6px 0 #1c1917;
+
+  /* Type */
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Spacing scale */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+}

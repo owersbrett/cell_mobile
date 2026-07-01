@@ -352,9 +352,10 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                               context
                                   .read<ScaleExplorerBloc>()
                                   .add(SelectScale(info.scale));
-                              // All scales explore through the mini-game
-                              // route; party-ready scales get the new
-                              // hosted games there.
+                              // LEARN → this scale's Play (compass) opens the
+                              // scale's GAMES LIST (the "CHOOSE A GAME" picker),
+                              // NOT a game directly. Only the GAMES console
+                              // launches a specific game straight away.
                               context.read<NavigationBloc>().add(
                                   NavigateToScreen(AppScreen.miniGame));
                             },

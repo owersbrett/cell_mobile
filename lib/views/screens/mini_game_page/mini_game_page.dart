@@ -34,6 +34,51 @@ class _MiniGamePageState extends State<MiniGamePage> {
 
   BioScale get scale => widget.scale;
 
+  @override
+  void initState() {
+    super.initState();
+    // One-shot "Play" intents: skip the picker and drop straight into a game.
+    // Consumed here so each fires exactly once (backing out of the game still
+    // reveals the full picker). A specific game (Games console) wins over the
+    // scale's top-ranked (scale-overview Play).
+    final specId = PlayConfig.autoLaunchSpecId;
+    if (specId != null) {
+      PlayConfig.autoLaunchSpecId = null;
+      PlayConfig.autoLaunchTopGame = false; // don't let a stale flag double-fire
+      _chosen = _gameForSpecId(specId) ?? _topRankedFor(scale);
+      RankStore.load();
+    } else if (PlayConfig.autoLaunchTopGame) {
+      PlayConfig.autoLaunchTopGame = false;
+      _chosen = _topRankedFor(scale);
+      // Pull saved rank overrides in the background so the picker (if the
+      // player backs out) reflects them; the launch target above uses whatever
+      // is loaded now (defaults are already authored best-first).
+      RankStore.load();
+    }
+  }
+
+  /// The catalog game with this registry specId (searched across all scales, so
+  /// it works even if the selected scale doesn't match), or null if none.
+  CatalogGame? _gameForSpecId(String specId) {
+    for (final g in GameCatalog.games) {
+      if (g.specId == specId) return g;
+    }
+    return null;
+  }
+
+  /// The scale's best game by effective rank — mirrors the picker's sort so
+  /// "Play" launches the same game that would sit at the top of the list.
+  CatalogGame? _topRankedFor(BioScale scale) {
+    final games = [...GameCatalog.forScale(scale)];
+    if (games.isEmpty) return null;
+    games.sort((a, b) {
+      final r =
+          RankStore.rankFor(a).order.compareTo(RankStore.rankFor(b).order);
+      return r != 0 ? r : a.name.compareTo(b.name);
+    });
+    return games.first;
+  }
+
   void _toOverview() => context
       .read<NavigationBloc>()
       .add(NavigateToScreen(AppScreen.scaleOverview));

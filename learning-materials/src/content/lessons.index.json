@@ -1,0 +1,17 @@
+{
+  "syncVersion": 1,
+  "generatedAt": "2026-06-30T00:00:00Z",
+  "lessons": [
+    {
+      "id": "black-hole-heart",
+      "gameId": "black_hole",
+      "title": "Black-Hole Heart",
+      "scale": "galactic",
+      "accent": "#7B61FF",
+      "summary": "Keep stars orbiting the abyss at the center of the galaxy — and learn why the closest orbits are the fastest and most precarious.",
+      "size": "large",
+      "totalSteps": 6,
+      "careerCount": 6
+    }
+  ]
+}

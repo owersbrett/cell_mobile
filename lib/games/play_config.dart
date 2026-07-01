@@ -40,6 +40,19 @@ class PlayConfig {
   static bool disruption = false;
   static bool _loaded = false;
 
+  /// Ephemeral (NOT persisted) one-shot intent: the next [MiniGamePage] should
+  /// skip the "CHOOSE A GAME" picker and launch the scale's top-ranked game
+  /// directly. Set by the scale-overview Play button; consumed once in
+  /// MiniGamePage.initState.
+  static bool autoLaunchTopGame = false;
+
+  /// Ephemeral one-shot intent: the next [MiniGamePage] should skip the picker
+  /// and launch THIS specific game (by registry specId). Set by the Games
+  /// console's Play button so tapping a game plays that exact game, not the
+  /// scale's list. Consumed once in MiniGamePage.initState. Takes precedence
+  /// over [autoLaunchTopGame].
+  static String? autoLaunchSpecId;
+
   /// Opponent count fed to [MiniGameHost] for Explore play.
   static int get opponentCount => mode.opponents;
 

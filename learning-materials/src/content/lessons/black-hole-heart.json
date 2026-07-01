@@ -1,0 +1,158 @@
+{
+  "id": "black-hole-heart",
+  "gameId": "black_hole",
+  "source": "lib/games/galactic/black_hole/EDUCATION.md",
+  "sourceHash": "seed-handwritten-pending-sync",
+  "title": "Black-Hole Heart",
+  "scale": "galactic",
+  "accent": "#7B61FF",
+  "summary": "Keep stars orbiting the abyss at the center of the galaxy — and learn why the closest orbits are the fastest, the most precarious, and the highest-scoring.",
+  "size": "large",
+  "intro": [
+    {
+      "type": "markdown",
+      "markdown": "At the center of the Milky Way sits **Sagittarius A\\*** (Sgr A\\*), a **supermassive black hole** of about **4.3 million solar masses** packed into a region smaller than Mercury's orbit. This game puts you in charge of that heart: the single overwhelming mass is the black hole, the lethal black disk is its **event horizon**, and the glowing rings are its **accretion disk**. Your job is to keep stars in orbit on the very edge of the abyss."
+    },
+    {
+      "type": "callout",
+      "variant": "science",
+      "markdown": "**The core idea:** closer orbits are *faster*, more *precarious*, and worth *more* — exactly the tension that real astronomers exploit to weigh a black hole they can never see directly."
+    }
+  ],
+  "sections": [
+    {
+      "id": "the-lesson",
+      "title": "The galaxy turns around a supermassive black hole",
+      "intro": "How we know a black hole is there at all — and what the game is really modeling.",
+      "steps": [
+        {
+          "id": "sgr-a",
+          "title": "Meet Sagittarius A*",
+          "objective": "Know what sits at the galactic center and how its mass was measured.",
+          "body": [
+            {
+              "type": "markdown",
+              "markdown": "We know Sgr A\\*'s mass because we have watched stars — the **S-stars**, especially **S2** — sweep around it in tight, fast, decades-long orbits that only such a tiny, monstrous mass can produce. In 2022 the Event Horizon Telescope released the first image of the glowing ring around its shadow."
+            }
+          ]
+        },
+        {
+          "id": "horizon",
+          "title": "The event horizon is a one-way door",
+          "objective": "Understand the radius of no return — the game's fail line.",
+          "body": [
+            {
+              "type": "markdown",
+              "markdown": "Cross `r ≤ horizon` and the star is gone — swallowed, fed to the black hole, streak reset. The horizon is not a surface but the boundary inside which not even light can escape. Its size is the **Schwarzschild radius**:"
+            },
+            {
+              "type": "equation",
+              "tex": "r_s = \\frac{2GM}{c^2}",
+              "caption": "For Sgr A* this is roughly 12 million km — large for a star, vanishingly small for 4 million Suns."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "why-it-teaches",
+      "title": "Why the mechanic teaches it (not just decorates it)",
+      "intro": "Every rule in the game maps onto real orbital physics.",
+      "steps": [
+        {
+          "id": "close-is-fast",
+          "title": "Close orbits are FAST",
+          "objective": "Connect orbital speed to radius.",
+          "body": [
+            {
+              "type": "markdown",
+              "markdown": "Orbital speed is set by the mass and the radius. Halve the radius and the required speed rises by √2. The preview shows it — a tight orbit needs a much harder, more precise fling than a wide one."
+            },
+            {
+              "type": "equation",
+              "tex": "v = \\sqrt{\\frac{GM}{r}}",
+              "caption": "Bound orbital speed scales as v ∝ 1/√r."
+            }
+          ]
+        },
+        {
+          "id": "close-is-precarious",
+          "title": "Close orbits are PRECARIOUS",
+          "objective": "Understand precession and the ISCO.",
+          "body": [
+            {
+              "type": "markdown",
+              "markdown": "Near a black hole gravity grows *faster* than Newton predicts, so close orbits **precess** — the ellipse itself rotates, exactly as S2's orbit precesses around Sgr A\\* (measured by the GRAVITY instrument, confirming Einstein). Inside the **ISCO** (innermost stable circular orbit, at `3 r_s`) no stable circular orbit exists at all."
+            },
+            {
+              "type": "callout",
+              "variant": "note",
+              "markdown": "The most rewarding orbits in the game are the ones most likely to fall in — that risk/reward curve *is* the physics."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "what-you-can-say",
+      "title": "What you should be able to say afterward",
+      "steps": [
+        {
+          "id": "recap",
+          "title": "The four takeaways",
+          "body": [
+            {
+              "type": "markdown",
+              "markdown": "- \"Our galaxy has a supermassive black hole at its center — Sgr A\\*, about 4 million Suns.\"\n- \"The event horizon is the point of no return; cross it and nothing comes back.\"\n- \"Closer orbits are faster — `v = √(GM/r)` — and near a black hole they precess and become unstable.\"\n- \"The glow is an accretion disk: gas heated white-hot as it slowly spirals in.\""
+            },
+            {
+              "type": "gameLink",
+              "label": "Play Black-Hole Heart",
+              "target": "https://explore-the-cell.web.app/black-hole"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "careers": [
+    {
+      "title": "Planetarium / science museum educator",
+      "tier": "mainstream",
+      "blurb": "Runs the dome shows and exhibits that explain exactly this — black holes, orbits, the galactic center — to the public.",
+      "background": "Bachelor's in a science or education field; strong public-speaking; deep enthusiasm more than research credentials."
+    },
+    {
+      "title": "Science communicator / journalist",
+      "tier": "mainstream",
+      "blurb": "Turns results like the EHT image of Sgr A* into stories, videos, and articles people actually understand.",
+      "background": "Writing/media skills plus solid science literacy; a STEM degree helps but a portfolio matters more."
+    },
+    {
+      "title": "Astrophysicist",
+      "tier": "professional",
+      "blurb": "Studies the dynamics of stars and black holes — the people who tracked S2's orbit to weigh Sgr A*.",
+      "background": "PhD in physics or astronomy; years of math, coding, and observational or theoretical training."
+    },
+    {
+      "title": "Data scientist (astronomy pipelines)",
+      "tier": "professional",
+      "blurb": "Builds the software that turns telescope data into measured orbits and images — skills that transfer straight to industry.",
+      "background": "Strong programming + statistics; physics/CS degree; the most portable role on this list."
+    },
+    {
+      "title": "Gravitational-wave analyst",
+      "tier": "specialist",
+      "blurb": "Hunts the spacetime ripples from merging black holes in LIGO/Virgo data — a field barely a decade old.",
+      "background": "Graduate-level general relativity and signal processing; strong background in physics and computation."
+    },
+    {
+      "title": "Numerical-relativity researcher",
+      "tier": "frontier",
+      "blurb": "Simulates Einstein's equations on supercomputers to predict what merging black holes actually do.",
+      "background": "Deep expertise in general relativity, PDEs, and high-performance computing; research-level and esoteric."
+    }
+  ],
+  "generatedAt": "2026-06-30T00:00:00Z",
+  "syncVersion": 1
+}

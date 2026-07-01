@@ -41,10 +41,13 @@
 // One Ticker → one CustomPainter. All geometry guarded finite. <80s round.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -127,6 +130,26 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
   final List<FxParticle> _parts = [];
   final List<FxPop> _pops = [];
 
+  // ── Mobile tilt-aim path ─────────────────────────────────────────────────────
+  // On touch devices with motion sensors we swap the "tap at the crest" web
+  // mechanic for a tilt-to-aim measurement: the qubit's state vector is a line
+  // pinned at the sphere's centre, its tip riding the circumference. The player
+  // tilts the phone to sweep the vector onto the target pole, then taps to
+  // collapse. Blinks periodically drift the target so the aim must be re-found.
+  bool _mobile = false;
+  StreamSubscription<AccelerometerEvent>? _accelSub;
+  double _rawGx = 0.0, _rawGy = 9.8; // latest raw gravity (portrait upright)
+  double _gx = 0.0, _gy = 9.8; // low-passed gravity vector
+  double _aimAngle = -math.pi / 2; // smoothed vector angle (rad, screen space)
+  double _targetAngle = 0.0; // target pole angle on the circumference (rad)
+  double _matchGlow = 0.0; // 0..1, swells while the vector overlaps the target
+  double _blinkClock = 0.0; // time accrued toward the next blink
+  double _blinkInterval = 9.5; // seconds between blinks (shrinks with level)
+  bool _blinking = false;
+  double _blinkPhase = 0.0; // 0→1 across one blink (eyelid close→open)
+  bool _wobbleApplied = false; // target wobbled once per blink at full close
+  double _blink = 0.0; // 0 open .. 1 fully closed (drives the eyelid overlay)
+
   int get _level => (1 + _favorable ~/ _kFavPerLevel).clamp(1, 9);
   double get _omega {
     final base = math.min(_kOmegaCap, _kBaseOmega + (_level - 1) * _kOmegaStep);
@@ -136,12 +159,28 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
   @override
   void initState() {
     super.initState();
+    _mobile = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.android);
     _respawn();
+    if (_mobile) {
+      _respawnMobile();
+      // Subscribe to the accelerometer ONLY on the mobile path. The gravity
+      // vector gives a stable ABSOLUTE tilt (unlike the gyroscope, which is
+      // angular velocity and drifts). Raw samples are stashed here and
+      // low-passed in the ticker so the frame rate — not the sensor rate —
+      // governs smoothing.
+      _accelSub = accelerometerEventStream().listen((e) {
+        _rawGx = e.x;
+        _rawGy = e.y;
+      }, onError: (_) {});
+    }
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    _accelSub?.cancel();
     _ticker.dispose();
     super.dispose();
   }
@@ -153,6 +192,14 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
 
     final running = widget.session.isRunning;
     _idle += dt;
+
+    // Mobile tilt-aim path is a wholly separate update; the web mechanic below
+    // is left untouched.
+    if (_mobile) {
+      _tickMobile(dt, running);
+      setState(() {});
+      return;
+    }
 
     // Host owns the clock — read remaining to drive the final-stretch climax.
     final remMs = widget.session.remaining.inMilliseconds;
@@ -279,37 +326,182 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
     return [Offset(size.width / 2 - dx, cy), Offset(size.width / 2 + dx, cy)];
   }
 
+  // ── Mobile tilt-aim mechanic ────────────────────────────────────────────────
+
+  /// Angular tolerance (rad) for a MATCH — tightens as the level climbs.
+  double get _tolerance => math.max(0.06, 0.20 - (_level - 1) * 0.014);
+
+  Offset _tiltCenter(Size size) => Offset(size.width / 2, size.height * 0.44);
+  double _tiltRadius(Size size) =>
+      math.min(size.width * 0.32, size.height * 0.24);
+
+  /// Smallest signed angle between the aim and the target, magnitude in [0,π].
+  double _aimError() {
+    var d = (_aimAngle - _targetAngle) % (2 * math.pi);
+    if (d > math.pi) d -= 2 * math.pi;
+    if (d < -math.pi) d += 2 * math.pi;
+    return d.isFinite ? d.abs() : math.pi;
+  }
+
+  bool _isMatched() => _aimError() <= _tolerance;
+
+  void _tickMobile(double dt, bool running) {
+    // Low-pass the raw gravity vector, then read an ABSOLUTE tilt angle from it.
+    // Smoothing the (x,y) components rather than the angle sidesteps wrap-around
+    // discontinuities for free. k is dt-derived so smoothing is frame-rate safe.
+    final k = (1 - math.exp(-dt / 0.08)).clamp(0.0, 1.0);
+    _gx += (_rawGx - _gx) * k;
+    _gy += (_rawGy - _gy) * k;
+    final mag2 = _gx * _gx + _gy * _gy;
+    if (mag2 > 0.04) {
+      final a = math.atan2(_gx, _gy);
+      if (a.isFinite) _aimAngle = a;
+    }
+
+    // Collapse hold → fresh target.
+    if (_collapseT > 0) {
+      _collapseT = math.max(0.0, _collapseT - dt);
+      if (_collapseT == 0 && running) _respawnMobile();
+    }
+
+    // Blink ramp — rare early, frequent later; each blink drifts the target.
+    if (running && _collapseT == 0) {
+      _blinkInterval = math.max(2.4, 9.5 - (_level - 1) * 0.95);
+      if (!_blinking) {
+        _blinkClock += dt;
+        // Level 1 is calm: no blinking until the player has warmed up.
+        if (_level >= 2 && _blinkClock >= _blinkInterval) {
+          _blinking = true;
+          _blinkPhase = 0.0;
+          _wobbleApplied = false;
+          _blinkClock = 0.0;
+        }
+      } else {
+        _blinkPhase += dt / 0.44; // one blink ≈ 0.44s (close then open)
+        if (!_wobbleApplied && _blinkPhase >= 0.5) {
+          _wobbleApplied = true; // wobble once, at full close (vision masked)
+          final amt = math.min(0.55, 0.10 + (_level - 1) * 0.055);
+          _targetAngle += (_rng.nextDouble() - 0.5) * 2 * amt;
+        }
+        if (_blinkPhase >= 1.0) {
+          _blinking = false;
+          _blinkPhase = 0.0;
+        }
+      }
+    }
+    _blink = _blinking ? math.sin(_blinkPhase.clamp(0.0, 1.0) * math.pi) : 0.0;
+
+    // Match glow swells while the vector overlaps the target pole.
+    final matched = running && _collapseT == 0 && _isMatched();
+    _matchGlow = (matched ? _matchGlow + dt * 4.0 : _matchGlow - dt * 5.0)
+        .clamp(0.0, 1.0);
+
+    // Decay shared juice.
+    _flashGood = math.max(0.0, _flashGood - dt * 2.6);
+    _flashBad = math.max(0.0, _flashBad - dt * 3.0);
+    _parts.removeWhere((p) => !p.step(dt));
+    _pops.removeWhere((p) => !p.step(dt));
+  }
+
+  void _respawnMobile() {
+    // Drop the target somewhere clearly away from the current aim so the round
+    // always starts with a real correction to make.
+    final away = _aimAngle + math.pi + (_rng.nextDouble() - 0.5) * math.pi;
+    _targetAngle = away.isFinite ? away : _rng.nextDouble() * 2 * math.pi;
+    _blinking = false;
+    _blinkPhase = 0.0;
+    _blink = 0.0;
+    _blinkClock = 0.0;
+    _matchGlow = 0.0;
+  }
+
+  void _measureMobile(Size size) {
+    if (!widget.session.isRunning || _collapseT > 0) return;
+    final err = _aimError();
+    final matched = err <= _tolerance;
+    final c = _tiltCenter(size);
+    final r = _tiltRadius(size);
+    final tip = Offset(
+        c.dx + r * math.cos(_aimAngle), c.dy + r * math.sin(_aimAngle));
+
+    if (matched) {
+      // Dead-centre aim scores more than a lip-of-tolerance match.
+      final quality = (1 - (err / _tolerance)).clamp(0.0, 1.0);
+      const base = 120.0;
+      final pts = (base * (0.55 + 0.45 * math.pow(quality, 1.4))).round() +
+          _streak * 5;
+      widget.session.addScore(pts);
+      _favorable++;
+      _streak++;
+      widget.session.noteStreak(_streak);
+      _flashGood = quality > 0.6 ? 1.0 : 0.8;
+      _parts.addAll(FxBurst.spawn(tip, _kLock, count: 16, speed: 155));
+      _pops.add(FxPop(
+          Offset(size.width / 2, size.height * 0.26), '+$pts', _kLock));
+      _lastAllLand = true;
+    } else {
+      _streak = 0;
+      _flashBad = 1.0;
+      _parts.addAll(FxBurst.spawn(tip, _kBad, count: 10, speed: 130));
+      _pops.add(FxPop(
+          Offset(size.width / 2, size.height * 0.26), 'DECOHERED', _kBad));
+      _lastAllLand = false;
+    }
+    _collapseT = _kCollapseHold;
+    _matchGlow = 0.0;
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => _measure(size),
+        onTapDown: (_) => _mobile ? _measureMobile(size) : _measure(size),
         child: ClipRect(
           child: CustomPaint(
             size: size,
-            painter: _SuperpositionV2Painter(
-              phase: List<double>.from(_phase),
-              target: List<bool>.from(_target),
-              outUp: List<bool>.from(_outUp),
-              landed: List<bool>.from(_landed),
-              wasLock: List<bool>.from(_wasLock),
-              n: _n,
-              collapsed: _collapseT > 0,
-              collapseT: _collapseT,
-              lastAllLand: _lastAllLand,
-              lockPulse: _lockPulse,
-              flashGood: _flashGood,
-              flashBad: _flashBad,
-              idle: _idle,
-              level: _level,
-              streak: _streak,
-              climax: _climax,
-              running: widget.session.isRunning,
-              parts: _parts,
-              pops: _pops,
-            ),
+            painter: _mobile
+                ? _SuperpositionTiltPainter(
+                    aimAngle: _aimAngle,
+                    targetAngle: _targetAngle,
+                    tolerance: _tolerance,
+                    matched: _collapseT == 0 && _isMatched(),
+                    matchGlow: _matchGlow,
+                    collapsed: _collapseT > 0,
+                    collapseT: _collapseT,
+                    lastAllLand: _lastAllLand,
+                    blink: _blink,
+                    flashGood: _flashGood,
+                    flashBad: _flashBad,
+                    idle: _idle,
+                    level: _level,
+                    streak: _streak,
+                    running: widget.session.isRunning,
+                    parts: _parts,
+                    pops: _pops,
+                  )
+                : _SuperpositionV2Painter(
+                    phase: List<double>.from(_phase),
+                    target: List<bool>.from(_target),
+                    outUp: List<bool>.from(_outUp),
+                    landed: List<bool>.from(_landed),
+                    wasLock: List<bool>.from(_wasLock),
+                    n: _n,
+                    collapsed: _collapseT > 0,
+                    collapseT: _collapseT,
+                    lastAllLand: _lastAllLand,
+                    lockPulse: _lockPulse,
+                    flashGood: _flashGood,
+                    flashBad: _flashBad,
+                    idle: _idle,
+                    level: _level,
+                    streak: _streak,
+                    climax: _climax,
+                    running: widget.session.isRunning,
+                    parts: _parts,
+                    pops: _pops,
+                  ),
           ),
         ),
       );
@@ -714,4 +906,289 @@ class _SuperpositionV2Painter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _SuperpositionV2Painter old) => true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOBILE — tilt-to-aim painter.
+//
+// The state vector is a line pinned at the circle's centre; its tip rides the
+// circumference as the aim angle changes. A glowing target dot sits on the
+// circumference at the target-pole angle. Overlap the tip with the dot (angle
+// within tolerance) to LOCK, then tap to collapse. Blinks mask the screen and
+// drift the target so vision must be re-corrected. One CustomPainter, all
+// motion driven by the shared ticker — no per-frame widget state.
+class _SuperpositionTiltPainter extends CustomPainter {
+  final double aimAngle;
+  final double targetAngle;
+  final double tolerance;
+  final bool matched;
+  final double matchGlow;
+  final bool collapsed;
+  final double collapseT;
+  final bool? lastAllLand;
+  final double blink;
+  final double flashGood;
+  final double flashBad;
+  final double idle;
+  final int level;
+  final int streak;
+  final bool running;
+  final List<FxParticle> parts;
+  final List<FxPop> pops;
+
+  _SuperpositionTiltPainter({
+    required this.aimAngle,
+    required this.targetAngle,
+    required this.tolerance,
+    required this.matched,
+    required this.matchGlow,
+    required this.collapsed,
+    required this.collapseT,
+    required this.lastAllLand,
+    required this.blink,
+    required this.flashGood,
+    required this.flashBad,
+    required this.idle,
+    required this.level,
+    required this.streak,
+    required this.running,
+    required this.parts,
+    required this.pops,
+  });
+
+  double _fin(double v, double fallback) => v.isFinite ? v : fallback;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = _kInk);
+    GameFx.atmosphere(canvas, size, matched ? _kLock : _kAccent, idle,
+        motes: 26);
+
+    final c = Offset(size.width / 2, size.height * 0.44);
+    final r = math.min(size.width * 0.32, size.height * 0.24);
+    final aim = _fin(aimAngle, -math.pi / 2);
+    final tgt = _fin(targetAngle, 0.0);
+
+    _paintHeader(canvas, size);
+
+    // ── The circle (the Bloch great-circle the vector sweeps). ────────────────
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = (matched ? _kLock : _kAccent)
+            .withValues(alpha: matched ? 0.7 : 0.5),
+    );
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          (matched ? _kLock : _kAccent)
+              .withValues(alpha: 0.06 + 0.16 * matchGlow),
+          _kAccent.withValues(alpha: 0.0),
+        ]).createShader(Rect.fromCircle(center: c, radius: r)),
+    );
+    // Pivot hub.
+    canvas.drawCircle(c, 4.5, Paint()..color = Colors.white.withValues(alpha: 0.5));
+
+    if (!collapsed) {
+      // Tolerance arc around the target — the window you must land the tip in.
+      final arc = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = matched ? 8 : 5
+        ..strokeCap = StrokeCap.round
+        ..color = _kLock.withValues(alpha: matched ? 0.55 : 0.22)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, matched ? 6 : 3);
+      canvas.drawArc(Rect.fromCircle(center: c, radius: r), tgt - tolerance,
+          tolerance * 2, false, arc);
+    }
+
+    // ── Target dot on the circumference. ──────────────────────────────────────
+    final dot = Offset(c.dx + r * math.cos(tgt), c.dy + r * math.sin(tgt));
+    final dotCol = matched ? _kLock : _kGood;
+    canvas.drawCircle(
+      dot,
+      (matched ? 20 : 14) + 4 * matchGlow,
+      Paint()
+        ..color = dotCol.withValues(alpha: 0.35 + 0.4 * matchGlow)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, matched ? 12 : 8),
+    );
+    canvas.drawCircle(
+      dot,
+      9,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..color = dotCol,
+    );
+    canvas.drawCircle(dot, 4.5, Paint()..color = dotCol.withValues(alpha: 0.95));
+
+    // ── The pivoting state vector. ────────────────────────────────────────────
+    final tip = Offset(c.dx + r * math.cos(aim), c.dy + r * math.sin(aim));
+    if (collapsed) {
+      final ok = lastAllLand == true;
+      final col = ok ? _kLock : _kBad;
+      // Snap the vector onto the target pole on a success; freeze in place on a
+      // miss (decohered off-target).
+      final end = ok ? dot : tip;
+      canvas.drawLine(
+        c,
+        end,
+        Paint()
+          ..strokeWidth = 4.5
+          ..strokeCap = StrokeCap.round
+          ..color = col,
+      );
+      GameFx.orb(canvas, end, 9, col, glow: 1.2);
+      final ringT = 1.0 - (collapseT / _kCollapseHold);
+      canvas.drawCircle(
+        c,
+        r * (0.3 + ringT * 0.9),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5 * (1 - ringT)
+          ..color = col.withValues(alpha: 0.6 * (1 - ringT)),
+      );
+    } else {
+      final vecCol = matched ? _kLock : _kUp;
+      canvas.drawLine(
+        c,
+        tip,
+        Paint()
+          ..strokeWidth = (matched ? 4.0 : 3.4)
+          ..strokeCap = StrokeCap.round
+          ..color = vecCol.withValues(alpha: 0.35)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, matched ? 7 : 4),
+      );
+      canvas.drawLine(
+        c,
+        tip,
+        Paint()
+          ..strokeWidth = matched ? 4.0 : 3.2
+          ..strokeCap = StrokeCap.round
+          ..color = vecCol.withValues(alpha: 0.95),
+      );
+      GameFx.orb(canvas, tip, matched ? 8 : 6, vecCol, glow: 0.6 + matchGlow);
+    }
+
+    _paintPrompt(canvas, size);
+
+    FxBurst.paint(canvas, parts);
+    for (final p in pops) {
+      p.paint(canvas);
+    }
+
+    // ── Blink overlay: eyelids close from top and bottom, masking the scene. ──
+    if (blink > 0.001) {
+      final b = blink.clamp(0.0, 1.0);
+      final lidH = size.height * 0.54 * b;
+      final bulge = size.height * 0.06 * b;
+      final lid = Paint()..color = const Color(0xFF060309);
+      final rim = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = _kAccent.withValues(alpha: 0.5 * b);
+      final top = Path()
+        ..moveTo(0, -1)
+        ..lineTo(size.width, -1)
+        ..lineTo(size.width, lidH)
+        ..quadraticBezierTo(size.width / 2, lidH + bulge, 0, lidH)
+        ..close();
+      final bottom = Path()
+        ..moveTo(0, size.height + 1)
+        ..lineTo(size.width, size.height + 1)
+        ..lineTo(size.width, size.height - lidH)
+        ..quadraticBezierTo(
+            size.width / 2, size.height - lidH - bulge, 0, size.height - lidH)
+        ..close();
+      canvas.drawPath(top, lid);
+      canvas.drawPath(bottom, lid);
+      // Eyelash rim on the closing edges.
+      final topEdge = Path()
+        ..moveTo(0, lidH)
+        ..quadraticBezierTo(size.width / 2, lidH + bulge, size.width, lidH);
+      final botEdge = Path()
+        ..moveTo(0, size.height - lidH)
+        ..quadraticBezierTo(size.width / 2, size.height - lidH - bulge,
+            size.width, size.height - lidH);
+      canvas.drawPath(topEdge, rim);
+      canvas.drawPath(botEdge, rim);
+    }
+
+    // Full-screen collapse flash.
+    if (flashGood > 0.25) {
+      canvas.drawRect(Offset.zero & size,
+          Paint()..color = _kGood.withValues(alpha: (flashGood - 0.25) * 0.32));
+    }
+    if (flashBad > 0.25) {
+      canvas.drawRect(Offset.zero & size,
+          Paint()..color = _kBad.withValues(alpha: (flashBad - 0.25) * 0.30));
+    }
+  }
+
+  void _paintHeader(Canvas canvas, Size size) {
+    GameFx.text(
+      canvas,
+      'TILT TO AIM THE VECTOR AT THE TARGET, THEN TAP TO MEASURE',
+      Offset(size.width / 2, 22),
+      11,
+      matched ? _kLock : Potatuhs.textSecondary,
+      weight: FontWeight.w700,
+      glow: matched ? 0.6 : 0,
+    );
+    GameFx.text(canvas, 'LV $level', Offset(28, 18), 11, _kAccent,
+        weight: FontWeight.w800);
+    if (streak >= 2) {
+      GameFx.text(canvas, '🔥$streak', Offset(size.width - 26, 18), 12, _kGood,
+          weight: FontWeight.w800);
+    }
+  }
+
+  void _paintPrompt(Canvas canvas, Size size) {
+    final y = size.height * 0.9;
+    if (!running) {
+      GameFx.text(
+        canvas,
+        'Tilt to sweep the vector onto the target, then tap to measure',
+        Offset(size.width / 2, y),
+        13,
+        Potatuhs.textSecondary,
+        weight: FontWeight.w700,
+      );
+      return;
+    }
+    final String msg;
+    final Color col;
+    if (collapsed) {
+      msg = lastAllLand == true ? 'COLLAPSED' : 'DECOHERED';
+      col = lastAllLand == true ? _kGood : _kBad;
+    } else if (matched) {
+      msg = 'LOCKED — MEASURE!';
+      col = _kLock;
+    } else {
+      msg = 'TILT TO AIM';
+      col = _kAccent;
+    }
+    final pulse = collapsed
+        ? 0.6
+        : (matched
+            ? (0.75 + 0.25 * math.sin(idle * 9))
+            : (0.7 + 0.3 * math.sin(idle * 4)));
+    GameFx.text(
+      canvas,
+      msg,
+      Offset(size.width / 2, y),
+      matched ? 18 : 16,
+      col.withValues(alpha: pulse.clamp(0.0, 1.0)),
+      display: true,
+      weight: FontWeight.w900,
+      glow: matched ? 0.9 : 0.6,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SuperpositionTiltPainter old) => true;
 }

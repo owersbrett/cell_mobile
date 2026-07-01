@@ -1,0 +1,30 @@
+{
+  "name": "learning-materials",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Explore The Cell — lessons gallery. The E (Education) surface of the GAMES rubric: scholarly, multimedia, progress-tracked lessons derived from each game's EDUCATION.md, kept in sync by the sync-education skill. Doubles as marketing material for the games.",
+  "comment_port": "dev server runs on 5180 (chosen after confirming 5180/5181 are free). preview on 5181.",
+  "scripts": {
+    "dev": "vite --port 5180 --strictPort",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --port 5181 --strictPort",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "katex": "^0.16.11",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "react-router-dom": "^6.26.2",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/katex": "^0.16.7",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}
