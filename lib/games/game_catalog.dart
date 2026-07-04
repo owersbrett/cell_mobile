@@ -85,6 +85,11 @@ class CatalogGame {
 class GameCatalog {
   GameCatalog._();
 
+  /// True for an un-judged A/B alternate (the `_v2` twin of a base game).
+  /// Player mode (DevMode off) hides these so players see one game per pair;
+  /// judged promotions rename ids, so a canonical game never keeps the suffix.
+  static bool isAlternate(CatalogGame g) => g.id.endsWith('_v2');
+
   static const List<CatalogGame> games = [
     // ---- nothings ----
     CatalogGame(

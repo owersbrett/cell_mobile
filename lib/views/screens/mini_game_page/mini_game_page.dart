@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
+import 'package:cell_mobile/games/dev_mode.dart';
 import 'package:cell_mobile/games/game_catalog.dart';
 import 'package:cell_mobile/games/play_config.dart';
 import 'package:cell_mobile/games/rank_store.dart';
@@ -38,6 +39,10 @@ class _MiniGamePageState extends State<MiniGamePage> {
   @override
   void initState() {
     super.initState();
+    // Player/dev split (v2 visibility, rank tooling) — refresh once loaded.
+    DevMode.load().then((_) {
+      if (mounted) setState(() {});
+    });
     // One-shot "Play" intents: skip the picker and drop straight into a game.
     // Consumed here so each fires exactly once (backing out of the game still
     // reveals the full picker). A specific game (Games console) wins over the
@@ -70,7 +75,10 @@ class _MiniGamePageState extends State<MiniGamePage> {
   /// The scale's best game by effective rank — mirrors the picker's sort so
   /// "Play" launches the same game that would sit at the top of the list.
   CatalogGame? _topRankedFor(BioScale scale) {
-    final games = [...GameCatalog.forScale(scale)];
+    final games = [
+      for (final g in GameCatalog.forScale(scale))
+        if (DevMode.on || !GameCatalog.isAlternate(g)) g,
+    ];
     if (games.isEmpty) return null;
     games.sort((a, b) {
       final r =
@@ -126,10 +134,13 @@ class _MiniGamePageState extends State<MiniGamePage> {
   }
 
   /// Every catalog game whose registry spec resolves, in catalog order — the
-  /// quick-hop ring.
+  /// quick-hop ring. Player mode skips the `_v2` A/B alternates.
   List<CatalogGame> _playableCatalog() => [
         for (final g in GameCatalog.games)
-          if (g.specId != null && MiniGameRegistry.byId(g.specId!) != null) g,
+          if (g.specId != null &&
+              MiniGameRegistry.byId(g.specId!) != null &&
+              (DevMode.on || !GameCatalog.isAlternate(g)))
+            g,
       ];
 
   /// Safety net for a catalog entry whose specId doesn't resolve. Should never
@@ -195,15 +206,19 @@ class _GamePickerState extends State<_GamePicker> {
   @override
   void initState() {
     super.initState();
-    // Load any saved rank overrides, then re-sort with them applied.
-    RankStore.load().then((_) {
+    // Load saved rank overrides + the dev/player split, then re-sort/refilter.
+    Future.wait([RankStore.load(), DevMode.load()]).then((_) {
       if (mounted) setState(() {});
     });
   }
 
   /// Scale's games ordered by their EFFECTIVE rank (override or default).
+  /// Player mode hides the `_v2` A/B alternates — one game per pair.
   List<CatalogGame> get _sorted {
-    final list = [...widget.games];
+    final list = [
+      for (final g in widget.games)
+        if (DevMode.on || !GameCatalog.isAlternate(g)) g,
+    ];
     list.sort((a, b) {
       final r = RankStore.rankFor(a).order.compareTo(RankStore.rankFor(b).order);
       return r != 0 ? r : a.name.compareTo(b.name);
@@ -296,7 +311,8 @@ class _GamePickerState extends State<_GamePicker> {
                   rank: RankStore.rankFor(games[i]),
                   hasNote: RankStore.hasNote(games[i].id),
                   onTap: () => widget.onPick(games[i]),
-                  onEdit: () => _editGame(games[i]),
+                  // Rating is dev triage — players get no badge/edit seam.
+                  onEdit: DevMode.on ? () => _editGame(games[i]) : null,
                   onFriends: _friendsLauncher(games[i]),
                 ),
               ),
@@ -313,14 +329,17 @@ class _GameCard extends StatelessWidget {
   final GameRank rank;
   final bool hasNote;
   final VoidCallback onTap;
-  final VoidCallback onEdit;
+
+  /// Dev triage seam — null (player mode) hides the rank badge, edit pencil,
+  /// and feedback indicator entirely.
+  final VoidCallback? onEdit;
   final VoidCallback? onFriends; // quick match — registry games only
   const _GameCard({
     required this.game,
     required this.rank,
     required this.hasNote,
     required this.onTap,
-    required this.onEdit,
+    this.onEdit,
     this.onFriends,
   });
 
@@ -351,9 +370,11 @@ class _GameCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Rank badge — the assigned tier, leading the card.
-            _rankBadge(accent),
-            const SizedBox(width: 12),
+            // Rank badge — the assigned tier, leading the card (dev only).
+            if (onEdit != null) ...[
+              _rankBadge(accent),
+              const SizedBox(width: 12),
+            ],
             Container(
               width: 52,
               height: 52,
@@ -388,7 +409,7 @@ class _GameCard extends StatelessWidget {
                       color: Colors.white.withValues(alpha: 0.7),
                     ),
                   ),
-                  if (hasNote) ...[
+                  if (onEdit != null && hasNote) ...[
                     const SizedBox(height: 8),
                     Row(
                       children: [

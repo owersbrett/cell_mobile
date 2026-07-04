@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../games/dev_mode.dart';
 import '../../../games/mini_game_registry.dart';
 import '../../../games/opponent_config.dart';
 import '../../../games/play_config.dart';
@@ -29,7 +30,8 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   @override
   void initState() {
     super.initState();
-    Future.wait([PlayConfig.load(), OpponentRoster.load()]).then((_) {
+    Future.wait([PlayConfig.load(), OpponentRoster.load(), DevMode.load()])
+        .then((_) {
       if (mounted) setState(() => _ready = true);
     });
   }
@@ -93,6 +95,10 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                           isYou: OpponentRoster.playAs == c.name,
                           onChanged: () => setState(() {}),
                         ),
+                      const SizedBox(height: 12),
+                      const _SectionLabel('DEV TOOLS'),
+                      const SizedBox(height: 10),
+                      _DevToolsToggle(onChanged: () => setState(() {})),
                     ],
                   ),
                 ),
@@ -196,6 +202,60 @@ class _ModeSection extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// The DEV TOOLS switch — surfaces the games-triage tooling (rank grades,
+/// RATE, feedback tools, v1/v2 A/B pairs) on the games surfaces. Player mode
+/// (off, the default) keeps all of that hidden.
+class _DevToolsToggle extends StatelessWidget {
+  final VoidCallback onChanged;
+  const _DevToolsToggle({required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final on = DevMode.on;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () async {
+        await DevMode.set(!DevMode.on);
+        onChanged();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: on
+              ? Potatuhs.airForce.withValues(alpha: 0.18)
+              : Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: on ? Potatuhs.airForce : Colors.white.withValues(alpha: 0.12),
+            width: on ? 1.6 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.build,
+                size: 16, color: on ? Potatuhs.airForce : Colors.white54),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'DEV TOOLS — game grades, rating & A/B alternates',
+                style: TextStyle(
+                  fontFamily: Potatuhs.bodyFont,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: on ? Potatuhs.airForce : Colors.white60,
+                ),
+              ),
+            ),
+            Icon(on ? Icons.toggle_on : Icons.toggle_off,
+                size: 26, color: on ? Potatuhs.airForce : Colors.white38),
+          ],
+        ),
+      ),
     );
   }
 }
