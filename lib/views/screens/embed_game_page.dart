@@ -8,12 +8,18 @@ import 'package:cell_mobile/games/mini_game_registry.dart';
 /// Renders exactly ONE game (solo, no opponents) with no splash, overview, or
 /// app navigation. Exiting the game replays it — the embed is self-contained.
 ///
+/// With [attract] (URL: `/{slug}?attract=true`), the host runs the game
+/// hands-free on its autopilot bot and replays it forever once each round's
+/// results settle — self-playing b-roll for a dashboard/kiosk iframe.
+///
 /// This screen is reached ONLY when the app is opened at a game deep-link URL
-/// (see [GameSlug.embedSpecIdFromUrl]); the normal in-app flow never routes
+/// (see [GameSlug.embedTargetFromUrl]); the normal in-app flow never routes
 /// here, so existing navigation is untouched.
 class EmbedGamePage extends StatefulWidget {
   final String specId;
-  const EmbedGamePage({Key? key, required this.specId}) : super(key: key);
+  final bool attract;
+  const EmbedGamePage({Key? key, required this.specId, this.attract = false})
+      : super(key: key);
 
   @override
   State<EmbedGamePage> createState() => _EmbedGamePageState();
@@ -44,6 +50,11 @@ class _EmbedGamePageState extends State<EmbedGamePage> {
       onExit: () => setState(() => _replay++),
       opponentCount: 0,
       disruption: false,
+      autoPlay: widget.attract,
+      // Attract embeds loop the SAME game: once the results settle, remount
+      // for a fresh hands-free round.
+      onAutoAdvance:
+          widget.attract ? () => setState(() => _replay++) : null,
     );
   }
 }

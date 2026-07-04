@@ -28,9 +28,10 @@ class MyApp extends StatelessWidget {
         );
 
     // iframe deep-link: if the app was opened at /{slug} for a known game, host
-    // JUST that game (chromeless). Null for the normal app / non-web / unknown
-    // slug — in which case the flow below is byte-for-byte unchanged.
-    final embedSpecId = GameSlug.embedSpecIdFromUrl();
+    // JUST that game (chromeless); /{slug}?attract=true runs it self-playing
+    // on a loop (dashboard b-roll). Null for the normal app / non-web /
+    // unknown slug — in which case the flow below is byte-for-byte unchanged.
+    final embed = GameSlug.embedTargetFromUrl();
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -44,8 +45,8 @@ class MyApp extends StatelessWidget {
           BlocProvider(create: (_) => ScaleExplorerBloc()),
         ],
         child: SafeArea(
-          child: embedSpecId != null
-              ? EmbedGamePage(specId: embedSpecId)
+          child: embed != null
+              ? EmbedGamePage(specId: embed.specId, attract: embed.attract)
               : const AppViewDelegate(),
         ),
       ),

@@ -1,6 +1,14 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 
 import 'game_catalog.dart';
+
+/// What a game deep-link URL resolved to: which game, and whether it should
+/// run hands-free (attract autopilot — dashboard/kiosk b-roll).
+class EmbedTarget {
+  final String specId;
+  final bool attract;
+  const EmbedTarget(this.specId, {this.attract = false});
+}
 
 /// URL-slug support for embedding a SINGLE game at
 /// `explore-the-cell.web.app/{slug}` (e.g. `/farm-panic`), so an iframe can host
@@ -10,6 +18,10 @@ import 'game_catalog.dart';
 /// (`farm_panic` → `farm-panic`). Only registry games (`specId != null`) are
 /// embeddable. Add an entry to [_slugOverrides] to give a game a
 /// marketing-clean URL that differs from its derived slug.
+///
+/// ATTRACT VARIANT — the game self-plays on a loop (autopilot bot, replays
+/// forever). Canonical form: `/{slug}?attract=true`. Also accepted:
+/// `/{slug}/attract` and `/attract/{slug}`.
 ///
 /// This is a pure, additive lookup — it does not touch the app's navigation.
 class GameSlug {
@@ -47,26 +59,51 @@ class GameSlug {
 
   /// If the current web URL points at a known game slug — either as a path
   /// segment (`/farm-panic`, path URL strategy) or in the fragment
-  /// (`/#/farm-panic`, hash strategy) — return that game's specId. On non-web,
-  /// the root path, or an unknown slug, returns null so the normal app boots.
-  static String? embedSpecIdFromUrl() {
+  /// (`/#/farm-panic`, hash strategy) — return that game as an [EmbedTarget],
+  /// with `attract` set when the URL asks for the self-playing variant (see
+  /// the class doc for the accepted forms). On non-web, the root path, or an
+  /// unknown slug, returns null so the normal app boots.
+  static EmbedTarget? embedTargetFromUrl() {
     if (!kIsWeb) return null;
     final uri = Uri.base;
 
-    // First real path segment is the game slug (path URL strategy).
-    final pathSegs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-    if (pathSegs.isNotEmpty) {
-      final spec = specIdForSlug(pathSegs.first);
-      if (spec != null) return spec;
+    // Path URL strategy: route + ?query live on the real URI.
+    final fromPath = targetFrom(uri.pathSegments, uri.queryParameters);
+    if (fromPath != null) return fromPath;
+
+    // Fallback: hash strategy keeps the route (and any ?query) in the
+    // fragment — re-parse it as its own URI.
+    final frag = Uri.parse(uri.fragment);
+    return targetFrom(frag.pathSegments, frag.queryParameters);
+  }
+
+  static const _attractSeg = 'attract';
+
+  /// Resolves route segments + query to an embed target. Exposed for tests —
+  /// production goes through [embedTargetFromUrl] (which owns `Uri.base`).
+  @visibleForTesting
+  static EmbedTarget? targetFrom(
+      List<String> rawSegments, Map<String, String> query) {
+    final segs = rawSegments.where((s) => s.isNotEmpty).toList();
+    if (segs.isEmpty) return null;
+
+    // /attract/{slug}
+    if (segs.first.toLowerCase() == _attractSeg) {
+      if (segs.length < 2) return null;
+      final spec = specIdForSlug(segs[1]);
+      return spec == null ? null : EmbedTarget(spec, attract: true);
     }
 
-    // Fallback: hash strategy leaves the route in the fragment.
-    final fragSegs = uri.fragment.split('/').where((s) => s.isNotEmpty).toList();
-    if (fragSegs.isNotEmpty) {
-      final spec = specIdForSlug(fragSegs.first);
-      if (spec != null) return spec;
-    }
+    final spec = specIdForSlug(segs.first);
+    if (spec == null) return null;
 
-    return null;
+    // /{slug}/attract
+    final pathAttract =
+        segs.length >= 2 && segs[1].toLowerCase() == _attractSeg;
+    // /{slug}?attract=true (canonical; `attract=1` also accepted)
+    final q = (query['attract'] ?? '').toLowerCase();
+    final queryAttract = q == 'true' || q == '1';
+
+    return EmbedTarget(spec, attract: pathAttract || queryAttract);
   }
 }
