@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 /// ffa4 (1 / 1v1 / 1v1v1 / 1v1v1v1); team + 8-player formats also exist.
 /// NOTE: serialized by `.index` (party_controller / party_net), so NEW modes
 /// are APPENDED to preserve existing indices — never reorder.
-enum PartyMode { duel, ffa4, teams2v2, teams3v3, teams4v4, ffa8, solo, ffa3 }
+enum PartyMode { duel, ffa4, teams2v2, teams3v3, teams4v4, ffa8, solo, ffa3, ffa5 }
 
 extension PartyModeInfo on PartyMode {
   String get label {
@@ -26,6 +26,18 @@ extension PartyModeInfo on PartyMode {
         return '4 v 4';
       case PartyMode.ffa8:
         return '8-PLAYER FFA';
+      case PartyMode.ffa5:
+        return '5-PLAYER FFA';
+    }
+  }
+
+  /// Compact form for tight UI (the lobby's five-across pill row).
+  String get shortLabel {
+    switch (this) {
+      case PartyMode.solo:
+        return 'SOLO';
+      default:
+        return '${playerCount}P';
     }
   }
 
@@ -47,6 +59,8 @@ extension PartyModeInfo on PartyMode {
         return 8;
       case PartyMode.ffa8:
         return 8;
+      case PartyMode.ffa5:
+        return 5;
     }
   }
 

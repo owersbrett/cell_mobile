@@ -710,12 +710,13 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
       );
 
   Widget _modeToggle() {
-    // The four home-screen formats, in player-count order.
+    // The home-screen formats plus 5-player FFA, in player-count order.
     const modes = [
       PartyMode.solo,
       PartyMode.duel,
       PartyMode.ffa3,
       PartyMode.ffa4,
+      PartyMode.ffa5,
     ];
     Widget pill(PartyMode mode) {
       final selected = _mode == mode;
@@ -735,7 +736,7 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
             child: Center(
               child: FittedBox(
                 fit: BoxFit.scaleDown,
-                child: Text(mode.label,
+                child: Text(mode.shortLabel,
                     style: Potatuhs.body(
                         size: 13,
                         weight: FontWeight.w700,
