@@ -54,20 +54,47 @@ Map is **picked at setup** (not a campaign). 8 themed scales per map.
 → SpaceType; jumps) + per-player stats model → map picker in setup → board
 renderer per shape (spiral/grid/ribbon). None of this is built yet.
 
-## Known bugs (observed)
+## Known bugs — FIXED (kept for history)
 
-- **Joining a room doesn't register the 2nd player.** Repro: host a room (gets a
-  code, e.g. QBZF), join from a second client with that code. Both clients show
-  the same room code (so the code/room sync works) but **both show
-  "PLAYERS (1/3)" with only the host** — the joiner never appears in the shared
-  player list, and the host's "WAITING FOR PLAYERS" never satisfies. Look at
-  `PartyNet.join` + `FirebasePartyTransport` players write/listen
-  (`cell_games/$id/players/$uid`) and how the lobby renders the players list —
-  the join writes the room/meta but not (or not visibly) the player record.
-- **Default names collide.** The lobby default name is
-  `kCharacters[Random().nextInt(4)].name` — both clients can roll the same name
-  ("Waffle"). Players should get distinct names/characters (tie into the sticker
-  roster + per-seat character assignment).
+- ~~**Joining a room doesn't register the 2nd player.**~~ Fixed: `PartyNet.join`
+  now reads the roster synchronously (`readPlayers`) to pick a free seat instead
+  of relying on the async `onPlayers` listener; regression-tested in
+  `test/party_net_test.dart` ("a slow roster listener never seats the joiner on
+  top of the host").
+- ~~**Default names collide.**~~ Fixed: lobby default draws from all 8
+  characters, and `PartyNet.join` dedupes any colliding name against the live
+  roster ("Waffle" → "Waffle 2").
+
+## Session resilience (implemented)
+
+- **5-player FFA online** (`PartyMode.ffa5`) is surfaced in the lobby — 1 host
+  + 4 joiners.
+- **Lobby onDisconnect guards** (`FirebasePartyTransport`): a joiner that drops
+  in the lobby is removed from the roster; a host that drops pre-start deletes
+  the room. Guards cancel at `status == 'playing'` — mid-game roster removal
+  would renumber the order-derived seats, so it must never happen.
+- **Join gates:** joining a started or full room throws (specific lobby error).
+- **Mini-score watchdog:** the host banks a 0 for any player that hasn't
+  submitted a mini-game score after `spec.durationSeconds + 30s`, so one
+  dropped device can't hang the round.
+- Still OPEN: no mid-game reconnect/host-migration (a dropped player idles at
+  0-score rounds; a dropped HOST stalls the match), and finished rooms are not
+  cleaned out of RTDB.
+
+## 5-device verification checklist (run on real hardware)
+
+1. Host on device A: PARTY → name → HOST with mode **5P**, any map/length.
+2. Join from devices B–E with the code. Room shows PLAYERS (5/5), five distinct
+   names, five distinct characters; taken characters dim in the picker.
+3. Kill device C's app while still in the lobby → roster drops to 4/5 and START
+   disables again; rejoin → 5/5.
+4. START on A → all five land on the board; only the current player can act.
+5. Play a full WEEK (7 rounds): every mini-game round fires for all five
+   simultaneously; scores award diamonds by rank.
+6. Mid-mini-game, kill device C → after game length + ~30s the round resolves
+   with C at 0; the other four continue.
+7. Final round ends → all four remaining devices show the same podium winner.
+8. EXIT / PLAY AGAIN on the host returns cleanly to a fresh lobby (session S).
 
 ## Online multiplayer — known gaps
 

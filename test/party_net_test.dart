@@ -231,7 +231,7 @@ void main() {
       expect(c.phase, PartyPhase.gameOver, reason: 'game must not deadlock');
     });
 
-    for (final mode in [PartyMode.duel, PartyMode.ffa4]) {
+    for (final mode in [PartyMode.duel, PartyMode.ffa4, PartyMode.ffa5]) {
       test('host + clients converge to the same final match ($mode)', () async {
         final nets = await _playNetworkedGame(
           mode: mode,
@@ -258,6 +258,85 @@ void main() {
         expect(host.inputLog.length, greaterThan(10));
       });
     }
+
+    test('colliding names are made unique at join', () async {
+      final transport = InMemoryPartyTransport();
+      const code = 'NAME';
+      await PartyNet.host(
+        transport: transport,
+        gameId: code,
+        uid: 'u0',
+        name: 'Waffle',
+        mode: PartyMode.ffa3,
+        rounds: 2,
+        seed: 1,
+      );
+      await PartyNet.join(
+          transport: transport, gameId: code, uid: 'u1', name: 'Waffle');
+      await PartyNet.join(
+          transport: transport, gameId: code, uid: 'u2', name: 'Waffle');
+      final roster = await transport.readPlayers(code);
+      final names = roster.map((p) => p.name).toSet();
+      expect(names, hasLength(3), reason: 'all names distinct');
+      expect(names, containsAll(['Waffle', 'Waffle 2', 'Waffle 3']));
+    });
+
+    test('joining a started or full room is rejected', () async {
+      final transport = InMemoryPartyTransport();
+      const code = 'GATE';
+      final host = await PartyNet.host(
+        transport: transport,
+        gameId: code,
+        uid: 'u0',
+        name: 'Spud',
+        mode: PartyMode.duel,
+        rounds: 2,
+        seed: 1,
+      );
+      await PartyNet.join(
+          transport: transport, gameId: code, uid: 'u1', name: 'Tater');
+
+      // Room is now at its 2-player cap — a third join must be rejected.
+      await expectLater(
+        PartyNet.join(
+            transport: transport, gameId: code, uid: 'u2', name: 'Late'),
+        throwsA(isA<StateError>()
+            .having((e) => e.message, 'message', contains('full'))),
+      );
+
+      await host.startGame();
+      await expectLater(
+        PartyNet.join(
+            transport: transport, gameId: code, uid: 'u3', name: 'Later'),
+        throwsA(isA<StateError>()
+            .having((e) => e.message, 'message', contains('started'))),
+      );
+    });
+
+    test('leaving the lobby cleans up the roster / the room', () async {
+      final transport = InMemoryPartyTransport();
+      const code = 'BAIL';
+      final host = await PartyNet.host(
+        transport: transport,
+        gameId: code,
+        uid: 'u0',
+        name: 'Spud',
+        mode: PartyMode.ffa3,
+        rounds: 2,
+        seed: 1,
+      );
+      final p2 = await PartyNet.join(
+          transport: transport, gameId: code, uid: 'u1', name: 'Tater');
+
+      // A joiner backing out of the lobby frees their roster row.
+      p2.dispose();
+      final roster = await transport.readPlayers(code);
+      expect(roster.map((p) => p.uid), ['u0']);
+
+      // The host backing out of the lobby deletes the room entirely.
+      host.dispose();
+      expect(await transport.readMeta(code), isNull);
+    });
 
     test('an out-of-turn request is ignored by the host', () async {
       final transport = InMemoryPartyTransport();
