@@ -37,8 +37,8 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
   // Created lazily only once Firebase is ready — never in a field initializer,
   // so building the lobby can't crash when Firebase isn't initialized.
   PartyTransport? _transport;
-  final TextEditingController _nameController =
-      TextEditingController(text: kCharacters[Random().nextInt(4)].name);
+  final TextEditingController _nameController = TextEditingController(
+      text: kCharacters[Random().nextInt(kCharacters.length)].name);
   final TextEditingController _joinController = TextEditingController();
 
   _LobbyStage _stage = _LobbyStage.choose;

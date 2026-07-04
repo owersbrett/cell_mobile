@@ -143,12 +143,19 @@ class PartyNet extends ChangeNotifier {
     while (used.contains(slot)) {
       slot++;
     }
+    // Names must be distinct — random lobby defaults (and hand-typed names)
+    // can collide across devices, making the roster/scoreboard ambiguous.
+    final taken = {for (final p in roster) p.name};
+    var uniqueName = name;
+    for (var n = 2; taken.contains(uniqueName); n++) {
+      uniqueName = '$name $n';
+    }
     net._listen();
     await transport.joinPlayer(
       gameId,
       NetPlayer(
           uid: uid,
-          name: name,
+          name: uniqueName,
           slot: slot,
           color: kCharacters[slot % kCharacters.length].color.toARGB32(),
           character: slot % kCharacters.length),
