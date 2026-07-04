@@ -11,6 +11,8 @@ import 'arcade/organ_quiz.dart';
 import 'arcade/molecule_mixer.dart';
 import 'nothings/bit_memory/bit_memory_game.dart';
 import 'somethings/whose_idea/whose_idea_game.dart';
+import 'somethings/parse/parse_game.dart';
+import 'somethings/code_trivia/code_trivia_game.dart';
 import 'infinities/tangent/tangent_game.dart';
 import 'infinities/area_under/area_under_game.dart';
 import 'supply_chain/bottleneck/bottleneck_game.dart';
@@ -231,6 +233,50 @@ class MiniGameRegistry {
       starThresholds: const [150, 320, 520],
       legendFrames: whoseIdeaLegendFrames,
       builder: (context, session) => WhoseIdeaGame(session: session),
+    ),
+    MiniGameSpec(
+      id: 'parse',
+      name: 'Parse',
+      scale: BioScale.somethings,
+      tagline: 'Name the construct — read past the syntax',
+      rules: [
+        'A code snippet appears — tap what it IS.',
+        'FUNCTION / CLASS / VARIABLE / INTERFACE… then LOOP / IMPORT / ENUM.',
+        'Right: points + streak. Wrong or timeout: streak resets.',
+        'Answer fast — the bonus falls and, late, a card timer shrinks.',
+      ],
+      howToWin: 'Most constructs identified when time runs out wins.',
+      durationSeconds: 60,
+      scoreUnit: 'constructs',
+      enabled: true,
+      accent: const Color(0xFF7E57C2),
+      icon: Icons.data_object_rounded,
+      humanMax: 3200,
+      starThresholds: const [900, 1800, 2900],
+      legendFrames: parseLegendFrames,
+      builder: (context, session) => ParseGame(session: session),
+    ),
+    MiniGameSpec(
+      id: 'code_trivia',
+      name: 'Code Trivia',
+      scale: BioScale.somethings,
+      tagline: 'Beat the fuse — prove you speak computer',
+      rules: [
+        'Tap the true answer before the fuse burns out.',
+        'Faster taps bank a bigger speed bonus.',
+        'Every 3 in a row raises your ×multiplier (up to ×4).',
+        'Wrong or too slow: streak breaks, the truth flashes with a why.',
+      ],
+      howToWin: 'Highest score when time runs out wins.',
+      durationSeconds: 60,
+      scoreUnit: 'answers',
+      enabled: true,
+      accent: const Color(0xFF7272AB), // Potatuhs.glaucous
+      icon: Icons.terminal_rounded,
+      humanMax: 3200,
+      starThresholds: const [900, 1800, 2800],
+      legendFrames: codeTriviaLegendFrames,
+      builder: (context, session) => CodeTriviaGame(session: session),
     ),
     MiniGameSpec(
       id: 'collider',

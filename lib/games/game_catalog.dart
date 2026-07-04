@@ -133,6 +133,26 @@ class GameCatalog {
       icon: Icons.lightbulb_rounded,
       specId: 'whose_idea',
     ),
+    CatalogGame(
+      id: 'parse',
+      name: 'Parse',
+      tagline: 'Name the construct — read past the syntax',
+      scale: BioScale.somethings,
+      rank: GameRank.unranked,
+      accent: Color(0xFF7E57C2),
+      icon: Icons.data_object_rounded,
+      specId: 'parse',
+    ),
+    CatalogGame(
+      id: 'code_trivia',
+      name: 'Code Trivia',
+      tagline: 'Beat the fuse — prove you speak computer',
+      scale: BioScale.somethings,
+      rank: GameRank.unranked,
+      accent: Color(0xFF7272AB),
+      icon: Icons.terminal_rounded,
+      specId: 'code_trivia',
+    ),
     // ---- particles (the existing two-game scale) ----
     CatalogGame(
       id: 'collider',
