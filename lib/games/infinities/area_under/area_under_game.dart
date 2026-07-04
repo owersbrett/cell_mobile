@@ -19,6 +19,13 @@ import 'area_under_data.dart';
 // + a precision streak = more points. Later rounds add signed area (curves that
 // dip below the axis count as negative).
 //
+// TWO ACTS and a CHEESE (GAME.md + GAME_DESIGN.md §8): Act 1 deliberately
+// rewards slamming the slider to max. Three consecutive max-slam locks
+// (n ≥ _kCheeseZone) trigger a one-time fourth-wall acknowledgment card and a
+// +_kCheeseBonus payout — then Act 2 begins: the slider becomes _kTickCount
+// discrete ticks whose n values are SHUFFLED, the readout shows "n = ?", and
+// the player must seek the clearing tick by reading the rectangles + meter.
+//
 // The host owns the 60 s clock, countdown, score HUD and results. This widget
 // renders ONLY the play area and never calls endEarly. The heavy plot is a
 // single Ticker-driven CustomPainter behind a RepaintBoundary; the controls are
@@ -46,6 +53,11 @@ const double _kFeedbackSecs = 2.0; // how long the result card lingers
 const double _kMeterMaxErr = 0.30; // relative error that reads as an empty meter
 const int _kStreakStep = 3; // +1× multiplier every N tight locks
 const int _kAutoNStep = 3; // rectangles the autopilot adds per host tick
+const int _kCheeseSlams = 3; // consecutive max-slam locks → the acknowledgment
+const int _kCheeseZone = _kNMax - 4; // lock n at/above this = a max-slam
+const int _kCheeseBonus = 300; // one-time acknowledgment payout
+const int _kTickCount = 10; // Act-2 staggered-slider ticks
+const double _kCheeseSecs = 2.5; // how long the acknowledgment card lingers
 
 enum _Phase { ready, playing, feedback }
 
@@ -304,7 +316,16 @@ class _AreaUnderGameState extends State<AreaUnderGame>
   // ── Streak + feedback card ────────────────────────────────────────────────
   int _streak = 0;
   double _feedbackTimer = 0;
+  double _feedbackDuration = _kFeedbackSecs; // of the card currently showing
   _Result? _result;
+
+  // ── The cheese → Act 2 (staggered slider) ────────────────────────────────
+  bool _act2 = false; // true from the round after the acknowledgment
+  bool _cheeseFired = false; // the acknowledgment happens once per run
+  int _maxSlamStreak = 0; // consecutive locks banked in the → ∞ zone
+  List<int> _ticks = const []; // Act-2 shuffled n values, in slider order
+  int _tickIndex = 0; // selected tick (the slider position)
+  int _bestTickIndex = 0; // min-error tick this round (ATTRACT autopilot)
 
   bool get _withinTol => _relError <= _tolerance;
   double get _relError =>
@@ -341,9 +362,22 @@ class _AreaUnderGameState extends State<AreaUnderGame>
   /// it LOCK IN via the same handler a tap would ([_confirm]) — a real, scoring
   /// lock, never a premature bad one. The feedback phase advances itself on the
   /// ticker, so there is nothing to do between rounds. Fully deterministic.
+  ///
+  /// Act 2 (staggered slider): the autopilot may read internals — it steps ONE
+  /// tick per call toward the round's minimum-error tick (so the seek is
+  /// visible on screen), then locks only once the estimate is inside tolerance.
   void _autoStep() {
     if (!widget.session.isRunning) return;
     if (_phase != _Phase.playing) return; // feedback/ready self-advance
+    if (_act2 && _ticks.isNotEmpty) {
+      if (_tickIndex != _bestTickIndex) {
+        _setTickIndex(
+            _tickIndex + (_bestTickIndex > _tickIndex ? 1 : -1)); // seek
+      } else if (_withinTol) {
+        _confirm(); // on the best tick and inside tolerance → bank it
+      }
+      return;
+    }
     if (_withinTol) {
       _confirm(); // meter past the notch → bank the lock
     } else if (_n < _kNMax) {
@@ -400,12 +434,48 @@ class _AreaUnderGameState extends State<AreaUnderGame>
     _tolerance = math.max(0.025, 0.08 - 0.006 * round);
     _curve = _pickCurve(round);
     _lastLabel = _curve.label;
-    _n = _kNStart;
+    if (_act2) {
+      _buildTicks(); // staggered slider: sets _ticks, _tickIndex, _n
+    } else {
+      _n = _kNStart;
+    }
     _roundElapsed = 0;
     _result = null;
     _recompute();
     _phase = _Phase.playing;
     if (mounted) setState(() {});
+  }
+
+  /// Act-2 round setup: build this round's shuffled tick set (guaranteed to
+  /// contain a clearing tick — see [buildShuffledTicks]) and cache the
+  /// minimum-error tick index for the ATTRACT autopilot. The slider opens on
+  /// the leftmost tick.
+  void _buildTicks() {
+    _ticks = buildShuffledTicks(_curve, _tolerance, _kTickCount, _rng);
+    _bestTickIndex = 0;
+    var bestErr = double.infinity;
+    for (var i = 0; i < _ticks.length; i++) {
+      final e = (riemannMidpoint(_curve, _ticks[i]) - _curve.trueArea).abs() /
+          math.max(1e-9, _curve.trueArea.abs());
+      if (e < bestErr) {
+        bestErr = e;
+        _bestTickIndex = i;
+      }
+    }
+    _tickIndex = 0;
+    _n = _ticks[_tickIndex];
+  }
+
+  /// Act-2 control path: snap to a tick (slider drag or ± step).
+  void _setTickIndex(int i) {
+    if (_ticks.isEmpty) return;
+    final clamped = i.clamp(0, _ticks.length - 1);
+    if (clamped == _tickIndex) return;
+    setState(() {
+      _tickIndex = clamped;
+      _n = _ticks[clamped];
+      _recompute();
+    });
   }
 
   AreaCurve _pickCurve(int round) {
@@ -455,8 +525,24 @@ class _AreaUnderGameState extends State<AreaUnderGame>
         (_kBasePoints * (0.45 + 0.55 * precision) * speed * mult).round();
     widget.session.addScore(pts);
 
+    // ── Cheese detection (Act 1 only): three consecutive max-slam locks ──
+    var cheese = false;
+    if (!_act2) {
+      if (_n >= _kCheeseZone) {
+        _maxSlamStreak++;
+      } else {
+        _maxSlamStreak = 0;
+      }
+      if (!_cheeseFired && _maxSlamStreak >= _kCheeseSlams) {
+        _cheeseFired = true; // once per run
+        cheese = true;
+        _act2 = true; // the staggered slider begins next round
+        widget.session.addScore(_kCheeseBonus);
+      }
+    }
+
     _confirmGlow = 1.0;
-    _spawnSparks(tight ? 30 : 16);
+    _spawnSparks(cheese ? 70 : (tight ? 30 : 16));
 
     _result = _Result(
       label: _curve.label,
@@ -467,10 +553,12 @@ class _AreaUnderGameState extends State<AreaUnderGame>
       tight: tight,
       multiplier: mult,
       signed: _curve.signed,
+      cheese: cheese,
       line: _reinforceLine(_curve.signed),
     );
     _phase = _Phase.feedback;
-    _feedbackTimer = _kFeedbackSecs;
+    _feedbackDuration = cheese ? _kCheeseSecs : _kFeedbackSecs;
+    _feedbackTimer = _feedbackDuration;
     setState(() {});
   }
 
@@ -588,9 +676,15 @@ class _AreaUnderGameState extends State<AreaUnderGame>
   }
 
   // Bottom panel: estimate readout, MATCH meter, n slider, ± buttons, CONFIRM.
+  // In Act 2 the slider snaps to _kTickCount shuffled ticks and the readout
+  // hides n ("n = ?") — the drawn rectangles are the only density cue.
   Widget _controls(bool canInteract) {
     final meterFill = (1 - _relError / _kMeterMaxErr).clamp(0.0, 1.0);
     final notch = (1 - _tolerance / _kMeterMaxErr).clamp(0.0, 1.0);
+    // The staggered slider only renders once a tick set exists (i.e. from the
+    // first Act-2 round — during the acknowledgment card the Act-1 controls
+    // linger untouched).
+    final act2Ui = _act2 && _ticks.isNotEmpty;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
@@ -634,7 +728,7 @@ class _AreaUnderGameState extends State<AreaUnderGame>
                     textBaseline: TextBaseline.alphabetic,
                     children: [
                       Text(
-                        'n = $_n',
+                        act2Ui ? 'n = ?' : 'n = $_n',
                         style: const TextStyle(
                           fontFamily: Potatuhs.bodyFont,
                           fontSize: 24,
@@ -643,7 +737,7 @@ class _AreaUnderGameState extends State<AreaUnderGame>
                           color: _kRect,
                         ),
                       ),
-                      if (_n >= _kNMax - 4)
+                      if (!act2Ui && _n >= _kCheeseZone)
                         Text('  → ∞',
                             style: TextStyle(
                               fontFamily: Potatuhs.bodyFont,
@@ -665,8 +759,9 @@ class _AreaUnderGameState extends State<AreaUnderGame>
             children: [
               _StepButton(
                 icon: Icons.remove,
-                enabled: canInteract && _n > 1,
-                onTap: () => _setN(_n - 1),
+                enabled: canInteract && (act2Ui ? _tickIndex > 0 : _n > 1),
+                onTap: () =>
+                    act2Ui ? _setTickIndex(_tickIndex - 1) : _setN(_n - 1),
               ),
               Expanded(
                 child: SliderTheme(
@@ -679,26 +774,46 @@ class _AreaUnderGameState extends State<AreaUnderGame>
                     thumbShape:
                         const RoundSliderThumbShape(enabledThumbRadius: 9),
                   ),
-                  child: Slider(
-                    min: 1,
-                    max: _kNMax.toDouble(),
-                    value: _n.toDouble().clamp(1, _kNMax.toDouble()),
-                    onChanged:
-                        canInteract ? (v) => _setN(v.round()) : null,
-                  ),
+                  child: act2Ui
+                      // Act 2: snaps between _kTickCount shuffled ticks —
+                      // position no longer encodes "more rectangles".
+                      ? Slider(
+                          min: 0,
+                          max: (_ticks.length - 1).toDouble(),
+                          divisions: math.max(1, _ticks.length - 1),
+                          value: _tickIndex
+                              .toDouble()
+                              .clamp(0, (_ticks.length - 1).toDouble()),
+                          onChanged: canInteract
+                              ? (v) => _setTickIndex(v.round())
+                              : null,
+                        )
+                      : Slider(
+                          min: 1,
+                          max: _kNMax.toDouble(),
+                          value: _n.toDouble().clamp(1, _kNMax.toDouble()),
+                          onChanged:
+                              canInteract ? (v) => _setN(v.round()) : null,
+                        ),
                 ),
               ),
               _StepButton(
                 icon: Icons.add,
-                enabled: canInteract && _n < _kNMax,
-                onTap: () => _setN(_n + 1),
+                enabled: canInteract &&
+                    (act2Ui ? _tickIndex < _ticks.length - 1 : _n < _kNMax),
+                onTap: () =>
+                    act2Ui ? _setTickIndex(_tickIndex + 1) : _setN(_n + 1),
               ),
             ],
           ),
           const SizedBox(height: 6),
           _ConfirmButton(
             enabled: canInteract && _withinTol,
-            label: _withinTol ? 'LOCK IT IN' : 'ADD RECTANGLES TO GET CLOSER',
+            label: _withinTol
+                ? 'LOCK IT IN'
+                : (act2Ui
+                    ? 'SEEK THE TICK THAT MATCHES'
+                    : 'ADD RECTANGLES TO GET CLOSER'),
             onTap: _confirm,
           ),
         ],
@@ -714,9 +829,10 @@ class _AreaUnderGameState extends State<AreaUnderGame>
         color: _kSub.withValues(alpha: 0.8),
       );
 
-  // The post-lock reinforcement card.
+  // The post-lock reinforcement card (or, once per run, the acknowledgment).
   Widget _feedbackCard(_Result r) {
-    final alpha = (_feedbackTimer / _kFeedbackSecs).clamp(0.0, 1.0);
+    final alpha = (_feedbackTimer / _feedbackDuration).clamp(0.0, 1.0);
+    if (r.cheese) return _cheeseCard(math.min(1.0, alpha * 2.2));
     return IgnorePointer(
       child: Opacity(
         opacity: math.min(1.0, alpha * 2.2),
@@ -781,6 +897,85 @@ class _AreaUnderGameState extends State<AreaUnderGame>
                     height: 1.35,
                     fontWeight: FontWeight.w600,
                     color: _kInk,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // The acknowledgment beat — the fourth-wall celebration when the player
+  // finds the cheese. Same vocabulary as the reinforcement card, but gold-
+  // bordered and slightly larger; the +300 has already been banked in
+  // [_confirm]. Company voice, per GAME.md.
+  Widget _cheeseCard(double opacity) {
+    return IgnorePointer(
+      child: Opacity(
+        opacity: opacity,
+        child: Align(
+          alignment: const Alignment(0, -0.18),
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 22),
+            padding: const EdgeInsets.fromLTRB(24, 22, 24, 24),
+            decoration: BoxDecoration(
+              color: _kPanel,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _kRegion, width: 2.4),
+              boxShadow: [
+                BoxShadow(
+                  color: _kRegion.withValues(alpha: 0.38),
+                  blurRadius: 34,
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'uhhh... you figured it out.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: Potatuhs.displayFont,
+                    fontSize: 23,
+                    color: _kRegion,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'More rectangles = the integral. Have some points.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: Potatuhs.bodyFont,
+                    fontSize: 14.5,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                    color: _kInk,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  '+$_kCheeseBonus CHEESE BONUS',
+                  style: TextStyle(
+                    fontFamily: Potatuhs.bodyFont,
+                    fontSize: 26,
+                    fontWeight: FontWeight.w900,
+                    color: _kGood,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  "New rule: the slider's shuffled now. Go find the answer.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: Potatuhs.bodyFont,
+                    fontSize: 13.5,
+                    height: 1.35,
+                    fontWeight: FontWeight.w800,
+                    color: _kRect.withValues(alpha: 0.95),
                   ),
                 ),
               ],
@@ -1205,6 +1400,7 @@ class _Result {
   final bool tight;
   final int multiplier;
   final bool signed;
+  final bool cheese; // this lock triggered the acknowledgment beat
   final String line;
   const _Result({
     required this.label,
@@ -1215,6 +1411,7 @@ class _Result {
     required this.tight,
     required this.multiplier,
     required this.signed,
+    this.cheese = false,
     required this.line,
   });
 }

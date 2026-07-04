@@ -97,6 +97,80 @@ double riemannMidpoint(AreaCurve c, int n) {
   return s;
 }
 
+/// Act-2 "staggered slider" tick construction (see GAME.md — TWO ACTS and a
+/// CHEESE). Returns [count] DISTINCT n values in **random order**, drawn from
+/// `[nMin, nMax]`, built so the hunt is real:
+///
+///  - 1–3 ticks clear [tolerance] for this curve (at least one always does —
+///    clearance judged with the same [riemannMidpoint] + relative-error logic
+///    the live MATCH meter uses),
+///  - the rest miss, where the curve allows it (very tame curves whose
+///    midpoint sum clears at almost every n pad the shortfall with the
+///    loosest-clearing values available, so the extras read as marginal),
+///  - the final full shuffle makes the best tick's position uniformly random.
+List<int> buildShuffledTicks(
+  AreaCurve c,
+  double tolerance,
+  int count,
+  math.Random rng, {
+  int nMin = 2,
+  int nMax = 60,
+}) {
+  double relErr(int n) =>
+      (riemannMidpoint(c, n) - c.trueArea).abs() /
+      math.max(1e-9, c.trueArea.abs());
+
+  final err = <int, double>{};
+  final clearing = <int>[];
+  final missing = <int>[];
+  for (var n = nMin; n <= nMax; n++) {
+    final e = relErr(n);
+    err[n] = e;
+    (e <= tolerance ? clearing : missing).add(n);
+  }
+
+  final picked = <int>{};
+
+  if (clearing.isEmpty) {
+    // Defensive: nothing in range clears (cannot happen with the shipped bank
+    // and the 2.5% tolerance floor). Seed with the closest candidate anyway so
+    // there is always a "best" tick to seek.
+    var best = nMin;
+    var bestE = double.infinity;
+    err.forEach((n, e) {
+      if (e < bestE) {
+        bestE = e;
+        best = n;
+      }
+    });
+    picked.add(best);
+  } else {
+    clearing.shuffle(rng);
+    final wantClear = math.min(1 + rng.nextInt(3), clearing.length); // 1..3
+    picked.addAll(clearing.take(wantClear));
+  }
+
+  // The rest of the ticks miss.
+  missing.shuffle(rng);
+  for (final n in missing) {
+    if (picked.length >= count) break;
+    picked.add(n);
+  }
+
+  // Shortfall (tame curve, tiny missing pool): pad with the loosest-clearing
+  // leftovers — highest error first, so the extras are as marginal as possible.
+  if (picked.length < count) {
+    final rest = clearing.where((n) => !picked.contains(n)).toList()
+      ..sort((x, y) => err[y]!.compareTo(err[x]!));
+    for (final n in rest) {
+      if (picked.length >= count) break;
+      picked.add(n);
+    }
+  }
+
+  return picked.toList()..shuffle(rng);
+}
+
 /// The full curve bank, grouped (loosely) by tier. Built once and cached.
 List<AreaCurve>? _bank;
 

@@ -69,7 +69,23 @@ Good, on-standard examples in `lib/games/arcade/`: `atom_builder.dart`,
 layering, glow, motion, and readability. If your result looks flatter than
 those, it's not done.
 
-## 8. DON'Ts (instant rejection)
+## 8. The Cheese (optional pattern — acknowledge superior knowledge)
+When a game has a dominant strategy that IS the lesson (e.g. Area Under: max
+rectangles = the integral), don't patch it away — **ship it as bait**. The
+pattern, in three beats:
+1. **The cheese works.** The opening act deliberately rewards the exploit;
+   finding it means the player understood the mechanic's underlying truth.
+2. **The game notices and celebrates.** After N consecutive cheese uses, break
+   the fourth wall in the company voice ("uhhh... you figured it out."), pay a
+   one-time bonus — superior knowledge is REWARDED, never punished.
+3. **Graduate the mechanic.** Only then does the real game begin: reshape the
+   control so the exploit no longer maps (Area Under shuffles its slider into
+   unordered ticks) and the player must apply the understanding for real.
+Rules: the cheese is a discovery — never spoiled in the intro/manual; a player
+who never finds it still has a complete game; the acknowledgment is once per
+run. Reference implementation: `lib/games/infinities/area_under/GAME.md`.
+
+## 9. DON'Ts (instant rejection)
 - Flat primitive shapes (plain `drawCircle`/`drawRect`) as the main visual.
 - Flat black background.
 - Random/unbranded hex colors; `'Avenir'`.
