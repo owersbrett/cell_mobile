@@ -41,10 +41,15 @@ const double _kDragToSpeedScale = 2.4; // drag px → speed
 const double _kMaxDragPx = 220.0; // drag length that maps to full power
 const double _kProjectileRadius = 7.0; // visual + hit radius of the planetlet
 
-// Gravity — STRONG. a = G*mass / r^2 (per sub-step, integrated).
-// At G=240000, mass=4.0, r=180px: a ≈ 240000*4/32400 ≈ 29.6 px/s² of pull —
-// roughly 3× the old feel, so wells dominate aiming and curves are dramatic.
-const double _kGravityConstant = 240000.0;
+// Gravity — STRONG, with a SOFTENED falloff: a = G*mass / r^1.5 (per
+// sub-step, integrated). True 1/r² dies too fast at these pixel scales — at
+// launch speeds of 230–760 px/s a shot crossed a well's whole neighborhood
+// with ~2% deflection ("barely curves at all", playtest 2026-07-04). r^1.5
+// keeps close passes slingshot-strong AND reaches across the board:
+// at G=100000, mass=4.0 → a ≈ 860 px/s² at r=60 · 304 at r=120 · 77 at r=300,
+// so wells dominate aiming and curves are dramatic even on level 1.
+// (Both the live integrator and the aim preview use this same formula.)
+const double _kGravityConstant = 100000.0;
 const double _kMinGravDist = 22.0; // softening radius (px) to avoid singularity
 
 // Trajectory preview — long enough to show the full curve onto the target.
@@ -873,7 +878,8 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
         final dy = by - proj.y;
         final distSq = (dx * dx + dy * dy).clamp(minSq, 1e9);
         final dist = sqrt(distSq);
-        final force = _kGravityConstant * body.mass / distSq;
+        // Softened r^1.5 falloff (= dist * sqrt(dist)) — see _kGravityConstant.
+        final force = _kGravityConstant * body.mass / (dist * sqrt(dist));
         proj.vx += (dx / dist) * force * subDt;
         proj.vy += (dy / dist) * force * subDt;
 
@@ -1019,7 +1025,9 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
         final ddy = by - py;
         final distSq = (ddx * ddx + ddy * ddy).clamp(minSq, 1e9);
         final dist = sqrt(distSq);
-        final force = _kGravityConstant * body.mass / distSq;
+        // Same softened r^1.5 falloff as the live integrator — the preview
+        // must stay truthful or aiming becomes a lie.
+        final force = _kGravityConstant * body.mass / (dist * sqrt(dist));
         vx += (ddx / dist) * force * _kPreviewDt;
         vy += (ddy / dist) * force * _kPreviewDt;
         if (dist < body.radius + _kProjectileRadius) {
