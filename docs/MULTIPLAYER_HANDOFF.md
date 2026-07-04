@@ -81,6 +81,22 @@ renderer per shape (spiral/grid/ribbon). None of this is built yet.
   0-score rounds; a dropped HOST stalls the match), and finished rooms are not
   cleaned out of RTDB.
 
+## Live-RTDB automated check (no hardware needed)
+
+`lib/dev/party_live_check.dart` — a dev-only entrypoint that plays a full
+1-round ffa5 match (1 host + 4 joiners, synthetic uids over one anonymous
+auth) against the REAL hot-potato-games RTDB and prints
+`PARTY-LIVE-RESULT: PASS/FAIL` to the console. Verifies what the in-memory
+tests can't: anonymous auth, RTDB rules, real async listener ordering, and
+lockstep convergence over the production pipe. Cleans up its room afterwards.
+
+```bash
+flutter run -d chrome -t lib/dev/party_live_check.dart
+```
+
+This does NOT replace the hardware checklist below (it can't see UI, real
+network variance, or five separate devices) — it's the fast regression check.
+
 ## 5-device verification checklist (run on real hardware)
 
 1. Host on device A: PARTY → name → HOST with mode **5P**, any map/length.
