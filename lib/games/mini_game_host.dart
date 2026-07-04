@@ -717,7 +717,16 @@ class _IntroView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = spec.accent;
-    return Padding(
+    // Scroll-safe: the Spacer-driven Column distributes slack on a tall
+    // screen, but on a short viewport (long rules lists, small embeds) the
+    // fixed content would overflow the bottom — so size to at least the
+    // viewport and scroll when there isn't room. Same pattern as the lobby.
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: IntrinsicHeight(
+            child: Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -915,6 +924,10 @@ class _IntroView extends StatelessWidget {
             ),
           ),
         ],
+      ),
+            ),
+          ),
+        ),
       ),
     );
   }
