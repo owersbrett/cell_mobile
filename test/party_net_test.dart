@@ -124,6 +124,11 @@ class _LaggyPlayers implements PartyTransport {
   Future<void> joinPlayer(String id, NetPlayer player) =>
       _inner.joinPlayer(id, player);
   @override
+  Future<void> removePlayer(String id, String uid) =>
+      _inner.removePlayer(id, uid);
+  @override
+  Future<void> removeGame(String id) => _inner.removeGame(id);
+  @override
   Future<void> setStatus(String id, String status) =>
       _inner.setStatus(id, status);
   @override

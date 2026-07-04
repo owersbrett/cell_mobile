@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -131,6 +132,11 @@ class PartyNet extends ChangeNotifier {
     if (existing == null) {
       throw StateError('no room "$gameId"');
     }
+    if (existing.status != 'lobby') {
+      // Joining after start would add a roster row with no board player and
+      // desync everyone's seat derivation.
+      throw StateError('room "$gameId" already started');
+    }
     // Pick the next free seat from the CURRENT roster, read directly. The live
     // `onPlayers` listener (attached below) fires asynchronously on Firebase, so
     // reading `net.players` here would see an empty list and hand every joiner
@@ -138,6 +144,9 @@ class PartyNet extends ChangeNotifier {
     // [_seated]) so a same-slot race still can't deadlock, but this keeps lobby
     // seats/colours correct.
     final roster = await transport.readPlayers(gameId);
+    if (roster.length >= PartyMode.values[existing.mode].playerCount) {
+      throw StateError('room "$gameId" is full');
+    }
     final used = {for (final p in roster) p.slot};
     var slot = 0;
     while (used.contains(slot)) {
@@ -251,6 +260,45 @@ class PartyNet extends ChangeNotifier {
       transport.publishCanonical(gameId, c.inputLog, c.recordedRandoms);
       notifyListeners();
     }
+    _armMiniTimeout();
+  }
+
+  // Host watchdog: if a player never submits a mini-game score (device
+  // dropped, app closed), bank a 0 for them once the game's duration plus a
+  // grace window has passed — one absent device must not hang the round for
+  // everyone. Re-armed/cancelled on every request pass, so a timer can never
+  // leak across rounds: leaving minigamePlaying requires processing a request,
+  // which cancels it.
+  Timer? _miniTimeout;
+  static const _miniGraceSeconds = 30;
+
+  void _armMiniTimeout() {
+    if (!isHost) return;
+    final c = controller;
+    if (c == null || c.phase != PartyPhase.minigamePlaying) {
+      _miniTimeout?.cancel();
+      _miniTimeout = null;
+      return;
+    }
+    if (_miniTimeout != null) return; // already armed for this round
+    final secs = (c.currentSpec?.durationSeconds ?? 60) + _miniGraceSeconds;
+    _miniTimeout = Timer(Duration(seconds: secs), () {
+      _miniTimeout = null;
+      final cc = controller;
+      if (cc == null || cc.phase != PartyPhase.minigamePlaying) return;
+      var changed = false;
+      for (var i = 0; i < cc.players.length; i++) {
+        if (!cc.hasSubmittedMiniScore(i)) {
+          cc.recordMiniScore(0, player: i);
+          changed = true;
+        }
+      }
+      if (changed) {
+        cc.advanceToDecision();
+        transport.publishCanonical(gameId, cc.inputLog, cc.recordedRandoms);
+        notifyListeners();
+      }
+    });
   }
 
   /// Validates a request against the authoritative controller and applies it.
@@ -411,6 +459,16 @@ class PartyNet extends ChangeNotifier {
 
   @override
   void dispose() {
+    _miniTimeout?.cancel();
+    if (status != 'playing') {
+      // Leaving from the lobby: clean up after ourselves so the roster/room
+      // can't wedge on a ghost entry.
+      if (isHost) {
+        transport.removeGame(gameId);
+      } else {
+        transport.removePlayer(gameId, myUid);
+      }
+    }
     transport.leave(gameId);
     super.dispose();
   }

@@ -25,6 +25,9 @@ class FirebasePartyTransport implements PartyTransport {
 
   final FirebaseDatabase _db;
   final Map<String, List<StreamSubscription<DatabaseEvent>>> _subs = {};
+  // One lobby guard per player row we've written ("$id/$uid"); see
+  // [_armLobbyGuard].
+  final Map<String, StreamSubscription<DatabaseEvent>> _lobbyGuards = {};
 
   DatabaseReference _game(String id) => _db.ref('cell_games/$id');
 
@@ -32,11 +35,15 @@ class FirebasePartyTransport implements PartyTransport {
       _subs.putIfAbsent(id, () => []).add(sub);
 
   @override
-  Future<void> createGame(String id, GameMeta meta, NetPlayer host) {
-    return _game(id).update({
+  Future<void> createGame(String id, GameMeta meta, NetPlayer host) async {
+    await _game(id).update({
       'meta': meta.toJson(),
       'players/${host.uid}': host.toJson(),
     });
+    // If the host drops before starting, the whole room evaporates instead of
+    // stranding joiners in a lobby that can never start. Cancelled when the
+    // game flips to 'playing' (see [setStatus]).
+    await _game(id).onDisconnect().remove();
   }
 
   @override
@@ -56,13 +63,51 @@ class FirebasePartyTransport implements PartyTransport {
   }
 
   @override
-  Future<void> joinPlayer(String id, NetPlayer player) {
-    return _game(id).child('players/${player.uid}').set(player.toJson());
+  Future<void> joinPlayer(String id, NetPlayer player) async {
+    final ref = _game(id).child('players/${player.uid}');
+    await ref.set(player.toJson());
+    _armLobbyGuard(id, player.uid, ref);
+  }
+
+  /// A player that disconnects during the LOBBY is removed from the roster so
+  /// the host's START gate can't wedge on a ghost. Once the room is playing
+  /// the guard is cancelled — seats are order-derived from the roster, so a
+  /// mid-game removal would renumber everyone.
+  void _armLobbyGuard(String id, String uid, DatabaseReference ref) {
+    final key = '$id/$uid';
+    if (_lobbyGuards.containsKey(key)) return; // re-writes (character picks)
+    ref.onDisconnect().remove();
+    final sub = _game(id).child('meta/status').onValue.listen((event) {
+      if (event.snapshot.value == 'playing') {
+        ref.onDisconnect().cancel();
+        _lobbyGuards.remove(key)?.cancel();
+      }
+    });
+    _lobbyGuards[key] = sub;
+    _track(id, sub);
   }
 
   @override
-  Future<void> setStatus(String id, String status) {
-    return _game(id).child('meta/status').set(status);
+  Future<void> removePlayer(String id, String uid) async {
+    _lobbyGuards.remove('$id/$uid')?.cancel();
+    final ref = _game(id).child('players/$uid');
+    await ref.onDisconnect().cancel();
+    await ref.remove();
+  }
+
+  @override
+  Future<void> removeGame(String id) async {
+    await _game(id).onDisconnect().cancel();
+    await _game(id).remove();
+  }
+
+  @override
+  Future<void> setStatus(String id, String status) async {
+    if (status == 'playing') {
+      // The room is live — a host drop must no longer delete it.
+      await _game(id).onDisconnect().cancel();
+    }
+    await _game(id).child('meta/status').set(status);
   }
 
   @override

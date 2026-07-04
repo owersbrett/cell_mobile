@@ -159,9 +159,14 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
         _busy = false;
       });
     } catch (e) {
+      final msg = e is StateError ? e.message : '';
       setState(() {
         _busy = false;
-        _error = 'No room "$code". Check the code with your host.';
+        _error = msg.contains('started')
+            ? 'Room "$code" already started.'
+            : msg.contains('full')
+                ? 'Room "$code" is full.'
+                : 'No room "$code". Check the code with your host.';
       });
     }
   }

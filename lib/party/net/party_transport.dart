@@ -36,6 +36,14 @@ abstract class PartyTransport {
   /// Adds a player to the room (lobby join).
   Future<void> joinPlayer(String id, NetPlayer player);
 
+  /// Removes a player's roster row (explicit lobby leave). Lobby-only: once a
+  /// game is playing, seats are order-derived from the roster, so removing a
+  /// row mid-game would renumber everyone.
+  Future<void> removePlayer(String id, String uid);
+
+  /// Removes the whole room (the host abandons the lobby).
+  Future<void> removeGame(String id);
+
   /// Flips the room status (e.g. lobby -> playing -> over).
   Future<void> setStatus(String id, String status);
 
@@ -217,6 +225,19 @@ class InMemoryPartyTransport implements PartyTransport {
     final room = _room(id);
     room.players[player.uid] = player;
     room._emitPlayers();
+  }
+
+  @override
+  Future<void> removePlayer(String id, String uid) async {
+    final room = _games[id];
+    if (room == null) return;
+    room.players.remove(uid);
+    room._emitPlayers();
+  }
+
+  @override
+  Future<void> removeGame(String id) async {
+    _games.remove(id);
   }
 
   @override
