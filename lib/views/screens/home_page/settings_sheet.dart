@@ -6,6 +6,7 @@ import '../../../games/opponent_config.dart';
 import '../../../games/play_config.dart';
 import '../../../party/party_models.dart';
 import '../../../theme/potatuhs.dart';
+import '../attract/attract_config_page.dart';
 
 /// Opens the play settings sheet: game mode + disruption, who you play as, and
 /// the per-character CPU roster (difficulty + favourite game).
@@ -99,6 +100,8 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                       const _SectionLabel('DEV TOOLS'),
                       const SizedBox(height: 10),
                       _DevToolsToggle(onChanged: () => setState(() {})),
+                      const SizedBox(height: 10),
+                      const _AttractButton(),
                     ],
                   ),
                 ),
@@ -206,9 +209,10 @@ class _ModeSection extends StatelessWidget {
   }
 }
 
-/// The DEV TOOLS switch — surfaces the games-triage tooling (rank grades,
-/// RATE, feedback tools, v1/v2 A/B pairs) on the games surfaces. Player mode
-/// (off, the default) keeps all of that hidden.
+/// The DEV TOOLS switch — surfaces the triage tooling (rank grades, RATE,
+/// v1/v2 A/B pairs) on the LEARN-path per-scale game picker + quick-hop ring.
+/// The GAMES console is always full-fat (it IS the QA surface); this only
+/// governs the player path.
 class _DevToolsToggle extends StatelessWidget {
   final VoidCallback onChanged;
   const _DevToolsToggle({required this.onChanged});
@@ -241,7 +245,7 @@ class _DevToolsToggle extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'DEV TOOLS — game grades, rating & A/B alternates',
+                'DEV TOOLS — grades & A/B alternates in the scale picker',
                 style: TextStyle(
                   fontFamily: Potatuhs.bodyFont,
                   fontSize: 11,
@@ -253,6 +257,55 @@ class _DevToolsToggle extends StatelessWidget {
             ),
             Icon(on ? Icons.toggle_on : Icons.toggle_off,
                 size: 26, color: on ? Potatuhs.airForce : Colors.white38),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// ATTRACT launcher — the self-playing background for build-in-public b-roll
+/// (moved here from the home doors: a production tool, not a player door).
+/// Closes the sheet and opens the attract config picker.
+class _AttractButton extends StatelessWidget {
+  const _AttractButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        final nav = Navigator.of(context, rootNavigator: true);
+        nav.pop(); // close the settings sheet first
+        nav.push(
+          MaterialPageRoute(builder: (_) => const AttractConfigPage()),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: Potatuhs.airForce.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(12),
+          border:
+              Border.all(color: Potatuhs.airForce.withValues(alpha: 0.5)),
+        ),
+        child: const Row(
+          children: [
+            Icon(Icons.smart_toy, size: 16, color: Potatuhs.airForce),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'ATTRACT — self-playing background for streams',
+                style: TextStyle(
+                  fontFamily: Potatuhs.bodyFont,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: Potatuhs.airForce,
+                ),
+              ),
+            ),
+            Icon(Icons.chevron_right, size: 20, color: Potatuhs.airForce),
           ],
         ),
       ),

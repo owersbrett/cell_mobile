@@ -2,7 +2,6 @@ import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
-import 'package:cell_mobile/games/dev_mode.dart';
 import 'package:cell_mobile/games/game_catalog.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:cell_mobile/games/play_config.dart';
@@ -25,15 +24,13 @@ extension on _Sort {
       };
 }
 
-/// Master list of every game in the catalog, across all scales — the home
-/// GAMES door. Two faces, split by [DevMode]:
-///
-/// - PLAYER (DevMode off, the default): a clean browser — search, name sort,
-///   group by scale, tap to play, quick-match. Best-first ordering; no
-///   grades, no RATE, no feedback tooling, and `_v2` A/B alternates hidden.
-/// - DEV (DevMode on, settings sheet): the triage loop exactly as built —
-///   worst-first rank sort, rank badges, RATE/comment in place, feedback
-///   filter + COPY ALL, v1/v2 pairs side by side.
+/// Master list of EVERY game in the catalog, across all scales — the home
+/// GAMES door, and THE QA/triage surface: search by name, sort by rank
+/// (worst- or best-first) or name, filter to games that have feedback, group
+/// by scale, jump straight in to test, rate/comment in place, and copy all
+/// feedback out in one block. Always full-fat — grades/RATE/v2 twins are
+/// essential for QAing the whole catalog (Brett 2026-07-04); the player-clean
+/// treatment ([DevMode] off) applies only to the LEARN-path per-scale picker.
 class GamesDebugPage extends StatefulWidget {
   const GamesDebugPage({super.key});
 
@@ -43,20 +40,15 @@ class GamesDebugPage extends StatefulWidget {
 
 class _GamesDebugPageState extends State<GamesDebugPage> {
   String _search = '';
-  // Player default is best-first; the dev default (worst-first triage) is
-  // applied once DevMode loads.
-  _Sort _sort = _Sort.rankBest;
+  _Sort _sort = _Sort.rankWorst;
   bool _onlyNoted = false;
   bool _groupByScale = false;
 
   @override
   void initState() {
     super.initState();
-    Future.wait([RankStore.load(), DevMode.load()]).then((_) {
-      if (!mounted) return;
-      setState(() {
-        if (DevMode.on) _sort = _Sort.rankWorst;
-      });
+    RankStore.load().then((_) {
+      if (mounted) setState(() {});
     });
   }
 
@@ -85,8 +77,6 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
   List<CatalogGame> get _filtered {
     final q = _search.trim().toLowerCase();
     final list = GameCatalog.games.where((g) {
-      // Players see one game per A/B pair; dev mode shows both for judging.
-      if (!DevMode.on && GameCatalog.isAlternate(g)) return false;
       if (q.isNotEmpty && !g.name.toLowerCase().contains(q)) return false;
       if (_onlyNoted && !RankStore.hasNote(g.id)) return false;
       return true;
@@ -176,12 +166,11 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
                     icon: const Icon(Icons.group_add, color: Colors.white70),
                     tooltip: 'Join a friends room',
                   ),
-                  if (DevMode.on)
-                    TextButton.icon(
-                      onPressed: RankStore.notedCount == 0 ? null : _copyAll,
-                      icon: const Icon(Icons.copy_all, size: 16),
-                      label: Text('COPY ALL (${RankStore.notedCount})'),
-                    ),
+                  TextButton.icon(
+                    onPressed: RankStore.notedCount == 0 ? null : _copyAll,
+                    icon: const Icon(Icons.copy_all, size: 16),
+                    label: Text('COPY ALL (${RankStore.notedCount})'),
+                  ),
                 ],
               ),
             ),
@@ -213,39 +202,33 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
               child: Row(
                 children: [
-                  // Players sort by name only (rank ordering still applies
-                  // invisibly); the grade-direction chips are dev triage.
                   for (final s in _Sort.values)
-                    if (DevMode.on ||
-                        s == _Sort.nameAsc ||
-                        s == _Sort.nameDesc)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          label: Text(s.label),
-                          selected: _sort == s,
-                          onSelected: (_) => setState(() => _sort = s),
-                          labelStyle: const TextStyle(
-                              fontFamily: 'Avenir', fontSize: 11),
-                        ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        label: Text(s.label),
+                        selected: _sort == s,
+                        onSelected: (_) => setState(() => _sort = s),
+                        labelStyle: const TextStyle(
+                            fontFamily: 'Avenir', fontSize: 11),
                       ),
+                    ),
                   Container(
                     width: 1,
                     height: 28,
                     margin: const EdgeInsets.symmetric(horizontal: 6),
                     color: Colors.white12,
                   ),
-                  if (DevMode.on)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        label: const Text('HAS FEEDBACK'),
-                        selected: _onlyNoted,
-                        onSelected: (v) => setState(() => _onlyNoted = v),
-                        labelStyle: const TextStyle(
-                            fontFamily: 'Avenir', fontSize: 11),
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      label: const Text('HAS FEEDBACK'),
+                      selected: _onlyNoted,
+                      onSelected: (v) => setState(() => _onlyNoted = v),
+                      labelStyle: const TextStyle(
+                          fontFamily: 'Avenir', fontSize: 11),
                     ),
+                  ),
                   FilterChip(
                     label: const Text('GROUP BY SCALE'),
                     selected: _groupByScale,
@@ -333,10 +316,8 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
       ),
       child: Row(
         children: [
-          // Dev mode: tappable grade badge (opens RATE). Player mode: the
-          // game's icon — same visual anchor, no triage affordance.
           GestureDetector(
-            onTap: DevMode.on ? () => _rate(game) : null,
+            onTap: () => _rate(game),
             behavior: HitTestBehavior.opaque,
             child: Container(
               width: 34,
@@ -347,17 +328,15 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: accent.withValues(alpha: 0.6)),
               ),
-              child: DevMode.on
-                  ? Text(
-                      rank.label,
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: accent,
-                      ),
-                    )
-                  : Icon(game.icon, size: 18, color: accent),
+              child: Text(
+                rank.label,
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: accent,
+                ),
+              ),
             ),
           ),
           const SizedBox(width: 10),
@@ -378,7 +357,7 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
                         ),
                       ),
                     ),
-                    if (DevMode.on && hasNote) ...[
+                    if (hasNote) ...[
                       const SizedBox(width: 6),
                       Icon(Icons.mode_comment,
                           size: 12, color: accent.withValues(alpha: 0.85)),
@@ -397,11 +376,10 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
               ],
             ),
           ),
-          if (DevMode.on)
-            TextButton(
-              onPressed: () => _rate(game),
-              child: const Text('RATE'),
-            ),
+          TextButton(
+            onPressed: () => _rate(game),
+            child: const Text('RATE'),
+          ),
           if (game.specId != null)
             IconButton(
               onPressed: () {

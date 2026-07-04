@@ -9,7 +9,6 @@ import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/user_profile.dart';
 import 'package:cell_mobile/vipotato.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
-import 'package:cell_mobile/views/screens/attract/attract_config_page.dart';
 import 'package:cell_mobile/views/screens/games_debug_page/games_debug_page.dart';
 import 'package:cell_mobile/views/screens/home_page/account_sheet.dart';
 import 'package:cell_mobile/views/screens/home_page/settings_sheet.dart';
@@ -237,18 +236,8 @@ class HomePage extends StatelessWidget {
                 );
               },
             ),
-            // Attract mode: the self-playing background for build-in-public
-            // b-roll. Opens the config picker (All Games or a party board).
-            const SizedBox(height: 14),
-            _HomeDoor(
-              title: 'ATTRACT',
-              subtitle: 'Self-playing background for streams',
-              icon: Icons.smart_toy,
-              accent: Potatuhs.airForce,
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const AttractConfigPage()),
-              ),
-            ),
+            // ATTRACT (self-playing b-roll) moved to the settings sheet — a
+            // production tool, not a player door.
           ],
         ),
       ),
