@@ -5,6 +5,7 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_states.dart';
 import 'package:cell_mobile/data/bio_entity_registry.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/views/widgets/scroll_fade.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'widgets/related_entity_card.dart';
@@ -155,9 +156,11 @@ class EntityDetailPage extends StatelessWidget {
                     ],
                   ),
                 ),
-                // Content
+                // Content — bottom fade while more article lies below the
+                // fold, so a long description reads as scrollable, not cut off.
                 Expanded(
-                  child: SingleChildScrollView(
+                  child: ScrollFade(
+                    child: SingleChildScrollView(
                     padding: const EdgeInsets.symmetric(horizontal: 20),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -246,6 +249,7 @@ class EntityDetailPage extends StatelessWidget {
                         ],
                         const SizedBox(height: 40),
                       ],
+                    ),
                     ),
                   ),
                 ),

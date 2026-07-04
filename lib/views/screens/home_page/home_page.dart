@@ -56,16 +56,20 @@ class HomePage extends StatelessWidget {
             ),
             // Deploy heartbeat — bumped by the /deploy skill so a live deploy is
             // visually verifiable on the home screen. See lib/app_version.dart.
+            // IgnorePointer + the menu's bottom clearance keep it from ever
+            // sitting on (or eating taps meant for) the last door's chevron.
             Positioned(
               right: 12,
               bottom: 6,
-              child: Text(
-                kBuildLabel,
-                style: const TextStyle(
-                  fontFamily: Potatuhs.bodyFont,
-                  fontSize: 11,
-                  letterSpacing: 1,
-                  color: Colors.white38,
+              child: IgnorePointer(
+                child: Text(
+                  kBuildLabel,
+                  style: const TextStyle(
+                    fontFamily: Potatuhs.bodyFont,
+                    fontSize: 11,
+                    letterSpacing: 1,
+                    color: Colors.white38,
+                  ),
                 ),
               ),
             ),
@@ -86,7 +90,9 @@ class HomePage extends StatelessWidget {
         constraints: BoxConstraints(minHeight: size.height),
         child: Center(
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 24),
+            // Extra bottom clearance = the build-label band, so on short
+            // viewports the last door never rests under the deploy heartbeat.
+            padding: const EdgeInsets.fromLTRB(0, 24, 0, 36),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.center,

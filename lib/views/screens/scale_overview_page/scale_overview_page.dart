@@ -46,7 +46,11 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
 
   static const _scaleInfo = <_ScaleDisplayInfo>[
     // Left side — from nothingness toward the cell
-    _ScaleDisplayInfo(BioScale.nothings, 'Nothing', '', Icons.circle_outlined, Color(0xFF424242)),
+    // "Nothing" is the dark bookend of the color ladder (Infinity is the
+    // white one) — deliberately void, but it must read as CHOSEN emptiness:
+    // a violet-leaning charcoal (pointing toward Something) + a subtitle
+    // that names the void, so it can't be mistaken for a failed-to-load tile.
+    _ScaleDisplayInfo(BioScale.nothings, 'Nothing', 'Before the first distinction', Icons.circle_outlined, Color(0xFF565062)),
     _ScaleDisplayInfo(BioScale.somethings, 'Something', 'The first distinctions', Icons.auto_awesome, Color(0xFF7E57C2)),
     _ScaleDisplayInfo(BioScale.particles, 'Particles', 'Quarks, electrons & photons', Icons.grain, Color(0xFFAB47BC)),
     _ScaleDisplayInfo(BioScale.atoms, 'Atoms', 'The elements of everything', Icons.blur_on, Color(0xFF5C6BC0)),
@@ -382,74 +386,176 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                 ),
               ),
               // Dot indicators — tap a dot, or DRAG a finger across the strip
-              // to quickly scrub between scales/games.
+              // to quickly scrub between scales/games. The grid button at the
+              // right opens the full scale index (jump anywhere in one tap) —
+              // the swipe-to-marvel first run stays intact, return users get
+              // a map.
               Padding(
                 padding: const EdgeInsets.only(bottom: 20),
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final n = _scaleInfo.length;
-                    final width = constraints.maxWidth;
-                    // Map a finger x-position over the strip to a page index
-                    // (even segments — generous hit area) and hop there.
-                    void scrub(double dx, {bool animate = false}) {
-                      if (n == 0 || width <= 0 || !_pageController.hasClients) {
-                        return;
-                      }
-                      final i = (dx / width * n).floor().clamp(0, n - 1);
-                      if (i == _selectedIndex) return;
-                      if (animate) {
-                        _pageController.animateToPage(
-                          i,
-                          duration: const Duration(milliseconds: 250),
-                          curve: Curves.easeOut,
-                        );
-                      } else {
-                        _pageController.jumpToPage(i);
-                      }
-                    }
-
-                    return GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTapUp: (d) =>
-                          scrub(d.localPosition.dx, animate: true),
-                      onHorizontalDragStart: (d) =>
-                          scrub(d.localPosition.dx),
-                      onHorizontalDragUpdate: (d) =>
-                          scrub(d.localPosition.dx),
-                      // Taller transparent band so the thin dots are easy to grab.
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: List.generate(
-                            n,
-                            (i) {
-                              final info = _scaleInfo[i];
-                              final isActive = i == _selectedIndex;
-                              return AnimatedContainer(
-                                duration: const Duration(milliseconds: 200),
-                                margin:
-                                    const EdgeInsets.symmetric(horizontal: 3),
-                                width: isActive ? 20 : 6,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(3),
-                                  color:
-                                      isActive ? info.color : Colors.white24,
-                                ),
-                              );
-                            },
-                          ),
-                        ),
+                child: Row(
+                  children: [
+                    // Balances the index button so the dots stay centered.
+                    const SizedBox(width: 44),
+                    Expanded(child: _buildDotStrip()),
+                    SizedBox(
+                      width: 44,
+                      child: IconButton(
+                        onPressed: _showScaleIndex,
+                        tooltip: 'All scales',
+                        icon: const Icon(Icons.apps,
+                            color: Colors.white54, size: 20),
                       ),
-                    );
-                  },
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  /// Bottom-sheet index of every scale — the "map" complement to the
+  /// swipe tunnel. Tap a scale to jump the carousel straight to it.
+  void _showScaleIndex() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF14110F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'ALL SCALES',
+                style: TextStyle(
+                  fontFamily: 'Avenir',
+                  fontSize: 12,
+                  letterSpacing: 2,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white54,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var i = 0; i < _scaleInfo.length; i++)
+                    _scaleIndexChip(sheetContext, i),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _scaleIndexChip(BuildContext sheetContext, int index) {
+    final info = _scaleInfo[index];
+    final isCurrent = index == _selectedIndex;
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(sheetContext).pop();
+        setState(() => _selectedIndex = index);
+        _pageController.jumpToPage(index);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: info.color.withValues(alpha: isCurrent ? 0.30 : 0.10),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isCurrent ? info.color : info.color.withValues(alpha: 0.4),
+            width: isCurrent ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(info.icon, size: 14, color: info.color),
+            const SizedBox(width: 6),
+            Text(
+              info.label,
+              style: TextStyle(
+                fontFamily: 'Avenir',
+                fontSize: 12,
+                fontWeight: isCurrent ? FontWeight.bold : FontWeight.w600,
+                color: Colors.white.withValues(alpha: 0.9),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDotStrip() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final n = _scaleInfo.length;
+        final width = constraints.maxWidth;
+        // Map a finger x-position over the strip to a page index
+        // (even segments — generous hit area) and hop there.
+        void scrub(double dx, {bool animate = false}) {
+          if (n == 0 || width <= 0 || !_pageController.hasClients) {
+            return;
+          }
+          final i = (dx / width * n).floor().clamp(0, n - 1);
+          if (i == _selectedIndex) return;
+          if (animate) {
+            _pageController.animateToPage(
+              i,
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeOut,
+            );
+          } else {
+            _pageController.jumpToPage(i);
+          }
+        }
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (d) =>
+              scrub(d.localPosition.dx, animate: true),
+          onHorizontalDragStart: (d) =>
+              scrub(d.localPosition.dx),
+          onHorizontalDragUpdate: (d) =>
+              scrub(d.localPosition.dx),
+          // Taller transparent band so the thin dots are easy to grab.
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(
+                n,
+                (i) {
+                  final info = _scaleInfo[i];
+                  final isActive = i == _selectedIndex;
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    margin:
+                        const EdgeInsets.symmetric(horizontal: 3),
+                    width: isActive ? 20 : 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(3),
+                      color:
+                          isActive ? info.color : Colors.white24,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

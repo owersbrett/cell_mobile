@@ -5,6 +5,7 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_states.dart';
 import 'package:cell_mobile/data/bio_entity_registry.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/views/widgets/scroll_fade.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -258,7 +259,10 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: SingleChildScrollView(
+      // Bottom fade while more article lies below the fold — long entity
+      // descriptions must read as scrollable, not cut off.
+      child: ScrollFade(
+        child: SingleChildScrollView(
         controller: _scrollController,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -367,6 +371,7 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
             ],
             const SizedBox(height: 32),
           ],
+        ),
         ),
       ),
     );

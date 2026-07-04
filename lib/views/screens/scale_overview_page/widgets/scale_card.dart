@@ -87,10 +87,13 @@ class ScaleCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: Text(
-                          '$entityCount',
+                          // Labelled so the number can't be misread as a game
+                          // count (blocks = this scale's knowledge entries).
+                          '$entityCount BLOCKS',
                           style: TextStyle(
                             fontFamily: 'Avenir',
-                            fontSize: 13,
+                            fontSize: 10,
+                            letterSpacing: 0.5,
                             color: color,
                             fontWeight: FontWeight.bold,
                           ),
