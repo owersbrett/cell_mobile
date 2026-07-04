@@ -27,8 +27,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -112,6 +114,11 @@ class _Well {
   final String label; // GIANT | MID | SMALL
   final double driftAmp; // fraction of canvas height; 0 = static
   final double driftPhase;
+
+  // Painter caches — gradient shaders are built ONCE (origin-centered; the
+  // painter translates the canvas to the well), not re-created every frame.
+  ui.Shader? fieldShader;
+  ui.Shader? orbShader;
   _Well({
     required this.dx,
     required this.dy,
@@ -229,6 +236,300 @@ const List<_LevelBlueprint> _kLevelLadder = [
   ),
 ];
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each card draws the LITERAL
+// in-game components (wells, dashed assist bands, gold beacon, cannon, probe,
+// dotted trajectory) in the game's own style, mirroring _SlingshotPainter but
+// self-contained and static (rendered once in the intro, never per frame).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A gravity well: soft field glow + faint influence rings + the dashed
+/// **assist band** (the ring you graze) + a shaded orb body. Mirrors
+/// `_SlingshotPainter._paintWell` at legend scale.
+void _legWell(Canvas canvas, Offset c, double radius, Color color,
+    {double band = 0}) {
+  final influence = radius * 2.6;
+  canvas.drawCircle(
+    c,
+    influence,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        color.withValues(alpha: 0.14),
+        color.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: c, radius: influence)),
+  );
+  for (int r = 3; r >= 1; r--) {
+    canvas.drawCircle(
+      c,
+      radius + r * (influence - radius) / 4,
+      Paint()
+        ..color = color.withValues(alpha: 0.06)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.9,
+    );
+  }
+  if (band > 0) {
+    // The assist band — the ring you want to graze, not cross.
+    canvas.drawCircle(
+      c,
+      band,
+      Paint()
+        ..color = color.withValues(alpha: 0.5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4,
+    );
+  }
+  GameFx.orb(canvas, c, radius, color, glow: 0.9, specular: true);
+}
+
+/// The distant gold beacon: long-range homing rings + orb + crosshair.
+void _legBeacon(Canvas canvas, Offset c, double radius) {
+  for (int i = 0; i < 3; i++) {
+    canvas.drawCircle(
+      c,
+      radius + 12 + i * 14,
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.16 - i * 0.045)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+  GameFx.orb(canvas, c, radius, Potatuhs.gold,
+      glow: 1.6, rim: Potatuhs.sienna, specular: true);
+  final ch = Paint()
+    ..color = Potatuhs.gold.withValues(alpha: 0.6)
+    ..strokeWidth = 1.3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(c.translate(-11, 0), c.translate(11, 0), ch);
+  canvas.drawLine(c.translate(0, -11), c.translate(0, 11), ch);
+}
+
+/// The fixed cannon + its barrel pointing at [angle].
+void _legCannon(Canvas canvas, Offset c, double angle) {
+  final end = Offset(c.dx + cos(angle) * 30, c.dy + sin(angle) * 30);
+  GameFx.glowLine(canvas, c, end, Potatuhs.airForce, width: 5);
+  GameFx.orb(canvas, c, 14, Potatuhs.inkPanel,
+      glow: 0.7, rim: Potatuhs.airForce, specular: false);
+}
+
+/// The glaucous probe orb.
+void _legProbe(Canvas canvas, Offset c) => GameFx.orb(
+    canvas, c, _kProjectileRadius + 1, Potatuhs.glaucous,
+    glow: 1.9, rim: Colors.white, specular: true);
+
+/// A Catmull-Rom smoothed polyline through [anchors] — the trajectory spine.
+List<Offset> _legCurve(List<Offset> anchors, {int seg = 12}) {
+  if (anchors.length < 2) return anchors;
+  final out = <Offset>[];
+  for (int i = 0; i < anchors.length - 1; i++) {
+    final p0 = anchors[i == 0 ? 0 : i - 1];
+    final p1 = anchors[i];
+    final p2 = anchors[i + 1];
+    final p3 = anchors[i + 2 >= anchors.length ? anchors.length - 1 : i + 2];
+    for (int j = 0; j < seg; j++) {
+      final t = j / seg, t2 = t * t, t3 = t2 * t;
+      final x = 0.5 *
+          (2 * p1.dx +
+              (-p0.dx + p2.dx) * t +
+              (2 * p0.dx - 5 * p1.dx + 4 * p2.dx - p3.dx) * t2 +
+              (-p0.dx + 3 * p1.dx - 3 * p2.dx + p3.dx) * t3);
+      final y = 0.5 *
+          (2 * p1.dy +
+              (-p0.dy + p2.dy) * t +
+              (2 * p0.dy - 5 * p1.dy + 4 * p2.dy - p3.dy) * t2 +
+              (-p0.dy + 3 * p1.dy - 3 * p2.dy + p3.dy) * t3);
+      out.add(Offset(x, y));
+    }
+  }
+  out.add(anchors.last);
+  return out;
+}
+
+/// The dotted trajectory preview: cool→warm dots, gold→white when it [lock]s.
+void _legTrajectory(Canvas canvas, List<Offset> pts, {bool lock = true}) {
+  for (int i = 0; i < pts.length; i++) {
+    final frac = pts.isEmpty ? 0.0 : i / pts.length;
+    final col = lock
+        ? Color.lerp(Potatuhs.gold, Colors.white, frac)!
+        : Color.lerp(Potatuhs.airForce, Potatuhs.gold, frac)!;
+    canvas.drawCircle(
+      pts[i],
+      (2.6 - frac * 1.4).clamp(0.8, 2.6),
+      Paint()..color = col.withValues(alpha: (1 - frac) * 0.6 + 0.18),
+    );
+  }
+}
+
+/// A double-headed drift arrow (drawn under wandering wells / a drifting beacon).
+void _legDriftArrow(Canvas canvas, Offset c, double half, Color color) {
+  final p = Paint()
+    ..color = color.withValues(alpha: 0.55)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(c.translate(-half, 0), c.translate(half, 0), p);
+  for (final s in [-1.0, 1.0]) {
+    final tip = c.translate(half * s, 0);
+    canvas.drawLine(tip, tip.translate(-6 * s, -4), p);
+    canvas.drawLine(tip, tip.translate(-6 * s, 4), p);
+  }
+}
+
+// Frame 1 — the verb: aim & launch.
+void _legendAim(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  GameFx.atmosphere(canvas, size, Potatuhs.airForce, 0.6, motes: 0);
+  final cannon = Offset(size.width * 0.20, size.height * 0.80);
+  const angle = -pi / 3.4; // aim up-right
+  final dir = Offset(cos(angle), sin(angle));
+  _legCannon(canvas, cannon, angle);
+
+  // The aim arrow (glaucous→gold power line), mirroring _paintAim.
+  final tip = cannon + dir * (size.shortestSide * 0.42);
+  final aimColor = Color.lerp(Potatuhs.airForce, Potatuhs.gold, 0.6)!;
+  canvas.drawLine(
+    cannon,
+    tip,
+    Paint()
+      ..color = aimColor.withValues(alpha: 0.9)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round,
+  );
+  final perp = Offset(-dir.dy, dir.dx);
+  final ah = Paint()
+    ..color = aimColor
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(tip, tip - dir * 12 + perp * 8, ah);
+  canvas.drawLine(tip, tip - dir * 12 - perp * 8, ah);
+  _legProbe(canvas, cannon + dir * (size.shortestSide * 0.20));
+}
+
+// Frame 2 — how to score: chain past assist bands into the beacon.
+void _legendChain(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  GameFx.atmosphere(canvas, size, Potatuhs.airForce, 0.6, motes: 0);
+  final w = size.width, h = size.height;
+  final cannon = Offset(w * 0.14, h * 0.82);
+  final beacon = Offset(w * 0.86, h * 0.24);
+  final wellA = Offset(w * 0.42, h * 0.62);
+  final wellB = Offset(w * 0.64, h * 0.40);
+  final rA = h * 0.055, rB = h * 0.045;
+
+  _legWell(canvas, wellA, rA, Potatuhs.copper, band: rA + 22);
+  _legWell(canvas, wellB, rB, Potatuhs.glaucous, band: rB + 20);
+  _legBeacon(canvas, beacon, h * 0.05);
+
+  // A curve that whips past each band (the two assists) then locks the beacon.
+  final path = _legCurve([
+    cannon,
+    Offset(w * 0.32, h * 0.70),
+    wellA.translate(-rA - 20, rA + 6),
+    Offset(w * 0.54, h * 0.50),
+    wellB.translate(rB + 16, rB + 2),
+    Offset(w * 0.76, h * 0.30),
+    beacon,
+  ]);
+  _legTrajectory(canvas, path, lock: true);
+  _legCannon(canvas, cannon, atan2(h * 0.70 - cannon.dy, w * 0.32 - cannon.dx));
+}
+
+// Frame 3 — the danger: touch a well's solid core and the probe is lost.
+void _legendCrash(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  GameFx.atmosphere(canvas, size, Potatuhs.airForce, 0.6, motes: 0);
+  final w = size.width, h = size.height;
+  final cannon = Offset(w * 0.16, h * 0.82);
+  final well = Offset(w * 0.56, h * 0.46);
+  final rW = h * 0.075;
+  _legWell(canvas, well, rW, Potatuhs.sienna, band: rW + 22);
+
+  // A trajectory diving straight into the lethal core.
+  final impact = well.translate(-rW * 0.55, -rW * 0.35);
+  final path = _legCurve([
+    cannon,
+    Offset(w * 0.34, h * 0.66),
+    Offset(w * 0.46, h * 0.54),
+    impact,
+  ]);
+  _legTrajectory(canvas, path, lock: false);
+
+  // Impact burst — spud lost against the core.
+  final burst = Paint()..color = Potatuhs.orange.withValues(alpha: 0.9);
+  for (int i = 0; i < 9; i++) {
+    final a = i / 9 * 2 * pi;
+    final rr = rW * (0.7 + (i.isEven ? 0.5 : 0.9));
+    canvas.drawCircle(
+        impact.translate(cos(a) * rr, sin(a) * rr), 2.4, burst);
+  }
+  // A warning ring on the core.
+  canvas.drawCircle(
+    well,
+    rW + 2,
+    Paint()
+      ..color = Potatuhs.orange.withValues(alpha: 0.85)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4,
+  );
+  _legCannon(canvas, cannon, atan2(h * 0.66 - cannon.dy, w * 0.34 - cannon.dx));
+}
+
+// Frame 4 — escalation: fields grow denser and drift; chain longer to cross.
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  GameFx.atmosphere(canvas, size, Potatuhs.airForce, 0.6, motes: 0);
+  final w = size.width, h = size.height;
+  final cannon = Offset(w * 0.12, h * 0.84);
+  final beacon = Offset(w * 0.88, h * 0.18);
+  final u = h; // scale reference
+
+  final wells = <List<dynamic>>[
+    [Offset(w * 0.30, h * 0.66), u * 0.055, Potatuhs.copper, true],
+    [Offset(w * 0.46, h * 0.44), u * 0.04, Potatuhs.glaucous, false],
+    [Offset(w * 0.58, h * 0.68), u * 0.048, Potatuhs.sienna, true],
+    [Offset(w * 0.70, h * 0.40), u * 0.035, Potatuhs.airForce, false],
+    [Offset(w * 0.78, h * 0.62), u * 0.05, Potatuhs.copper, true],
+  ];
+  for (final wl in wells) {
+    final c = wl[0] as Offset;
+    final r = wl[1] as double;
+    final col = wl[2] as Color;
+    final drifts = wl[3] as bool;
+    if (drifts) _legDriftArrow(canvas, c.translate(0, r + 10), r * 0.9, col);
+    _legWell(canvas, c, r, col, band: r + 16);
+  }
+  _legDriftArrow(canvas, beacon.translate(0, h * 0.05 + 8), h * 0.05, Potatuhs.gold);
+  _legBeacon(canvas, beacon, h * 0.042);
+
+  // A long chain threading the crowded field.
+  final path = _legCurve([
+    cannon,
+    Offset(w * 0.24, h * 0.74),
+    Offset(w * 0.38, h * 0.56),
+    Offset(w * 0.52, h * 0.56),
+    Offset(w * 0.64, h * 0.52),
+    Offset(w * 0.76, h * 0.40),
+    beacon,
+  ]);
+  _legTrajectory(canvas, path, lock: true);
+  _legCannon(canvas, cannon, atan2(h * 0.74 - cannon.dy, w * 0.24 - cannon.dx));
+}
+
+/// The visual manual for Orbit Slingshot — wired into the registry spec.
+final List<LegendFrame> orbitSlingshotLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag to aim, release to sling the probe',
+      paint: _legendAim),
+  const LegendFrame(
+      caption: "Chain past wells' dashed bands into the beacon",
+      paint: _legendChain),
+  const LegendFrame(
+      caption: "Touch a well's solid core and the probe is lost",
+      paint: _legendCrash),
+  const LegendFrame(
+      caption: 'Fields grow denser and drift — chain longer to cross',
+      paint: _legendEscalate),
+];
+
 class OrbitSlingshotGame extends StatefulWidget {
   final MiniGameSession session;
   const OrbitSlingshotGame({super.key, required this.session});
@@ -238,7 +539,8 @@ class OrbitSlingshotGame extends StatefulWidget {
 
 class _OrbitSlingshotGameState extends State<OrbitSlingshotGame>
     with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
 
   // ── progress (host owns score/timer/results) ───────────────────────────────
   int _level = 0;
@@ -273,15 +575,84 @@ class _OrbitSlingshotGameState extends State<OrbitSlingshotGame>
   void initState() {
     super.initState();
     _system = _generateSystem();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick);
-    _ctrl.forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to sling itself across the system.
+    // Registered always (harmless in normal play — the host only calls it in
+    // hands-free mode). See [_autoStep]. Cleared on dispose.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent hands-free move per host tick (~250ms). Acts ONLY when the
+  /// system is idle (no probe airborne). It reuses the game's OWN trajectory
+  /// preview ([_buildPreview]) to search a small DETERMINISTIC fan of aim
+  /// directions/powers for one that LOCKS the distant beacon, preferring the
+  /// aim whose predicted CHAIN is longest (a longer viable chain scores far
+  /// more — the whole point of Slingshot). If nothing locks, it falls back to a
+  /// full-power DIRECT AIM straight at the beacon and lets the gravity wells
+  /// curve it in — competent, not perfect. Fires through the game's own probe
+  /// launch (staging [_dragStart]/[_dragCurrent] and reusing [_launchVector], so
+  /// the live shot matches the previewed one exactly). Deterministic; never
+  /// launches mid-flight. The host owns the clock/HUD; the bot just slings.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_canvasSize == Size.zero) return;
+    // One probe at a time — mirror the guard the input handlers enforce.
+    if (_probe != null && _probe!.alive) return;
+
+    final size = _canvasSize;
+    final c = _cannonPx(size);
+    final tpx = _targetPx(size);
+    final dx = tpx.dx - c.dx;
+    final dy = tpx.dy - c.dy;
+    final baseLen = sqrt(dx * dx + dy * dy);
+    if (baseLen < 0.001) return;
+    final baseAngle = atan2(dy, dx);
+
+    // Deterministic aim fan: sweep a few angular offsets around the straight
+    // line to the beacon at a few power levels, score each with the game's own
+    // preview, and keep the LOCKING aim with the longest predicted chain.
+    const offsets = <double>[
+      0.0, 0.12, -0.12, 0.26, -0.26, 0.42, -0.42, 0.6, -0.6,
+    ];
+    const powerFracs = <double>[1.0, 0.86, 0.72, 0.58];
+
+    Offset? bestDrag;
+    int bestAssists = -1;
+    for (final pf in powerFracs) {
+      final dragLen = _kMaxDragPx * pf;
+      for (final off in offsets) {
+        final a = baseAngle + off;
+        final dc = c + Offset(cos(a), sin(a)) * dragLen;
+        // Stage a candidate drag and read the game's own trajectory preview.
+        _dragStart = c;
+        _dragCurrent = dc;
+        final preview = _buildPreview(size);
+        if (preview.locks && preview.assists > bestAssists) {
+          bestAssists = preview.assists;
+          bestDrag = dc;
+        }
+      }
+    }
+
+    // Chosen aim: the best locking chain, else a full-power direct shot at the
+    // beacon. Fire it through the same launch path a drag-release would.
+    _dragStart = c;
+    _dragCurrent =
+        bestDrag ?? (c + Offset(dx / baseLen, dy / baseLen) * _kMaxDragPx);
+    final launch = _launchVector(size);
+    setState(() {
+      _probe = _Probe(x: c.dx, y: c.dy, vx: launch.dx, vy: launch.dy);
+      _dragStart = null;
+      _dragCurrent = null;
+    });
   }
 
   // ── system generation ──────────────────────────────────────────────────────
@@ -405,8 +776,13 @@ class _OrbitSlingshotGameState extends State<OrbitSlingshotGame>
       Offset(w.dx * size.width, w.dy * size.height);
 
   // ── main tick ──────────────────────────────────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the game must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     if (!widget.session.isRunning) {
       setState(() => _t += dt); // keep atmosphere alive behind host UI
       return;
@@ -692,7 +1068,7 @@ class _OrbitSlingshotGameState extends State<OrbitSlingshotGame>
                       _loop > 0
                           ? 'Lv ${_level + 1} · Loop ${_loop + 1}'
                           : 'Lv ${_level + 1}',
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontFamily: Potatuhs.bodyFont,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
@@ -725,7 +1101,7 @@ class _OrbitSlingshotGameState extends State<OrbitSlingshotGame>
                   ),
                   child: Text(
                     _system.hint,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontFamily: Potatuhs.displayFont,
                       fontSize: 12,
                       color: Potatuhs.gold,
@@ -822,7 +1198,7 @@ class _SlingshotPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    GameFx.atmosphere(canvas, size, Potatuhs.airForce, t, motes: 60);
+    GameFx.atmosphere(canvas, size, Potatuhs.airForce, t, motes: 40);
 
     // Wells, large→small so smaller bodies read on top.
     final sorted = List<_Well>.from(wells)
@@ -847,18 +1223,19 @@ class _SlingshotPainter extends CustomPainter {
     final influence = w.radius + w.mass * 24;
     final pulse = 0.5 + 0.5 * sin(t * 1.6 + w.dx * 8);
 
-    // The well field, strength ∝ mass.
-    canvas.drawCircle(
-      bPos,
-      influence,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            w.color.withValues(alpha: 0.10 + 0.05 * w.mass / 4),
-            w.color.withValues(alpha: 0.0),
-          ],
-        ).createShader(Rect.fromCircle(center: bPos, radius: influence)),
-    );
+    // The well field, strength ∝ mass. Shader is cached on the well (built
+    // origin-centered once); only the canvas translation changes per frame.
+    w.fieldShader ??= RadialGradient(
+      colors: [
+        w.color.withValues(alpha: 0.10 + 0.05 * w.mass / 4),
+        w.color.withValues(alpha: 0.0),
+      ],
+    ).createShader(
+        Rect.fromCircle(center: Offset.zero, radius: influence));
+    canvas.save();
+    canvas.translate(bPos.dx, bPos.dy);
+    canvas.drawCircle(Offset.zero, influence, Paint()..shader = w.fieldShader);
+    canvas.restore();
 
     // Faint dashed "assist band" — the ring you want to graze, not cross.
     final band = assistBand(w);
@@ -887,15 +1264,43 @@ class _SlingshotPainter extends CustomPainter {
       );
     }
 
-    // Accretion rim glow + the body.
+    // Accretion rim glow — layered translucent fills, NO MaskFilter.blur.
+    // Blur ops here cost a Gaussian pass per well per frame (brutal on
+    // CanvasKit); three stacked soft circles read the same at 60fps.
+    final glowPaint = Paint()..color = w.color.withValues(alpha: 0.10);
+    canvas.drawCircle(bPos, w.radius + 14, glowPaint);
+    canvas.drawCircle(bPos, w.radius + 8, glowPaint);
+    canvas.drawCircle(bPos, w.radius + 3, glowPaint);
+
+    // The body — same look as GameFx.orb, but the gradient shader is cached
+    // per well instead of re-created every frame (orb's glow blur is replaced
+    // by the layered glow above).
+    w.orbShader ??= RadialGradient(
+      center: const Alignment(-0.4, -0.45),
+      colors: [
+        Color.lerp(w.color, Colors.white, 0.45)!,
+        w.color,
+        Color.lerp(w.color, Colors.black, 0.42)!,
+      ],
+      stops: const [0.0, 0.55, 1.0],
+    ).createShader(Rect.fromCircle(center: Offset.zero, radius: w.radius));
+    canvas.save();
+    canvas.translate(bPos.dx, bPos.dy);
+    canvas.drawCircle(Offset.zero, w.radius, Paint()..shader = w.orbShader);
     canvas.drawCircle(
-      bPos,
-      w.radius + 12,
+      Offset.zero,
+      w.radius,
       Paint()
-        ..color = w.color.withValues(alpha: 0.26)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Color.lerp(w.color, Colors.white, 0.4)!.withValues(alpha: 0.8),
     );
-    GameFx.orb(canvas, bPos, w.radius, w.color, glow: 1.4, specular: true);
+    canvas.drawCircle(
+      Offset(-w.radius * 0.32, -w.radius * 0.36),
+      w.radius * 0.20,
+      Paint()..color = Colors.white.withValues(alpha: 0.5),
+    );
+    canvas.restore();
 
     // Slow-rotating ring for giants.
     if (w.radius >= 32) {
@@ -1019,15 +1424,29 @@ class _SlingshotPainter extends CustomPainter {
   void _paintPreview(Canvas canvas) {
     final path = preview.path;
     if (path.isEmpty) return;
-    // Green tint when the aim locks the beacon, cool→warm gradient otherwise.
-    for (int i = 0; i < path.length; i++) {
-      final frac = i / path.length;
+    // Gold tint when the aim locks the beacon, cool→warm gradient otherwise.
+    // Dots are batched into a few drawPoints bands (one Paint each) instead of
+    // up to 300 individual drawCircle calls with per-dot Paints.
+    const bands = 6;
+    final n = path.length;
+    for (var b = 0; b < bands; b++) {
+      final start = n * b ~/ bands;
+      final end = n * (b + 1) ~/ bands;
+      if (end <= start) continue;
+      final frac = (start + end) / 2 / n;
       final alpha = (1.0 - frac) * 0.6;
       final r = (3.0 - frac * 2.0).clamp(0.6, 3.0);
       final col = preview.locks
           ? Color.lerp(Potatuhs.gold, Colors.white, frac)!
           : Color.lerp(Potatuhs.airForce, Potatuhs.gold, frac)!;
-      canvas.drawCircle(path[i], r, Paint()..color = col.withValues(alpha: alpha));
+      canvas.drawPoints(
+        ui.PointMode.points,
+        path.sublist(start, end),
+        Paint()
+          ..color = col.withValues(alpha: alpha)
+          ..strokeWidth = r * 2
+          ..strokeCap = StrokeCap.round,
+      );
     }
     // Mark the predicted impact when it locks.
     if (preview.locks && path.isNotEmpty) {
@@ -1045,25 +1464,42 @@ class _SlingshotPainter extends CustomPainter {
   void _paintProbe(Canvas canvas) {
     if (probe == null) return;
     final trail = probe!.trail;
-    for (int i = 1; i < trail.length; i++) {
-      final frac = i / trail.length;
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Potatuhs.airForce.withValues(alpha: frac * 0.38)
-          ..strokeWidth = 6
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
-      );
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Colors.white.withValues(alpha: frac * 0.75)
-          ..strokeWidth = 2.0
-          ..strokeCap = StrokeCap.round,
-      );
+    // Trail in a few alpha bands (old → new), each band ONE polyline path with
+    // one blurred stroke — not a blurred draw per segment. Per-segment blur was
+    // ~120 Gaussian passes per frame, the single biggest cost in this painter.
+    const bands = 3;
+    final n = trail.length;
+    if (n >= 2) {
+      for (var b = 0; b < bands; b++) {
+        // Overlap each band by one point so the polyline stays connected.
+        final start = max(0, n * b ~/ bands - 1);
+        final end = n * (b + 1) ~/ bands;
+        if (end - start < 2) continue;
+        final path = Path()..moveTo(trail[start].dx, trail[start].dy);
+        for (var i = start + 1; i < end; i++) {
+          path.lineTo(trail[i].dx, trail[i].dy);
+        }
+        final frac = (b + 1) / bands;
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Potatuhs.airForce.withValues(alpha: 0.38 * frac)
+            ..strokeWidth = 6
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Colors.white.withValues(alpha: 0.75 * frac)
+            ..strokeWidth = 2.0
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round,
+        );
+      }
     }
     if (probe!.alive) {
       final mPos = Offset(probe!.x, probe!.y);

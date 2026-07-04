@@ -15,6 +15,7 @@ import 'infinities/tangent/tangent_game.dart';
 import 'infinities/area_under/area_under_game.dart';
 import 'supply_chain/bottleneck/bottleneck_game.dart';
 import 'supply_chain/stock_it/stock_it_game.dart';
+import 'supply_chain/stock_it/stock_it_legend.dart';
 import 'supply_chain/reroute/reroute_game.dart';
 import 'supply_chain/build_chain/build_chain_game.dart';
 import 'planets/orbit_ricochet/orbit_ricochet_game.dart';
@@ -31,6 +32,7 @@ import 'cosmic_structures/map_void/map_void_game.dart';
 import 'farm_system/crop_rotation/crop_rotation_game.dart';
 import 'galactic/galaxy_classify/galaxy_classify_game.dart';
 import 'galactic/galaxy_merger/galaxy_merger_game.dart';
+import 'galactic/galaxy_merger/galaxy_merger_legend.dart';
 import 'financial/portfolio/portfolio_game.dart';
 import 'farm_system/companion_planting/companion_planting_game.dart';
 import 'cosmic_structures/structure_formation/structure_formation_game.dart';
@@ -47,10 +49,10 @@ import 'tissue/skin_layers/skin_layers_game.dart';
 import 'organelle/membrane_gate/membrane_gate_game.dart';
 import 'cell/cell_type/cell_type_game.dart';
 import 'organelle/powerhouse/powerhouse_game.dart';
+import 'organelle/powerhouse/powerhouse_legend.dart';
 import 'tissue/tissue_type/tissue_type_game.dart';
 import 'organ/heartbeat/heartbeat_game.dart';
 import 'cell/osmosis/osmosis_game.dart';
-import 'organ/nephron/nephron_game.dart';
 import 'cell/transcribe/transcribe_game.dart';
 import 'organ/body_map/body_map_game.dart';
 import 'organ_system/circulate/circulate_game.dart';
@@ -99,7 +101,6 @@ import 'nothings/the_wait_v2/the_wait_v2_game.dart';
 import 'molecular/phase_change_v2/phase_change_v2_game.dart';
 import 'multiverse/superposition_v2/superposition_v2_game.dart';
 import 'universe_all/powers_of_ten_v2/powers_of_ten_v2_game.dart';
-import 'atoms/isotopes_v2/isotopes_v2_game.dart';
 import 'molecular/bond_lab_v2/bond_lab_v2_game.dart';
 import 'cell/transcribe_v2/transcribe_v2_game.dart';
 import 'universe_all/cosmic_timeline_v2/cosmic_timeline_v2_game.dart';
@@ -112,8 +113,6 @@ import 'multiverse/bubbles_v2/bubbles_v2_game.dart';
 import 'organ/body_map_v2/body_map_v2_game.dart';
 import 'organism/homeostasis_v2/homeostasis_v2_game.dart';
 import 'somethings/pattern_lock_v2/pattern_lock_v2_game.dart';
-import 'particles/standard_model_v2/standard_model_v2_game.dart';
-import 'particles/decay_chain_v2/decay_chain_v2_game.dart';
 import 'universe_all/constants_v2/constants_v2_game.dart';
 import 'organ/heartbeat_v2/heartbeat_v2_game.dart';
 import 'tissue/tissue_type_v2/tissue_type_v2_game.dart';
@@ -125,6 +124,7 @@ import 'universe_all/everything/everything.dart';
 import 'organism/harvest/harvest_game.dart';
 import 'planets/orbit_catch/orbit_catch_game.dart';
 import 'solar_systems/orbital_insertion/orbital_insertion_game.dart';
+import 'solar_systems/orbital_insertion/orbital_insertion_legend.dart';
 import 'multiverse/reality_merge/reality_merge_game.dart';
 import 'financial/market_trader/market_trader.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/games/mitosis_rush_game.dart';
@@ -163,6 +163,7 @@ class MiniGameRegistry {
       // (sustained combos through the late-game waves). Also seeds CPU scaling.
       humanMax: 520,
       starThresholds: const [150, 320, 520],
+      legendFrames: bigBangLegendFrames,
       builder: (context, session) => BigBangArcade(session: session),
     ),
     MiniGameSpec(
@@ -186,6 +187,7 @@ class MiniGameRegistry {
       icon: Icons.memory,
       humanMax: 1500,
       starThresholds: const [300, 800, 1500],
+      legendFrames: bitMemoryLegendFrames,
       builder: (context, session) => BitMemoryGame(session: session),
     ),
     MiniGameSpec(
@@ -205,6 +207,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF7E57C2),
       icon: Icons.category,
+      legendFrames: cornersLegendFrames,
       builder: (context, session) => CornersGame(session: session),
     ),
     MiniGameSpec(
@@ -226,6 +229,7 @@ class MiniGameRegistry {
       icon: Icons.lightbulb_rounded,
       humanMax: 520,
       starThresholds: const [150, 320, 520],
+      legendFrames: whoseIdeaLegendFrames,
       builder: (context, session) => WhoseIdeaGame(session: session),
     ),
     MiniGameSpec(
@@ -244,6 +248,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFFAB47BC),
       icon: Icons.grain,
+      legendFrames: colliderLegendFrames,
       builder: (context, session) => ColliderGame(session: session),
     ),
     MiniGameSpec(
@@ -252,9 +257,10 @@ class MiniGameRegistry {
       scale: BioScale.particles,
       tagline: 'Pump the beam — hold the band — survive',
       rules: [
-        'Tap anywhere to pump energy into the accelerator bar.',
+        'Tap the PUMP button to feed energy into the accelerator beam.',
         'Energy drains constantly — keep the needle inside the green band.',
         'Hold the band for 2.5 s to trigger a collision and score: +30 base plus a level bonus.',
+        'Halfway through, a SECOND beam comes online and the button splits in two — sustain both beams at once.',
         'Each level the band narrows and drain speeds up — find your rhythm.',
       ],
       howToWin: 'Most points when time runs out wins.',
@@ -263,6 +269,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFFCE93D8),
       icon: Icons.bolt,
+      legendFrames: acceleratorLegendFrames,
       builder: (context, session) => AcceleratorGame(session: session),
     ),
     MiniGameSpec(
@@ -281,6 +288,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF5C6BC0),
       icon: Icons.blur_on,
+      legendFrames: atomBuilderLegendFrames,
       builder: (context, session) => AtomBuilderGame(session: session),
     ),
     MiniGameSpec(
@@ -299,6 +307,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF00BCD4),
       icon: Icons.science,
+      legendFrames: moleculeMixerLegendFrames,
       builder: (context, session) => MoleculeMixerGame(session: session),
     ),
     MiniGameSpec(
@@ -317,6 +326,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF9C27B0),
       icon: Icons.blur_circular,
+      legendFrames: hungryCellLegendFrames,
       builder: (context, session) => HungryCellGame(session: session),
     ),
     MiniGameSpec(
@@ -336,6 +346,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF8BC34A),
       icon: Icons.quiz,
+      legendFrames: organRushLegendFrames,
       builder: (context, session) => OrganQuizGame(session: session),
     ),
     MiniGameSpec(
@@ -359,6 +370,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF66BB6A),
       icon: Icons.grass,
+      legendFrames: harvestLegendFrames,
       builder: (context, session) => OrganismHarvestGame(session: session),
     ),
     MiniGameSpec(
@@ -381,6 +393,7 @@ class MiniGameRegistry {
       icon: Icons.show_chart,
       humanMax: 1800,
       starThresholds: const [500, 1000, 1600],
+      legendFrames: tangentLegendFrames,
       builder: (context, session) => TangentGame(session: session),
     ),
     MiniGameSpec(
@@ -402,6 +415,7 @@ class MiniGameRegistry {
       icon: Icons.area_chart_rounded,
       humanMax: 1400,
       starThresholds: const [450, 900, 1400],
+      legendFrames: areaUnderLegendFrames,
       builder: (context, session) => AreaUnderGame(session: session),
     ),
     MiniGameSpec(
@@ -421,6 +435,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF26A69A),
       icon: Icons.hub,
+      legendFrames: mitosisRushLegendFrames,
       builder: (context, session) => MitosisRushGame(session: session),
     ),
     MiniGameSpec(
@@ -440,6 +455,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF42A5F5),
       icon: Icons.layers,
+      legendFrames: tissueLayerLegendFrames,
       builder: (context, session) => TissueLayerGame(session: session),
     ),
     MiniGameSpec(
@@ -460,6 +476,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF9CCC65),
       icon: Icons.grass,
+      legendFrames: farmPanicLegendFrames,
       builder: (context, session) => FarmPanicGame(session: session),
     ),
     MiniGameSpec(
@@ -481,6 +498,7 @@ class MiniGameRegistry {
       icon: Icons.public,
       humanMax: 2600,
       starThresholds: [900, 1700, 2600],
+      legendFrames: planetCatchLegendFrames,
       builder: (context, session) => PlanetCatchGame(session: session),
     ),
     MiniGameSpec(
@@ -502,6 +520,7 @@ class MiniGameRegistry {
       icon: Icons.sports_baseball,
       humanMax: 2900,
       starThresholds: const [1000, 1900, 2900],
+      legendFrames: orbitRicochetLegendFrames,
       builder: (context, session) => OrbitRicochetGame(session: session),
     ),
     MiniGameSpec(
@@ -523,6 +542,7 @@ class MiniGameRegistry {
       icon: Icons.track_changes,
       humanMax: 2600,
       starThresholds: const [700, 1500, 2400],
+      legendFrames: orbitPursuitLegendFrames,
       builder: (context, session) => OrbitPursuitGame(session: session),
     ),
     MiniGameSpec(
@@ -544,6 +564,7 @@ class MiniGameRegistry {
       icon: Icons.rocket_launch,
       humanMax: 2200,
       starThresholds: const [600, 1300, 2200],
+      legendFrames: orbitSlingshotLegendFrames,
       builder: (context, session) => OrbitSlingshotGame(session: session),
     ),
     MiniGameSpec(
@@ -565,6 +586,7 @@ class MiniGameRegistry {
       icon: Icons.satellite_alt,
       humanMax: 3600,
       starThresholds: const [1300, 2400, 3600],
+      legendFrames: orbitalInsertionLegendFrames,
       builder: (context, session) => OrbitalInsertionGame(session: session),
     ),
     MiniGameSpec(
@@ -584,6 +606,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF8A7BFF),
       icon: Icons.adjust,
+      legendFrames: realityMergeLegendFrames,
       builder: (context, session) => RealityMergeGame(session: session),
     ),
     MiniGameSpec(
@@ -602,6 +625,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF26A69A),
       icon: Icons.translate,
+      legendFrames: everythingLegendFrames,
       builder: (context, session) => EverythingGame(session: session),
     ),
     MiniGameSpec(
@@ -621,6 +645,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFFFFD54F),
       icon: Icons.show_chart,
+      legendFrames: marketTraderLegendFrames,
       builder: (context, session) => FinancialTradingGame(session: session),
     ),
     MiniGameSpec(
@@ -642,6 +667,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFFFF7043),
       icon: Icons.route,
+      legendFrames: deliveryLegendFrames,
       builder: (context, session) => DeliveryGame(session: session),
     ),
     MiniGameSpec(
@@ -663,6 +689,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFFE16416),
       icon: Icons.factory,
+      legendFrames: bottleneckLegendFrames,
       builder: (context, session) => BottleneckGame(session: session),
     ),
     MiniGameSpec(
@@ -684,6 +711,7 @@ class MiniGameRegistry {
       icon: Icons.warehouse_rounded,
       humanMax: 3200,
       starThresholds: const [1200, 2200, 3000],
+      legendFrames: stockItLegendFrames,
       builder: (context, session) => StockItGame(session: session),
     ),
     MiniGameSpec(
@@ -705,6 +733,7 @@ class MiniGameRegistry {
       enabled: true,
       accent: const Color(0xFF2EC4B6),
       icon: Icons.alt_route,
+      legendFrames: rerouteLegendFrames,
       builder: (context, session) => RerouteGame(session: session),
     ),
     MiniGameSpec(
@@ -726,6 +755,7 @@ class MiniGameRegistry {
       icon: Icons.link,
       humanMax: 900,
       starThresholds: const [300, 600, 900],
+      legendFrames: buildChainLegendFrames,
       builder: (context, session) => BuildChainGame(session: session),
     ),
     MiniGameSpec(
@@ -747,6 +777,7 @@ class MiniGameRegistry {
       icon: Icons.savings_rounded,
       humanMax: 520,
       starThresholds: const [150, 320, 520],
+      legendFrames: vocabLegendFrames,
       builder: (context, session) =>
           VocabGame(session: session, bank: kFinanceVocab),
     ),
@@ -770,6 +801,7 @@ class MiniGameRegistry {
       icon: Icons.show_chart,
       humanMax: 600,
       starThresholds: const [180, 380, 600],
+      legendFrames: bondsLegendFrames,
       builder: (context, session) => BondsGame(session: session),
     ),
     MiniGameSpec(
@@ -792,6 +824,7 @@ class MiniGameRegistry {
       icon: Icons.blur_circular,
       humanMax: 1600,
       starThresholds: const [450, 1000, 1600],
+      legendFrames: spiralArmsLegendFrames,
       builder: (context, session) => SpiralArmsGame(session: session),
     ),
     MiniGameSpec(
@@ -813,6 +846,7 @@ class MiniGameRegistry {
       icon: Icons.hub,
       humanMax: 2000,
       starThresholds: const [700, 1400, 2000],
+      legendFrames: cosmicWebLegendFrames,
       builder: (context, session) => CosmicWebGame(session: session),
     ),
     MiniGameSpec(
@@ -834,6 +868,7 @@ class MiniGameRegistry {
       icon: Icons.account_balance,
       humanMax: 1800,
       starThresholds: const [600, 1100, 1800],
+      legendFrames: lobbyingLegendFrames,
       builder: (context, session) => LobbyingGame(session: session),
     ),
     MiniGameSpec(
@@ -855,6 +890,7 @@ class MiniGameRegistry {
       icon: Icons.filter_tilt_shift,
       humanMax: 6000,
       starThresholds: const [2200, 4200, 6000],
+      legendFrames: blackHoleLegendFrames,
       builder: (context, session) => BlackHoleGame(session: session),
     ),
     MiniGameSpec(
@@ -876,6 +912,7 @@ class MiniGameRegistry {
       icon: Icons.travel_explore_rounded,
       humanMax: 2600,
       starThresholds: const [700, 1500, 2400],
+      legendFrames: mapVoidLegendFrames,
       builder: (context, session) => MapVoidGame(session: session),
     ),
     MiniGameSpec(
@@ -897,6 +934,7 @@ class MiniGameRegistry {
       icon: Icons.agriculture,
       humanMax: 2600,
       starThresholds: const [700, 1500, 2400],
+      legendFrames: cropRotationLegendFrames,
       builder: (context, session) => CropRotationGame(session: session),
     ),
     MiniGameSpec(
@@ -917,6 +955,7 @@ class MiniGameRegistry {
       icon: Icons.auto_awesome,
       humanMax: 6500,
       starThresholds: const [1800, 3600, 5500],
+      legendFrames: galaxyClassifyLegendFrames,
       builder: (context, session) => GalaxyClassifyGame(session: session),
     ),
     MiniGameSpec(
@@ -938,6 +977,7 @@ class MiniGameRegistry {
       icon: Icons.blur_circular,
       humanMax: 2600,
       starThresholds: const [900, 1700, 2500],
+      legendFrames: galaxyMergerLegendFrames,
       builder: (context, session) => GalaxyMergerGame(session: session),
     ),
     MiniGameSpec(
@@ -959,6 +999,7 @@ class MiniGameRegistry {
       icon: Icons.pie_chart,
       humanMax: 2600,
       starThresholds: const [1300, 1900, 2800],
+      legendFrames: portfolioLegendFrames,
       builder: (context, session) => PortfolioGame(session: session),
     ),
     MiniGameSpec(
@@ -980,6 +1021,7 @@ class MiniGameRegistry {
       icon: Icons.grass,
       humanMax: 900,
       starThresholds: const [250, 500, 900],
+      legendFrames: companionPlantingLegendFrames,
       builder: (context, session) => CompanionPlantingGame(session: session),
     ),
     MiniGameSpec(
@@ -1001,6 +1043,7 @@ class MiniGameRegistry {
       icon: Icons.grain,
       humanMax: 1400,
       starThresholds: const [400, 800, 1300],
+      legendFrames: structureFormationLegendFrames,
       builder: (context, session) => StructureFormationGame(session: session),
     ),
     MiniGameSpec(
@@ -1044,6 +1087,7 @@ class MiniGameRegistry {
       icon: Icons.auto_awesome,
       humanMax: 900,
       starThresholds: const [300, 600, 900],
+      legendFrames: stellarEvolutionLegendFrames,
       builder: (context, session) => StellarEvolutionGame(session: session),
     ),
     MiniGameSpec(
@@ -1065,6 +1109,7 @@ class MiniGameRegistry {
       icon: Icons.lens_blur,
       humanMax: 4200,
       starThresholds: const [1400, 2600, 3800],
+      legendFrames: lensingLegendFrames,
       builder: (context, session) => LensingGame(session: session),
     ),
     MiniGameSpec(
@@ -1086,6 +1131,7 @@ class MiniGameRegistry {
       icon: Icons.wb_sunny,
       humanMax: 850,
       starThresholds: const [300, 550, 800],
+      legendFrames: solarStormLegendFrames,
       builder: (context, session) => SolarStormGame(session: session),
     ),
     MiniGameSpec(
@@ -1107,6 +1153,7 @@ class MiniGameRegistry {
       icon: Icons.pest_control_outlined,
       humanMax: 800,
       starThresholds: const [250, 500, 750],
+      legendFrames: pestPatrolLegendFrames,
       builder: (context, session) => PestPatrolGame(session: session),
     ),
     MiniGameSpec(
@@ -1129,6 +1176,7 @@ class MiniGameRegistry {
       icon: Icons.rocket_launch,
       humanMax: 28,
       starThresholds: const [10, 18, 26],
+      legendFrames: spaceRushLegendFrames,
       builder: (context, session) => SpaceRushGame(session: session),
     ),
     MiniGameSpec(
@@ -1150,6 +1198,7 @@ class MiniGameRegistry {
       icon: Icons.local_florist,
       humanMax: 2000,
       starThresholds: const [500, 1000, 1600],
+      legendFrames: pollinationLegendFrames,
       builder: (context, session) => PollinationGame(session: session),
     ),
     MiniGameSpec(
@@ -1171,6 +1220,7 @@ class MiniGameRegistry {
       icon: Icons.hub_rounded,
       humanMax: 1800,
       starThresholds: const [500, 1000, 1600],
+      legendFrames: organelleMatchLegendFrames,
       builder: (context, session) => OrganelleMatchGame(session: session),
     ),
     MiniGameSpec(
@@ -1192,6 +1242,7 @@ class MiniGameRegistry {
       icon: Icons.sensor_door,
       humanMax: 800,
       starThresholds: const [280, 520, 760],
+      legendFrames: membraneGateLegendFrames,
       builder: (context, session) => MembraneGateGame(session: session),
     ),
     MiniGameSpec(
@@ -1213,6 +1264,7 @@ class MiniGameRegistry {
       icon: Icons.bolt,
       humanMax: 3200,
       starThresholds: const [1100, 2100, 3000],
+      legendFrames: twitchLegendFrames,
       builder: (context, session) => TwitchGame(session: session),
     ),
     MiniGameSpec(
@@ -1234,6 +1286,7 @@ class MiniGameRegistry {
       icon: Icons.layers,
       humanMax: 900,
       starThresholds: const [300, 550, 800],
+      legendFrames: skinLayersLegendFrames,
       builder: (context, session) => SkinLayersGame(session: session),
     ),
     MiniGameSpec(
@@ -1255,6 +1308,7 @@ class MiniGameRegistry {
       icon: Icons.biotech_rounded,
       humanMax: 2000,
       starThresholds: const [600, 1300, 2000],
+      legendFrames: cellTypeLegendFrames,
       builder: (context, session) => CellTypeGame(session: session),
     ),
     MiniGameSpec(
@@ -1276,6 +1330,7 @@ class MiniGameRegistry {
       icon: Icons.water_drop,
       humanMax: 700,
       starThresholds: const [220, 450, 700],
+      legendFrames: osmosisLegendFrames,
       builder: (context, session) => OsmosisGame(session: session),
     ),
     MiniGameSpec(
@@ -1297,6 +1352,7 @@ class MiniGameRegistry {
       icon: Icons.bolt,
       humanMax: 800,
       starThresholds: const [250, 450, 650],
+      legendFrames: powerhouseLegendFrames,
       builder: (context, session) => PowerhouseGame(session: session),
     ),
     MiniGameSpec(
@@ -1318,6 +1374,7 @@ class MiniGameRegistry {
       icon: Icons.biotech_rounded,
       humanMax: 4200,
       starThresholds: const [1400, 2800, 4000],
+      legendFrames: tissueTypeLegendFrames,
       builder: (context, session) => TissueTypeGame(session: session),
     ),
     MiniGameSpec(
@@ -1339,6 +1396,7 @@ class MiniGameRegistry {
       icon: Icons.favorite,
       humanMax: 1600,
       starThresholds: const [350, 800, 1400],
+      legendFrames: heartbeatLegendFrames,
       builder: (context, session) => HeartbeatGame(session: session),
     ),
     MiniGameSpec(
@@ -1360,28 +1418,8 @@ class MiniGameRegistry {
       icon: Icons.biotech,
       humanMax: 800,
       starThresholds: const [250, 500, 750],
+      legendFrames: transcribeLegendFrames,
       builder: (context, session) => TranscribeGame(session: session),
-    ),
-    MiniGameSpec(
-      id: 'nephron',
-      name: 'Nephron',
-      scale: BioScale.organ,
-      tagline: 'Run the kidney\'s filter — reabsorb the good, let the waste flow',
-      rules: [
-        'Blood pours down the tubule. Sort each molecule before it exits.',
-        'Flick a molecule LEFT to reabsorb it into the BLOOD.',
-        'Flick it RIGHT (or let it fall) to send it out as URINE.',
-        'Reabsorb nutrients; let waste pass. Mistakes drain BLOOD PURITY.',
-      ],
-      howToWin: 'Highest score when time runs out — reabsorb nutrients, excrete toxins.',
-      durationSeconds: 60,
-      scoreUnit: 'molecules',
-      enabled: true,
-      accent: const Color(0xFFC65A6E),
-      icon: Icons.filter_alt,
-      humanMax: 1400,
-      starThresholds: const [400, 850, 1400],
-      builder: (context, session) => NephronGame(session: session),
     ),
     MiniGameSpec(
       id: 'body_map',
@@ -1402,6 +1440,7 @@ class MiniGameRegistry {
       icon: Icons.accessibility_new,
       humanMax: 1800,
       starThresholds: const [500, 1000, 1600],
+      legendFrames: bodyMapLegendFrames,
       builder: (context, session) => BodyMapGame(session: session),
     ),
     MiniGameSpec(
@@ -1423,6 +1462,7 @@ class MiniGameRegistry {
       icon: Icons.favorite,
       humanMax: 650,
       starThresholds: const [200, 400, 600],
+      legendFrames: circulateLegendFrames,
       builder: (context, session) => CirculateGame(session: session),
     ),
     MiniGameSpec(
@@ -1444,6 +1484,7 @@ class MiniGameRegistry {
       icon: Icons.timelapse,
       humanMax: 800,
       starThresholds: const [320, 560, 760],
+      legendFrames: halfLifeLegendFrames,
       builder: (context, session) => HalfLifeGame(session: session),
     ),
     MiniGameSpec(
@@ -1465,6 +1506,7 @@ class MiniGameRegistry {
       icon: Icons.lunch_dining,
       humanMax: 700,
       starThresholds: const [240, 440, 640],
+      legendFrames: digestLegendFrames,
       builder: (context, session) => DigestGame(session: session),
     ),
     MiniGameSpec(
@@ -1486,6 +1528,7 @@ class MiniGameRegistry {
       icon: Icons.thermostat,
       humanMax: 12,
       starThresholds: const [4, 8, 12],
+      legendFrames: phaseChangeLegendFrames,
       builder: (context, session) => PhaseChangeGame(session: session),
     ),
     MiniGameSpec(
@@ -1506,6 +1549,7 @@ class MiniGameRegistry {
       icon: Icons.hub,
       humanMax: 360,
       starThresholds: const [110, 230, 350],
+      legendFrames: bondLabLegendFrames,
       builder: (context, session) => BondLabGame(session: session),
     ),
     MiniGameSpec(
@@ -1527,6 +1571,7 @@ class MiniGameRegistry {
       icon: Icons.bolt,
       humanMax: 1700,
       starThresholds: const [500, 1000, 1500],
+      legendFrames: reflexLegendFrames,
       builder: (context, session) => ReflexGame(session: session),
     ),
     MiniGameSpec(
@@ -1548,6 +1593,7 @@ class MiniGameRegistry {
       icon: Icons.cyclone,
       humanMax: 3500,
       starThresholds: const [1200, 2400, 3600],
+      legendFrames: lifeCycleLegendFrames,
       builder: (context, session) => LifeCycleGame(session: session),
     ),
     MiniGameSpec(
@@ -1569,6 +1615,7 @@ class MiniGameRegistry {
       icon: Icons.account_tree,
       humanMax: 1000,
       starThresholds: const [300, 600, 900],
+      legendFrames: foodWebLegendFrames,
       builder: (context, session) => FoodWebGame(session: session),
     ),
     MiniGameSpec(
@@ -1590,6 +1637,7 @@ class MiniGameRegistry {
       icon: Icons.track_changes,
       humanMax: 1200,
       starThresholds: const [400, 750, 1100],
+      legendFrames: electronShellsLegendFrames,
       builder: (context, session) => ElectronShellsGame(session: session),
     ),
     MiniGameSpec(
@@ -1611,6 +1659,7 @@ class MiniGameRegistry {
       icon: Icons.scatter_plot,
       humanMax: 350,
       starThresholds: const [130, 240, 330],
+      legendFrames: isotopesLegendFrames,
       builder: (context, session) => IsotopesGame(session: session),
     ),
     MiniGameSpec(
@@ -1632,6 +1681,7 @@ class MiniGameRegistry {
       icon: Icons.recycling,
       humanMax: 70,
       starThresholds: const [25, 45, 65],
+      legendFrames: nutrientCycleLegendFrames,
       builder: (context, session) => NutrientCycleGame(session: session),
     ),
     MiniGameSpec(
@@ -1652,6 +1702,7 @@ class MiniGameRegistry {
       icon: Icons.science,
       humanMax: 900,
       starThresholds: const [300, 550, 800],
+      legendFrames: phBalanceLegendFrames,
       builder: (context, session) => PhBalanceGame(session: session),
     ),
     MiniGameSpec(
@@ -1673,6 +1724,7 @@ class MiniGameRegistry {
       icon: Icons.pets,
       humanMax: 480,
       starThresholds: const [150, 300, 440],
+      legendFrames: predatorPreyLegendFrames,
       builder: (context, session) => PredatorPreyGame(session: session),
     ),
     MiniGameSpec(
@@ -1694,6 +1746,7 @@ class MiniGameRegistry {
       icon: Icons.blur_on,
       humanMax: 520,
       starThresholds: const [140, 300, 460],
+      legendFrames: quantumFoamLegendFrames,
       builder: (context, session) => QuantumFoamGame(session: session),
     ),
     MiniGameSpec(
@@ -1714,6 +1767,7 @@ class MiniGameRegistry {
       icon: Icons.bubble_chart,
       humanMax: 420,
       starThresholds: const [150, 280, 400],
+      legendFrames: bubblesLegendFrames,
       builder: (context, session) => BubblesGame(session: session),
     ),
     MiniGameSpec(
@@ -1735,6 +1789,7 @@ class MiniGameRegistry {
       icon: Icons.hourglass_empty,
       humanMax: 480,
       starThresholds: const [200, 340, 460],
+      legendFrames: theWaitLegendFrames,
       builder: (context, session) => TheWaitGame(session: session),
     ),
     MiniGameSpec(
@@ -1756,28 +1811,8 @@ class MiniGameRegistry {
       icon: Icons.timeline,
       humanMax: 700,
       starThresholds: const [200, 400, 650],
+      legendFrames: cosmicTimelineLegendFrames,
       builder: (context, session) => CosmicTimelineGame(session: session),
-    ),
-    MiniGameSpec(
-      id: 'standard_model',
-      name: 'Standard Model',
-      scale: BioScale.particles,
-      tagline: 'Sort every particle into its family',
-      rules: [
-        'Particles stream down — drag each into a bin.',
-        'QUARKS · LEPTONS · BOSONS: match the family to score.',
-        'Wrong bin fizzles; let one sink and you miss it.',
-        'Tells (charge, colour, mass) fade as you climb.',
-      ],
-      howToWin: 'Most particles correctly sorted when time runs out wins.',
-      durationSeconds: 50,
-      scoreUnit: 'particles',
-      enabled: true,
-      accent: const Color(0xFF7C4DFF),
-      icon: Icons.bubble_chart,
-      humanMax: 800,
-      starThresholds: const [250, 500, 750],
-      builder: (context, session) => StandardModelGame(session: session),
     ),
     MiniGameSpec(
       id: 'converge',
@@ -1798,6 +1833,7 @@ class MiniGameRegistry {
       icon: Icons.all_inclusive,
       humanMax: 1600,
       starThresholds: const [450, 900, 1500],
+      legendFrames: convergeLegendFrames,
       builder: (context, session) => ConvergeGame(session: session),
     ),
     MiniGameSpec(
@@ -1819,28 +1855,8 @@ class MiniGameRegistry {
       icon: Icons.pinch,
       humanMax: 1200,
       starThresholds: const [350, 700, 1100],
+      legendFrames: tzimtzumLegendFrames,
       builder: (context, session) => TzimtzumGame(session: session),
-    ),
-    MiniGameSpec(
-      id: 'decay_chain',
-      name: 'Decay Chain',
-      scale: BioScale.particles,
-      tagline: 'Catch the decay products before they escape the detector',
-      rules: const [
-        'Tap real decay products: +10.',
-        'Finish a decay clean (no escapes): +25 & streak.',
-        'Tap the impostor particle: −12.',
-        'Let a real product escape: −5.',
-      ],
-      howToWin: 'Most particles caught when the reactor cools wins.',
-      durationSeconds: 50,
-      scoreUnit: 'particles',
-      enabled: true,
-      accent: const Color(0xFF64DD17),
-      icon: Icons.scatter_plot,
-      humanMax: 950,
-      starThresholds: const [300, 600, 900],
-      builder: (context, session) => DecayChainGame(session: session),
     ),
     MiniGameSpec(
       id: 'branch',
@@ -1861,6 +1877,7 @@ class MiniGameRegistry {
       icon: Icons.account_tree,
       humanMax: 4200,
       starThresholds: const [1400, 2800, 4200],
+      legendFrames: branchLegendFrames,
       builder: (context, session) => BranchGame(session: session),
     ),
     MiniGameSpec(
@@ -1882,6 +1899,7 @@ class MiniGameRegistry {
       icon: Icons.lock_outline_rounded,
       humanMax: 2800,
       starThresholds: const [700, 1500, 2500],
+      legendFrames: patternLockLegendFrames,
       builder: (context, session) => PatternLockGame(session: session),
     ),
     MiniGameSpec(
@@ -1903,6 +1921,7 @@ class MiniGameRegistry {
       icon: Icons.tune,
       humanMax: 1000,
       starThresholds: const [350, 650, 950],
+      legendFrames: constantsLegendFrames,
       builder: (context, session) => ConstantsGame(session: session),
     ),
     MiniGameSpec(
@@ -1924,6 +1943,7 @@ class MiniGameRegistry {
       icon: Icons.hotel_rounded,
       humanMax: 2600,
       starThresholds: const [700, 1400, 2100],
+      legendFrames: hilbertsHotelLegendFrames,
       builder: (context, session) => HilbertsHotelGame(session: session),
     ),
     MiniGameSpec(
@@ -1945,6 +1965,7 @@ class MiniGameRegistry {
       icon: Icons.zoom_out_map,
       humanMax: 1500,
       starThresholds: const [500, 950, 1400],
+      legendFrames: powersOfTenLegendFrames,
       builder: (context, session) => PowersOfTenGame(session: session),
     ),
     // ── UX Refinement Pass — <id>_v2 alternatives (coexist; Brett judges) ──
@@ -1966,6 +1987,7 @@ class MiniGameRegistry {
       icon: Icons.adjust,
       humanMax: 950,
       starThresholds: const [350, 600, 850],
+      legendFrames: tzimtzumV2LegendFrames,
       builder: (context, session) => TzimtzumV2Game(session: session),
     ),
     MiniGameSpec(
@@ -1987,6 +2009,7 @@ class MiniGameRegistry {
       icon: Icons.hub_rounded,
       humanMax: 3000,
       starThresholds: const [1000, 2000, 3000],
+      legendFrames: organelleMatchV2LegendFrames,
       builder: (context, session) => OrganelleMatchV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2008,18 +2031,19 @@ class MiniGameRegistry {
       icon: Icons.sensor_door,
       humanMax: 800,
       starThresholds: const [280, 520, 760],
+      legendFrames: membraneGateV2LegendFrames,
       builder: (context, session) => MembraneGateV2Game(session: session),
     ),
     MiniGameSpec(
       id: 'half_life_v2',
-      name: 'Half-Life v2',
+      name: 'Halving Beat',
       scale: BioScale.atoms,
-      tagline: 'Feel the glow halve — tap at 50 · 25 · 12.5%',
+      tagline: 'Mark the glow at every halving — 50 · 25 · 12.5 · 6.25%',
       rules: [
         'A glowing sample decays — no counter, estimate by feel.',
-        'Tap at 50%, then 25%, then 12.5% still glowing.',
-        'Each halving takes the same time — ride the rhythm.',
-        'Closer to the true moment = more points.',
+        'Tap EACH TIME it halves: 50%, 25%, 12.5%, 6.25%.',
+        'Every halving takes the same time — ride the rhythm.',
+        'Hold FORCE DECAY to speed up: faster rounds, tighter timing.',
       ],
       howToWin: 'Most accurate measurements when time runs out wins.',
       durationSeconds: 55,
@@ -2029,6 +2053,7 @@ class MiniGameRegistry {
       icon: Icons.timelapse,
       humanMax: 1500,
       starThresholds: const [600, 1050, 1400],
+      legendFrames: halfLifeV2LegendFrames,
       builder: (context, session) => HalfLifeV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2051,6 +2076,7 @@ class MiniGameRegistry {
       icon: Icons.bolt,
       humanMax: 520,
       starThresholds: const [200, 360, 500],
+      legendFrames: powerhouseV2LegendFrames,
       builder: (context, session) => PowerhouseV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2072,6 +2098,7 @@ class MiniGameRegistry {
       icon: Icons.water_drop,
       humanMax: 1500,
       starThresholds: const [400, 900, 1500],
+      legendFrames: osmosisV2LegendFrames,
       builder: (context, session) => OsmosisV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2093,6 +2120,7 @@ class MiniGameRegistry {
       icon: Icons.layers,
       humanMax: 70,
       starThresholds: const [25, 45, 65],
+      legendFrames: skinLayersV2LegendFrames,
       builder: (context, session) => SkinLayersV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2114,11 +2142,12 @@ class MiniGameRegistry {
       icon: Icons.hotel_rounded,
       humanMax: 3000,
       starThresholds: const [800, 1600, 2400],
+      legendFrames: hilbertsHotelV2LegendFrames,
       builder: (context, session) => HilbertsHotelV2Game(session: session),
     ),
     MiniGameSpec(
-      id: 'nephron_v2',
-      name: 'Nephron v2',
+      id: 'nephron',
+      name: 'Nephron',
       scale: BioScale.organ,
       tagline: 'Run the kidney\'s filter — drag the good back to blood, flick waste to urine',
       rules: [
@@ -2126,6 +2155,7 @@ class MiniGameRegistry {
         'Grab a molecule and DRAG or FLICK it LEFT to reabsorb into the BLOOD.',
         'DRAG or FLICK it RIGHT (or let it fall) to excrete it as URINE.',
         'Reabsorb nutrients; let waste pass. Wrong calls drain BLOOD PURITY — never your clock.',
+        'The shift intensifies — molecules arrive faster, then in clusters.',
       ],
       howToWin: 'Highest score when time runs out — reabsorb nutrients, excrete toxins.',
       durationSeconds: 60,
@@ -2135,6 +2165,7 @@ class MiniGameRegistry {
       icon: Icons.filter_alt,
       humanMax: 1400,
       starThresholds: const [400, 850, 1400],
+      legendFrames: nephronLegendFrames,
       builder: (context, session) => NephronV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2156,6 +2187,7 @@ class MiniGameRegistry {
       icon: Icons.lunch_dining,
       humanMax: 800,
       starThresholds: const [280, 500, 720],
+      legendFrames: digestV2LegendFrames,
       builder: (context, session) => DigestV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2178,6 +2210,7 @@ class MiniGameRegistry {
       icon: Icons.pets,
       humanMax: 520,
       starThresholds: const [180, 340, 480],
+      legendFrames: predatorPreyV2LegendFrames,
       builder: (context, session) => PredatorPreyV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2199,6 +2232,7 @@ class MiniGameRegistry {
       icon: Icons.account_tree,
       humanMax: 7000,
       starThresholds: const [2800, 4800, 6800],
+      legendFrames: branchV2LegendFrames,
       builder: (context, session) => BranchV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2220,6 +2254,7 @@ class MiniGameRegistry {
       icon: Icons.favorite,
       humanMax: 700,
       starThresholds: const [220, 440, 660],
+      legendFrames: circulateV2LegendFrames,
       builder: (context, session) => CirculateV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2241,13 +2276,14 @@ class MiniGameRegistry {
       icon: Icons.recycling,
       humanMax: 120,
       starThresholds: const [35, 70, 110],
+      legendFrames: nutrientCycleV2LegendFrames,
       builder: (context, session) => NutrientCycleV2Game(session: session),
     ),
     MiniGameSpec(
       id: 'electron_shells_v2',
-      name: 'Electron Shells v2',
+      name: 'Energy Levels',
       scale: BioScale.atoms,
-      tagline: 'Sort electrons into shells — fill inside-out to a stable atom',
+      tagline: 'Sort electrons by energy level — fill inside-out to a stable atom',
       rules: [
         'Tap the TRAY electron whose letter matches the active shell (+5).',
         'Fill inside-out — K=2, L=8, M=8, N=8; the gap shows as a number.',
@@ -2262,6 +2298,7 @@ class MiniGameRegistry {
       icon: Icons.track_changes,
       humanMax: 1400,
       starThresholds: const [500, 900, 1300],
+      legendFrames: electronShellsV2LegendFrames,
       builder: (context, session) => ElectronShellsV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2283,6 +2320,7 @@ class MiniGameRegistry {
       icon: Icons.biotech_rounded,
       humanMax: 2200,
       starThresholds: const [700, 1400, 2200],
+      legendFrames: cellTypeV2LegendFrames,
       builder: (context, session) => CellTypeV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2304,6 +2342,7 @@ class MiniGameRegistry {
       icon: Icons.hourglass_top,
       humanMax: 1100,
       starThresholds: const [450, 750, 1050],
+      legendFrames: theWaitV2LegendFrames,
       builder: (context, session) => TheWaitV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2325,6 +2364,7 @@ class MiniGameRegistry {
       icon: Icons.thermostat,
       humanMax: 900,
       starThresholds: const [350, 600, 820],
+      legendFrames: phaseChangeV2LegendFrames,
       builder: (context, session) => PhaseChangeV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2337,6 +2377,7 @@ class MiniGameRegistry {
         'A glowing LOCK zone caps the target near 100%.',
         'Tap MEASURE in the lock zone: the favorable collapse is GUARANTEED.',
         'Hold for the crest to score more; gamble below lock and it may decohere.',
+        'On phones: TILT (or DRAG — works without a gyro) to aim, then tap.',
       ],
       howToWin: 'Most favorable collapses when time runs out wins.',
       durationSeconds: 55,
@@ -2346,6 +2387,7 @@ class MiniGameRegistry {
       icon: Icons.blur_on,
       humanMax: 3400,
       starThresholds: const [1000, 2000, 3000],
+      legendFrames: superpositionLegendFrames,
       builder: (context, session) => SuperpositionV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2367,28 +2409,8 @@ class MiniGameRegistry {
       icon: Icons.zoom_out_map,
       humanMax: 3000,
       starThresholds: const [1100, 2100, 2900],
+      legendFrames: powersOfTenV2LegendFrames,
       builder: (context, session) => PowersOfTenV2Game(session: session),
-    ),
-    MiniGameSpec(
-      id: 'isotopes_v2',
-      name: 'Isotopes v2',
-      scale: BioScale.atoms,
-      tagline: 'Dial protons and neutrons fast — build the nuclide before the bar empties',
-      rules: [
-        'Coarse/fine ±PROTONS sets the element (Z); ±NEUTRONS sets the isotope (A=Z+N).',
-        'Match the ELEMENT and ISOTOPE pills, then LOCK IT IN before the time bar empties.',
-        'Lock fast for a speed bonus; the bar tightens as you build more.',
-        'Final 10s = FUSION SURGE ×2. Miss or time out: no points, streak resets.',
-      ],
-      howToWin: 'Most nuclides built when time runs out wins.',
-      durationSeconds: 50,
-      scoreUnit: 'nuclides',
-      enabled: true,
-      accent: const Color(0xFF4DD0E1),
-      icon: Icons.scatter_plot,
-      humanMax: 520,
-      starThresholds: const [180, 330, 470],
-      builder: (context, session) => IsotopesV2Game(session: session),
     ),
     MiniGameSpec(
       id: 'bond_lab_v2',
@@ -2409,6 +2431,7 @@ class MiniGameRegistry {
       icon: Icons.hub,
       humanMax: 600,
       starThresholds: const [200, 380, 560],
+      legendFrames: bondLabV2LegendFrames,
       builder: (context, session) => BondLabV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2430,6 +2453,7 @@ class MiniGameRegistry {
       icon: Icons.biotech,
       humanMax: 1400,
       starThresholds: const [400, 850, 1300],
+      legendFrames: transcribeV2LegendFrames,
       builder: (context, session) => TranscribeV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2451,6 +2475,7 @@ class MiniGameRegistry {
       icon: Icons.timeline,
       humanMax: 1000,
       starThresholds: const [380, 650, 880],
+      legendFrames: cosmicTimelineV2LegendFrames,
       builder: (context, session) => CosmicTimelineV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2472,6 +2497,7 @@ class MiniGameRegistry {
       icon: Icons.bolt,
       humanMax: 2000,
       starThresholds: const [700, 1300, 1800],
+      legendFrames: twitchV2LegendFrames,
       builder: (context, session) => TwitchV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2493,6 +2519,7 @@ class MiniGameRegistry {
       icon: Icons.autorenew,
       humanMax: 1600,
       starThresholds: const [400, 850, 1400],
+      legendFrames: lifeCycleV2LegendFrames,
       builder: (context, session) => LifeCycleV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2514,6 +2541,7 @@ class MiniGameRegistry {
       icon: Icons.account_tree,
       humanMax: 600,
       starThresholds: const [220, 400, 600],
+      legendFrames: foodWebV2LegendFrames,
       builder: (context, session) => FoodWebV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2535,6 +2563,7 @@ class MiniGameRegistry {
       icon: Icons.science,
       humanMax: 1100,
       starThresholds: const [400, 700, 1000],
+      legendFrames: phBalanceV2LegendFrames,
       builder: (context, session) => PhBalanceV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2556,6 +2585,7 @@ class MiniGameRegistry {
       icon: Icons.blur_on,
       humanMax: 2000,
       starThresholds: const [600, 1200, 1750],
+      legendFrames: quantumFoamV2LegendFrames,
       builder: (context, session) => QuantumFoamV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2577,6 +2607,7 @@ class MiniGameRegistry {
       icon: Icons.bubble_chart,
       humanMax: 1100,
       starThresholds: const [400, 700, 1000],
+      legendFrames: bubblesV2LegendFrames,
       builder: (context, session) => BubblesV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2598,6 +2629,7 @@ class MiniGameRegistry {
       icon: Icons.accessibility_new,
       humanMax: 1000,
       starThresholds: const [350, 650, 950],
+      legendFrames: bodyMapV2LegendFrames,
       builder: (context, session) => BodyMapV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2619,6 +2651,7 @@ class MiniGameRegistry {
       icon: Icons.tune,
       humanMax: 800,
       starThresholds: const [300, 550, 750],
+      legendFrames: homeostasisLegendFrames,
       builder: (context, session) => HomeostasisV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2640,11 +2673,12 @@ class MiniGameRegistry {
       icon: Icons.lock_outline_rounded,
       humanMax: 5000,
       starThresholds: const [1400, 2900, 4600],
+      legendFrames: patternLockV2LegendFrames,
       builder: (context, session) => PatternLockV2Game(session: session),
     ),
     MiniGameSpec(
-      id: 'standard_model_v2',
-      name: 'Standard Model v2',
+      id: 'standard_model',
+      name: 'Standard Model',
       scale: BioScale.particles,
       tagline: 'Sort every particle into its family — fast',
       rules: const [
@@ -2652,6 +2686,7 @@ class MiniGameRegistry {
         'Arm a bin (tap it), then tap particles to rapid-sort',
         'Right family scores & names it; wrong fizzles',
         'Tells fade as you climb — late game, know the symbol',
+        'Double-tap empty space to DECODE — reveal the tells (earn one every 10 sorts)',
       ],
       howToWin: 'Correctly sort the most particles before time runs out.',
       durationSeconds: 55,
@@ -2661,11 +2696,12 @@ class MiniGameRegistry {
       icon: Icons.bubble_chart,
       humanMax: 1500,
       starThresholds: const [450, 900, 1350],
-      builder: (context, session) => StandardModelV2Game(session: session),
+      legendFrames: standardModelLegendFrames,
+      builder: (context, session) => StandardModelGame(session: session),
     ),
     MiniGameSpec(
-      id: 'decay_chain_v2',
-      name: 'Decay Chain v2',
+      id: 'decay_chain',
+      name: 'Decay Chain',
       scale: BioScale.particles,
       tagline: 'Catch real decay products — refuse the ✗ impostor',
       rules: const [
@@ -2682,7 +2718,8 @@ class MiniGameRegistry {
       icon: Icons.scatter_plot,
       humanMax: 1100,
       starThresholds: const [450, 800, 1050],
-      builder: (context, session) => DecayChainV2Game(session: session),
+      legendFrames: decayChainLegendFrames,
+      builder: (context, session) => DecayChainGame(session: session),
     ),
     MiniGameSpec(
       id: 'constants_v2',
@@ -2703,6 +2740,7 @@ class MiniGameRegistry {
       icon: Icons.tune,
       humanMax: 900,
       starThresholds: const [320, 580, 850],
+      legendFrames: constantsV2LegendFrames,
       builder: (context, session) => ConstantsV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2724,6 +2762,7 @@ class MiniGameRegistry {
       icon: Icons.favorite,
       humanMax: 1900,
       starThresholds: const [450, 1000, 1600],
+      legendFrames: heartbeatV2LegendFrames,
       builder: (context, session) => HeartbeatV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2745,6 +2784,7 @@ class MiniGameRegistry {
       icon: Icons.biotech_rounded,
       humanMax: 5000,
       starThresholds: const [1600, 3200, 4600],
+      legendFrames: tissueTypeV2LegendFrames,
       builder: (context, session) => TissueTypeV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2766,6 +2806,7 @@ class MiniGameRegistry {
       icon: Icons.flash_on,
       humanMax: 2600,
       starThresholds: const [800, 1600, 2400],
+      legendFrames: reflexV2LegendFrames,
       builder: (context, session) => ReflexV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2787,6 +2828,7 @@ class MiniGameRegistry {
       icon: Icons.pets,
       humanMax: 600,
       starThresholds: const [200, 400, 600],
+      legendFrames: forageLegendFrames,
       builder: (context, session) => ForageV2Game(session: session),
     ),
     MiniGameSpec(
@@ -2808,6 +2850,7 @@ class MiniGameRegistry {
       icon: Icons.all_inclusive,
       humanMax: 1300,
       starThresholds: const [400, 800, 1200],
+      legendFrames: convergeV2LegendFrames,
       builder: (context, session) => ConvergeV2Game(session: session),
     ),
   ];

@@ -88,12 +88,44 @@ class _CosmicWebGameState extends State<CosmicWebGame>
       ..addListener(_onTick)
       ..forward();
     _newWeb(0);
+    // ATTRACT autopilot: this game knows how to trace itself. Registered always
+    // (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep]. Default interval (act every tick): Cosmic Web is a connect
+    // game, so one filament lit per tick reads as steady, deliberate tracing.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent move per host tick (~250ms). Lights the web the way scoring
+  /// rewards — trace REAL filaments only — using the game's OWN link handler
+  /// ([_attempt]), never synthetic drags or coordinate math.
+  ///
+  /// Strategy: [_filaments] is the set of real cluster-pairs a filament joins;
+  /// [_litFil] flags which are already ignited. Each tick, take the first real
+  /// filament still dark and hand its two clusters to [_attempt] — since the
+  /// pair comes straight from [_filaments] it is guaranteed real, so [_attempt]
+  /// resolves it via [_onFilamentLit] (score + combo) and NEVER as a void miss.
+  /// Lighting the last thread fires [_onWebComplete], which banks the bonus and
+  /// advances to the next, denser web after its own delay. While that hand-off
+  /// is in flight every filament reads as lit, so there is nothing to do and we
+  /// simply return — the host advances the web.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_clusters.isEmpty || _filaments.isEmpty) return;
+    for (var i = 0; i < _filaments.length; i++) {
+      if (_litFil[i]) continue;
+      final f = _filaments[i];
+      _attempt(f.a, f.b); // real pair → _onFilamentLit; never a void
+      return;
+    }
+    // Web complete / advancing — nothing to light; let the host advance.
   }
 
   // ── The single ticker: advances clock, FX, and the session re-entry guard ──
@@ -593,6 +625,172 @@ class _VoidBlob {
   final double radius;
   const _VoidBlob(this.center, this.radius);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the REAL components (the
+// same orbs, filament threads and void wells the live game uses). Static,
+// cheap, size-guarded; palette from the game's own private constants.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _lAccent = _CosmicWebGameState._accent; // dark-matter violet
+const Color _lLit = _CosmicWebGameState._lit; // ignited matter (gold-warm)
+const Color _lVoidTint = _CosmicWebGameState._voidTint; // near-empty void
+
+/// A supercluster node with a dark thread still to trace: violet orb + halo.
+void _legendCluster(Canvas canvas, Offset c, {bool lit = false}) {
+  if (!lit) {
+    canvas.drawCircle(
+      c,
+      16,
+      Paint()..color = _lAccent.withValues(alpha: 0.20),
+    );
+  }
+  GameFx.orb(canvas, c, 9, lit ? _lLit : _lAccent, glow: lit ? 1.1 : 0.7);
+}
+
+/// A faint dark-matter filament waiting to be traced (as in-game).
+void _legendDarkThread(Canvas canvas, Offset a, Offset b) {
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = _lAccent.withValues(alpha: 0.5)
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5),
+  );
+}
+
+/// A dark void well the web bends around (same radial fill as the game).
+void _legendVoidWell(Canvas canvas, Offset c, double r) {
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        _lVoidTint.withValues(alpha: 0.85),
+        _lVoidTint.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: c, radius: r)),
+  );
+  canvas.drawCircle(
+    c,
+    r * 0.92,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _lAccent.withValues(alpha: 0.16),
+  );
+}
+
+/// (a) Core objects + verb: drag one cluster to another along a faint filament.
+void _legendTrace(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final a = Offset(size.width * 0.26, size.height * 0.55);
+  final b = Offset(size.width * 0.74, size.height * 0.45);
+  _legendDarkThread(canvas, a, b);
+  // Drag hint: a gold rubber-band growing from a toward b.
+  final tip = Offset.lerp(a, b, 0.6)!;
+  canvas.drawLine(
+    a,
+    tip,
+    Paint()
+      ..color = _lLit.withValues(alpha: 0.6)
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round,
+  );
+  _legendCluster(canvas, a);
+  _legendCluster(canvas, b);
+}
+
+/// (b) Score: a real filament ignites warm gold and banks points.
+void _legendIgnite(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final a = Offset(size.width * 0.26, size.height * 0.55);
+  final b = Offset(size.width * 0.74, size.height * 0.45);
+  GameFx.glowLine(canvas, a, b, _lLit, width: 3.2);
+  _legendCluster(canvas, a, lit: true);
+  _legendCluster(canvas, b, lit: true);
+  GameFx.text(canvas, '+10', Offset.lerp(a, b, 0.5)!.translate(0, -20), 15,
+      _lLit,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// (c) Danger: dragging across a void has no filament — the link fizzles.
+void _legendVoid(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final a = Offset(size.width * 0.24, size.height * 0.50);
+  final b = Offset(size.width * 0.76, size.height * 0.50);
+  final r = size.shortestSide * 0.20;
+  _legendVoidWell(canvas, Offset(size.width * 0.5, size.height * 0.50), r);
+  // White (invalid) rubber-band crossing the void — reads as a miss.
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.55)
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round,
+  );
+  _legendCluster(canvas, a);
+  _legendCluster(canvas, b);
+}
+
+/// (d) Escalation: light every thread to complete the web — then a denser one
+/// replaces it. A small MST-like web with some threads lit, some still dark.
+void _legendWeb(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  Offset p(double nx, double ny) => Offset(size.width * nx, size.height * ny);
+  final nodes = <Offset>[
+    p(0.22, 0.30),
+    p(0.50, 0.20),
+    p(0.78, 0.36),
+    p(0.34, 0.66),
+    p(0.66, 0.72),
+    p(0.50, 0.48),
+  ];
+  // Edges: (index pair, lit?). A partly-traced web.
+  const edges = <List<int>>[
+    [0, 5, 1],
+    [1, 5, 1],
+    [2, 5, 0],
+    [3, 5, 0],
+    [4, 5, 1],
+    [1, 2, 0],
+  ];
+  _legendVoidWell(canvas, p(0.80, 0.66), size.shortestSide * 0.11);
+  for (final e in edges) {
+    final a = nodes[e[0]], b = nodes[e[1]];
+    if (e[2] == 1) {
+      GameFx.glowLine(canvas, a, b, _lLit, width: 2.6);
+    } else {
+      _legendDarkThread(canvas, a, b);
+    }
+  }
+  for (var i = 0; i < nodes.length; i++) {
+    // A node is "lit" only if all its edges are lit.
+    var allLit = true;
+    for (final e in edges) {
+      if ((e[0] == i || e[1] == i) && e[2] == 0) allLit = false;
+    }
+    _legendCluster(canvas, nodes[i], lit: allLit);
+  }
+}
+
+/// The visual manual for Cosmic Web — wired into the registry spec.
+final List<LegendFrame> cosmicWebLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag cluster to cluster along a faint filament',
+      paint: _legendTrace),
+  const LegendFrame(
+      caption: 'A real filament ignites gold and scores',
+      paint: _legendIgnite),
+  const LegendFrame(
+      caption: 'Cross a void (no filament) and the link fizzles',
+      paint: _legendVoid),
+  const LegendFrame(
+      caption: 'Light every thread — a denser web then replaces it',
+      paint: _legendWeb),
+];
 
 class _CosmicWebPainter extends CustomPainter {
   final _CosmicWebGameState state;

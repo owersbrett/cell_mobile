@@ -2,6 +2,13 @@
         "version": "0.2.0",
         "configurations": [
             {
+                "name": "attract_mode",
+                "type": "dart",
+                "request": "launch",
+                "program": "lib/main_dev.dart",
+                "deviceId": "37F2FB16-EF0A-4760-BAC3-60FBD35F740F"
+            },
+            {
                 "name": "mac",
                 "type": "dart",
                 "request": "launch",

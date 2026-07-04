@@ -181,12 +181,43 @@ class _SkinLayersV2GameState extends State<SkinLayersV2Game>
       ..addListener(_onTick)
       ..forward();
     _buildColumn();
+    // ATTRACT autopilot: this game can rebuild the skin itself. The host calls
+    // [_autoStep] ~every 250ms only while driving hands-free. Dormant in play.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free placement per host tick. Plays v2 *correctly*, never wrong:
+  /// it reads the currently docked layer, finds ITS correct depth band
+  /// (`_correct.indexOf(dock)`), aims the drag at that band's center and fires
+  /// the game's own [_resolveDrop] handler — so every placement is a healthy
+  /// depth match and the streak keeps climbing into the hot combo.
+  ///
+  /// On the tempo: placing the moment a tile docks is always optimal — scoring
+  /// is a binary correct/hot-combo, there is no "wait for the beat" bonus, and
+  /// the only role of the draining tempo bar is to punish delay by resetting the
+  /// streak. So the favorable beat is simply *now*: place immediately, beat the
+  /// drain, never miss. When the last band lands, [_resolveDrop] auto-completes
+  /// the column and seeds the next, deeper one instantly.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    final dock = _dock;
+    if (dock == null) return; // between columns; next tick has a fresh tile
+    if (_dragging) return; // never happens hands-free, but stay safe
+    if (_bandRects.isEmpty) return; // layout not measured yet
+    final correctBand = _correct.indexOf(dock);
+    if (correctBand < 0 || correctBand >= _bandRects.length) return;
+    if (_filled[correctBand] != null) return; // depths are unique; guard anyway
+    // Aim the drop at the correct band and let the real handler score it.
+    _dragPos = _bandRects[correctBand].center;
+    _resolveDrop(); // exactly one placement per tick; advances the column
   }
 
   // ── Column composition ─────────────────────────────────────────────────────
@@ -723,3 +754,261 @@ class _SkinV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _SkinV2Painter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each frame draws the LITERAL
+// components a player meets (the same depth-bands, docked tile, tempo bar,
+// teal seams and red break ring the live painter uses), so the intro shows
+// the real game, not a diagram. Cheap + static: rendered once in the intro.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// A representative surface→deep column: Corneum(0) → Spinosum(2) →
+// Reticular(8) → Hypodermis(11). Unique depths = one correct band each.
+const List<_LayerId> _kLegendColumn = [
+  _LayerId.corneum,
+  _LayerId.spinosum,
+  _LayerId.reticular,
+  _LayerId.hypodermis,
+];
+
+const Color _lgGood = _SkinLayersV2GameState._good;
+const Color _lgAccent = _SkinLayersV2GameState._accent;
+const Color _lgBreak = _SkinLayersV2GameState._break;
+
+/// Lay out [n] stacked depth-bands centred in [size] (mirrors `_computeLayout`).
+List<Rect> _lgColumnRects(Size size, int n) {
+  const gap = 6.0;
+  final top = size.height * 0.12;
+  final bottom = size.height * 0.62;
+  final avail = bottom - top;
+  final bandH = ((avail - gap * (n - 1)) / n).clamp(20.0, 60.0);
+  final totalH = bandH * n + gap * (n - 1);
+  final startY = top + (avail - totalH) / 2;
+  final bandW = (size.width * 0.62).clamp(120.0, 320.0);
+  final left = (size.width - bandW) / 2;
+  return [
+    for (var i = 0; i < n; i++)
+      Rect.fromLTWH(left, startY + i * (bandH + gap), bandW, bandH),
+  ];
+}
+
+/// The SURFACE↕DEEP guide rail beside the column (mirrors `_drawDepthGuide`).
+void _lgDepthGuide(Canvas canvas, List<Rect> rects) {
+  if (rects.isEmpty) return;
+  final x = rects.first.left - 14;
+  canvas.drawLine(
+      Offset(x, rects.first.top),
+      Offset(x, rects.last.bottom),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.12)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round);
+  GameFx.text(canvas, 'SURFACE', Offset(x + 2, rects.first.top - 10), 8,
+      Colors.white.withValues(alpha: 0.34), weight: FontWeight.w700);
+  GameFx.text(canvas, 'DEEP', Offset(x + 2, rects.last.bottom + 10), 8,
+      Colors.white.withValues(alpha: 0.34), weight: FontWeight.w700);
+}
+
+/// One depth-band: empty+numbered when [id] is null, else filled with the
+/// layer's real colour/emoji/name and a teal border (mirrors `_drawBands`).
+void _lgBand(Canvas canvas, Rect r, {_LayerId? id, int number = 0, bool alive = false}) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(10));
+  if (id == null) {
+    canvas.drawRRect(rr, Paint()..color = Colors.white.withValues(alpha: 0.04));
+    canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = Colors.white.withValues(alpha: 0.18));
+    if (number > 0) {
+      GameFx.text(canvas, '$number', Offset(r.left + 12, r.center.dy), 10,
+          Colors.white.withValues(alpha: 0.30), weight: FontWeight.w700);
+    }
+    return;
+  }
+  final l = _layer(id);
+  canvas.drawRRect(
+      rr, Paint()..color = l.color.withValues(alpha: alive ? 0.5 : 0.30));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = _lgGood.withValues(alpha: 0.85));
+  final showFull = r.width >= 130;
+  final iconSize = (r.height * 0.42).clamp(13.0, 20.0);
+  final labelSize = (r.height * 0.30).clamp(8.0, 12.0);
+  if (showFull) {
+    GameFx.text(canvas, l.emoji,
+        Offset(r.center.dx - r.width * 0.30, r.center.dy), iconSize, Colors.white);
+    GameFx.text(canvas, l.name, Offset(r.center.dx + r.width * 0.04, r.center.dy),
+        labelSize, Colors.white.withValues(alpha: 0.95), weight: FontWeight.w700);
+  } else {
+    GameFx.text(canvas, l.emoji,
+        Offset(r.center.dx, r.center.dy - r.height * 0.16), iconSize, Colors.white);
+    GameFx.text(canvas, l.abbrev,
+        Offset(r.center.dx, r.center.dy + r.height * 0.30), labelSize,
+        Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+  }
+}
+
+/// The docked / dragged incoming layer tile (mirrors `_drawTile`).
+void _lgTile(Canvas canvas, _LayerId id, Rect rect, {bool dragging = false}) {
+  final l = _layer(id);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+  if (dragging) {
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(rect.inflate(7), const Radius.circular(16)),
+        Paint()..color = l.color.withValues(alpha: 0.22));
+  }
+  canvas.drawRRect(
+      rr, Paint()..color = l.color.withValues(alpha: dragging ? 0.45 : 0.34));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = l.color.withValues(alpha: 0.8));
+  final iconSize = (rect.height * 0.40).clamp(14.0, 22.0);
+  final labelSize = (rect.height * 0.26).clamp(9.0, 13.0);
+  GameFx.text(canvas, l.emoji,
+      Offset(rect.center.dx - rect.width * 0.30, rect.center.dy), iconSize,
+      Colors.white);
+  GameFx.text(canvas, l.name,
+      Offset(rect.center.dx + rect.width * 0.04, rect.center.dy), labelSize,
+      Colors.white.withValues(alpha: 0.95), weight: FontWeight.w700);
+}
+
+// Frame 1 — the core verb: an empty numbered column + the docked layer with an
+// upward drag arrow aimed at its correct surface band.
+void _legendColumn(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final rects = _lgColumnRects(size, 4);
+  if (rects.isEmpty) return;
+  _lgDepthGuide(canvas, rects);
+  for (var i = 0; i < rects.length; i++) {
+    _lgBand(canvas, rects[i], number: i + 1);
+  }
+  final band0 = rects.first;
+  final dockW = (band0.width * 0.82).clamp(110.0, 280.0);
+  final dockH = (size.height * 0.12).clamp(34.0, 50.0);
+  final dockRect = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height * 0.86),
+      width: dockW,
+      height: dockH);
+  _lgTile(canvas, _LayerId.corneum, dockRect);
+  // Upward drag arrow: dock → correct (surface) band.
+  final tipY = band0.bottom + 6;
+  final tipX = band0.center.dx;
+  final p = Paint()
+    ..color = _layer(_LayerId.corneum).color.withValues(alpha: 0.75)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(Offset(tipX, dockRect.top - 6), Offset(tipX, tipY), p);
+  canvas.drawLine(Offset(tipX, tipY), Offset(tipX - 6, tipY + 9), p);
+  canvas.drawLine(Offset(tipX, tipY), Offset(tipX + 6, tipY + 9), p);
+}
+
+// Frame 2 — how to score: the column filled in correct depth order, teal seams
+// linking correct neighbours, and a +1 layer bank pop.
+void _legendMatch(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final rects = _lgColumnRects(size, 4);
+  if (rects.isEmpty) return;
+  _lgDepthGuide(canvas, rects);
+  for (var i = 0; i < rects.length; i++) {
+    _lgBand(canvas, rects[i], id: _kLegendColumn[i]);
+  }
+  final seam = Paint()
+    ..color = _lgGood.withValues(alpha: 0.9)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  for (var i = 0; i < rects.length - 1; i++) {
+    final y = (rects[i].bottom + rects[i + 1].top) / 2;
+    canvas.drawLine(
+        Offset(rects[i].left + 6, y), Offset(rects[i].right - 6, y), seam);
+  }
+  final b = rects[1];
+  GameFx.text(canvas, '+1',
+      Offset(b.center.dx + b.width * 0.36, b.top - b.height * 0.4), 16,
+      _layer(_kLegendColumn[1]).color, weight: FontWeight.w800);
+}
+
+// Frame 3 — the danger: an almost-empty red tempo bar and a red BREAK ring on a
+// band dropped out of order, with the incoming tile still waiting.
+void _legendTempo(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final rects = _lgColumnRects(size, 4);
+  if (rects.isEmpty) return;
+  _lgBand(canvas, rects[0], id: _kLegendColumn[0]);
+  _lgBand(canvas, rects[1], number: 2);
+  _lgBand(canvas, rects[2], number: 3);
+  _lgBand(canvas, rects[3], id: _kLegendColumn[3]);
+  // Red break ring — the wrong-depth drop.
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(rects[2].inflate(3), const Radius.circular(12)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = _lgBreak.withValues(alpha: 0.95));
+  // Draining tempo bar (near empty → red).
+  final barW = rects.first.width;
+  final barLeft = (size.width - barW) / 2;
+  final tempo = Rect.fromLTWH(barLeft, size.height * 0.74, barW, 8);
+  canvas.drawRRect(RRect.fromRectAndRadius(tempo, const Radius.circular(4)),
+      Paint()..color = Colors.white.withValues(alpha: 0.08));
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(tempo.left, tempo.top, tempo.width * 0.2, tempo.height),
+          const Radius.circular(4)),
+      Paint()..color = _lgBreak.withValues(alpha: 0.9));
+  final dockW = (barW * 0.82).clamp(110.0, 280.0);
+  final dockH = (size.height * 0.12).clamp(34.0, 50.0);
+  final dockRect = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height * 0.88),
+      width: dockW,
+      height: dockH);
+  _lgTile(canvas, _kLegendColumn[2], dockRect);
+}
+
+// Frame 4 — the escalation: a completed column pulsing alive with rising sweat
+// beads, the hot-streak combo lit, before a deeper column seeds.
+void _legendAlive(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final rects = _lgColumnRects(size, 4);
+  if (rects.isEmpty) return;
+  for (var i = 0; i < rects.length; i++) {
+    _lgBand(canvas, rects[i], id: _kLegendColumn[i], alive: true);
+  }
+  // Rising sweat beads (healthy teal) — the "skin alive" flourish.
+  for (var i = 0; i < 7; i++) {
+    final r = rects[i % rects.length];
+    final x = r.left + r.width * ((i * 0.17 + 0.12) % 1.0);
+    final y = r.center.dy - i * 6.0;
+    canvas.drawCircle(
+        Offset(x, y), 2.5, Paint()..color = _lgGood.withValues(alpha: 0.7));
+  }
+  GameFx.text(canvas, 'SKIN ALIVE +4',
+      Offset(size.width / 2, rects.first.top - 14), 12, _lgGood,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '🔥 x5', Offset(size.width / 2, size.height * 0.82), 14,
+      _lgAccent, weight: FontWeight.w800);
+}
+
+/// The visual manual for Skin Layers v2 — wired into the registry spec.
+final List<LegendFrame> skinLayersV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Drag the incoming layer up to its correct depth',
+      paint: _legendColumn),
+  const LegendFrame(
+      caption: 'Right depth banks a layer — teal seams link them',
+      paint: _legendMatch),
+  const LegendFrame(
+      caption: 'Beat the draining tempo — wrong band breaks red',
+      paint: _legendTempo),
+  const LegendFrame(
+      caption: 'Fill every band: skin comes alive, then dives deeper',
+      paint: _legendAlive),
+];

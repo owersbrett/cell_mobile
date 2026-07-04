@@ -197,16 +197,43 @@ class _GalaxyClassifyGameState extends State<GalaxyClassifyGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer classifications to a human pace — this quiz banks a correct answer
+    // per tap, so at the host's ~250ms cadence it would read galaxies
+    // superhumanly. One call every 1.1s reads like a sharp human.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _frame.dispose();
     for (final g in _galaxies) {
       g.tag?.dispose();
     }
     super.dispose();
+  }
+
+  // ==========================================================================
+  // ATTRACT autopilot
+  // ==========================================================================
+
+  /// One hands-free move per host tick. Plays Galaxy Classifier *correctly*, not
+  /// randomly: whenever a galaxy is FRAMED (the front-most unresolved one, held
+  /// in [_focused]) it taps that galaxy's true [_GalaxyData.type] through the
+  /// game's own [_onTypeTap] — always right, no guessing, so the speed/streak
+  /// bonus lands. Resolved galaxies reveal and slide off on their own via
+  /// [_simulate], so there is no manual advance to trigger. When nothing is
+  /// framed it does nothing. The host owns the clock and score HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    final g = _focused;
+    if (g == null || g.resolved != _kUnresolved) return;
+    _onTypeTap(g.type);
   }
 
   // ==========================================================================
@@ -979,3 +1006,282 @@ class _GlyphPainter extends CustomPainter {
   @override
   bool shouldRepaint(_GlyphPainter old) => old.type != type;
 }
+
+// ============================================================================
+// Visual manual — the legend carousel cards, drawn with the SAME procedural
+// galaxy shapes the live game reads (spiral / barred / elliptical / irregular),
+// in the game's own palette. Static + cheap: rendered once in the intro.
+// ============================================================================
+
+// -- Deterministic star generators (mirror the in-game _generate* methods) ---
+
+List<_Star> _legSpiralStars(math.Random rng,
+    {required double windings, required bool barred}) {
+  final stars = <_Star>[];
+  Color bulge() => Color.lerp(
+      const Color(0xFFFFE9A8), const Color(0xFFFFC25A), rng.nextDouble())!;
+  Color arm() => Color.lerp(_kSpiralBlue, Colors.white, rng.nextDouble())!
+      .withValues(alpha: 0.92);
+  final double startR;
+  if (barred) {
+    const barLen = 0.46;
+    startR = barLen;
+    for (var i = 0; i < 13; i++) {
+      final t = (i / 12) * 2 - 1;
+      stars.add(_Star(Offset(t * barLen, (rng.nextDouble() - 0.5) * 0.10),
+          1.7 + rng.nextDouble() * 1.3, bulge()));
+    }
+  } else {
+    startR = 0.16;
+    for (var i = 0; i < 14; i++) {
+      final a = rng.nextDouble() * math.pi * 2;
+      final rad = rng.nextDouble() * 0.18;
+      stars.add(_Star(Offset(math.cos(a) * rad, math.sin(a) * rad * 0.9),
+          1.7 + rng.nextDouble() * 1.5, bulge()));
+    }
+  }
+  for (final armOffset in [0.0, math.pi]) {
+    const n = 18;
+    for (var i = 0; i < n; i++) {
+      final t = i / (n - 1);
+      final rad = startR + t * (1.0 - startR);
+      final theta = armOffset + t * windings * math.pi * 2;
+      final jx = (rng.nextDouble() - 0.5) * 0.06;
+      final jy = (rng.nextDouble() - 0.5) * 0.06;
+      stars.add(_Star(
+          Offset(math.cos(theta) * rad + jx, math.sin(theta) * rad + jy),
+          1.2 + rng.nextDouble() * 1.4,
+          arm()));
+    }
+  }
+  return stars;
+}
+
+List<_Star> _legEllipticalStars(math.Random rng) {
+  final stars = <_Star>[];
+  final ellip = 0.5 + rng.nextDouble() * 0.32;
+  final pa = rng.nextDouble() * math.pi;
+  final cosP = math.cos(pa), sinP = math.sin(pa);
+  for (var i = 0; i < 46; i++) {
+    final rad = rng.nextDouble() * rng.nextDouble() * 0.98;
+    final a = rng.nextDouble() * math.pi * 2;
+    final x = math.cos(a) * rad;
+    final y = math.sin(a) * rad * ellip;
+    final rx = x * cosP - y * sinP;
+    final ry = x * sinP + y * cosP;
+    final warm = Color.lerp(const Color(0xFFFFF1D6), const Color(0xFFFFC98A),
+        rng.nextDouble())!;
+    stars.add(_Star(Offset(rx, ry), 1.0 + (1.0 - rad) * 1.9,
+        warm.withValues(alpha: 0.55 + (1.0 - rad) * 0.45)));
+  }
+  return stars;
+}
+
+List<_Star> _legIrregularStars(math.Random rng) {
+  final stars = <_Star>[];
+  final blobs = 2 + rng.nextInt(3);
+  for (var b = 0; b < blobs; b++) {
+    final cx = (rng.nextDouble() - 0.5) * 0.95;
+    final cy = (rng.nextDouble() - 0.5) * 0.85;
+    final spread = 0.18 + rng.nextDouble() * 0.22;
+    final cnt = 7 + rng.nextInt(8);
+    for (var j = 0; j < cnt; j++) {
+      final dx = (rng.nextDouble() - 0.5) * spread * 2;
+      final dy = (rng.nextDouble() - 0.5) * spread * 2;
+      final knot = rng.nextDouble() < 0.18;
+      final base = rng.nextDouble() < 0.25
+          ? _kIrregMagenta
+          : Color.lerp(_kSpiralBlue, Colors.white, rng.nextDouble())!;
+      stars.add(_Star(Offset(cx + dx, cy + dy),
+          (knot ? 2.6 : 1.0) + rng.nextDouble() * 1.3,
+          base.withValues(alpha: knot ? 1.0 : 0.8)));
+    }
+  }
+  return stars;
+}
+
+List<_Star> _legStarsFor(GalaxyType type, math.Random rng) {
+  switch (type) {
+    case GalaxyType.spiral:
+      return _legSpiralStars(rng, windings: 0.75, barred: false);
+    case GalaxyType.barredSpiral:
+      return _legSpiralStars(rng, windings: 0.7, barred: true);
+    case GalaxyType.elliptical:
+      return _legEllipticalStars(rng);
+    case GalaxyType.irregular:
+      return _legIrregularStars(rng);
+  }
+}
+
+// -- Draw helpers (mirror _FieldPainter._drawGalaxy / _drawReticle) ----------
+
+void _legDrawGalaxy(
+  Canvas canvas,
+  Offset c,
+  double radius,
+  List<_Star> stars,
+  Color glow, {
+  double spin = 0,
+  double dim = 1.0,
+  bool elliptical = false,
+}) {
+  final glowR = elliptical ? radius * 1.45 : radius * 1.2;
+  canvas.drawCircle(
+    c,
+    glowR,
+    Paint()
+      ..color = glow.withValues(alpha: 0.07 * dim)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
+  );
+  final scale = radius / 38.0;
+  final cosA = math.cos(spin), sinA = math.sin(spin);
+  final p = Paint();
+  for (final s in stars) {
+    final px = s.p.dx * cosA - s.p.dy * sinA;
+    final py = s.p.dx * sinA + s.p.dy * cosA;
+    p.color = s.c.withValues(alpha: s.c.a * dim);
+    canvas.drawCircle(
+        Offset(c.dx + px * radius, c.dy + py * radius), s.s * scale, p);
+  }
+}
+
+void _legReticle(Canvas canvas, Offset c, double radius) {
+  final r = radius * 1.5;
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kAccent.withValues(alpha: 0.75),
+  );
+  final tick = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.0
+    ..strokeCap = StrokeCap.round
+    ..color = _kAccent;
+  const len = 7.0;
+  for (final a in [
+    math.pi / 4,
+    3 * math.pi / 4,
+    5 * math.pi / 4,
+    7 * math.pi / 4,
+  ]) {
+    final cc = Offset(c.dx + math.cos(a) * r, c.dy + math.sin(a) * r);
+    final dir = Offset(math.cos(a), math.sin(a));
+    canvas.drawLine(cc - dir * len, cc + dir * len, tick);
+  }
+}
+
+void _legText(Canvas canvas, String s, Offset center, double fontSize,
+    Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.w800,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
+}
+
+// -- The four legend cards ---------------------------------------------------
+
+void _legendTypes(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final radius = math.min(size.width * 0.11, size.height * 0.26);
+  final cy = size.height * 0.42;
+  const xs = [0.16, 0.38, 0.62, 0.84];
+  const short = ['Spiral', 'Barred', 'Elliptical', 'Irregular'];
+  for (var i = 0; i < 4; i++) {
+    final type = _kTypeOrder[i];
+    final c = Offset(xs[i] * size.width, cy);
+    _legDrawGalaxy(canvas, c, radius, _legStarsFor(type, math.Random(i * 17 + 3)),
+        type.color,
+        spin: i * 0.7, elliptical: type == GalaxyType.elliptical);
+    _legText(canvas, short[i], Offset(c.dx, cy + radius + 16), 10, type.color);
+  }
+}
+
+void _legendFrameCall(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final radius = math.min(size.width * 0.20, size.height * 0.30);
+  final c = Offset(size.width * 0.5, size.height * 0.48);
+  _legDrawGalaxy(canvas, c, radius,
+      _legStarsFor(GalaxyType.spiral, math.Random(7)), _kSpiralBlue,
+      spin: 0.4);
+  _legReticle(canvas, c, radius);
+  _legText(canvas, '+120', Offset(c.dx, c.dy - radius * 1.5 - 16), 15, _kGold);
+}
+
+void _legendMiss(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final radius = math.min(size.width * 0.16, size.height * 0.26);
+  final c = Offset(size.width * 0.34, size.height * 0.5);
+  _legDrawGalaxy(canvas, c, radius,
+      _legStarsFor(GalaxyType.elliptical, math.Random(11)), _kEllipAmber,
+      dim: 0.5, elliptical: true);
+  // A left-pointing arrow: the galaxy is sliding off the exit edge.
+  final ap = Paint()
+    ..color = _kBadRed
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final ax = size.width * 0.1, ay = c.dy;
+  canvas.drawLine(Offset(ax + 22, ay - 11), Offset(ax, ay), ap);
+  canvas.drawLine(Offset(ax + 22, ay + 11), Offset(ax, ay), ap);
+  // The true type is revealed in red on a miss.
+  _legText(canvas, 'Elliptical', Offset(c.dx, c.dy - radius - 14), 13, _kBadRed);
+}
+
+void _legendBar(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final radius = math.min(size.width * 0.15, size.height * 0.25);
+  final cy = size.height * 0.44;
+  final left = Offset(size.width * 0.3, cy);
+  final right = Offset(size.width * 0.7, cy);
+  _legDrawGalaxy(canvas, left,
+      radius, _legSpiralStars(math.Random(3), windings: 1.1, barred: false),
+      _kSpiralBlue,
+      spin: 0.5);
+  _legDrawGalaxy(canvas, right,
+      radius, _legSpiralStars(math.Random(5), windings: 1.0, barred: true),
+      _kBarredTeal,
+      spin: -0.3);
+  // Ring the bar that separates barred from plain spirals.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromCenter(
+          center: right, width: radius * 1.15, height: radius * 0.44),
+      const Radius.circular(6),
+    ),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _kBarredTeal.withValues(alpha: 0.9),
+  );
+  _legText(canvas, 'Spiral', Offset(left.dx, cy + radius + 16), 10, _kSpiralBlue);
+  _legText(
+      canvas, 'Barred', Offset(right.dx, cy + radius + 16), 10, _kBarredTeal);
+}
+
+/// The visual manual for Galaxy Classifier — wired into the registry spec.
+final List<LegendFrame> galaxyClassifyLegendFrames = [
+  const LegendFrame(
+      caption: 'Read each shape: Spiral, Barred, Elliptical, Irregular',
+      paint: _legendTypes),
+  const LegendFrame(
+      caption: 'Frame the front galaxy and name it fast for max points',
+      paint: _legendFrameCall),
+  const LegendFrame(
+      caption: 'Let one slide off the left edge and your streak resets',
+      paint: _legendMiss),
+  const LegendFrame(
+      caption: 'Late game: spot the BAR — barred vs plain spiral',
+      paint: _legendBar),
+];

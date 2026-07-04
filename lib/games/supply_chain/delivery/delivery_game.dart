@@ -80,12 +80,66 @@ class _DeliveryGameState extends State<DeliveryGame>
       ..addListener(_onTick)
       ..forward();
     _newPuzzle(3);
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep]. Default interval (act every tick): Delivery is a route
+    // builder, so one nearest-neighbour link per tick reads as brisk, competent
+    // routing rather than machine-gun answers — no buffer needed.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent move per host tick (~250ms). Plays Delivery the way the
+  /// scoring rewards — a nearest-neighbour Hamiltonian path — using the game's
+  /// OWN link handler ([_connect]), never synthetic drags or coordinate math.
+  ///
+  /// Strategy: keep the drawn route a single growing chain. Each tick, take an
+  /// endpoint of the chain (a stop of [_degree] 1; any stop when the board is
+  /// empty) and connect it to the nearest not-yet-visited stop ([_degree] 0)
+  /// that [_canConnect] accepts. Growing one end into fresh stops means we lay
+  /// exactly n-1 legal segments and the route resolves itself — [_connect]
+  /// fires [_onSolved], which banks the score and advances to the next, larger
+  /// puzzle after its own delay. While that hand-off is in flight ([_awaitingNext]
+  /// / already [_solved]) there is nothing to do.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_awaitingNext || _solved || _nodes.isEmpty) return;
+
+    // Pick the head to extend: an existing chain endpoint, or any stop to start.
+    int? head;
+    if (_edges.isEmpty) {
+      head = 0;
+    } else {
+      for (var i = 0; i < _nodes.length; i++) {
+        if (_degree[i] == 1) {
+          head = i;
+          break;
+        }
+      }
+    }
+    if (head == null) return;
+
+    // Nearest fresh (unvisited) stop we may legally link to.
+    int? best;
+    var bestD = double.infinity;
+    for (var i = 0; i < _nodes.length; i++) {
+      if (i == head || _degree[i] != 0) continue;
+      if (!_canConnect(head, i)) continue;
+      final d = (_nodes[head] - _nodes[i]).distance;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    if (best == null) return;
+    _connect(head, best); // one link per tick; resolves the route on the last
   }
 
   void _onTick() {
@@ -242,7 +296,7 @@ class _DeliveryGameState extends State<DeliveryGame>
     final eff = (playerLen <= 0) ? 1.0 : (_optLen / playerLen).clamp(0.0, 1.0);
     final solveTime = _clock - _puzzleStart;
 
-    final base = 30;
+    const base = 30;
     final effPts = (70 * eff).round();
     final par = _nodes.length * 1.3;
     final speedPts = ((par - solveTime) * 6).clamp(0.0, 50.0).round();
@@ -709,3 +763,225 @@ class _DeliveryPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _DeliveryPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME primitives the
+// live painter uses (stops, glowing route lines, the rubber-band drag with its
+// km read-out) so the intro shows the literal board the player will meet.
+// Static + cheap: painted once in the intro carousel, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kLegendAccent = _DeliveryGameState._accent;
+const Color _kLegendGood = _DeliveryGameState._good;
+
+/// One route segment, glow + core — mirrors the live painter's edge draw.
+void _legendRouteLine(Canvas canvas, Offset a, Offset b, Color color,
+    {double coreWidth = 4}) {
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = color.withValues(alpha: 0.30)
+      ..strokeWidth = coreWidth + 6
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = color
+      ..strokeWidth = coreWidth
+      ..strokeCap = StrokeCap.round,
+  );
+}
+
+/// One delivery stop — mirrors the live painter's node draw: halo when
+/// unvisited, ring in the route colour once wired, filled core at degree 2.
+void _legendStop(
+  Canvas canvas,
+  Offset p, {
+  int degree = 0,
+  Color routeColor = _kLegendAccent,
+  double r = 12,
+}) {
+  final wired = degree > 0;
+  if (!wired) {
+    canvas.drawCircle(
+        p, r + 5, Paint()..color = _kLegendAccent.withValues(alpha: 0.18));
+  }
+  canvas.drawCircle(p, r, Paint()..color = const Color(0xFF1E1E1E));
+  canvas.drawCircle(
+    p,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = wired ? 3 : 2
+      ..color = wired ? routeColor : Colors.white.withValues(alpha: 0.5),
+  );
+  if (degree >= 2) {
+    canvas.drawCircle(p, r * 0.5, Paint()..color = routeColor);
+  } else if (degree == 1) {
+    canvas.drawCircle(
+        p, r * 0.42, Paint()..color = _kLegendAccent.withValues(alpha: 0.6));
+  } else {
+    canvas.drawCircle(
+        p, r * 0.25, Paint()..color = Colors.white.withValues(alpha: 0.35));
+  }
+}
+
+/// Card 1 — the verb: dragging from a stop, rubber-band line + live km
+/// read-out, toward a haloed unvisited stop.
+void _legendDrag(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final a = Offset(w * 0.20, h * 0.66);
+  final tip = Offset(w * 0.56, h * 0.36);
+  final target = Offset(w * 0.80, h * 0.28);
+
+  // Rubber-band guide line, exactly as during a live drag.
+  canvas.drawLine(
+    a,
+    tip,
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.55)
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round,
+  );
+  // Live segment-distance read-out at the midpoint.
+  GameFx.text(
+    canvas,
+    '212 km',
+    Offset.lerp(a, tip, 0.5)!.translate(0, -12),
+    11,
+    Colors.white.withValues(alpha: 0.7),
+  );
+  _legendStop(canvas, a, degree: 1);
+  _legendStop(canvas, target, degree: 0);
+  _legendStop(canvas, Offset(w * 0.44, h * 0.84), degree: 0, r: 10);
+  // Finger at the drag tip.
+  canvas.drawCircle(
+      tip, 9, Paint()..color = Colors.white.withValues(alpha: 0.25));
+  canvas.drawCircle(
+      tip, 4, Paint()..color = Colors.white.withValues(alpha: 0.85));
+}
+
+/// Card 2 — the goal shape: every stop sitting on ONE connected path.
+void _legendChain(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final pts = [
+    Offset(w * 0.14, h * 0.70),
+    Offset(w * 0.38, h * 0.30),
+    Offset(w * 0.62, h * 0.58),
+    Offset(w * 0.86, h * 0.26),
+  ];
+  for (var i = 0; i < pts.length - 1; i++) {
+    _legendRouteLine(canvas, pts[i], pts[i + 1], _kLegendAccent);
+  }
+  for (var i = 0; i < pts.length; i++) {
+    final endpoint = i == 0 || i == pts.length - 1;
+    _legendStop(canvas, pts[i], degree: endpoint ? 1 : 2);
+  }
+  GameFx.text(
+    canvas,
+    '3 / 3 stops linked',
+    Offset(w * 0.5, h * 0.90),
+    11,
+    Colors.white.withValues(alpha: 0.6),
+  );
+}
+
+/// Card 3 — scoring: the SAME four stops routed two ways. A wasteful
+/// criss-cross stays orange; the shortest route turns teal and pays more.
+void _legendEfficiency(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+
+  List<Offset> board(double x0) => [
+        Offset(x0 + w * 0.02, h * 0.62),
+        Offset(x0 + w * 0.13, h * 0.24),
+        Offset(x0 + w * 0.26, h * 0.55),
+        Offset(x0 + w * 0.38, h * 0.22),
+      ];
+
+  void route(List<Offset> pts, List<int> order, Color color, String label) {
+    for (var i = 0; i < order.length - 1; i++) {
+      _legendRouteLine(canvas, pts[order[i]], pts[order[i + 1]], color,
+          coreWidth: 3);
+    }
+    for (var i = 0; i < pts.length; i++) {
+      final endpoint = i == order.first || i == order.last;
+      _legendStop(canvas, pts[i], degree: endpoint ? 1 : 2, routeColor: color, r: 8);
+    }
+    final cx = (pts.first.dx + pts.last.dx) / 2 + w * 0.06;
+    GameFx.text(canvas, label, Offset(cx, h * 0.86), 11, color,
+        weight: FontWeight.w800);
+  }
+
+  // Left: same stops linked in a back-tracking order — longer, orange.
+  route(board(w * 0.05), [0, 3, 1, 2], _kLegendAccent, '74% of best');
+  // Right: linked in the short order — teal, full marks.
+  route(board(w * 0.55), [0, 1, 2, 3], _kLegendGood, '100% SHORTEST');
+}
+
+/// Card 4 — escalation: bank a solved route (teal, +points) and the next
+/// board arrives with one more stop to weave in.
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+
+  // Left: a solved 3-stop route, recoloured teal, points banked.
+  final left = [
+    Offset(w * 0.08, h * 0.62),
+    Offset(w * 0.20, h * 0.32),
+    Offset(w * 0.32, h * 0.60),
+  ];
+  for (var i = 0; i < left.length - 1; i++) {
+    _legendRouteLine(canvas, left[i], left[i + 1], _kLegendGood, coreWidth: 3);
+  }
+  for (var i = 0; i < left.length; i++) {
+    final endpoint = i == 0 || i == left.length - 1;
+    _legendStop(canvas, left[i],
+        degree: endpoint ? 1 : 2, routeColor: _kLegendGood, r: 8);
+  }
+  GameFx.text(canvas, '+124', Offset(w * 0.20, h * 0.16), 13, _kLegendGood,
+      weight: FontWeight.w800);
+
+  // Chevron: on to the next, bigger board.
+  final arrow = Paint()
+    ..color = Colors.white.withValues(alpha: 0.6)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final ac = Offset(w * 0.46, h * 0.46);
+  canvas.drawLine(ac.translate(-6, -8), ac.translate(4, 0), arrow);
+  canvas.drawLine(ac.translate(4, 0), ac.translate(-6, 8), arrow);
+
+  // Right: the next puzzle — more stops, all waiting (haloed).
+  final next = [
+    Offset(w * 0.60, h * 0.26),
+    Offset(w * 0.82, h * 0.20),
+    Offset(w * 0.92, h * 0.48),
+    Offset(w * 0.66, h * 0.56),
+    Offset(w * 0.78, h * 0.78),
+    Offset(w * 0.58, h * 0.86),
+  ];
+  for (final p in next) {
+    _legendStop(canvas, p, degree: 0, r: 7);
+  }
+}
+
+/// The visual manual for Delivery — wired into the registry spec.
+final List<LegendFrame> deliveryLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag stop → stop to draw a route line', paint: _legendDrag),
+  const LegendFrame(
+      caption: 'Link EVERY stop into one path — no loops', paint: _legendChain),
+  const LegendFrame(
+      caption: 'Shorter route = more points — match the best',
+      paint: _legendEfficiency),
+  const LegendFrame(
+      caption: 'Bank the route — the next one adds a stop',
+      paint: _legendEscalate),
+];

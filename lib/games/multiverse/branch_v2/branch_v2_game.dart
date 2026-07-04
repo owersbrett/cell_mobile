@@ -141,6 +141,172 @@ class _Seg {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME primitives the
+// live painter uses (amplitude-sized orbs, branch legs, selection halos,
+// resonance rings, commit-zone tints) so the intro shows the LITERAL fork the
+// player meets, not an abstract diagram. Cheap + static: no ticker, no state.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A commit-zone tint (faint top/bottom half; the committed side is brighter).
+void _lgZone(Canvas canvas, Rect r, bool selected) {
+  canvas.drawRect(
+    r,
+    Paint()..color = _bAccent.withValues(alpha: selected ? 0.075 : 0.015),
+  );
+}
+
+/// One branch leg parent→child, brightness/width by amplitude (matches
+/// `_liveLeg`); a [color] override tints a resonance dive gold.
+void _lgLeg(Canvas canvas, Offset a, Offset b,
+    {bool selected = false, double amp = 0.5, Color? color}) {
+  if (!a.dx.isFinite || !b.dx.isFinite) return;
+  final base = color ?? (amp >= 0.5 ? _bAccent : _bGhost);
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = base.withValues(alpha: selected ? 0.95 : (0.34 + amp * 0.3))
+      ..strokeWidth = selected ? 4.5 : (1.8 + amp * 2.4)
+      ..strokeCap = StrokeCap.round,
+  );
+}
+
+/// A child world node — radius/brightness encode the Born weight (matches the
+/// live painter), with an optional selection halo and gold resonance ring.
+void _lgNode(Canvas canvas, Offset o, double amp,
+    {bool selected = false,
+    bool resonance = false,
+    int bonus = 0,
+    bool showPct = true}) {
+  if (!o.dx.isFinite || !o.dy.isFinite) return;
+  final heavy = amp >= 0.5;
+  final base = heavy ? _bAccent : _bGhost;
+  final rad = 6.0 + amp * 9.0;
+  if (selected) {
+    canvas.drawCircle(
+      o,
+      rad + 7,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..color = _bAccent.withValues(alpha: 0.9),
+    );
+  }
+  GameFx.orb(canvas, o, rad, base, glow: selected ? 1.1 : (0.3 + amp * 0.5));
+  if (resonance) {
+    canvas.drawCircle(
+      o,
+      rad + 6,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..color = _bResonance.withValues(alpha: 0.75),
+    );
+    GameFx.text(canvas, '⟲$bonus', o.translate(0, rad + 17), 12, _bResonance,
+        weight: FontWeight.w800, glow: 0.5);
+  }
+  if (showPct) {
+    GameFx.text(canvas, '${(amp * 100).round()}%', o.translate(0, -(rad + 12)),
+        heavy ? 13 : 11, base,
+        weight: heavy ? FontWeight.w800 : FontWeight.w600);
+  }
+}
+
+/// Frame 1 — the live fork: tap a half to ride one of two splitting worlds.
+void _legendFork(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height, mid = h * 0.5;
+  _lgZone(canvas, Rect.fromLTRB(0, h * 0.10, w, mid), true);
+  _lgZone(canvas, Rect.fromLTRB(0, mid, w, h * 0.90), false);
+  final parent = Offset(w * 0.24, mid);
+  final up = Offset(w * 0.74, h * 0.28);
+  final down = Offset(w * 0.74, h * 0.72);
+  _lgLeg(canvas, parent, up, selected: true, amp: 0.7);
+  _lgLeg(canvas, parent, down, amp: 0.3);
+  _lgNode(canvas, up, 0.7, selected: true);
+  _lgNode(canvas, down, 0.3);
+  GameFx.orb(canvas, parent, 9, _bAccent, glow: 1.2);
+  GameFx.text(canvas, 'YOU', parent.translate(0, -22), 10,
+      Colors.white.withValues(alpha: 0.7));
+}
+
+/// Frame 2 — ride the heavier world: bank amplitude, grow the coherence multiplier.
+void _legendCoherence(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+  const xs = [0.16, 0.40, 0.64, 0.86];
+  const ys = [0.72, 0.60, 0.44, 0.26];
+  for (int i = 1; i < 4; i++) {
+    _lgLeg(canvas, Offset(w * xs[i - 1], h * ys[i - 1]),
+        Offset(w * xs[i], h * ys[i]),
+        selected: true, amp: 0.75);
+  }
+  for (int i = 0; i < 4; i++) {
+    _lgNode(canvas, Offset(w * xs[i], h * ys[i]), (0.6 + i * 0.06).clamp(0.0, 0.9),
+        selected: i == 3, showPct: false);
+  }
+  GameFx.text(canvas, '×${(1 + 3 * _bMultStep).toStringAsFixed(2)} COHERENCE',
+      Offset(w * 0.5, h * 0.90), 13, _bAccent,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+/// Frame 3 — dive across the grain to a gold resonance node for a flat bonus
+/// (the trade: your coherence resets).
+void _legendResonance(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height, mid = h * 0.5;
+  final parent = Offset(w * 0.22, mid);
+  final up = Offset(w * 0.72, h * 0.30);
+  final down = Offset(w * 0.72, h * 0.70);
+  _lgLeg(canvas, parent, up, amp: 0.68);
+  _lgLeg(canvas, parent, down, selected: true, amp: 0.32, color: _bResonance);
+  _lgNode(canvas, up, 0.68);
+  _lgNode(canvas, down, 0.32, resonance: true, bonus: 120, showPct: false);
+  GameFx.orb(canvas, parent, 8, _bAccent, glow: 1.0);
+}
+
+/// Frame 4 — the danger: go passive and your measure DECOHERES, smeared across
+/// both near-equal worlds (the climax collapses the gap to ~50/50).
+void _legendDecohere(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height, mid = h * 0.5;
+  final parent = Offset(w * 0.22, mid);
+  final up = Offset(w * 0.72, h * 0.36);
+  final down = Offset(w * 0.72, h * 0.64);
+  _lgLeg(canvas, parent, up, amp: 0.5, color: _bGhost);
+  _lgLeg(canvas, parent, down, amp: 0.5, color: _bGhost);
+  // Smear haze — measure spread across both worlds instead of committed.
+  canvas.drawCircle(
+    Offset(w * 0.72, mid),
+    26,
+    Paint()
+      ..color = _bGhost.withValues(alpha: 0.18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+  _lgNode(canvas, up, 0.52);
+  _lgNode(canvas, down, 0.48);
+  GameFx.orb(canvas, parent, 8, _bGhost, glow: 0.6);
+  GameFx.text(canvas, 'DECOHERE', Offset(w * 0.5, h * 0.90), 13, _bGhost,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Branch v2 — wired into the registry spec.
+final List<LegendFrame> branchV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap top or bottom to steer one splitting world',
+      paint: _legendFork),
+  const LegendFrame(
+      caption: 'Ride the heavier world to grow your coherence',
+      paint: _legendCoherence),
+  const LegendFrame(
+      caption: 'Dive to a gold resonance node — coherence resets',
+      paint: _legendResonance),
+  const LegendFrame(
+      caption: 'Never idle: an uncommitted world DECOHERES',
+      paint: _legendDecohere),
+];
+
 // ---------------------------------------------------------------------------
 // Widget
 // ---------------------------------------------------------------------------
@@ -198,12 +364,62 @@ class _BranchV2GameState extends State<BranchV2Game>
     _forkA = _genFork(_curGen + 1, _curY);
     _forkUp = _genFork(_curGen + 2, _forkA.up.y);
     _forkDown = _genFork(_curGen + 2, _forkA.down.y);
+    // ATTRACT mode: play ourselves. Each step COMMITS one side of the live fork
+    // via the same handler a tap uses, banking a scored choice when it resolves.
+    // Human-paced so the commit is watchable (one bank per fork, not 4×/s).
+    widget.session.autoPilot = _autoStep;
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── autopilot ─────────────────────────────────────────────────────────────
+  //
+  // The game's own rule: RIDE the heavier child to bank more base amplitude AND
+  // grow the coherence multiplier; DIVE to a lighter child only when its
+  // RESONANCE bonus outweighs the coherence you'd break. We reproduce
+  // `_resolveFork`'s scoring exactly, then add the forward value of KEEPING the
+  // streak (each coherent pick is +_bMultStep to the multiplier applied to every
+  // future bank) so the bot defaults to coherence and dives only when the gold
+  // node genuinely pays for it. Deterministic — no randomness, no synthetic tap.
+
+  /// Points `_resolveFork` would bank for committing [chosen] over [other],
+  /// PLUS a coherence-preservation term (value of the streak we keep/lose).
+  double _valueOf(_Node chosen, _Node other) {
+    final heavy = chosen.amp >= other.amp;
+    final mult = _mult;
+    var v = chosen.amp * _bAmpPoints * mult;
+    // Forward value of one multiplier step, applied to a typical future bank.
+    const coherenceStepValue = _bMultStep * _bAmpPoints * 0.6;
+    if (heavy) {
+      v += 10 + (_streak + 1) * 2; // coherence stipend
+      if (chosen.resonance) v += chosen.resonanceBonus;
+      v += coherenceStepValue; // keeping (growing) coherence is worth this
+    } else {
+      if (chosen.resonance) v += chosen.resonanceBonus;
+      // Diving decoheres the run — forfeit the multiplier we'd built.
+      v -= _streak * coherenceStepValue;
+    }
+    return v;
+  }
+
+  void _autoStep() {
+    final session = widget.session;
+    if (!session.isRunning || _size == Size.zero) return;
+    if (_committed) return; // already committed this fork; wait for it to resolve
+    final vUp = _valueOf(_forkA.up, _forkA.down);
+    final vDown = _valueOf(_forkA.down, _forkA.up);
+    final pick = vUp >= vDown ? _Sel.up : _Sel.down;
+    setState(() {
+      _sel = pick;
+      _committed = true;
+      _commitPulse = 1.0;
+    });
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;

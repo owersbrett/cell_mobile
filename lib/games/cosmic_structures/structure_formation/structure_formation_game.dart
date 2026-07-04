@@ -204,6 +204,217 @@ class _StructurePainter extends CustomPainter {
   bool shouldRepaint(_StructurePainter oldDelegate) => true;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// VISUAL MANUAL — the legend carousel cards, drawn with the SAME density-field
+// primitives the live game uses (the cosmic-web colour ramp + hot collapsed
+// cores + filament links). Static, cheap, self-contained; rendered once in the
+// intro. Palette comes straight from the game's own constants + ramp — no new
+// hex introduced beyond the ramp the painter already draws.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _sfDanger = Color(0xFFFF6B6B); // the game's dark-energy warning hue
+const Color _sfNodeGlow = Color(0xFFFFE08A); // the game's WEB-NODE callout hue
+
+/// The cosmic-web colour ramp, mirrored from [_StructurePainter._cosmicColor]
+/// so the manual cells read identically to live play.
+Color _sfLegendColor(double rel) {
+  const stops = <Color>[
+    Color(0xFF1E3A8A), // deep blue — faint sheet
+    Color(0xFF6D45C9), // violet — filament
+    Color(0xFFC2410C), // deep orange — collapsing
+    Color(0xFFF59E0B), // amber — dense
+    Color(0xFFFFF1C9), // near white-hot — cluster core
+  ];
+  final double f = ((rel - _drawFloor) / (2.6 - _drawFloor)).clamp(0.0, 1.0);
+  final double scaled = f * (stops.length - 1);
+  final int idx = scaled.floor().clamp(0, stops.length - 2);
+  final double frac = (scaled - idx).clamp(0.0, 1.0);
+  return Color.lerp(stops[idx], stops[idx + 1], frac)!;
+}
+
+/// A single Gaussian over-density for the manual field: centre in normalized
+/// (0..1) field coords, peak amplitude, and spread.
+class _SfBump {
+  final double cx, cy, amp, sigma;
+  const _SfBump(this.cx, this.cy, this.amp, this.sigma);
+}
+
+/// Renders a density field from a set of over-density bumps, cell-for-cell in
+/// the game's own style (colour ramp + hot white core on collapsed cells).
+void _sfDrawField(Canvas canvas, Size size, List<_SfBump> bumps,
+    {int gc = 16, int gr = 24, double alpha = 1.0, bool cores = true}) {
+  final double cw = size.width / gc;
+  final double ch = size.height / gr;
+  final double ow = cw + 0.7, oh = ch + 0.7;
+  final Paint cell = Paint();
+  final Paint hot = Paint();
+  for (int r = 0; r < gr; r++) {
+    for (int c = 0; c < gc; c++) {
+      final double fx = (c + 0.5) / gc;
+      final double fy = (r + 0.5) / gr;
+      double rel = 0;
+      for (final b in bumps) {
+        final double dx = fx - b.cx, dy = fy - b.cy;
+        rel += b.amp * exp(-(dx * dx + dy * dy) / (2 * b.sigma * b.sigma));
+      }
+      if (rel < _drawFloor) continue;
+      final double x = c * cw, y = r * ch;
+      final double a = (0.22 + 0.78 * (rel / 1.5)).clamp(0.0, 1.0) * alpha;
+      cell.color = _sfLegendColor(rel).withValues(alpha: a);
+      canvas.drawRect(Rect.fromLTWH(x - 0.35, y - 0.35, ow, oh), cell);
+      if (cores && rel >= _collapseRatio * 0.62) {
+        final double inset = cw * 0.28;
+        hot.color = const Color(0xFFFFF6E0).withValues(alpha: 0.5 * alpha);
+        canvas.drawRect(
+          Rect.fromLTWH(x + inset, y + inset, cw - 2 * inset + 0.5,
+              ch - 2 * inset + 0.5),
+          hot,
+        );
+      }
+    }
+  }
+}
+
+/// The seed-budget dots (mirrors the in-game seed HUD) along the card bottom.
+void _sfSeedDots(Canvas canvas, Size size, {int filled = 5}) {
+  final double y = size.height * 0.90;
+  const int total = _seedMax;
+  const double gap = 13;
+  final double startX = size.width / 2 - (total - 1) * gap / 2;
+  for (int i = 0; i < total; i++) {
+    final Offset c = Offset(startX + i * gap, y);
+    if (i < filled) {
+      canvas.drawCircle(
+          c,
+          5,
+          Paint()
+            ..color = _sfAccent.withValues(alpha: 0.55)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3));
+      canvas.drawCircle(c, 4, Paint()..color = _sfAccent);
+    } else {
+      canvas.drawCircle(c, 4, Paint()..color = Colors.white24);
+    }
+  }
+}
+
+/// A short chevron-tipped arrow (matter inflow / tearing pull cue).
+void _sfArrow(Canvas canvas, Offset from, Offset to, Color color) {
+  final Paint p = Paint()
+    ..color = color
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(from, to, p);
+  final double ang = atan2(to.dy - from.dy, to.dx - from.dx);
+  const double head = 6;
+  canvas.drawLine(
+      to,
+      to - Offset(cos(ang - 0.5) * head, sin(ang - 0.5) * head), p);
+  canvas.drawLine(
+      to,
+      to - Offset(cos(ang + 0.5) * head, sin(ang + 0.5) * head), p);
+}
+
+/// Frame 1 — the verb: tap the smooth void to plant a tiny density ripple.
+void _legendSeed(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  GameFx.atmosphere(canvas, size, _sfAccent, 0, motes: 18);
+  // A single faint young over-density (a just-planted seed) in the centre.
+  _sfDrawField(canvas, size, const [_SfBump(0.5, 0.44, 0.95, 0.10)],
+      cores: false);
+  // Tap ring at the seed point.
+  final Offset seed = Offset(size.width * 0.5, size.height * 0.44);
+  canvas.drawCircle(
+      seed,
+      size.shortestSide * 0.20,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _sfAccent.withValues(alpha: 0.75));
+  _sfSeedDots(canvas, size, filled: 6);
+}
+
+/// Frame 2 — how to score: gravity collapses over-densities into white-hot
+/// cores (each newly collapsed cell = mass into structure).
+void _legendCollapse(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  GameFx.atmosphere(canvas, size, _sfAccent, 0, motes: 18);
+  final Offset c = Offset(size.width * 0.5, size.height * 0.46);
+  _sfDrawField(canvas, size, const [_SfBump(0.5, 0.46, 2.7, 0.13)]);
+  // Matter flowing inward toward the collapsing well.
+  final double r = size.shortestSide * 0.34;
+  for (int i = 0; i < 6; i++) {
+    final double a = i / 6 * 2 * pi;
+    final Offset outer = c + Offset(cos(a), sin(a)) * r;
+    final Offset inner = c + Offset(cos(a), sin(a)) * (r * 0.5);
+    _sfArrow(canvas, outer, inner, _sfAccent.withValues(alpha: 0.85));
+  }
+  GameFx.text(canvas, '+6', Offset(size.width * 0.5, size.height * 0.86), 15,
+      _sfNodeGlow,
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+/// Frame 3 — the payoff: link many collapsed clusters into a filamentary web;
+/// each new web node pays a bonus.
+void _legendWeb(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  GameFx.atmosphere(canvas, size, _sfAccent, 0, motes: 18);
+  const nodes = <_SfBump>[
+    _SfBump(0.28, 0.30, 2.6, 0.10),
+    _SfBump(0.70, 0.34, 2.6, 0.10),
+    _SfBump(0.50, 0.58, 2.6, 0.11),
+    _SfBump(0.30, 0.74, 2.5, 0.09),
+  ];
+  // Filament links between the nodes (the cosmic web threads).
+  Offset pt(_SfBump b) => Offset(b.cx * size.width, b.cy * size.height);
+  GameFx.glowLine(canvas, pt(nodes[0]), pt(nodes[1]), _sfAccent, width: 2.4);
+  GameFx.glowLine(canvas, pt(nodes[0]), pt(nodes[2]), _sfAccent, width: 2.4);
+  GameFx.glowLine(canvas, pt(nodes[1]), pt(nodes[2]), _sfAccent, width: 2.4);
+  GameFx.glowLine(canvas, pt(nodes[2]), pt(nodes[3]), _sfAccent, width: 2.4);
+  _sfDrawField(canvas, size, nodes);
+  GameFx.text(canvas, 'WEB NODE +40',
+      Offset(size.width * 0.5, size.height * 0.90), 12, _sfNodeGlow,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// Frame 4 — the late-game twist: expansion and a dark-energy surge stretch
+/// and tear your structure apart. Beat them by building dense enough.
+void _legendDarkEnergy(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  GameFx.atmosphere(canvas, size, _sfDanger, 0, motes: 18);
+  final Offset c = Offset(size.width * 0.5, size.height * 0.44);
+  // A fading, half-torn structure (dimmed alpha = losing contrast).
+  _sfDrawField(canvas, size, const [_SfBump(0.5, 0.44, 2.3, 0.14)],
+      alpha: 0.55);
+  // Outward tearing pull in all directions.
+  final double r = size.shortestSide * 0.20;
+  for (int i = 0; i < 6; i++) {
+    final double a = i / 6 * 2 * pi;
+    final Offset inner = c + Offset(cos(a), sin(a)) * r;
+    final Offset outer = c + Offset(cos(a), sin(a)) * (r * 2.0);
+    _sfArrow(canvas, inner, outer, _sfDanger);
+  }
+  GameFx.text(canvas, 'DARK ENERGY',
+      Offset(size.width * 0.5, size.height * 0.88), 13, _sfDanger,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// The visual manual for Structure Formation — wired into the registry spec.
+final List<LegendFrame> structureFormationLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the smooth void to seed a tiny density ripple',
+      paint: _legendSeed),
+  const LegendFrame(
+      caption: 'Gravity pulls matter into white-hot collapsed cores',
+      paint: _legendCollapse),
+  const LegendFrame(
+      caption: 'Link clusters into a web of nodes for big bonuses',
+      paint: _legendWeb),
+  const LegendFrame(
+      caption: 'Beat dark energy before it tears your web apart',
+      paint: _legendDarkEnergy),
+];
+
 // ---------------------------------------------------------------------------
 // GAME
 // ---------------------------------------------------------------------------
@@ -265,6 +476,10 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_update);
     _ticker.forward();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep]. Dormant unless the host is driving the attract loop.
+    widget.session.autoPilot = _autoStep;
   }
 
   /// Seed the nearly-smooth early universe: mean density 1.0 with faint random
@@ -283,8 +498,67 @@ class _StructureFormationGameState extends State<StructureFormationGame>
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free seed per host tick (~250ms). Plays the game the *right* way:
+  /// it SPREADS seeds instead of piling them up. Over-densities already live in
+  /// the density field, so the bot reads the field directly, collects the cells
+  /// that are meaningfully over-dense (existing seeded structure), and drops the
+  /// next seed on the grid cell whose NEAREST over-density is farthest away — a
+  /// maximin, well-spread, low-density spot with room to accrete. As that cell
+  /// then grows dense, the next tick's farthest point moves elsewhere, so the
+  /// web fills out node by node. Deterministic; respects the seed budget.
+  void _autoStep() {
+    if (!widget.session.isRunning || !_geomReady) return;
+    if (_seeds < 1) return; // out of budget this tick — wait for regen
+
+    // Cells that already carry meaningful over-density (seeded / accreting).
+    final double thresh = _mean * 1.3;
+    final List<int> dense = [];
+    for (int i = 0; i < _n; i++) {
+      if (_d[i] >= thresh) dense.add(i);
+    }
+
+    int bestCol = _cols ~/ 2;
+    int bestRow = _rows ~/ 2;
+    if (dense.isNotEmpty) {
+      // Pick the cell whose distance to the nearest over-density is greatest
+      // (farthest-point spread). Tie-break toward the lower-density cell so we
+      // seed the emptier region of the near-smooth field.
+      double bestScore = -1;
+      double bestFill = double.infinity;
+      for (int r = 0; r < _rows; r++) {
+        final int rowBase = r * _cols;
+        for (int c = 0; c < _cols; c++) {
+          double nearest = double.infinity;
+          for (final j in dense) {
+            final int jr = j ~/ _cols;
+            final int jc = j - jr * _cols;
+            final double dd =
+                ((jr - r) * (jr - r) + (jc - c) * (jc - c)).toDouble();
+            if (dd < nearest) nearest = dd;
+          }
+          final double fill = _d[rowBase + c];
+          if (nearest > bestScore ||
+              (nearest == bestScore && fill < bestFill)) {
+            bestScore = nearest;
+            bestFill = fill;
+            bestCol = c;
+            bestRow = r;
+          }
+        }
+      }
+    }
+
+    _placeSeed(
+      bestCol,
+      bestRow,
+      Offset((bestCol + 0.5) * _cellW, (bestRow + 0.5) * _cellH),
+    );
   }
 
   // ── Simulation step ─────────────────────────────────────────────────────
@@ -500,18 +774,24 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     final pos = d.localPosition;
     final int col = (pos.dx / _cellW).floor().clamp(0, _cols - 1);
     final int row = (pos.dy / _cellH).floor().clamp(0, _rows - 1);
+    _placeSeed(col, row, pos);
+  }
+
+  /// Deposit one seed at grid cell (col,row) and spend a seed from the budget,
+  /// bursting FX at [fxPos]. Shared by the human tap path and the autopilot.
+  void _placeSeed(int col, int row, Offset fxPos) {
     _seedAt(col, row);
     _seeds -= 1;
 
     // Seed burst FX.
-    _fx.addAll(FxBurst.spawn(pos, _sfAccent, count: 12, speed: 90, size: 2.6));
+    _fx.addAll(FxBurst.spawn(fxPos, _sfAccent, count: 12, speed: 90, size: 2.6));
     if (_fx.length > 160) _fx.removeRange(0, _fx.length - 160);
   }
 
   /// Deposit a small Gaussian over-density centred on (col,row). Adds mass to
   /// the field (raising total mass — the only thing that does).
   void _seedAt(int col, int row) {
-    final double twoSigSq = 2 * _seedSigma * _seedSigma;
+    const double twoSigSq = 2 * _seedSigma * _seedSigma;
     for (int dr = -_seedRadius; dr <= _seedRadius; dr++) {
       final int rr = row + dr;
       if (rr < 0 || rr >= _rows) continue;

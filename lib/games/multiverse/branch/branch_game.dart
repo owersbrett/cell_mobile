@@ -153,12 +153,29 @@ class _BranchGameState extends State<BranchGame>
       ..forward();
     _lastWall = _now();
     _fork = _genFork();
+    // ATTRACT autopilot: play Branch correctly hands-free. Harmless in normal
+    // play — the host only invokes it during autoplay. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free steer per host tick (~250ms). Branch resolves the pending
+  /// fork on its own ticker when the front crosses the decision line; the only
+  /// choice is which child to ride, so the bot simply keeps the selection
+  /// pointed at the HEAVIER branch (the higher Born amplitude). That is always
+  /// the CLEAN navigation — max score, streak intact — so this plays optimally
+  /// by the game's own scoring rule. Deterministic: no randomness, one steer.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    final best = _fork.upAmp >= _fork.downAmp ? _Sel.up : _Sel.down;
+    if (_sel != best) setState(() => _sel = best);
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
@@ -184,7 +201,7 @@ class _BranchGameState extends State<BranchGame>
     final w = _size.width, h = _size.height;
     final genPx = w * _genFrac;
     final dx = w * _bDecisionX + (gen - _front) * genPx;
-    final top = _bFieldTop;
+    const top = _bFieldTop;
     final bot = math.max(top + 40.0, h - _bFieldBottom);
     final dy = top + yNorm.clamp(0.0, 1.0) * (bot - top);
     return Offset(dx, dy);
@@ -630,3 +647,185 @@ class _BranchPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BranchPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME branch-leg style
+// the live painter uses (amplitude-sized orbs, % labels, selection halo,
+// decohering ghost fans). Static + cheap: rendered once on the intro screen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One fork leg exactly as the game draws it: line weighted by amplitude,
+/// child orb sized by amplitude, the % label, and the halo when selected.
+void _legendLeg(Canvas canvas, Offset parent, Offset child, double amp,
+    {bool selected = false}) {
+  final heavy = amp >= 0.5;
+  final base = heavy ? _bAccent : _bGhost;
+
+  canvas.drawLine(
+    parent,
+    child,
+    Paint()
+      ..color = base.withValues(alpha: selected ? 0.9 : (0.32 + amp * 0.3))
+      ..strokeWidth = selected ? 4.0 : (1.8 + amp * 2.2)
+      ..strokeCap = StrokeCap.round,
+  );
+
+  if (selected) {
+    canvas.drawCircle(
+      child,
+      13,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = _bAccent.withValues(alpha: 0.85),
+    );
+  }
+
+  final r = 4.5 + amp * 7.0;
+  GameFx.orb(canvas, child, r, base, glow: selected ? 1.0 : (0.3 + amp * 0.5));
+
+  final pct = (amp * 100).round();
+  GameFx.text(
+    canvas,
+    '$pct%',
+    child.translate(0, -(r + 12)),
+    heavy ? 13 : 11,
+    (heavy ? _bAccent : _bGhost).withValues(alpha: selected ? 1.0 : 0.85),
+    weight: heavy ? FontWeight.w800 : FontWeight.w600,
+  );
+}
+
+/// The observer node — the same "YOU" orb the player rides in-game.
+void _legendYou(Canvas canvas, Offset at) {
+  GameFx.orb(canvas, at, 8.5, _bAccent, glow: 1.1);
+  GameFx.text(canvas, 'YOU', at.translate(0, -22), 10,
+      Colors.white.withValues(alpha: 0.7));
+}
+
+/// A tiny static decohering fan — the abandoned world still splitting.
+void _legendGhostFan(Canvas canvas, Offset from, double dx, double alpha) {
+  for (var k = 0; k < 2; k++) {
+    final sign = k == 0 ? -1.0 : 1.0;
+    final tip = Offset(from.dx + dx, from.dy + sign * 14.0);
+    canvas.drawLine(
+      from,
+      tip,
+      Paint()
+        ..color = _bGhost.withValues(alpha: alpha)
+        ..strokeWidth = 1.0
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawCircle(
+        tip, 1.6, Paint()..color = _bGhost.withValues(alpha: alpha * 0.9));
+  }
+}
+
+/// Frame 1 — the core object: a fork, both branches real, weighted by |ψ|².
+void _legendFork(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final parent = Offset(size.width * 0.28, size.height * 0.55);
+  final up = Offset(size.width * 0.72, size.height * 0.32);
+  final down = Offset(size.width * 0.72, size.height * 0.78);
+  _legendLeg(canvas, parent, up, 0.72);
+  _legendLeg(canvas, parent, down, 0.28);
+  _legendYou(canvas, parent);
+}
+
+/// Frame 2 — the verb: tap the top or bottom half to steer the selection.
+void _legendSteer(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mid = size.height * 0.52;
+
+  // Faint dashed midline splitting the two tap zones (the "now" line style).
+  final lp = Paint()
+    ..color = Colors.white.withValues(alpha: 0.10)
+    ..strokeWidth = 1.4;
+  var x = size.width * 0.06;
+  while (x < size.width * 0.94) {
+    canvas.drawLine(Offset(x, mid), Offset(x + 8, mid), lp);
+    x += 16;
+  }
+  GameFx.text(canvas, 'TAP TOP', Offset(size.width * 0.20, size.height * 0.12),
+      11, _bAccent,
+      weight: FontWeight.w800);
+  GameFx.text(
+      canvas,
+      'TAP BOTTOM',
+      Offset(size.width * 0.20, size.height * 0.90),
+      11,
+      Colors.white.withValues(alpha: 0.55),
+      weight: FontWeight.w800);
+
+  final parent = Offset(size.width * 0.36, mid);
+  final up = Offset(size.width * 0.78, size.height * 0.28);
+  final down = Offset(size.width * 0.78, size.height * 0.80);
+  _legendLeg(canvas, parent, up, 0.64, selected: true);
+  _legendLeg(canvas, parent, down, 0.36);
+  _legendYou(canvas, parent);
+}
+
+/// Frame 3 — scoring: the heavier branch is the CLEAN pick (streak bonus).
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final parent = Offset(size.width * 0.26, size.height * 0.58);
+  final up = Offset(size.width * 0.66, size.height * 0.34);
+  final down = Offset(size.width * 0.66, size.height * 0.82);
+  _legendLeg(canvas, parent, down, 0.30);
+  _legendLeg(canvas, parent, up, 0.70, selected: true);
+  _legendYou(canvas, parent);
+  GameFx.text(canvas, 'CLEAN +91', Offset(size.width * 0.66, size.height * 0.12),
+      13, _bAccent,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'streak up', Offset(size.width * 0.66, size.height * 0.20),
+      10, Colors.white.withValues(alpha: 0.55));
+}
+
+/// Frame 4 — escalation: amplitudes drift toward 50/50; ghosts decohere behind.
+void _legendDrift(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+
+  // Wake behind you: bright chosen worldline + a fading abandoned branch.
+  final a = Offset(size.width * 0.08, size.height * 0.46);
+  final b = Offset(size.width * 0.30, size.height * 0.58);
+  final ghost = Offset(size.width * 0.30, size.height * 0.26);
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = _bAccent.withValues(alpha: 0.55)
+      ..strokeWidth = 3.0
+      ..strokeCap = StrokeCap.round,
+  );
+  canvas.drawLine(
+    a,
+    ghost,
+    Paint()
+      ..color = _bGhost.withValues(alpha: 0.24)
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round,
+  );
+  _legendGhostFan(canvas, ghost, size.width * 0.10, 0.18);
+
+  // A late fork: nearly a coin flip to read.
+  final up = Offset(size.width * 0.70, size.height * 0.40);
+  final down = Offset(size.width * 0.70, size.height * 0.80);
+  _legendLeg(canvas, b, up, 0.52);
+  _legendLeg(canvas, b, down, 0.48);
+  _legendYou(canvas, b);
+}
+
+/// The visual manual for Branch — wired into the registry spec.
+final List<LegendFrame> branchLegendFrames = [
+  const LegendFrame(
+      caption: 'Every fork splits the world — both branches happen',
+      paint: _legendFork),
+  const LegendFrame(
+      caption: 'Tap top or bottom to steer YOU onto that branch',
+      paint: _legendSteer),
+  const LegendFrame(
+      caption: 'Ride the heavier % — CLEAN picks grow a streak bonus',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Late forks drift near 50/50 — a light pick resets streak',
+      paint: _legendDrift),
+];

@@ -168,6 +168,260 @@ const _Cycle _kNitrogen = _Cycle(
 
 const List<_Cycle> _kCycles = [_kCarbon, _kWater, _kNitrogen];
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, each drawn with the REAL components
+// (the same reservoir orbs, process edges, travelling atom and energy meter the
+// live game paints). Cheap + static: rendered once in the intro carousel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legIcon(
+    Canvas canvas, IconData icon, Offset center, double sz, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontSize: sz,
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// A reservoir node — mirrors `_paintNode`: an orb + icon + name label.
+void _legReservoir(Canvas canvas, Offset c, double r, Color color, IconData icon,
+    String name,
+    {bool current = false, bool demand = false}) {
+  if (demand) {
+    canvas.drawCircle(
+      c,
+      r + 9,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = Potatuhs.gold.withValues(alpha: 0.85),
+    );
+  }
+  GameFx.orb(canvas, c, r,
+      current ? color : Color.lerp(color, Potatuhs.ink, 0.5)!,
+      glow: current ? 1.0 : 0.35, specular: false);
+  if (current) {
+    canvas.drawCircle(
+      c,
+      r + 3,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..color = Colors.white.withValues(alpha: 0.7),
+    );
+  }
+  _legIcon(canvas, icon, c.translate(0, -3), r * 0.7,
+      Colors.white.withValues(alpha: 0.92));
+  GameFx.text(canvas, name, c.translate(0, r + 12), 9.5,
+      Colors.white.withValues(alpha: current ? 0.95 : 0.7),
+      weight: FontWeight.w800);
+  if (demand) {
+    GameFx.text(canvas, 'NEEDS', c.translate(0, r + 23), 8,
+        Potatuhs.gold.withValues(alpha: 0.9),
+        weight: FontWeight.w800);
+  }
+}
+
+/// A directed process edge — mirrors `_paintEdge`: line + arrowhead + label,
+/// glowing gold with a ☀ when it is the sun-driven energy-input process.
+void _legEdge(Canvas canvas, Offset a, Offset b, double nodeR, Color color,
+    {String? label, bool solar = false}) {
+  final dir = b - a;
+  final len = dir.distance;
+  if (len < 1) return;
+  final u = dir / len;
+  final p0 = a + u * (nodeR + 2);
+  final p1 = b - u * (nodeR + 6);
+  final lineCol = solar ? Potatuhs.gold : color;
+  canvas.drawLine(
+    p0,
+    p1,
+    Paint()
+      ..color = lineCol.withValues(alpha: 0.6)
+      ..strokeWidth = solar ? 3.0 : 2.4
+      ..strokeCap = StrokeCap.round,
+  );
+  final perp = Offset(-u.dy, u.dx);
+  const ah = 7.0;
+  final base = p1 - u * ah;
+  final path = Path()
+    ..moveTo(p1.dx, p1.dy)
+    ..lineTo(base.dx + perp.dx * ah * 0.5, base.dy + perp.dy * ah * 0.5)
+    ..lineTo(base.dx - perp.dx * ah * 0.5, base.dy - perp.dy * ah * 0.5)
+    ..close();
+  canvas.drawPath(path, Paint()..color = lineCol.withValues(alpha: 0.75));
+  if (label != null) {
+    final mid = Offset.lerp(p0, p1, 0.5)! + perp * 11;
+    GameFx.text(canvas, solar ? '☀ $label' : label, mid, 8.5,
+        lineCol.withValues(alpha: 0.9),
+        weight: FontWeight.w800);
+  }
+}
+
+/// The travelling atom + its energy aura — mirrors `_paintAtom`. [energy] 0..1
+/// controls the aura: the matter (orb) is conserved, only the glow shrinks.
+void _legAtom(Canvas canvas, Offset pos, double nodeR, Color cycleColor,
+    String symbol, double energy) {
+  final r = nodeR * 0.42;
+  final e = energy.clamp(0.0, 1.0);
+  canvas.drawCircle(
+    pos,
+    r + 4 + 6 * e,
+    Paint()
+      ..color = Color.lerp(Potatuhs.orange, Potatuhs.gold, e)!
+          .withValues(alpha: 0.20 + 0.35 * e)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+  );
+  GameFx.orb(canvas, pos, r, Color.lerp(cycleColor, Colors.white, 0.55)!,
+      glow: 1.2);
+  GameFx.text(canvas, symbol, pos.translate(0, 0.5),
+      symbol.length > 1 ? 8.5 : 12, Potatuhs.ink,
+      weight: FontWeight.w800);
+}
+
+/// The top energy meter — mirrors `_paintEnergyMeter` (☀ in, heat out).
+void _legEnergyMeter(Canvas canvas, Size size, double frac) {
+  const pad = 16.0;
+  const y = 16.0;
+  final barW = size.width - pad * 2;
+  if (barW <= 0) return;
+  final track = RRect.fromRectAndRadius(
+      Rect.fromLTWH(pad, y, barW, 8), const Radius.circular(4));
+  canvas.drawRRect(
+      track, Paint()..color = Colors.white.withValues(alpha: 0.08));
+  final f = frac.clamp(0.0, 1.0);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(pad, y, barW * f, 8), const Radius.circular(4)),
+    Paint()
+      ..color = Color.lerp(Potatuhs.orange, Potatuhs.gold, f)!
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+  );
+  GameFx.text(canvas, '☀ ENERGY', Offset(size.width / 2, y - 8), 9,
+      Colors.white.withValues(alpha: 0.6),
+      weight: FontWeight.w800);
+}
+
+/// Heat motes drifting up off [at] and vanishing — the visible one-way leak.
+void _legHeat(Canvas canvas, Offset at) {
+  for (var i = 0; i < 5; i++) {
+    final p = at.translate((i - 2) * 4.0, -8 - i * 7.0);
+    canvas.drawCircle(
+      p,
+      (2.6 - i * 0.35).clamp(0.6, 2.6),
+      Paint()
+        ..color = Color.lerp(Potatuhs.orange, Potatuhs.gold, i / 5)!
+            .withValues(alpha: (0.5 - i * 0.08).clamp(0.0, 0.5)),
+    );
+  }
+}
+
+double _legR(Size size, double frac) =>
+    (math.min(size.width, size.height) * frac).clamp(14.0, 42.0);
+
+// Frame 1 — the core verb: tap a reservoir to slide the atom down a process.
+void _legendRoute(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = _legR(size, 0.16);
+  final cy = size.height * 0.48;
+  final a = Offset(size.width * 0.28, cy);
+  final b = Offset(size.width * 0.72, cy);
+  _legEdge(canvas, a, b, r, _kCarbon.color, label: 'feeding');
+  _legReservoir(canvas, a, r, _kCarbon.color, Icons.grass, 'PLANT',
+      current: true);
+  _legReservoir(canvas, b, r, _kCarbon.color, Icons.pets, 'ANIMAL');
+  _legAtom(canvas, a, r, _kCarbon.color, 'C', 0.9);
+}
+
+// Frame 2 — scoring: chain clean transfers, the combo climbs to ×5.
+void _legendCombo(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = _legR(size, 0.12);
+  final cy = size.height * 0.46;
+  final xs = [size.width * 0.22, size.width * 0.5, size.width * 0.78];
+  final ins = [Icons.terrain, Icons.cloud, Icons.grass];
+  const names = ['SOIL', 'ATMOSPHERE', 'PLANT'];
+  for (var i = 0; i < 2; i++) {
+    _legEdge(canvas, Offset(xs[i], cy), Offset(xs[i + 1], cy), r,
+        _kCarbon.color);
+  }
+  for (var i = 0; i < 3; i++) {
+    _legReservoir(canvas, Offset(xs[i], cy), r, _kCarbon.color, ins[i], names[i],
+        current: i == 1);
+  }
+  _legAtom(canvas, Offset(xs[1], cy), r, _kCarbon.color, 'C', 0.9);
+  GameFx.text(canvas, '+5', Offset(xs[1], cy - r - 16), 14, _kCarbon.color,
+      weight: FontWeight.w800, glow: 0.5);
+  GameFx.text(canvas, '×5 COMBO', Offset(size.width / 2, size.height * 0.82), 15,
+      Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame 3 — the danger: energy leaks every step; recharge only at the ☀ sun.
+void _legendEnergy(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  _legEnergyMeter(canvas, size, 0.32);
+  final r = _legR(size, 0.15);
+  final cy = size.height * 0.56;
+  final a = Offset(size.width * 0.28, cy);
+  final b = Offset(size.width * 0.72, cy);
+  _legEdge(canvas, a, b, r, _kWater.color, label: 'evaporation', solar: true);
+  _legReservoir(canvas, a, r, _kWater.color, Icons.waves, 'OCEAN',
+      current: true);
+  _legReservoir(canvas, b, r, _kWater.color, Icons.air, 'ATMOSPHERE');
+  _legAtom(canvas, a, r, _kWater.color, 'H₂O', 0.3);
+  _legHeat(canvas, a.translate(r * 0.6, -r * 0.5));
+}
+
+// Frame 4 — the escalation: the last 12 s FINAL BLOOM, leak spikes, points ×2.
+void _legendBloom(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final rect = Offset.zero & size;
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Potatuhs.gold.withValues(alpha: 0.0),
+          Potatuhs.orange.withValues(alpha: 0.22),
+        ],
+        stops: const [0.55, 1.0],
+      ).createShader(rect),
+  );
+  final r = _legR(size, 0.16);
+  final c = Offset(size.width * 0.5, size.height * 0.58);
+  _legReservoir(canvas, c, r, _kNitrogen.color, Icons.terrain, 'SOIL',
+      current: true, demand: true);
+  _legAtom(canvas, c, r, _kNitrogen.color, 'N', 1.0);
+  GameFx.text(canvas, 'FINAL BLOOM ×2', Offset(size.width / 2, size.height * 0.24),
+      19, Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+/// The visual manual for Nutrient Cycle v2 — wired into the registry spec.
+final List<LegendFrame> nutrientCycleV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap a reservoir to route the atom along a process',
+      paint: _legendRoute),
+  const LegendFrame(
+      caption: 'Chain clean transfers — combo climbs ×1 to ×5',
+      paint: _legendCombo),
+  const LegendFrame(
+      caption: 'Energy leaks each step — recharge at the gold ☀ sun',
+      paint: _legendEnergy),
+  const LegendFrame(
+      caption: 'Final Bloom: leak spikes and points score ×2',
+      paint: _legendBloom),
+];
+
 class _Pop {
   Offset pos;
   final String text;
@@ -235,10 +489,14 @@ class _NutrientCycleV2GameState extends State<NutrientCycleV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT-mode autopilot: `_autoStep` is already the preview auto-router, so
+    // the host hook lives on the distinct name `_autoPilot`. See [_autoPilot].
+    widget.session.autoPilot = _autoPilot;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoPilot) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
   }
@@ -495,6 +753,116 @@ class _NutrientCycleV2GameState extends State<NutrientCycleV2Game>
     final out = _outgoing(_current);
     if (out.isEmpty) return;
     _beginTransfer(out[_rng.nextInt(out.length)].to, dur: _kTransferIdle);
+  }
+
+  /// Hops (BFS over directed process edges) from the current reservoir to
+  /// [target]; 0 if already there, a large sentinel if unreachable.
+  int _hopCount(int target) {
+    if (target == _current) return 0;
+    final dist = <int, int>{_current: 0};
+    final q = <int>[_current];
+    while (q.isNotEmpty) {
+      final u = q.removeAt(0);
+      for (final e in _cycle.edges.where((e) => e.from == u)) {
+        if (!dist.containsKey(e.to)) {
+          dist[e.to] = dist[u]! + 1;
+          if (e.to == target) return dist[e.to]!;
+          q.add(e.to);
+        }
+      }
+    }
+    return 999;
+  }
+
+  /// First hop of a shortest directed path from the current reservoir toward
+  /// [target]; -1 if there's no path (or target is the current node).
+  int _nextHopToward(int target) {
+    if (target < 0 || target == _current) return -1;
+    final prev = <int, int>{};
+    final q = <int>[_current];
+    final seen = <int>{_current};
+    var found = false;
+    while (q.isNotEmpty && !found) {
+      final u = q.removeAt(0);
+      for (final e in _cycle.edges.where((e) => e.from == u)) {
+        if (seen.add(e.to)) {
+          prev[e.to] = u;
+          if (e.to == target) {
+            found = true;
+            break;
+          }
+          q.add(e.to);
+        }
+      }
+    }
+    if (!found) return -1;
+    var node = target;
+    while (prev[node] != _current) {
+      final p = prev[node];
+      if (p == null) return -1;
+      node = p;
+    }
+    return node;
+  }
+
+  /// ATTRACT-mode host hook (registered on `session.autoPilot`; the name
+  /// `_autoStep` is already the preview router). One competent move per call:
+  /// project one transfer's energy leak ahead and, if topping the atom up would
+  /// otherwise be impossible before it stalls, route to (or take) the sun-driven
+  /// recharge edge; otherwise keep matter cycling — delivering to the roaming
+  /// DEMAND when it's safe. Deterministic; reads only the game's own state.
+  void _autoPilot() {
+    final session = widget.session;
+    if (!session.isRunning) return;
+    if (_transferT < 1.0) return; // ignore while the atom is mid-slide
+    final out = _outgoing(_current);
+    if (out.isEmpty) return;
+
+    // Leak the NEXT non-solar transfer will cost (mirrors _finishTransfer).
+    final prog = (_elapsed / _duration).clamp(0.0, 1.0);
+    var leak = _kLeakBase + _kLeakRamp * prog;
+    if (_climax) leak *= _kClimaxLeakMul;
+
+    final solarEdge = _cycle.edges[_cycle.solar];
+    final solarFrom = solarEdge.from;
+    final solarTo = solarEdge.to;
+
+    // Energy needed to survive routing to the sun (one leak per hop + a margin);
+    // once at the source, the next hop IS the recharge.
+    final hopsToSun = _hopCount(solarFrom);
+    final sunBudget = leak * (hopsToSun + 1) + 0.05;
+    final needSun = _energy <= sunBudget;
+
+    if (needSun) {
+      if (_current == solarFrom && _hasEdge(_current, solarTo)) {
+        _beginTransfer(solarTo, dur: _kTransferRun); // take the recharge edge
+        return;
+      }
+      final hop = _nextHopToward(solarFrom);
+      if (hop >= 0 && _hasEdge(_current, hop)) {
+        _beginTransfer(hop, dur: _kTransferRun); // head for the sun
+        return;
+      }
+    }
+
+    // Energy healthy: chase the DEMAND payoff when a safe path exists.
+    if (_demand >= 0 && _demand != _current) {
+      final hop = _nextHopToward(_demand);
+      if (hop >= 0 && _hasEdge(_current, hop)) {
+        _beginTransfer(hop, dur: _kTransferRun);
+        return;
+      }
+    }
+
+    // Otherwise keep the loop alive: grab a free recharge if it's an option,
+    // else advance along the first valid outgoing edge.
+    for (final e in out) {
+      if (_isSolar(_current, e.to)) {
+        _beginTransfer(e.to, dur: _kTransferRun);
+        return;
+      }
+    }
+    _beginTransfer(out.first.to, dur: _kTransferRun);
   }
 
   // ── Input ─────────────────────────────────────────────────────────────────

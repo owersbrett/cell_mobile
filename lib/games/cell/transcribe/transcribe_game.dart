@@ -83,6 +83,199 @@ const Map<String, String> _codonTable = {
 final List<String> _allAminos =
     _codonTable.values.toSet().where((a) => a != 'Stop').toList();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the REAL components
+// (same base orbs, transcription bubble, timing bar and rungs the live game
+// uses). Static + cheap: rendered once in the intro carousel, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draw a base orb + its letter, matching the in-game [_StrandPainter._drawBase].
+void _legendOrb(Canvas canvas, Offset at, String letter, double r,
+    {double alpha = 1.0, bool highlight = false, bool broken = false}) {
+  final c =
+      broken ? const Color(0xFF6E6E6E) : (_baseColor[letter] ?? _kAccent);
+  GameFx.orb(canvas, at, r, c.withValues(alpha: alpha),
+      glow: highlight ? 1.2 : 0.7 * alpha, specular: alpha > 0.6);
+  GameFx.text(canvas, letter, at, r * 0.92, Colors.white.withValues(alpha: alpha),
+      weight: FontWeight.w900);
+  if (highlight) {
+    canvas.drawCircle(
+      at,
+      r + 4,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = Colors.white.withValues(alpha: 0.8),
+    );
+  }
+}
+
+/// The empty mRNA slot marker (a ringed `?`), as drawn in play.
+void _legendGhost(Canvas canvas, Offset at, double r) {
+  canvas.drawCircle(
+    at,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = Colors.white.withValues(alpha: 0.35),
+  );
+  GameFx.text(canvas, '?', at, r * 0.9, Colors.white.withValues(alpha: 0.5),
+      weight: FontWeight.w900);
+}
+
+/// Frame 1 — the core verb: an active DNA base inside the transcription bubble,
+/// with the `?` mRNA slot below waiting for the complementary tap.
+void _legendPair(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cx = size.width * 0.5;
+  final dnaY = size.height * 0.34;
+  final mrnaY = size.height * 0.66;
+
+  // Transcription bubble around the active pair.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromCenter(
+          center: Offset(cx, (dnaY + mrnaY) / 2),
+          width: _kBaseR * 3.2,
+          height: (mrnaY - dnaY) + _kBaseR * 3),
+      const Radius.circular(26),
+    ),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kAccent.withValues(alpha: 0.5),
+  );
+  _legendOrb(canvas, Offset(cx, dnaY), 'A', _kBaseR + 2, highlight: true);
+  _legendGhost(canvas, Offset(cx, mrnaY), _kBaseR);
+  GameFx.text(canvas, 'DNA', Offset(cx - size.width * 0.30, dnaY), 11,
+      Colors.white.withValues(alpha: 0.5));
+  GameFx.text(canvas, 'mRNA', Offset(cx - size.width * 0.30, mrnaY), 11,
+      Colors.white.withValues(alpha: 0.5));
+}
+
+/// Frame 2 — the pairing rule: DNA base → its complementary mRNA base for all
+/// four pairs (A→U, T→A, C→G, G→C — no thymine in mRNA).
+void _legendRule(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const pairs = [
+    ['A', 'U'],
+    ['T', 'A'],
+    ['C', 'G'],
+    ['G', 'C'],
+  ];
+  final r = (size.width / 11).clamp(10.0, _kBaseR);
+  for (var i = 0; i < 4; i++) {
+    final x = size.width * (0.18 + 0.21 * i);
+    final dnaY = size.height * 0.34;
+    final mrnaY = size.height * 0.66;
+    _legendOrb(canvas, Offset(x, dnaY), pairs[i][0], r);
+    // downward arrow rung
+    canvas.drawLine(
+      Offset(x, dnaY + r + 2),
+      Offset(x, mrnaY - r - 2),
+      Paint()
+        ..color = _kAccent.withValues(alpha: 0.5)
+        ..strokeWidth = 2.5,
+    );
+    _legendOrb(canvas, Offset(x, mrnaY), pairs[i][1], r);
+  }
+}
+
+/// Frame 3 — the danger: a wrong tap or a drained timer breaks the strand
+/// (greyed base, red rung) for −4 and resets the streak.
+void _legendBreak(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cx = size.width * 0.5;
+  final dnaY = size.height * 0.30;
+  final mrnaY = size.height * 0.58;
+
+  // Broken pair: greyed DNA + jagged red rung, no mRNA letter.
+  _legendOrb(canvas, Offset(cx, dnaY), 'G', _kBaseR, broken: true);
+  canvas.drawLine(
+    Offset(cx, dnaY + _kBaseR),
+    Offset(cx, mrnaY - _kBaseR),
+    Paint()
+      ..color = const Color(0xFFFF5252).withValues(alpha: 0.7)
+      ..strokeWidth = 2,
+  );
+  _legendGhost(canvas, Offset(cx, mrnaY), _kBaseR);
+
+  // The timing bar, nearly drained (red end).
+  const barW = _kBaseR * 3.0;
+  final left = cx - barW / 2;
+  final y = mrnaY + _kBaseR + 16;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, y, barW, 5), const Radius.circular(3)),
+    Paint()..color = Colors.white.withValues(alpha: 0.12),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, y, barW * 0.18, 5), const Radius.circular(3)),
+    Paint()..color = const Color(0xFFFF5252),
+  );
+  GameFx.text(canvas, '-4', Offset(cx, y + 26), 15, const Color(0xFFFF5252),
+      weight: FontWeight.w900);
+}
+
+/// Frame 4 — the escalation: three clean bases close a codon that translates
+/// to an amino acid (the codon stage — +15 for the codon, +20 for the match).
+void _legendCodon(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const letters = ['A', 'U', 'G'];
+  final r = (size.width / 12).clamp(9.0, _kBaseR - 4);
+  final y = size.height * 0.32;
+  for (var i = 0; i < 3; i++) {
+    final x = size.width * (0.24 + 0.13 * i);
+    _legendOrb(canvas, Offset(x, y), letters[i], r);
+  }
+  // bracket under the codon
+  final bx0 = size.width * 0.24 - r;
+  final bx1 = size.width * (0.24 + 0.26) + r;
+  final by = y + r + 8;
+  final bp = Paint()
+    ..color = const Color(0xFFFFD54F)
+    ..strokeWidth = 2.5
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(Offset(bx0, by), Offset(bx1, by), bp);
+  // arrow to amino acid
+  final ax = size.width * 0.5;
+  canvas.drawLine(Offset(ax, by), Offset(ax, by + 14), bp);
+  // amino-acid chip
+  final chip = Rect.fromCenter(
+      center: Offset(ax, by + 40), width: size.width * 0.34, height: 34);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(chip, const Radius.circular(10)),
+    Paint()..color = const Color(0xFFFFD54F).withValues(alpha: 0.18),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(chip, const Radius.circular(10)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = const Color(0xFFFFD54F),
+  );
+  GameFx.text(canvas, 'Met', chip.center, 14, Colors.white,
+      weight: FontWeight.w900);
+}
+
+/// The visual manual for Transcribe — wired into the registry spec.
+final List<LegendFrame> transcribeLegendFrames = [
+  const LegendFrame(
+      caption: 'Read the lit DNA base in the bubble; fill the mRNA slot',
+      paint: _legendPair),
+  const LegendFrame(
+      caption: 'Tap the pairing base: A→U, T→A, C→G, G→C (no T in mRNA)',
+      paint: _legendRule),
+  const LegendFrame(
+      caption: 'Wrong tap or timer out breaks the strand: -4, streak resets',
+      paint: _legendBreak),
+  const LegendFrame(
+      caption: 'Three clean bases close a codon; translate it: +15 & +20',
+      paint: _legendCodon),
+];
+
 // ---------------------------------------------------------------------------
 // Runtime entity
 // ---------------------------------------------------------------------------
@@ -154,12 +347,37 @@ class _TranscribeGameState extends State<TranscribeGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to transcribe itself. Registered
+    // always (harmless in normal play — the host only calls it in autoplay).
+    // See [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Transcribe *correctly*,
+  /// never wrong: if a codon-translation overlay is up, tap the correct amino
+  /// acid; otherwise read the active DNA template base and tap its correct mRNA
+  /// complement (reusing the game's own [_mrnaOf] rule and [_onBaseTap] /
+  /// [_onAminoTap] handlers). One base per tick reads as building the strand.
+  /// The host owns the clock, so the round still ends on time.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Resolve a pending codon → amino-acid translation first.
+    if (_aminoAge >= 0 && _aminoPicked == null) {
+      _onAminoTap(_aminoCorrect);
+      return;
+    }
+    // Otherwise transcribe the active DNA base with its correct complement.
+    if (_queue.isNotEmpty) {
+      _onBaseTap(_mrnaOf(_queue.first.dna));
+    }
   }
 
   // ----------------------------------------------------------- geometry --

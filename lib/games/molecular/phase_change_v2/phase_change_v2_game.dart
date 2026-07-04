@@ -181,12 +181,50 @@ class _PhaseChangeV2GameState extends State<PhaseChangeV2Game>
     super.initState();
     _mols = _buildLattice();
     _ticker = createTicker(_onTick)..start();
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ──────────────────────────────────────────────────────
+  // Host calls this ~4×/s in attract mode. Deterministic band-lock controller:
+  // project the added energy one control-interval ahead by the ambient bleed
+  // (the constant downward drift), then FEATHER a single control per call —
+  // heat if we're sliding below the target band, cool if we've overshot above
+  // it, and off when we're safely centred so ambient loss carries us without
+  // overshoot. Holding the band fills the passive LOCK meter, which auto-fires
+  // `_succeed` from the ticker — there's no separate lock element to trigger.
+  void _autoStep() {
+    final session = widget.session;
+    if (!session.isRunning) return;
+
+    const interval = 0.25; // host cadence — how far ahead drift will carry us
+    final projected = (_energy - _lossRate * interval).clamp(0.0, 1.0);
+    final lo = _targetE - _bandHalf;
+    final hi = _targetE + _bandHalf;
+
+    if (projected < lo) {
+      // Below the band (or drifting under it) — pour energy in.
+      _heating = true;
+      _cooling = false;
+    } else if (projected > hi) {
+      // Above the band — bleed it back down.
+      _heating = false;
+      _cooling = true;
+    } else if (projected < _targetE - _bandHalf * 0.35) {
+      // Inside but sagging toward the low edge — a feather of heat holds centre.
+      _heating = true;
+      _cooling = false;
+    } else {
+      // Centred / high in the band — feather OFF and let ambient loss ease down.
+      _heating = false;
+      _cooling = false;
+    }
   }
 
   List<_Mol> _buildLattice() {
@@ -564,6 +602,311 @@ class _HoldButtonState extends State<_HoldButton> {
     );
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each draws the LITERAL components
+// a player meets (the molecule lattice + bonds, the thermometer target band,
+// the latent-heat curve, the HEAT/COOL pills) with the same primitives and
+// colours the live game uses. Cheap + static; guarded against degenerate sizes.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A beaker of 9 molecules at a given [agitation] (0 = locked lattice with
+/// strong bonds, high = flying apart) — mirrors `_paintMolecules`. Deterministic
+/// (index-seeded) so it renders identically every intro.
+void _legendMoleculeBox(
+    Canvas canvas, Rect box, Color color, double agitation, String label) {
+  if (box.width <= 8 || box.height <= 8) return;
+
+  final rr = RRect.fromRectAndRadius(box, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.28));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = color.withValues(alpha: 0.6),
+  );
+
+  const cols = 3, rows = 3;
+  final inset = box.deflate(box.shortestSide * 0.16);
+  final w = inset.width, h = inset.height;
+  if (w <= 0 || h <= 0) return;
+  final r = math.min(w / cols, h / rows) * 0.30;
+  final amp = agitation;
+
+  final pts = <Offset>[];
+  for (var ry = 0; ry < rows; ry++) {
+    for (var cx = 0; cx < cols; cx++) {
+      final i = ry * cols + cx;
+      final dx = math.sin(i * 2.3) * amp * w * 0.42;
+      final dy = math.cos(i * 1.7) * amp * h * 0.42;
+      final x = (inset.left + (cx + 0.5) / cols * w + dx)
+          .clamp(inset.left + r, inset.right - r);
+      final y = (inset.top + (ry + 0.5) / rows * h + dy)
+          .clamp(inset.top + r, inset.bottom - r);
+      pts.add(Offset(x, y));
+    }
+  }
+
+  // Lattice bonds — strong when solid, gone once molecules fly apart.
+  final bondAlpha = (1.0 - amp * 2.4).clamp(0.0, 1.0);
+  if (bondAlpha > 0.02) {
+    final bond = Paint()
+      ..color = color.withValues(alpha: 0.4 * bondAlpha)
+      ..strokeWidth = 1.4;
+    for (var ry = 0; ry < rows; ry++) {
+      for (var cx = 0; cx < cols; cx++) {
+        final i = ry * cols + cx;
+        if (cx < cols - 1) canvas.drawLine(pts[i], pts[i + 1], bond);
+        if (ry < rows - 1) canvas.drawLine(pts[i], pts[i + cols], bond);
+      }
+    }
+  }
+
+  final molColor = Color.lerp(color, _kHeat, (amp - 0.45).clamp(0.0, 0.5) * 2)!;
+  for (final p in pts) {
+    GameFx.orb(canvas, p, r, molColor, glow: 0.5 + amp);
+  }
+
+  GameFx.text(canvas, label, Offset(box.center.dx, box.bottom + 14), 11, color,
+      weight: FontWeight.w800);
+}
+
+/// A HEAT/COOL hold-pill, matching the live `_HoldButton` look.
+void _legendPill(Canvas canvas, Rect r, Color color, String label) {
+  if (r.width <= 4 || r.height <= 4) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [color, Color.lerp(color, Colors.black, 0.35)!],
+      ).createShader(r),
+  );
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Potatuhs.ink,
+  );
+  GameFx.text(canvas, label, r.center, 13, Colors.white,
+      weight: FontWeight.w800);
+}
+
+// Frame 1 — the three states of matter, drawn as the real molecule box.
+void _legendStates(Canvas canvas, Size size) {
+  if (size.width < 60 || size.height < 60) return;
+  final cy = size.height * 0.44;
+  final bw = size.width * 0.26;
+  final bh = math.min(size.height * 0.44, bw * 1.25);
+  final xs = [size.width * 0.22, size.width * 0.5, size.width * 0.78];
+  final defs = <List<Object>>[
+    [_kSolid, 0.02, 'SOLID'],
+    [_kLiquid, 0.22, 'LIQUID'],
+    [_kGas, 0.52, 'GAS'],
+  ];
+  for (var i = 0; i < 3; i++) {
+    final box =
+        Rect.fromCenter(center: Offset(xs[i], cy), width: bw, height: bh);
+    _legendMoleculeBox(canvas, box, defs[i][0] as Color, defs[i][1] as double,
+        defs[i][2] as String);
+  }
+}
+
+// Frame 2 — feather HEAT/COOL to hold the thermometer inside the target band.
+void _legendBand(Canvas canvas, Size size) {
+  if (size.width < 80 || size.height < 80) return;
+  const accent = _kLiquid;
+  final x = size.width * 0.32;
+  final top = size.height * 0.18;
+  final bottom = size.height * 0.74;
+  final hgt = bottom - top;
+  double ty(double t) => bottom - t.clamp(0.0, 1.0) * hgt;
+
+  canvas.drawLine(
+    Offset(x, top),
+    Offset(x, bottom),
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..strokeWidth = 10
+      ..strokeCap = StrokeCap.round,
+  );
+
+  // Target band — the zone you feather the column into.
+  final bandRect = Rect.fromLTRB(x - 9, ty(0.60), x + 9, ty(0.44));
+  final bandRR = RRect.fromRectAndRadius(bandRect, const Radius.circular(6));
+  canvas.drawRRect(bandRR, Paint()..color = accent.withValues(alpha: 0.30));
+  canvas.drawRRect(
+    bandRR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = accent.withValues(alpha: 0.85),
+  );
+
+  // Mercury column feathered dead-centre in the band.
+  final yc = ty(0.52);
+  canvas.drawLine(Offset(x, bottom), Offset(x, yc),
+      Paint()..color = accent..strokeWidth = 10..strokeCap = StrokeCap.round);
+  canvas.drawCircle(Offset(x, yc), 7, Paint()..color = accent);
+  canvas.drawCircle(
+      Offset(x, yc), 7, Paint()..color = Colors.white.withValues(alpha: 0.35));
+  GameFx.text(canvas, 'HOLD', Offset(x + 34, yc), 11, _kGood,
+      weight: FontWeight.w800);
+
+  // HEAT / COOL hold-pills.
+  final pillW = size.width * 0.26, pillH = size.height * 0.15;
+  _legendPill(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(size.width * 0.72, size.height * 0.34),
+          width: pillW,
+          height: pillH),
+      _kHeat,
+      'HEAT');
+  _legendPill(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(size.width * 0.72, size.height * 0.58),
+          width: pillW,
+          height: pillH),
+      _kCool,
+      'COOL');
+}
+
+// Frame 3 — the latent-heat curve; overshoot a flat plateau and energy goes
+// into BREAKING BONDS, not temperature.
+void _legendCurve(Canvas canvas, Size size) {
+  if (size.width < 80 || size.height < 80) return;
+  final s = _kSubstances[0]; // WATER
+  final left = size.width * 0.12, right = size.width * 0.88;
+  final top = size.height * 0.30, bottom = size.height * 0.70;
+  final w = right - left, h = bottom - top;
+  if (w <= 0 || h <= 0) return;
+  double px(double e) => left + e * w;
+  double py(double t) => bottom - t.clamp(0.0, 1.0) * h;
+
+  double tempFor(double e) {
+    if (e < s.meltStart) return (e / s.meltStart) * 0.30;
+    if (e < s.meltEnd) return 0.30;
+    if (e < s.boilStart) {
+      return 0.30 + (e - s.meltEnd) / (s.boilStart - s.meltEnd) * 0.40;
+    }
+    if (e < s.boilEnd) return 0.70;
+    return 0.70 + (e - s.boilEnd) / (1.0 - s.boilEnd) * 0.30;
+  }
+
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTRB(left - 8, top - 8, right + 8, bottom + 8),
+        const Radius.circular(10)),
+    Paint()..color = Colors.black.withValues(alpha: 0.22),
+  );
+
+  final path = Path();
+  const samples = 48;
+  for (var i = 0; i <= samples; i++) {
+    final e = i / samples;
+    final p = Offset(px(e), py(tempFor(e)));
+    if (i == 0) {
+      path.moveTo(p.dx, p.dy);
+    } else {
+      path.lineTo(p.dx, p.dy);
+    }
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = Colors.white.withValues(alpha: 0.6)
+      ..strokeJoin = StrokeJoin.round,
+  );
+
+  // The boiling plateau glows hot — the danger zone.
+  canvas.drawLine(
+    Offset(px(s.boilStart), py(0.70)),
+    Offset(px(s.boilEnd), py(0.70)),
+    Paint()
+      ..color = _kHeat
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round,
+  );
+
+  // A dot overshot onto the plateau.
+  final dot = Offset(px((s.boilStart + s.boilEnd) / 2), py(0.70));
+  canvas.drawCircle(dot, 6, Paint()..color = _kHeat);
+  canvas.drawCircle(
+      dot, 6, Paint()..color = Colors.white.withValues(alpha: 0.4));
+
+  GameFx.text(canvas, 'BREAKING BONDS',
+      Offset(size.width * 0.5, top - size.height * 0.10), 16, _kHeat,
+      display: true, glow: 0.5);
+  GameFx.text(canvas, 'ENERGY IN  →', Offset(left + 44, bottom + 18), 9,
+      Potatuhs.textFaint,
+      weight: FontWeight.w700);
+}
+
+// Frame 4 — FLASH POINT: the final seconds squeeze the band and pay a flat +25.
+void _legendFlash(Canvas canvas, Size size) {
+  if (size.width < 80 || size.height < 80) return;
+  final x = size.width * 0.4;
+  final top = size.height * 0.24, bottom = size.height * 0.76;
+  final hgt = bottom - top;
+  double ty(double t) => bottom - t.clamp(0.0, 1.0) * hgt;
+
+  canvas.drawLine(
+    Offset(x, top),
+    Offset(x, bottom),
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..strokeWidth = 10
+      ..strokeCap = StrokeCap.round,
+  );
+
+  // A TIGHT band — flash point pinches it.
+  final bandRect = Rect.fromLTRB(x - 9, ty(0.57), x + 9, ty(0.50));
+  final bandRR = RRect.fromRectAndRadius(bandRect, const Radius.circular(5));
+  canvas.drawRRect(bandRR, Paint()..color = _kGas.withValues(alpha: 0.34));
+  canvas.drawRRect(
+    bandRR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = _kGas,
+  );
+
+  final yc = ty(0.535);
+  canvas.drawLine(Offset(x, bottom), Offset(x, yc),
+      Paint()..color = _kHeat..strokeWidth = 10..strokeCap = StrokeCap.round);
+  canvas.drawCircle(Offset(x, yc), 7, Paint()..color = _kHeat);
+  canvas.drawCircle(
+      Offset(x, yc), 7, Paint()..color = Colors.white.withValues(alpha: 0.35));
+
+  GameFx.text(canvas, 'FLASH POINT',
+      Offset(size.width * 0.5, top - size.height * 0.10), 18, _kHeat,
+      display: true, glow: 0.6);
+  GameFx.text(canvas, '+25', Offset(x + 42, yc), 15, _kGood,
+      weight: FontWeight.w800, display: true);
+}
+
+/// The visual manual for Phase Change v2 — wired into the registry spec.
+final List<LegendFrame> phaseChangeV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Lock molecules as SOLID, LIQUID or GAS', paint: _legendStates),
+  const LegendFrame(
+      caption: 'Feather HEAT & COOL to hold the target band',
+      paint: _legendBand),
+  const LegendFrame(
+      caption: 'Overshoot a plateau and energy breaks bonds, not heat',
+      paint: _legendCurve),
+  const LegendFrame(
+      caption: 'FLASH POINT last 12s: hold the tighter band for +25',
+      paint: _legendFlash),
+];
 
 // ═══ Painter ══════════════════════════════════════════════════════════════════
 class _PhasePainter extends CustomPainter {

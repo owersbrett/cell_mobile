@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../../fx.dart';
 import '../../mini_game.dart';
@@ -131,7 +132,8 @@ class LobbyingGame extends StatefulWidget {
 
 class _LobbyingGameState extends State<LobbyingGame>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
   final math.Random _rng = math.Random();
 
   double _budget = _kStartBudget;
@@ -169,15 +171,58 @@ class _LobbyingGameState extends State<LobbyingGame>
   void initState() {
     super.initState();
     _bill = _makeBill();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to lobby itself. Registered always
+    // (harmless in normal play — the host only calls it in hands-free mode).
+    // See [_autoStep]. This is an action game, so it acts every host tick.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ─── ATTRACT autopilot ──────────────────────────────────────────────────────
+  /// One hands-free lobbying move per host tick (~250ms). Deterministic, no
+  /// synthetic taps: it reads the live panel and spends ONE donation on the
+  /// official whose nudge most raises the bill's projected pass-% — i.e. a cheap
+  /// swing vote near the flip point, not a sure thing (wasted, diminishing
+  /// returns) or a lost cause. It skips overreach (scandal risk) and stops once
+  /// the bill is comfortably passing, so the timer banks the payout cleanly.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Already winning → don't overspend; let the vote timer resolve it.
+    if (_passProbability() >= 0.85) return;
+    // Can't afford the current donation → nothing to do.
+    if (_budget < _donation - 1e-6) return;
+
+    final baseline = _passProbability();
+    _Official? best;
+    double bestGain = 0.0;
+    for (final o in _bill.panel) {
+      // Diminishing returns / scandal guards: skip officials already safely YES,
+      // those a donation would push past saturation, and any running hot.
+      if (o.heat > 0.6) continue;
+      if (_yesProb(o) >= 0.9) continue;
+      final unitsAfter = (o.invested + _donation) / (o.price * _kUnitCost);
+      if (unitsAfter > _kSaturationUnits) continue;
+      // Marginal improvement to the bill's pass probability from one donation.
+      // Evaluate without side effects by briefly toggling invested.
+      final saved = o.invested;
+      o.invested += _donation;
+      final gain = _passProbability() - baseline;
+      o.invested = saved;
+      if (gain > bestGain) {
+        bestGain = gain;
+        best = o;
+      }
+    }
+    // Nothing meaningfully movable (every swing is padding or waste) → hold.
+    if (best == null || bestGain < 1e-4) return;
+    _invest(best);
   }
 
   // ─── Influence model ────────────────────────────────────────────────────────
@@ -246,8 +291,13 @@ class _LobbyingGameState extends State<LobbyingGame>
   }
 
   // ─── Main loop (host owns the wall clock) ───────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the sim must
+    // advance by wall-clock time regardless of the render rate.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     setState(() {
       _elapsed += dt;
       _fx.removeWhere((p) => !p.step(dt));
@@ -808,3 +858,254 @@ class _FxPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _FxPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the REAL in-game
+// components (the official card, its yes-% bar, the projected-% banner, the
+// scandal heat bar) in the game's own style. Static + cheap: rendered once on
+// the intro screen, never per frame. Palette reuses the game's own constants
+// (_kGreen / _kRed / the accent green) + lib/theme/potatuhs.dart — no new hex.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kLegendAccent = _LobbyingGameState._accent; // 0xFF9CCC65 (reused)
+
+// A rounded surface panel, matching the game's Potatuhs.surface cards.
+void _legendPanel(Canvas c, Rect r, Color fill, Color border,
+    {double radius = 12, double stroke = 1.5}) {
+  final rr = RRect.fromRectAndRadius(r, Radius.circular(radius));
+  c.drawRRect(rr, Paint()..color = fill);
+  c.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke
+        ..color = border);
+}
+
+// A small rounded chip with centred label — the leaning / payout chips.
+void _legendChip(Canvas c, Offset center, String label, double fontSize,
+    Color tint) {
+  final w = fontSize * (label.length * 0.62) + 14;
+  final h = fontSize + 8;
+  final r = Rect.fromCenter(center: center, width: w, height: h);
+  _legendPanel(c, r, tint.withValues(alpha: 0.18),
+      tint.withValues(alpha: 0.55),
+      radius: h / 2, stroke: 1);
+  GameFx.text(c, label, center, fontSize, tint, weight: FontWeight.w800);
+}
+
+// The official's yes-% bar (red→green fill), exactly like the card's bar.
+void _legendProbBar(Canvas c, Rect r, double p, {bool showLabel = true}) {
+  final rr = RRect.fromRectAndRadius(r, Radius.circular(r.height / 2));
+  c.drawRRect(rr, Paint()..color = Colors.white.withValues(alpha: 0.08));
+  final fillW = (r.width * p.clamp(0.0, 1.0));
+  if (fillW > 0.5) {
+    final col = Color.lerp(_kRed, _kGreen, p.clamp(0.0, 1.0))!;
+    c.save();
+    c.clipRRect(rr);
+    c.drawRect(
+      Rect.fromLTWH(r.left, r.top, fillW, r.height),
+      Paint()
+        ..shader = LinearGradient(colors: [
+          col.withValues(alpha: 0.5),
+          col,
+        ]).createShader(Rect.fromLTWH(r.left, r.top, fillW, r.height)),
+    );
+    c.restore();
+  }
+  if (showLabel) {
+    GameFx.text(c, '${(p * 100).round()}% YES', r.center,
+        (r.height * 0.55).clamp(7.0, 12.0), Potatuhs.textPrimary,
+        weight: FontWeight.w800);
+  }
+}
+
+// One official card: potato portrait, name, leaning chip, yes-% bar. [heat]
+// tints the border red and (when > 0) draws a scandal-risk bar under it.
+void _legendOfficialCard(Canvas c, Rect r,
+    {required String name,
+    required double yes,
+    required String lean,
+    required Color leanCol,
+    String? marginal,
+    Color? marginalCol,
+    double heat = 0}) {
+  _legendPanel(
+    c,
+    r,
+    Potatuhs.inkPanel.withValues(alpha: 0.85),
+    heat > 0.5
+        ? _kRed.withValues(alpha: 0.5 + 0.4 * heat)
+        : _kLegendAccent.withValues(alpha: 0.3),
+    radius: 12,
+  );
+  final pad = r.height * 0.14;
+  // Potato portrait — the literal '🥔' the game draws on each card.
+  final potY = r.top + pad + r.height * 0.14;
+  GameFx.text(c, '\u{1F954}', Offset(r.left + pad + r.height * 0.16, potY),
+      r.height * 0.28, Potatuhs.textPrimary);
+  GameFx.text(
+      c,
+      name,
+      Offset(r.left + pad + r.height * 0.16 + r.width * 0.22, potY),
+      (r.height * 0.16).clamp(9.0, 14.0),
+      Potatuhs.textPrimary,
+      weight: FontWeight.w700);
+  // Leaning chip, top-right.
+  _legendChip(c, Offset(r.right - pad - r.width * 0.13, potY), lean,
+      (r.height * 0.11).clamp(6.0, 9.0), leanCol);
+  // Yes-% bar across the middle.
+  final barRect = Rect.fromLTWH(
+      r.left + pad, r.center.dy - r.height * 0.02, r.width - pad * 2,
+      r.height * 0.20);
+  _legendProbBar(c, barRect, yes);
+  // Marginal readout (the "where a dollar moves the needle" line).
+  if (marginal != null) {
+    GameFx.text(
+        c,
+        marginal,
+        Offset(r.center.dx, r.bottom - pad - r.height * 0.06),
+        (r.height * 0.12).clamp(7.0, 10.0),
+        marginalCol ?? _kLegendAccent,
+        weight: FontWeight.w700);
+  }
+  // Scandal-risk heat bar along the bottom.
+  if (heat > 0.02) {
+    final hr = Rect.fromLTWH(r.left + pad, r.bottom - pad - r.height * 0.04,
+        (r.width - pad * 2), r.height * 0.05);
+    final hrr = RRect.fromRectAndRadius(hr, const Radius.circular(3));
+    c.drawRRect(hrr, Paint()..color = Colors.white.withValues(alpha: 0.06));
+    c.save();
+    c.clipRRect(hrr);
+    c.drawRect(
+        Rect.fromLTWH(hr.left, hr.top, hr.width * heat.clamp(0.0, 1.0),
+            hr.height),
+        Paint()..color = _kRed);
+    c.restore();
+  }
+}
+
+// Frame 1 — the core object + verb: an official card you tap to fund.
+void _legendCore(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = Rect.fromLTWH(size.width * 0.08, size.height * 0.16,
+      size.width * 0.84, size.height * 0.5);
+  _legendOfficialCard(canvas, r,
+      name: 'Sen. Russet',
+      yes: 0.52,
+      lean: 'SWING VOTE',
+      leanCol: Potatuhs.sienna,
+      marginal: 'next \$25: +8%');
+  // A DONATE chip below, the spend you tap with.
+  _legendChip(canvas, Offset(size.width * 0.5, size.height * 0.82), '\$25',
+      (size.height * 0.05).clamp(11.0, 16.0), Potatuhs.gold);
+}
+
+// Frame 2 — how to score: push PROJECTED % over NEED, bank the payout.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = Rect.fromLTWH(size.width * 0.08, size.height * 0.12,
+      size.width * 0.84, size.height * 0.62);
+  _legendPanel(canvas, r, Potatuhs.inkPanel.withValues(alpha: 0.92),
+      _kLegendAccent.withValues(alpha: 0.4), radius: 14);
+  final pad = r.width * 0.06;
+  // Bill title + payout chip.
+  GameFx.text(canvas, 'Fryer Subsidy Act',
+      Offset(r.left + pad + r.width * 0.24, r.top + r.height * 0.16),
+      (r.height * 0.11).clamp(11.0, 16.0), Potatuhs.gold,
+      weight: FontWeight.w800);
+  _legendChip(canvas, Offset(r.right - pad - r.width * 0.15,
+      r.top + r.height * 0.16), 'PAYS \$320',
+      (r.height * 0.09).clamp(8.0, 11.0), Potatuhs.gold);
+  // The big PROJECTED % readout (green = passing).
+  GameFx.text(canvas, 'PROJECTED',
+      Offset(r.center.dx, r.top + r.height * 0.40),
+      (r.height * 0.08).clamp(7.0, 10.0), Potatuhs.textFaint,
+      weight: FontWeight.w700);
+  GameFx.text(canvas, '78%', Offset(r.center.dx, r.top + r.height * 0.58),
+      (r.height * 0.24).clamp(20.0, 40.0), _kGreen,
+      weight: FontWeight.w800, glow: 0.5);
+  // Vote-timer bar near the bottom.
+  final tr = Rect.fromLTWH(r.left + pad, r.bottom - r.height * 0.14,
+      r.width - pad * 2, r.height * 0.06);
+  final trr = RRect.fromRectAndRadius(tr, const Radius.circular(3));
+  canvas.drawRRect(trr, Paint()..color = Colors.white.withValues(alpha: 0.08));
+  canvas.save();
+  canvas.clipRRect(trr);
+  canvas.drawRect(
+      Rect.fromLTWH(tr.left, tr.top, tr.width * 0.6, tr.height),
+      Paint()..color = _kLegendAccent);
+  canvas.restore();
+}
+
+// Frame 3 — the danger: overspend one official → SCANDAL, lose the chest.
+void _legendScandal(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = Rect.fromLTWH(size.width * 0.08, size.height * 0.14,
+      size.width * 0.84, size.height * 0.48);
+  _legendOfficialCard(canvas, r,
+      name: 'Gov. Yukon',
+      yes: 0.86,
+      lean: 'OVERREACH',
+      leanCol: _kRed,
+      heat: 1.0);
+  // A SCANDAL pop, like the one the game throws on max heat.
+  GameFx.text(canvas, 'SCANDAL!  -\$120',
+      Offset(size.width * 0.5, size.height * 0.80),
+      (size.height * 0.06).clamp(14.0, 24.0), _kRed,
+      weight: FontWeight.w800, glow: 0.7);
+}
+
+// Frame 4 — the escalation: faster timers, bigger payouts, panels grow to 7.
+void _legendEscalation(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  // A tall, dense 7-official panel (late-game) with a short, urgent timer bar.
+  final top = size.height * 0.1;
+  const rows = 7;
+  final gap = size.height * 0.012;
+  final rowH = (size.height * 0.66 - gap * (rows - 1)) / rows;
+  for (int i = 0; i < rows; i++) {
+    final ry = top + i * (rowH + gap);
+    final rr = Rect.fromLTWH(size.width * 0.08, ry, size.width * 0.6, rowH);
+    _legendPanel(canvas, rr, Potatuhs.inkPanel.withValues(alpha: 0.8),
+        _kLegendAccent.withValues(alpha: 0.25),
+        radius: 6, stroke: 1);
+    // A thin yes-% bar in each row, various fills.
+    final bar = Rect.fromLTWH(rr.left + rr.width * 0.06,
+        rr.center.dy - rowH * 0.16, rr.width * 0.88, rowH * 0.32);
+    _legendProbBar(canvas, bar, 0.28 + 0.62 * ((i * 0.19) % 1.0),
+        showLabel: false);
+  }
+  // Big payout chip + a short red (urgent) vote timer on the right.
+  _legendChip(canvas, Offset(size.width * 0.83, size.height * 0.22),
+      'PAYS \$440', (size.height * 0.045).clamp(9.0, 13.0), Potatuhs.gold);
+  final tr = Rect.fromLTWH(size.width * 0.72, size.height * 0.34,
+      size.width * 0.22, size.height * 0.03);
+  final trr = RRect.fromRectAndRadius(tr, const Radius.circular(3));
+  canvas.drawRRect(trr, Paint()..color = Colors.white.withValues(alpha: 0.08));
+  canvas.save();
+  canvas.clipRRect(trr);
+  canvas.drawRect(
+      Rect.fromLTWH(tr.left, tr.top, tr.width * 0.25, tr.height),
+      Paint()..color = _kRed);
+  canvas.restore();
+  GameFx.text(canvas, '6.0s', Offset(size.width * 0.83, size.height * 0.42),
+      (size.height * 0.05).clamp(11.0, 16.0), _kRed,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Lobbying — wired into the registry spec.
+final List<LegendFrame> lobbyingLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap an official to fund their YES vote',
+      paint: _legendCore),
+  const LegendFrame(
+      caption: 'Push PROJECTED % over NEED before the vote to bank cash',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Overspend one official — they overheat into SCANDAL',
+      paint: _legendScandal),
+  const LegendFrame(
+      caption: 'Bills speed up, pay more, and grow to 7 officials',
+      paint: _legendEscalation),
+];

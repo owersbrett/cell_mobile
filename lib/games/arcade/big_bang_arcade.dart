@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import '../fx.dart';
 import '../mini_game.dart';
 
 const _kFont = 'Avenir';
@@ -113,12 +114,47 @@ class _BigBangArcadeState extends State<BigBangArcade>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays Big Bang the way a
+  /// skilled thumb would, not randomly: it scans the live sparks, ignores every
+  /// red antimatter orb, and catches the matter spark that is closest to fading
+  /// back into the void (highest age/lifespan ratio). Grabbing the most urgent
+  /// spark salvages combos that expiry would otherwise fizzle and banks real
+  /// points; catching any matter also extends the streak/multiplier. If no
+  /// matter spark is alive this instant, it does nothing. The host owns the
+  /// clock, so the round still ends on time.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    _Spark? best;
+    var bestUrgency = -1.0;
+    for (final s in _sparks) {
+      if (s.caught || s.antimatter || s.age >= s.lifespan) continue;
+      // Urgency = how far into its life the spark is; 1.0 = about to expire.
+      final urgency = s.age / s.lifespan;
+      if (urgency > bestUrgency) {
+        bestUrgency = urgency;
+        best = s;
+      }
+    }
+    if (best == null) return; // no valid target — never tap antimatter or void
+
+    // Fire the exact code path a real tap on this spark would (see [_onTapDown]).
+    best.caught = true;
+    _catchMatter(best);
   }
 
   void _onTick(Duration elapsed) {
@@ -495,11 +531,9 @@ class _VoidPainter extends CustomPainter {
   }
 
   void _paintStars(Canvas canvas) {
-    final paint = Paint();
     for (final st in stars) {
       final twinkle = 0.25 + 0.35 * (0.5 + 0.5 * math.sin(time * 2 + st.phase));
-      paint.color = Colors.white.withValues(alpha: twinkle);
-      canvas.drawCircle(st.pos, st.size, paint);
+      _BigBangArt.star(canvas, st.pos, st.size, twinkle);
     }
   }
 
@@ -512,51 +546,94 @@ class _VoidPainter extends CustomPainter {
   }
 
   void _paintMatter(Canvas canvas, _Spark s) {
-    final env = _envelope(s);
+    _BigBangArt.matter(canvas, s.pos,
+        env: _envelope(s), time: time, seed: s.seed);
+  }
+
+  void _paintAntimatter(Canvas canvas, _Spark s) {
+    _BigBangArt.antimatter(canvas, s.pos,
+        env: _envelope(s), time: time, seed: s.seed);
+  }
+
+  void _paintBurst(Canvas canvas, _Burst b) {
+    _BigBangArt.burst(canvas, b.pos,
+        t: (b.age / _Burst.life).clamp(0.0, 1.0),
+        color: b.color,
+        seed: b.seed);
+  }
+
+  @override
+  bool shouldRepaint(covariant _VoidPainter oldDelegate) => true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// _BigBangArt — the component draws, shared by the live painter above and the
+// visual manual below so the manual shows the EXACT sparks the player meets.
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _BigBangArt {
+  _BigBangArt._();
+
+  /// One golden matter spark: halo, glowing body, white-hot core, orbiting
+  /// flecks. [env] is the pop-in/fade-out envelope (1.0 = fully alive).
+  static void matter(
+    Canvas canvas,
+    Offset pos, {
+    double env = 1.0,
+    double time = 0,
+    double seed = 0,
+  }) {
     if (env <= 0) return;
-    final pulse = 1.0 + 0.12 * math.sin(time * 9 + s.seed * math.pi * 2);
-    final r = (13.0 + s.seed * 6.0) * env * pulse;
+    final pulse = 1.0 + 0.12 * math.sin(time * 9 + seed * math.pi * 2);
+    final r = (13.0 + seed * 6.0) * env * pulse;
 
     // Outer halo.
     final halo = Paint()
       ..color = _kAccent.withValues(alpha: 0.35 * env)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18);
-    canvas.drawCircle(s.pos, r * 1.9, halo);
+    canvas.drawCircle(pos, r * 1.9, halo);
 
     // Glowing body.
     final body = Paint()
       ..color = _kAccent.withValues(alpha: 0.95 * env)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-    canvas.drawCircle(s.pos, r, body);
+    canvas.drawCircle(pos, r, body);
 
     // White-hot core.
     final core = Paint()..color = Colors.white.withValues(alpha: 0.95 * env);
-    canvas.drawCircle(s.pos, r * 0.42, core);
+    canvas.drawCircle(pos, r * 0.42, core);
 
     // Tiny orbiting flecks for richness.
     final fleck = Paint()..color = Colors.white.withValues(alpha: 0.7 * env);
     for (var i = 0; i < 3; i++) {
-      final a = time * (2.5 + i) + s.seed * 10 + i * 2.1;
+      final a = time * (2.5 + i) + seed * 10 + i * 2.1;
       final fr = r * (1.35 + 0.25 * i);
       canvas.drawCircle(
-        s.pos + Offset(math.cos(a) * fr, math.sin(a) * fr),
+        pos + Offset(math.cos(a) * fr, math.sin(a) * fr),
         1.6,
         fleck,
       );
     }
   }
 
-  void _paintAntimatter(Canvas canvas, _Spark s) {
-    final env = _envelope(s);
+  /// One red antimatter orb: red halo, jagged spinning star, warning ring,
+  /// dark anti-core.
+  static void antimatter(
+    Canvas canvas,
+    Offset pos, {
+    double env = 1.0,
+    double time = 0,
+    double seed = 0,
+  }) {
     if (env <= 0) return;
-    final spin = time * 1.8 + s.seed * math.pi * 2;
-    final r = (15.0 + s.seed * 5.0) * env;
+    final spin = time * 1.8 + seed * math.pi * 2;
+    final r = (15.0 + seed * 5.0) * env;
 
     // Red halo.
     final halo = Paint()
       ..color = _kAnti.withValues(alpha: 0.30 * env)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14);
-    canvas.drawCircle(s.pos, r * 1.7, halo);
+    canvas.drawCircle(pos, r * 1.7, halo);
 
     // Jagged star polygon.
     final path = Path();
@@ -564,7 +641,7 @@ class _VoidPainter extends CustomPainter {
     for (var i = 0; i <= points * 2; i++) {
       final a = spin + i * math.pi / points;
       final rad = i.isEven ? r : r * 0.55;
-      final pt = s.pos + Offset(math.cos(a) * rad, math.sin(a) * rad);
+      final pt = pos + Offset(math.cos(a) * rad, math.sin(a) * rad);
       if (i == 0) {
         path.moveTo(pt.dx, pt.dy);
       } else {
@@ -579,7 +656,7 @@ class _VoidPainter extends CustomPainter {
 
     // Warning ring.
     canvas.drawCircle(
-      s.pos,
+      pos,
       r * 1.35,
       Paint()
         ..style = PaintingStyle.stroke
@@ -589,41 +666,206 @@ class _VoidPainter extends CustomPainter {
 
     // Dark anti-core.
     canvas.drawCircle(
-      s.pos,
+      pos,
       r * 0.4,
       Paint()..color = Colors.black.withValues(alpha: 0.9 * env),
     );
   }
 
-  void _paintBurst(Canvas canvas, _Burst b) {
-    final t = (b.age / _Burst.life).clamp(0.0, 1.0);
+  /// The catch/hit burst: expanding ring + radiating particles. [t] 0..1.
+  static void burst(
+    Canvas canvas,
+    Offset pos, {
+    required double t,
+    required Color color,
+    double seed = 0,
+  }) {
     final fade = (1.0 - t);
 
     // Expanding ring.
     canvas.drawCircle(
-      b.pos,
+      pos,
       12 + 52 * Curves.easeOut.transform(t),
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0 * fade + 0.5
-        ..color = b.color.withValues(alpha: 0.8 * fade),
+        ..color = color.withValues(alpha: 0.8 * fade),
     );
 
     // Radiating particles.
     final paint = Paint();
     const count = 10;
     for (var i = 0; i < count; i++) {
-      final a = b.seed * math.pi * 2 + i * math.pi * 2 / count;
+      final a = seed * math.pi * 2 + i * math.pi * 2 / count;
       final dist = 10 + 46 * Curves.easeOut.transform(t);
-      final wobble = 1.0 + 0.3 * math.sin(b.seed * 20 + i * 3.0);
-      final pt =
-          b.pos + Offset(math.cos(a) * dist * wobble, math.sin(a) * dist);
-      paint.color = (i.isEven ? b.color : Colors.white)
-          .withValues(alpha: 0.9 * fade);
+      final wobble = 1.0 + 0.3 * math.sin(seed * 20 + i * 3.0);
+      final pt = pos + Offset(math.cos(a) * dist * wobble, math.sin(a) * dist);
+      paint.color =
+          (i.isEven ? color : Colors.white).withValues(alpha: 0.9 * fade);
       canvas.drawCircle(pt, 2.4 * fade + 0.4, paint);
     }
   }
 
-  @override
-  bool shouldRepaint(covariant _VoidPainter oldDelegate) => true;
+  /// One drifting star-dust mote.
+  static void star(Canvas canvas, Offset pos, double size, double twinkle) {
+    canvas.drawCircle(
+      pos,
+      size,
+      Paint()..color = Colors.white.withValues(alpha: twinkle),
+    );
+  }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components (same _BigBangArt the live game uses).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The void backdrop shared by every card: black with the faint warm breath at
+/// center, plus a scatter of star dust. Guards degenerate sizes.
+void _legendVoid(Canvas canvas, Size size, {int starCount = 14}) {
+  final bgPaint = Paint()
+    ..shader = RadialGradient(
+      colors: [_kAccent.withValues(alpha: 0.06), Colors.black],
+      stops: const [0.0, 1.0],
+    ).createShader(
+      Rect.fromCircle(
+        center: Offset(size.width / 2, size.height / 2),
+        radius: size.longestSide * 0.7,
+      ),
+    );
+  canvas.drawRect(Offset.zero & size, bgPaint);
+
+  final rng = math.Random(7);
+  for (var i = 0; i < starCount; i++) {
+    _BigBangArt.star(
+      canvas,
+      Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height),
+      0.6 + rng.nextDouble() * 1.4,
+      0.25 + rng.nextDouble() * 0.35,
+    );
+  }
+}
+
+/// Card 1 — the verb: a fresh matter spark to tap, next to one fading away.
+void _legendTapMatter(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size);
+
+  // A fresh, fully-alive spark with a tap ring around it.
+  final fresh = Offset(size.width * 0.36, size.height * 0.44);
+  _BigBangArt.matter(canvas, fresh, env: 1.0, time: 1.3, seed: 0.7);
+  canvas.drawCircle(
+    fresh,
+    36,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Colors.white.withValues(alpha: 0.75),
+  );
+  GameFx.text(canvas, 'TAP!', fresh.translate(0, 52), 12, Colors.white,
+      weight: FontWeight.w800);
+
+  // The same spark late in life, slipping back into the void.
+  final fading = Offset(size.width * 0.74, size.height * 0.58);
+  _BigBangArt.matter(canvas, fading, env: 0.30, time: 2.1, seed: 0.2);
+  GameFx.text(canvas, 'fading...', fading.translate(0, 30), 11,
+      Colors.white.withValues(alpha: 0.5));
+}
+
+/// Card 2 — scoring: the catch burst plus the streak combo badge.
+void _legendCombo(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size);
+
+  // A spark mid-catch: golden burst + score popup.
+  final hit = Offset(size.width * 0.34, size.height * 0.52);
+  _BigBangArt.burst(canvas, hit, t: 0.35, color: _kAccent, seed: 0.4);
+  GameFx.text(canvas, '+50', hit.translate(0, -46), 20,
+      const Color(0xFFFFD54F),
+      weight: FontWeight.w800, glow: 0.8);
+
+  // The combo badge from the top-right of the live game.
+  final badge = Rect.fromCenter(
+    center: Offset(size.width * 0.70, size.height * 0.36),
+    width: 108,
+    height: 34,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(badge, const Radius.circular(14)),
+    Paint()..color = Colors.black.withValues(alpha: 0.55),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(badge, const Radius.circular(14)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = _kAccent.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, '×5', badge.center.translate(-30, 0), 17, _kAccent,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '13 streak', badge.center.translate(16, 1), 11,
+      Colors.white.withValues(alpha: 0.7),
+      weight: FontWeight.w700);
+
+  // A next spark waiting to keep the chain alive.
+  _BigBangArt.matter(canvas,
+      Offset(size.width * 0.72, size.height * 0.70),
+      env: 1.0, time: 0.6, seed: 0.3);
+}
+
+/// Card 3 — the danger: the red antimatter orb and its penalty.
+void _legendAntimatter(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size);
+
+  final anti = Offset(size.width * 0.5, size.height * 0.44);
+  _BigBangArt.antimatter(canvas, anti, env: 1.0, time: 0.9, seed: 0.5);
+  _BigBangArt.burst(canvas, anti, t: 0.55, color: _kAnti, seed: 0.8);
+  GameFx.text(canvas, '-15', anti.translate(0, -56), 20, _kAnti,
+      weight: FontWeight.w800, glow: 0.8);
+  GameFx.text(canvas, 'streak lost', anti.translate(0, 58), 12,
+      _kAnti.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+}
+
+/// Card 4 — the escalation: late-game waves flood the void with sparks.
+void _legendWaves(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size, starCount: 26);
+
+  final rng = math.Random(3);
+  for (var i = 0; i < 7; i++) {
+    final pos = Offset(
+      size.width * (0.14 + rng.nextDouble() * 0.72),
+      size.height * (0.18 + rng.nextDouble() * 0.60),
+    );
+    _BigBangArt.matter(canvas, pos,
+        env: 0.55 + rng.nextDouble() * 0.45,
+        time: rng.nextDouble() * 3,
+        seed: rng.nextDouble());
+  }
+  // One antimatter hiding in the flood.
+  _BigBangArt.antimatter(canvas,
+      Offset(size.width * 0.62, size.height * 0.62),
+      env: 0.9, time: 1.4, seed: 0.35);
+  GameFx.text(canvas, 'WAVE ×8', Offset(size.width * 0.5, size.height * 0.88),
+      12, _kAccent.withValues(alpha: 0.9),
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Big Bang — wired into the registry spec.
+final List<LegendFrame> bigBangLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap gold matter sparks before they fade away',
+      paint: _legendTapMatter),
+  const LegendFrame(
+      caption: 'Chain catches — streaks build up to a ×5 combo',
+      paint: _legendCombo),
+  const LegendFrame(
+      caption: 'Never tap red antimatter: −15 and streak lost',
+      paint: _legendAntimatter),
+  const LegendFrame(
+      caption: 'Late game floods in waves — catch what you can',
+      paint: _legendWaves),
+];

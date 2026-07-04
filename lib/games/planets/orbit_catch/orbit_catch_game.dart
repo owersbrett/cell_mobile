@@ -24,6 +24,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -375,16 +376,282 @@ final List<_LevelBlueprint> _kLevelLadder = [
   ),
 ];
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME primitives the
+// live painter uses (gravity wells, gold catcher, cannon, glaucous planetlet +
+// its blurred trail) so the manual shows the LITERAL components in flight.
+// Static + self-contained: no ticker, fixed pulse, cheap. Guards tiny canvases.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A static gravity well — mirrors `_GravityPuzzlePainter._paintWell` (field
+/// gradient, influence rings ∝ mass, rim glow, shaded orb, giant equator ring,
+/// size label) with animation frozen so a card renders once.
+void _legendWell(Canvas canvas, Offset pos, double radius, Color color,
+    {double mass = 3.4, String label = ''}) {
+  final influence = radius + mass * 18;
+  canvas.drawCircle(
+    pos,
+    influence,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          color.withValues(alpha: 0.12),
+          color.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromCircle(center: pos, radius: influence)),
+  );
+  final ringCount = (3 + mass).round().clamp(3, 7);
+  final ringSpacing = (influence - radius) / (ringCount + 1);
+  for (int r = ringCount; r >= 1; r--) {
+    final rr = radius + r * ringSpacing;
+    canvas.drawCircle(
+      pos,
+      rr,
+      Paint()
+        ..color = color.withValues(alpha: 0.05 + 0.04 * (1 - r / ringCount))
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.9,
+    );
+  }
+  canvas.drawCircle(
+    pos,
+    radius + 12,
+    Paint()
+      ..color = color.withValues(alpha: 0.26)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+  GameFx.orb(canvas, pos, radius, color, glow: 1.4, specular: true);
+  if (radius >= 34) {
+    canvas.save();
+    canvas.translate(pos.dx, pos.dy);
+    canvas.scale(1.0, 0.30);
+    canvas.drawCircle(
+      Offset.zero,
+      radius * 1.55,
+      Paint()
+        ..color = color.withValues(alpha: 0.32)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.2,
+    );
+    canvas.restore();
+  }
+  if (label.isNotEmpty) {
+    GameFx.text(canvas, label, pos.translate(0, radius + 15), 9,
+        color.withValues(alpha: 0.8));
+  }
+}
+
+/// The gold catcher — mirrors `_paintCatcher` (intake rings, drift arrow when
+/// moving, gold orb, crosshair) with the pulse frozen.
+void _legendCatcher(Canvas canvas, Offset pos, double radius,
+    {bool moving = false}) {
+  for (int i = 0; i < 2; i++) {
+    canvas.drawCircle(
+      pos,
+      radius + 10 + i * 9,
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.16 - i * 0.06)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+  if (moving) {
+    final ax = Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.4)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(pos.translate(-radius - 16, 0),
+        pos.translate(radius + 16, 0), ax);
+  }
+  GameFx.orb(canvas, pos, radius, Potatuhs.gold,
+      glow: 1.6, rim: Potatuhs.sienna, specular: true);
+  final ch = Paint()
+    ..color = Potatuhs.gold.withValues(alpha: 0.6)
+    ..strokeWidth = 1.3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(pos.translate(-11, 0), pos.translate(11, 0), ch);
+  canvas.drawLine(pos.translate(0, -11), pos.translate(0, 11), ch);
+}
+
+/// The cannon — mirrors `_paintCannon` (glow barrel at [angle] + ink hub).
+void _legendCannon(Canvas canvas, Offset pos, double angle) {
+  const barrelLen = 30.0;
+  final end = Offset(
+      pos.dx + cos(angle) * barrelLen, pos.dy + sin(angle) * barrelLen);
+  GameFx.glowLine(canvas, pos, end, Potatuhs.airForce, width: 5, progress: 1.0);
+  GameFx.orb(canvas, pos, 15, Potatuhs.inkPanel,
+      glow: 0.7, rim: Potatuhs.airForce, specular: false);
+}
+
+/// Points along a quadratic bend — a stand-in for the real curved sim path so
+/// the card can show a shot arcing around a well.
+List<Offset> _legendArc(Offset a, Offset ctrl, Offset b, int n) {
+  final pts = <Offset>[];
+  for (int i = 0; i <= n; i++) {
+    final t = i / n;
+    final mt = 1 - t;
+    pts.add(Offset(
+      mt * mt * a.dx + 2 * mt * t * ctrl.dx + t * t * b.dx,
+      mt * mt * a.dy + 2 * mt * t * ctrl.dy + t * t * b.dy,
+    ));
+  }
+  return pts;
+}
+
+/// The planetlet's glowing trail + orb — mirrors `_paintProjectile` (blurred
+/// air-force polyline + white core, glaucous planetlet at [pts.last]).
+void _legendTrail(Canvas canvas, List<Offset> pts, {double pr = 7.0}) {
+  if (pts.length >= 2) {
+    final path = Path()..moveTo(pts.first.dx, pts.first.dy);
+    for (var i = 1; i < pts.length; i++) {
+      path.lineTo(pts[i].dx, pts[i].dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..color = Potatuhs.airForce.withValues(alpha: 0.38)
+        ..strokeWidth = 6
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..color = Colors.white.withValues(alpha: 0.7)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+  if (pts.isNotEmpty) {
+    GameFx.orb(canvas, pts.last, pr, Potatuhs.glaucous,
+        glow: 1.9, rim: Colors.white, specular: true);
+  }
+}
+
+// ── Frame 1 — aim + gravity bends the shot ─────────────────────────────────
+void _legendAim(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final s = size.shortestSide;
+  final cannon = Offset(w * 0.15, h * 0.82);
+  final well = Offset(w * 0.52, h * 0.44);
+  final gr = s * 0.15;
+  _legendWell(canvas, well, gr, Potatuhs.airForce, mass: 3.8, label: 'GIANT');
+
+  // Curved preview arcing from the cannon, bending around the well.
+  final arc = _legendArc(cannon, Offset(w * 0.28, h * 0.20),
+      Offset(w * 0.86, h * 0.30), 26);
+  _legendTrail(canvas, arc, pr: s * 0.022);
+
+  // Aim arrow FROM the cannon (direct-aim: points where the shot goes).
+  final dir = (arc[3] - cannon);
+  final len = dir.distance;
+  if (len > 0.01) {
+    final u = dir / len;
+    final tip = cannon + u * (s * 0.22);
+    final ap = Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.9)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(cannon, tip, ap);
+    final perp = Offset(-u.dy, u.dx);
+    canvas.drawLine(tip, tip - u * 10 + perp * 6, ap);
+    canvas.drawLine(tip, tip - u * 10 - perp * 6, ap);
+  }
+  _legendCannon(canvas, cannon, atan2(dir.dy, dir.dx));
+}
+
+// ── Frame 2 — curve it into the gold catcher to score ──────────────────────
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final s = size.shortestSide;
+  final well = Offset(w * 0.40, h * 0.56);
+  final catcher = Offset(w * 0.76, h * 0.28);
+  _legendWell(canvas, well, s * 0.13, Potatuhs.sienna, mass: 3.2);
+  _legendCatcher(canvas, catcher, s * 0.075);
+
+  // Shot arcs up and around the well, curving into the catcher.
+  final arc = _legendArc(Offset(w * 0.14, h * 0.80),
+      Offset(w * 0.24, h * 0.30), catcher, 26);
+  _legendTrail(canvas, arc, pr: s * 0.022);
+}
+
+// ── Frame 3 — crash into a planet and the shot is lost ─────────────────────
+void _legendCrash(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final s = size.shortestSide;
+  final well = Offset(w * 0.56, h * 0.48);
+  final gr = s * 0.15;
+  _legendWell(canvas, well, gr, Potatuhs.airForce, mass: 3.8);
+
+  // Shot heading straight INTO the well, stopping at its surface.
+  final impact = Offset(well.dx - gr * 0.72, well.dy - gr * 0.62);
+  final arc = _legendArc(Offset(w * 0.14, h * 0.82),
+      Offset(w * 0.22, h * 0.42), impact, 22);
+  _legendTrail(canvas, arc, pr: s * 0.02);
+
+  // Impact burst — small filled sparks (well color + orange), like _spawnBurst.
+  final rng = Random(7);
+  for (int i = 0; i < 14; i++) {
+    final a = rng.nextDouble() * pi * 2;
+    final d = (0.2 + rng.nextDouble() * 0.9) * gr * 0.9;
+    final col = i.isEven ? Potatuhs.airForce : Potatuhs.orange;
+    canvas.drawCircle(
+      impact.translate(cos(a) * d, sin(a) * d),
+      (1.5 + rng.nextDouble() * 2.5),
+      Paint()..color = col.withValues(alpha: 0.85),
+    );
+  }
+}
+
+// ── Frame 4 — late game: dense field, tiny drifting catcher ────────────────
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final s = size.shortestSide;
+  _legendWell(canvas, Offset(w * 0.36, h * 0.40), s * 0.14, Potatuhs.airForce,
+      mass: 4.2, label: 'GIANT');
+  _legendWell(canvas, Offset(w * 0.64, h * 0.62), s * 0.12, Potatuhs.sienna,
+      mass: 3.4, label: 'GIANT');
+  _legendWell(canvas, Offset(w * 0.26, h * 0.70), s * 0.055, Potatuhs.copper,
+      mass: 0.7, label: 'SMALL');
+  // Tiny moving catcher tucked past the field.
+  _legendCatcher(canvas, Offset(w * 0.84, h * 0.24), s * 0.05, moving: true);
+}
+
+/// The visual manual for Planet Catch — wired into the registry spec.
+final List<LegendFrame> planetCatchLegendFrames = [
+  const LegendFrame(
+      caption: "Drag to aim — a planet's gravity bends your shot",
+      paint: _legendAim),
+  const LegendFrame(
+      caption: 'Curve the planetlet into the gold catcher to score',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Crash into a planet and the shot is lost',
+      paint: _legendCrash),
+  const LegendFrame(
+      caption: 'Later: dense fields and a tiny drifting catcher',
+      paint: _legendEscalate),
+];
+
 class PlanetCatchGame extends StatefulWidget {
   final MiniGameSession session;
-  const PlanetCatchGame({Key? key, required this.session}) : super(key: key);
+  const PlanetCatchGame({super.key, required this.session});
   @override
   State<PlanetCatchGame> createState() => _PlanetCatchGameState();
 }
 
 class _PlanetCatchGameState extends State<PlanetCatchGame>
     with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
 
   // ── progress (host owns score/timer/results) ───────────────────────────────
   int _level = 0; // index into the ladder
@@ -417,15 +684,92 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   void initState() {
     super.initState();
     _layout = _generateLayout();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick);
-    _ctrl.forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game can aim and launch itself. Registered here,
+    // dormant in normal play — the host only invokes it in hands-free mode.
+    // See [_autoStep]. Cleared on dispose.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent move per host tick (~250ms): if the cannon is idle (no live
+  /// shot) it aims a full-power launch straight from the cannon toward the
+  /// current catcher and fires. This is DIRECT-AIM — the launch velocity points
+  /// at the target exactly like a player's drag would — so it reuses the game's
+  /// own [_launch] handler and the strong gravity wells curve the shot the rest
+  /// of the way (competent, not perfect). Deterministic; never spams while a
+  /// planetlet is airborne.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_canvasSize == Size.zero) return;
+    // Only launch when nothing is in flight.
+    if (_projectile != null && _projectile!.alive) return;
+    final size = _canvasSize;
+    final c = _cannonPx(size);
+    final tpx = _targetPx(size);
+    final dx = tpx.dx - c.dx;
+    final dy = tpx.dy - c.dy;
+    final baseLen = sqrt(dx * dx + dy * dy);
+    if (baseLen < 0.001) return;
+    final baseAngle = atan2(dy, dx);
+
+    // A blind direct shot gets bent off course by the gravity wells and misses.
+    // Instead, sweep a deterministic fan of candidate launch vectors — a spread
+    // of aim angles around the straight line to the catcher × a few power
+    // levels — run each through the game's OWN curved sim ([_simulatePath]), and
+    // keep the vector whose predicted path passes closest to the catcher.
+    const offsets = <double>[
+      0.0, 0.12, -0.12, 0.26, -0.26, 0.42, -0.42, 0.6, -0.6,
+    ];
+    const powerFracs = <double>[1.0, 0.86, 0.72, 0.58];
+    final hitRadius = _targetRadius + _kProjectileRadius;
+
+    Offset? bestVel;
+    double bestMiss = double.infinity;
+    for (final pf in powerFracs) {
+      final speed = _kMinLaunchSpeed +
+          (_kMaxLaunchSpeed - _kMinLaunchSpeed) * pf;
+      for (final off in offsets) {
+        final a = baseAngle + off;
+        final vel = Offset(cos(a) * speed, sin(a) * speed);
+        final path = _simulatePath(vel, size);
+        // Closest approach of this path to the catcher center.
+        double miss = double.infinity;
+        for (final p in path) {
+          final mdx = p.dx - tpx.dx;
+          final mdy = p.dy - tpx.dy;
+          final d = sqrt(mdx * mdx + mdy * mdy);
+          if (d < miss) miss = d;
+          if (d < hitRadius) break; // this path already reaches the catcher
+        }
+        // First-wins on ties keeps it deterministic (prefers lower power / the
+        // direct 0.0 offset, which is listed first).
+        if (miss < bestMiss) {
+          bestMiss = miss;
+          bestVel = vel;
+        }
+      }
+    }
+
+    // Fall back to a full-power direct shot if the fan somehow found nothing.
+    final v = bestVel ??
+        Offset(dx / baseLen * _kMaxLaunchSpeed, dy / baseLen * _kMaxLaunchSpeed);
+    setState(() => _launch(v));
+  }
+
+  /// Fire a planetlet from the cannon with the given launch [velocity].
+  /// Shared by drag-release input and the attract autopilot.
+  void _launch(Offset velocity) {
+    final c = _cannonPx(_canvasSize);
+    _projectile =
+        _Projectile(x: c.dx, y: c.dy, vx: velocity.dx, vy: velocity.dy);
   }
 
   // ── layout generation ──────────────────────────────────────────────────────
@@ -479,8 +823,13 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   }
 
   // ── main tick ──────────────────────────────────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the game must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     if (!widget.session.isRunning) {
       // Still animate atmosphere so the canvas isn't frozen behind the host UI.
       setState(() => _t += dt);
@@ -625,10 +974,8 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
       return;
     }
     final launch = _launchVector(_canvasSize);
-    final c = _cannonPx(_canvasSize);
     setState(() {
-      _projectile =
-          _Projectile(x: c.dx, y: c.dy, vx: launch.dx, vy: launch.dy);
+      _launch(launch);
       _dragStart = null;
       _dragCurrent = null;
     });
@@ -650,9 +997,17 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   // ── trajectory preview — same gravity sim, same constants ─────────────────
   List<Offset> _buildPreview(Size size) {
     if (!_isDragging || !widget.session.isRunning) return const [];
+    return _simulatePath(_launchVector(size), size);
+  }
+
+  /// Walk the real gravity sim from the cannon along an arbitrary launch
+  /// [launchVel], returning the curved path as pixel points. Same constants as
+  /// the live shot, so it faithfully predicts where a shot would go. Stops early
+  /// where the path would crash into a well or leave the field. Shared by the
+  /// on-screen [_buildPreview] and the attract-mode aiming search ([_autoStep]).
+  List<Offset> _simulatePath(Offset launchVel, Size size) {
     final c = _cannonPx(size);
-    final v = _launchVector(size);
-    double px = c.dx, py = c.dy, vx = v.dx, vy = v.dy;
+    double px = c.dx, py = c.dy, vx = launchVel.dx, vy = launchVel.dy;
     final pts = <Offset>[];
     const minSq = _kMinGravDist * _kMinGravDist;
 
@@ -669,14 +1024,16 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
         vy += (ddy / dist) * force * _kPreviewDt;
         if (dist < body.radius + _kProjectileRadius) {
           pts.add(Offset(px, py));
-          return pts; // preview stops where it would crash into a well
+          return pts; // path stops where it would crash into a well
         }
       }
       px += vx * _kPreviewDt;
       py += vy * _kPreviewDt;
       pts.add(Offset(px, py));
       if (px < -120 || px > size.width + 120 ||
-          py < -120 || py > size.height + 120) break;
+          py < -120 || py > size.height + 120) {
+        break;
+      }
     }
     return pts;
   }
@@ -745,7 +1102,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
                       _loop > 0
                           ? 'Lv ${_level + 1} · Loop ${_loop + 1}'
                           : 'Lv ${_level + 1}',
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontFamily: Potatuhs.bodyFont,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
@@ -771,7 +1128,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
                   ),
                   child: Text(
                     _layout.hint,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontFamily: Potatuhs.displayFont,
                       fontSize: 12,
                       color: Potatuhs.gold,
@@ -1055,25 +1412,42 @@ class _GravityPuzzlePainter extends CustomPainter {
   void _paintProjectile(Canvas canvas) {
     if (projectile == null) return;
     final trail = projectile!.trail;
-    for (int i = 1; i < trail.length; i++) {
-      final frac = i / trail.length;
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Potatuhs.airForce.withValues(alpha: frac * 0.38)
-          ..strokeWidth = 6
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
-      );
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Colors.white.withValues(alpha: frac * 0.75)
-          ..strokeWidth = 2.0
-          ..strokeCap = StrokeCap.round,
-      );
+    // Trail in a few alpha bands (old → new), each band ONE polyline path with
+    // one blurred stroke — not a blurred draw per segment. Per-segment blur was
+    // a Gaussian pass per trail segment per frame, the biggest cost here.
+    const bands = 3;
+    final n = trail.length;
+    if (n >= 2) {
+      for (var b = 0; b < bands; b++) {
+        // Overlap each band by one point so the polyline stays connected.
+        final start = max(0, n * b ~/ bands - 1);
+        final end = n * (b + 1) ~/ bands;
+        if (end - start < 2) continue;
+        final path = Path()..moveTo(trail[start].dx, trail[start].dy);
+        for (var i = start + 1; i < end; i++) {
+          path.lineTo(trail[i].dx, trail[i].dy);
+        }
+        final frac = (b + 1) / bands;
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Potatuhs.airForce.withValues(alpha: 0.38 * frac)
+            ..strokeWidth = 6
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Colors.white.withValues(alpha: 0.75 * frac)
+            ..strokeWidth = 2.0
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round,
+        );
+      }
     }
     if (projectile!.alive) {
       final mPos = Offset(projectile!.x, projectile!.y);

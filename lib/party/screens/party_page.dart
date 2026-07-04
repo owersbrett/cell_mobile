@@ -28,7 +28,16 @@ const _kAccent = Potatuhs.gold; // brand gold accent (was off-brand green)
 /// Owns the controller; [onExit] returns to the home screen.
 class PartyFlowPage extends StatefulWidget {
   final VoidCallback onExit;
-  const PartyFlowPage({Key? key, required this.onExit}) : super(key: key);
+
+  /// Attract mode: skip setup, auto-start a 4-player game on the configured
+  /// board, and drive every decision hands-free (the board self-walks; the
+  /// embedded [MiniGameHost] auto-plays each minigame). Flipping this false
+  /// mid-game pauses the driver in place so a human can take over; flipping it
+  /// back on resumes. Never persists or counts telemetry. See `AttractMapPage`.
+  final bool autoPilot;
+
+  const PartyFlowPage({Key? key, required this.onExit, this.autoPilot = false})
+      : super(key: key);
 
   @override
   State<PartyFlowPage> createState() => _PartyFlowPageState();
@@ -51,9 +60,20 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   /// Non-null when this session is an ONLINE match (set once at initState).
   PartyNet? _net;
 
+  // ── Attract autopilot ─────────────────────────────────────────────────────
+  static const _kAutoRounds = 5;
+  static const _kAutoNames = ['Russ', 'Butter', 'Chips', 'Tater'];
+  final Random _autoRng = Random();
+  Timer? _autoPending; // the next scheduled hands-free action
+
   @override
   void initState() {
     super.initState();
+    if (widget.autoPilot) {
+      // Attract: no online / save / resume logic — just start a fresh board.
+      _startAutoGame();
+      return;
+    }
     final net = PartySession.active;
     if (net != null) {
       // ONLINE mode: no local save/resume logic.
@@ -89,6 +109,128 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       _resumable = null;
       _controller = c;
     });
+  }
+
+  // ── Attract autopilot driver ──────────────────────────────────────────────
+  // The board self-walks (its own step timer) and the embedded MiniGameHost
+  // auto-plays each minigame; the driver only needs to "press the buttons" at
+  // each genuine decision phase, on a watchable dwell.
+
+  void _startAutoGame() {
+    _controller?.removeListener(_autoOnChange);
+    final c = PartyController(
+      mode: PartyMode.ffa4,
+      totalRounds: _kAutoRounds,
+      playerNames: _kAutoNames,
+      gameMap: gameMapById(PlayConfig.mapId),
+    );
+    // No PartySessionStore.save / CellTelemetry here — attract is a bot loop and
+    // must not persist or count toward the Sessions KPI.
+    c.addListener(_autoOnChange);
+    _controller = c;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _autoOnChange();
+    });
+  }
+
+  /// Dwell before acting on each decision phase (null = don't act; the phase
+  /// resolves itself — `moving` walks, `minigamePlaying` is the host's bot).
+  Duration? _autoDelayFor(PartyPhase p) {
+    switch (p) {
+      case PartyPhase.turnStart:
+        return const Duration(milliseconds: 900);
+      case PartyPhase.rollResult:
+        return const Duration(milliseconds: 700);
+      case PartyPhase.chooseBranch:
+        return const Duration(milliseconds: 700);
+      case PartyPhase.shopOffer:
+        return const Duration(milliseconds: 800);
+      case PartyPhase.cardDecision:
+        return const Duration(milliseconds: 1100);
+      case PartyPhase.spaceResolved:
+        return const Duration(milliseconds: 1100);
+      case PartyPhase.minigameIntro:
+        return const Duration(milliseconds: 1600);
+      case PartyPhase.passPhone:
+        return const Duration(milliseconds: 900);
+      case PartyPhase.minigameResults:
+        return const Duration(milliseconds: 2600);
+      case PartyPhase.gameOver:
+        return const Duration(milliseconds: 4000);
+      case PartyPhase.moving:
+      case PartyPhase.minigamePlaying:
+        return null;
+    }
+  }
+
+  /// Called on every controller notification. Schedules the next hands-free
+  /// action if the current phase needs one and nothing is already pending.
+  void _autoOnChange() {
+    if (!widget.autoPilot || !mounted || _autoPending != null) return;
+    final c = _controller;
+    if (c == null) return;
+    final delay = _autoDelayFor(c.phase);
+    if (delay == null) return;
+    final scheduledPhase = c.phase;
+    _autoPending = Timer(delay, () {
+      _autoPending = null;
+      if (!widget.autoPilot || !mounted) return;
+      final cur = _controller;
+      if (cur == null) return;
+      // Phase moved underneath us (e.g. the board finished walking): re-evaluate
+      // rather than act on a stale phase.
+      if (cur.phase != scheduledPhase) {
+        _autoOnChange();
+        return;
+      }
+      _autoAct(cur, scheduledPhase);
+    });
+  }
+
+  void _autoAct(PartyController c, PartyPhase phase) {
+    final a = LocalActions(c);
+    switch (phase) {
+      case PartyPhase.turnStart:
+        a.roll();
+        break;
+      case PartyPhase.rollResult:
+        a.beginWalk();
+        break;
+      case PartyPhase.chooseBranch:
+        final opts = c.branchOptions;
+        a.choosePath(opts[_autoRng.nextInt(opts.length)]);
+        break;
+      case PartyPhase.shopOffer:
+        // Simple policy: grab a potato when affordable (it's the win condition),
+        // otherwise pass.
+        if (c.currentPlayer.diamonds >= kPotatoPrice) {
+          a.buyPotato();
+        } else {
+          a.skipPotato();
+        }
+        break;
+      case PartyPhase.cardDecision:
+        a.chooseCardOption(0);
+        break;
+      case PartyPhase.spaceResolved:
+        a.confirmSpace();
+        break;
+      case PartyPhase.minigameIntro:
+        a.beginMiniGameRound();
+        break;
+      case PartyPhase.passPhone:
+        a.startMiniGameAttempt();
+        break;
+      case PartyPhase.minigameResults:
+        a.confirmMiniGameResults();
+        break;
+      case PartyPhase.gameOver:
+        setState(_startAutoGame); // endless: restart the board
+        break;
+      case PartyPhase.moving:
+      case PartyPhase.minigamePlaying:
+        break;
+    }
   }
 
   void _resume() {
@@ -127,7 +269,22 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   }
 
   @override
+  void didUpdateWidget(covariant PartyFlowPage old) {
+    super.didUpdateWidget(old);
+    if (old.autoPilot && !widget.autoPilot) {
+      // Ejected: stop driving; the live game stays interactive for the human.
+      _autoPending?.cancel();
+      _autoPending = null;
+    } else if (!old.autoPilot && widget.autoPilot) {
+      // Resumed: pick the game back up from whatever phase it's sitting in.
+      _autoOnChange();
+    }
+  }
+
+  @override
   void dispose() {
+    _autoPending?.cancel();
+    _controller?.removeListener(_autoOnChange);
     _controller?.removeListener(_persist);
     // _net is owned by PartySession; we don't dispose it here (the user might
     // navigate back and reconnect). Only PartySession.clear() disposes it.
@@ -306,6 +463,8 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           playerLabel: '${player.name}$teamTag',
           onComplete: actions.recordMiniScore,
           onExit: () => actions.recordMiniScore(0),
+          // Attract: the bot plays each player's attempt and auto-submits.
+          autoPlay: widget.autoPilot,
         );
         return Stack(
           children: [
@@ -581,9 +740,26 @@ class _BoardScreenState extends State<_BoardScreen>
     if (geo == null || viewport == null) return;
     final target = geo.nodeCenter(index);
     const z = _frameZoom;
+    const margin = _kBoardBoundaryMargin;
+
+    // Translation that would center [target] at zoom [z].
+    double tx = viewport.width / 2 - target.dx * z;
+    double ty = viewport.height / 2 - target.dy * z;
+
+    // Clamp to the SAME pan boundary the InteractiveViewer enforces (canvas
+    // size + boundaryMargin). Otherwise centering an edge tile writes a
+    // transform outside the legal region and the player's first drag snaps the
+    // camera back — the "fighting the camera" feel. min(lo, hi) guards the
+    // clamp bounds in case the canvas is ever smaller than the viewport.
+    const maxTx = margin * z;
+    const maxTy = margin * z;
+    final minTx = viewport.width - (geo.size.width + margin) * z;
+    final minTy = viewport.height - (geo.size.height + margin) * z;
+    tx = tx.clamp(min(minTx, maxTx), maxTx);
+    ty = ty.clamp(min(minTy, maxTy), maxTy);
+
     _boardTransform.value = Matrix4.identity()
-      ..translateByDouble(viewport.width / 2 - target.dx * z,
-          viewport.height / 2 - target.dy * z, 0, 1)
+      ..translateByDouble(tx, ty, 0, 1)
       ..scaleByDouble(z, z, z, 1);
   }
 
@@ -1374,7 +1550,26 @@ class _BoardScreenState extends State<_BoardScreen>
     String label;
     String sub;
     IconData icon;
-    if (!space.isShortcut) {
+    if (controller.gameMap != null) {
+      // xy maps carry their own forks and never set [isShortcut] (so the legacy
+      // [kBoardBranches] lookup below would throw). Label by order delta from
+      // the fork instead: the main path advances one step; a cut-through jumps
+      // ahead; a bail-up doubles back toward safety.
+      final delta = next - p.position;
+      if (delta <= 1) {
+        label = 'PRESS ON';
+        sub = 'The main path onward';
+        icon = Icons.arrow_forward;
+      } else if (next > p.position) {
+        label = 'CUT-THROUGH';
+        sub = 'Skip ahead — riskier ground';
+        icon = Icons.fast_forward;
+      } else {
+        label = 'BAIL OUT';
+        sub = 'Double back toward safety';
+        icon = Icons.u_turn_left;
+      }
+    } else if (!space.isShortcut) {
       label = 'STAY THE COURSE';
       sub = 'The main path onward';
       icon = Icons.arrow_forward;
@@ -1391,7 +1586,9 @@ class _BoardScreenState extends State<_BoardScreen>
         icon = Icons.fast_forward;
       }
     }
-    final color = space.section.color;
+    // Resolve the section via the controller so GameMap boards (8–10 sections)
+    // don't index the fixed 6-entry legacy [kBoardSections] list and RangeError.
+    final color = controller.sectionOf(space).color;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: GestureDetector(
@@ -1940,6 +2137,11 @@ class _SpaceInspector extends StatelessWidget {
   }
 }
 
+/// Pan slack (px) allowed outside the board canvas, in canvas space. Shared by
+/// the [InteractiveViewer] boundary and [_BoardScreenState._centerOn]'s clamp so
+/// a programmatic frame can never land outside the legal pan region.
+const double _kBoardBoundaryMargin = 240.0;
+
 class _BoardView extends StatelessWidget {
   final PartyController controller;
   final int Function(PartyPlayer) positionOf;
@@ -2015,9 +2217,16 @@ class _BoardView extends StatelessWidget {
         // step-by-step rebuilds. Tapping a space opens the inspector sheet.
         return InteractiveViewer(
             transformationController: transformController,
+            // The board canvas is [kCanvasSpread]× the viewport, i.e. LARGER
+            // than the viewer. Without this the child is clamped to viewport
+            // size and the far bottom/right of the board (incl. the boss/anchor)
+            // is unreachable by any pan — the "can't scroll to see where I'm
+            // going" bug. `constrained: false` lets the child take its natural
+            // 1.8× size so the whole board is pannable.
+            constrained: false,
             minScale: 0.5,
             maxScale: 5.0,
-            boundaryMargin: const EdgeInsets.all(240),
+            boundaryMargin: const EdgeInsets.all(_kBoardBoundaryMargin),
             child: SizedBox(
               width: canvas.width,
               height: canvas.height,

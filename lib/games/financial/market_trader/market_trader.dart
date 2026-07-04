@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../../fx.dart';
 import '../../mini_game.dart';
@@ -113,15 +114,19 @@ class _MtOrder {
 
 class FinancialTradingGame extends StatefulWidget {
   final MiniGameSession session;
-  const FinancialTradingGame({Key? key, required this.session})
-      : super(key: key);
+  const FinancialTradingGame({super.key, required this.session});
   @override
   State<FinancialTradingGame> createState() => _FinancialTradingGameState();
 }
 
 class _FinancialTradingGameState extends State<FinancialTradingGame>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
+  // Repaint driver for the smooth painters (background atmosphere + FX) — NOT
+  // the sim clock. The painters listen to it and read its lastElapsedDuration.
   late AnimationController _ctrl;
+  // The sim clock: a Ticker delivering real wall-clock elapsed time.
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
   final Random _rng = Random();
 
   // --- Wallet ---
@@ -206,26 +211,84 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     super.initState();
     _eventCooldowns = List.filled(_kMtEvents.length, 0.0);
     _chart.add(_MtPriceSample(_price));
+    // _ctrl only repaints the painters; the sim advances on _ticker below.
     _ctrl = AnimationController(
         vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
       ..forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this desk knows how to trade itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     _ctrl.dispose();
     _chartRev.dispose();
     super.dispose();
+  }
+
+  // ─── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One competent, deterministic move per host tick (~250ms). Plays the desk
+  /// the way it's meant to be played — buy low, sell high — off the game's OWN
+  /// fields (price, position, cash, chart), never randomness or synthetic taps:
+  ///   • Holding at a worthwhile profit over the average cost → MARKET SELL all,
+  ///     realizing the gain into the score.
+  ///   • Otherwise, when the live price sits at/below the short recent average
+  ///     (a relatively "low" entry) and there's free cash → MARKET BUY a lot
+  ///     sized to a slice of that cash.
+  ///   • Nothing attractive → hold.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // Sell the held position once it clears the average cost by a small margin.
+    if (_inPosition) {
+      const profitMargin = 0.006; // ~0.6% over basis is worth banking
+      if (_price > _avgCost * (1 + profitMargin)) {
+        _sellAll();
+        return;
+      }
+    }
+
+    // Otherwise accumulate when price is low relative to the recent average.
+    final recentAvg = _recentAvgPrice();
+    if (_price <= recentAvg && _available > _price) {
+      // Deploy roughly a third of free cash per entry, at least one share.
+      final lot = max(1, (_available / max(_price, 0.01) / 3).floor());
+      if (_lotSize != lot) _setLot(lot);
+      if (_canMarketBuy) _marketBuy();
+      return;
+    }
+    // else hold — no worthwhile move this tick.
+  }
+
+  /// Short recent average price from the chart history — the autopilot's "low"
+  /// reference for deciding whether the current price is a good entry.
+  double _recentAvgPrice() {
+    if (_chart.isEmpty) return _price;
+    final n = min(_chart.length, 20);
+    double sum = 0;
+    for (int i = _chart.length - n; i < _chart.length; i++) {
+      sum += _chart[i].price;
+    }
+    return sum / n;
   }
 
   // ─── Main loop (host owns the clock) ──────────────────────────────────────
   // The sim advances every frame; painters animate off Listenables. We only
   // rebuild the widget tree at _kMtRenderHz, or immediately when a discrete
   // event (order fill, news, cooldown ready) changes what the controls show.
-  void _tick() {
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the sim must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     if (!widget.session.isRunning) return;
-    const dt = 1 / 60.0;
     _timeLeft = widget.session.remaining.inMilliseconds / 1000.0;
     bool dirty = false; // a discrete change that needs an immediate rebuild
 
@@ -1398,7 +1461,9 @@ class _MtFxPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     FxBurst.paint(canvas, particles);
-    for (final p in pops) p.paint(canvas);
+    for (final p in pops) {
+      p.paint(canvas);
+    }
   }
 
   @override
@@ -1436,3 +1501,416 @@ class _MtCooldownRingPainter extends CustomPainter {
   bool shouldRepaint(covariant _MtCooldownRingPainter old) =>
       old.progress != progress;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each frame draws the LITERAL desk
+// components (the chart, the BUY/SELL buttons, the SIZE control, the limit line,
+// the order chips) in the exact styles the live game uses.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// The desk's trading palette (same values used throughout the live UI above).
+const Color _kMtUp       = Color(0xFF66BB6A);
+const Color _kMtUpDeep   = Color(0xFF1B5E20);
+const Color _kMtUpMid    = Color(0xFF388E3C);
+const Color _kMtDown     = Color(0xFFEF5350);
+const Color _kMtDownDeep = Color(0xFF7F0000);
+const Color _kMtDownMid  = Color(0xFFC62828);
+
+bool _mtLegendBad(Size size) =>
+    size.width <= 0 ||
+    size.height <= 0 ||
+    !size.width.isFinite ||
+    !size.height.isFinite;
+
+// Price tapes (fractional x/y inside the chart rect; y 0 = top = high price).
+const List<Offset> _kMtTapeUp = [
+  Offset(0.00, 0.60), Offset(0.08, 0.50), Offset(0.16, 0.64),
+  Offset(0.24, 0.44), Offset(0.34, 0.54), Offset(0.44, 0.36),
+  Offset(0.52, 0.48), Offset(0.62, 0.30), Offset(0.72, 0.44),
+  Offset(0.82, 0.26), Offset(0.92, 0.36), Offset(1.00, 0.22),
+];
+const List<Offset> _kMtTapeValleyPeak = [
+  Offset(0.00, 0.42), Offset(0.10, 0.52), Offset(0.20, 0.62),
+  Offset(0.28, 0.70), Offset(0.34, 0.76), Offset(0.42, 0.66),
+  Offset(0.50, 0.52), Offset(0.58, 0.40), Offset(0.66, 0.28),
+  Offset(0.74, 0.20), Offset(0.82, 0.28), Offset(0.92, 0.24),
+  Offset(1.00, 0.32),
+];
+const List<Offset> _kMtTapeDip = [
+  Offset(0.00, 0.30), Offset(0.10, 0.38), Offset(0.20, 0.32),
+  Offset(0.30, 0.44), Offset(0.40, 0.38), Offset(0.50, 0.52),
+  Offset(0.60, 0.46), Offset(0.70, 0.58), Offset(0.80, 0.66),
+  Offset(0.90, 0.60), Offset(1.00, 0.70),
+];
+
+/// Draws one chart card exactly the way [_MtChartPainter] renders the live
+/// chart: ink gradient panel, grid, dashed baseline, sienna dashed limit line,
+/// gradient fill under the price line, glow stroke + core stroke, glowing tip.
+void _mtLegendChart(Canvas canvas, Rect r, List<Offset> pts, Color lineColor,
+    {double? baselineFrac, double? limitFrac}) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Potatuhs.inkPanel.withValues(alpha: 0.95),
+          Potatuhs.inkDeep.withValues(alpha: 0.98),
+        ],
+      ).createShader(r),
+  );
+  canvas.save();
+  canvas.clipRRect(rrect);
+
+  final gridPaint = Paint()
+    ..color = Colors.white.withValues(alpha: 0.06)
+    ..strokeWidth = 0.5;
+  for (int i = 1; i <= 4; i++) {
+    final y = r.top + r.height * i / 5;
+    canvas.drawLine(Offset(r.left, y), Offset(r.right, y), gridPaint);
+  }
+
+  if (baselineFrac != null) {
+    final y = r.top + r.height * baselineFrac;
+    final dash = Paint()
+      ..color = Potatuhs.textFaint.withValues(alpha: 0.4)
+      ..strokeWidth = 1.0;
+    for (double x = r.left; x < r.right; x += 10) {
+      canvas.drawLine(Offset(x, y), Offset(x + 5, y), dash);
+    }
+  }
+
+  if (limitFrac != null) {
+    final y = r.top + r.height * limitFrac;
+    final lim = Paint()
+      ..color = Potatuhs.sienna.withValues(alpha: 0.8)
+      ..strokeWidth = 1.2;
+    for (double x = r.left; x < r.right; x += 12) {
+      canvas.drawLine(Offset(x, y), Offset(x + 6, y), lim);
+    }
+  }
+
+  Offset pt(Offset f) =>
+      Offset(r.left + f.dx * r.width, r.top + f.dy * r.height);
+
+  final linePath = Path();
+  for (int i = 0; i < pts.length; i++) {
+    final p = pt(pts[i]);
+    i == 0 ? linePath.moveTo(p.dx, p.dy) : linePath.lineTo(p.dx, p.dy);
+  }
+
+  final fillPath = Path.from(linePath)
+    ..lineTo(r.right, r.bottom)
+    ..lineTo(r.left, r.bottom)
+    ..close();
+  canvas.drawPath(
+    fillPath,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          lineColor.withValues(alpha: 0.28),
+          lineColor.withValues(alpha: 0.04),
+        ],
+      ).createShader(r),
+  );
+
+  canvas.drawPath(
+    linePath,
+    Paint()
+      ..color = lineColor.withValues(alpha: 0.3)
+      ..strokeWidth = 7
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  canvas.drawPath(
+    linePath,
+    Paint()
+      ..color = lineColor
+      ..strokeWidth = 2.2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round,
+  );
+
+  final tip = pt(pts.last);
+  canvas.drawCircle(
+    tip, 7,
+    Paint()
+      ..color = lineColor.withValues(alpha: 0.35)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawCircle(tip, 3.5, Paint()..color = lineColor);
+  canvas.restore();
+}
+
+/// One big trade button, drawn like [_bigBtn]: diagonal gradient, accent border
+/// + soft glow, display-face top label and a small sub-label.
+void _mtLegendBtn(Canvas canvas, Rect r, String top, String sub, Color colorA,
+    Color colorB, Color accent) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..color = accent.withValues(alpha: 0.3)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+  );
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [colorA, colorB],
+      ).createShader(r),
+  );
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = accent.withValues(alpha: 0.8),
+  );
+  GameFx.text(canvas, top, Offset(r.center.dx, r.center.dy - r.height * 0.14),
+      r.height * 0.30, accent,
+      display: true);
+  GameFx.text(canvas, sub, Offset(r.center.dx, r.center.dy + r.height * 0.26),
+      r.height * 0.15, Colors.white.withValues(alpha: 0.8));
+}
+
+/// A small pill button in the SIZE-control style ([_presetBtn] / [_stepperBtn]).
+void _mtLegendPill(Canvas canvas, Rect r, String label, bool active,
+    {double fontSize = 10}) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(8));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..color = active
+          ? Potatuhs.gold.withValues(alpha: 0.28)
+          : Colors.white.withValues(alpha: 0.06),
+  );
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = active
+          ? Potatuhs.gold.withValues(alpha: 0.7)
+          : Colors.white.withValues(alpha: 0.14),
+  );
+  GameFx.text(canvas, label, r.center, fontSize,
+      active ? Potatuhs.gold : Potatuhs.textSecondary,
+      weight: FontWeight.w800);
+}
+
+/// One open-order chip, drawn like [_buildOpenOrders]: sienna pill + cancel ✕.
+void _mtLegendOrderChip(Canvas canvas, Rect r, String label) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(8));
+  canvas.drawRRect(
+      rrect, Paint()..color = Potatuhs.sienna.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = Potatuhs.sienna.withValues(alpha: 0.55),
+  );
+  GameFx.text(canvas, label, Offset(r.center.dx - r.width * 0.08, r.center.dy),
+      r.height * 0.38, Potatuhs.sienna,
+      weight: FontWeight.w800);
+  final xc = Offset(r.right - r.height * 0.42, r.center.dy);
+  final xr = r.height * 0.14;
+  final xPaint = Paint()
+    ..color = _kMtDown.withValues(alpha: 0.9)
+    ..strokeWidth = 1.6
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(xc.translate(-xr, -xr), xc.translate(xr, xr), xPaint);
+  canvas.drawLine(xc.translate(xr, -xr), xc.translate(-xr, xr), xPaint);
+}
+
+/// A trade marker on the tape: glowing dot + BUY/SELL tag, like the fill pops.
+void _mtLegendMarker(Canvas canvas, Offset p, String label, Color color,
+    {required bool labelBelow}) {
+  canvas.drawCircle(
+    p, 9,
+    Paint()
+      ..color = color.withValues(alpha: 0.35)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawCircle(p, 4, Paint()..color = color);
+  GameFx.text(canvas, label, p.translate(0, labelBelow ? 15 : -15), 11, color,
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+// ── Frame 1: the desk — the live price tape and the market BUY/SELL verbs ────
+void _legendDesk(Canvas canvas, Size size) {
+  if (_mtLegendBad(size)) return;
+  final w = size.width, h = size.height;
+  _mtLegendChart(
+    canvas,
+    Rect.fromLTWH(w * 0.07, h * 0.06, w * 0.86, h * 0.46),
+    _kMtTapeUp,
+    _kMtUp,
+    baselineFrac: 0.58,
+  );
+  GameFx.text(canvas, '\$104.20 ▲', Offset(w * 0.5, h * 0.60), h * 0.055,
+      _kMtUp,
+      weight: FontWeight.w800, glow: 0.5);
+  final btnW = w * 0.38, btnH = h * 0.20, by = h * 0.70;
+  _mtLegendBtn(canvas, Rect.fromLTWH(w * 0.09, by, btnW, btnH), 'BUY 5',
+      'market', _kMtUpDeep, _kMtUpMid, _kMtUp);
+  _mtLegendBtn(canvas, Rect.fromLTWH(w * 0.53, by, btnW, btnH), 'SELL 5',
+      'realize', _kMtDownDeep, _kMtDownMid, _kMtDown);
+}
+
+// ── Frame 2: the SIZE control — the batch knob every action obeys ────────────
+void _legendSize(Canvas canvas, Size size) {
+  if (_mtLegendBad(size)) return;
+  final w = size.width, h = size.height;
+
+  // The gold SIZE panel, drawn like _buildSizeControl.
+  final panel = Rect.fromLTWH(w * 0.07, h * 0.10, w * 0.86, h * 0.42);
+  final prr = RRect.fromRectAndRadius(panel, const Radius.circular(12));
+  canvas.drawRRect(
+      prr, Paint()..color = Potatuhs.inkPanel.withValues(alpha: 0.7));
+  canvas.drawRRect(
+    prr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = Potatuhs.gold.withValues(alpha: 0.4),
+  );
+  GameFx.text(canvas, 'SIZE', Offset(panel.left + w * 0.09, panel.top + h * 0.07),
+      h * 0.038, Potatuhs.gold,
+      weight: FontWeight.w800);
+
+  // Stepper − / count / + row.
+  final rowY = panel.top + panel.height * 0.36;
+  final btn = h * 0.115;
+  _mtLegendPill(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(w * 0.28, rowY), width: btn, height: btn),
+      '−',
+      false,
+      fontSize: btn * 0.55);
+  GameFx.text(canvas, '5 sh', Offset(w * 0.5, rowY), h * 0.075,
+      Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+  _mtLegendPill(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(w * 0.72, rowY), width: btn, height: btn),
+      '+',
+      false,
+      fontSize: btn * 0.55);
+
+  // Lot presets 1 / 5 / 25 / MAX (5 active).
+  const labels = ['1', '5', '25', 'MAX'];
+  final chipY = panel.bottom - panel.height * 0.24;
+  final chipW = panel.width * 0.19;
+  for (int i = 0; i < 4; i++) {
+    final cx = panel.left + panel.width * (0.14 + i * 0.24);
+    _mtLegendPill(
+        canvas,
+        Rect.fromCenter(
+            center: Offset(cx, chipY), width: chipW, height: h * 0.09),
+        labels[i],
+        i == 1,
+        fontSize: h * 0.038);
+  }
+
+  // The lot flows into the trade button label.
+  final arrow = Paint()
+    ..color = Potatuhs.gold
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final ax = w * 0.5, ay = h * 0.60;
+  canvas.drawLine(Offset(ax, h * 0.555), Offset(ax, ay), arrow);
+  canvas.drawLine(Offset(ax - 7, ay - 6), Offset(ax, ay + 2), arrow);
+  canvas.drawLine(Offset(ax + 7, ay - 6), Offset(ax, ay + 2), arrow);
+  _mtLegendBtn(
+      canvas,
+      Rect.fromLTWH(w * 0.28, h * 0.68, w * 0.44, h * 0.20),
+      'BUY 5',
+      'market \$520',
+      _kMtUpDeep,
+      _kMtUpMid,
+      _kMtUp);
+}
+
+// ── Frame 3: scoring — buy the valley, sell the peak, bank realized P&L ──────
+void _legendPnl(Canvas canvas, Size size) {
+  if (_mtLegendBad(size)) return;
+  final w = size.width, h = size.height;
+  final chart = Rect.fromLTWH(w * 0.07, h * 0.14, w * 0.86, h * 0.56);
+  _mtLegendChart(canvas, chart, _kMtTapeValleyPeak, _kMtUp,
+      baselineFrac: 0.42);
+  Offset pt(double fx, double fy) =>
+      Offset(chart.left + fx * chart.width, chart.top + fy * chart.height);
+  _mtLegendMarker(canvas, pt(0.34, 0.76), 'BUY', _kMtUp, labelBelow: true);
+  _mtLegendMarker(canvas, pt(0.74, 0.20), 'SELL', _kMtDown, labelBelow: false);
+  // The realized-gain pop, exactly like a sell's _MtPop.
+  GameFx.text(canvas, '+\$120', Offset(w * 0.5, h * 0.85), h * 0.09,
+      Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.8);
+}
+
+// ── Frame 4: limit orders + the risk of holding at the buzzer ────────────────
+void _legendLimit(Canvas canvas, Size size) {
+  if (_mtLegendBad(size)) return;
+  final w = size.width, h = size.height;
+  final chart = Rect.fromLTWH(w * 0.07, h * 0.06, w * 0.86, h * 0.46);
+  _mtLegendChart(canvas, chart, _kMtTapeDip, _kMtDown, limitFrac: 0.78);
+  GameFx.text(
+      canvas,
+      'LIMIT \$92',
+      Offset(chart.left + chart.width * 0.16,
+          chart.top + chart.height * 0.78 - 10),
+      h * 0.036,
+      Potatuhs.sienna,
+      weight: FontWeight.w800);
+
+  // The resting order chip + the cash it reserves.
+  _mtLegendOrderChip(
+      canvas, Rect.fromLTWH(w * 0.09, h * 0.58, w * 0.44, h * 0.105),
+      '5 @ \$92.00');
+  GameFx.text(canvas, 'RESERVED \$460', Offset(w * 0.755, h * 0.633),
+      h * 0.038, Potatuhs.sienna,
+      weight: FontWeight.w800);
+
+  // The buzzer risk: unsold shares bank nothing — SELL ALL before 0:00.
+  GameFx.text(canvas, '0:07', Offset(w * 0.25, h * 0.815), h * 0.075,
+      _kMtDown,
+      weight: FontWeight.w800, glow: 0.6);
+  _mtLegendBtn(
+      canvas,
+      Rect.fromLTWH(w * 0.42, h * 0.735, w * 0.44, h * 0.17),
+      'SELL ALL',
+      'bank it in time',
+      _kMtDownDeep,
+      _kMtDownMid,
+      _kMtDown);
+}
+
+/// The visual manual for Market Trader — wired into the registry spec.
+final List<LegendFrame> marketTraderLegendFrames = [
+  const LegendFrame(
+      caption: 'Watch the live price — BUY dips, SELL spikes',
+      paint: _legendDesk),
+  const LegendFrame(
+      caption: 'Set SIZE — how many shares each tap trades',
+      paint: _legendSize),
+  const LegendFrame(
+      caption: 'Buy low, sell high — banked P&L is your score',
+      paint: _legendPnl),
+  const LegendFrame(
+      caption: 'Rest LIMIT BUYs below market — cash is reserved',
+      paint: _legendLimit),
+];

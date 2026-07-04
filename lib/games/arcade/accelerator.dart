@@ -6,7 +6,9 @@ import 'package:flutter/scheduler.dart';
 import '../mini_game.dart';
 
 // ── Feel constants ────────────────────────────────────────────────────────────
-// All tunable in one place; play-test and adjust freely.
+// All tunable in one place; play-test and adjust freely. These are SHARED by
+// every rig (accelerator beam) — each rig derives its own level-scaled values
+// from them but the base feel is common.
 
 /// Base drain rate (energy/s) at level 1.  Energy is always 0-1.
 const double _kDrainBase = 0.18;
@@ -40,24 +42,34 @@ const int _kPointsBonusPerLevelSq = 8;
 /// Points per second of in-band dwell (ongoing drip while holding the band).
 const double _kDwellPointsPerSec = 4.0;
 
-/// How fast the charge meter (_dwellAcc) bleeds back down while OUT of band,
+/// How fast the charge meter (dwellAcc) bleeds back down while OUT of band,
 /// in seconds-of-charge lost per real second. Slightly gentler than the 1.0/s
 /// fill rate so a brief slip is recoverable instead of a full reset.
 const double _kDwellPullbackRate = 0.8;
 
+/// How long the single→double split animation takes (seconds).
+const double _kSplitDuration = 0.9;
+
+/// ATTRACT autopilot cadence — the host calls the hook roughly this often
+/// (seconds). Used to look one tick ahead: pump a beam whose energy would drain
+/// out the bottom of its band before the next call.
+const double _kAutoTick = 0.25;
+
 // ── Colour palette ────────────────────────────────────────────────────────────
 const _kFont = 'Avenir'; // matches Collider
-const _kAccent = Color(0xFFCE93D8); // lighter purple — second particles game
-const _kAccentDeep = Color(0xFFAB47BC); // same hue as Collider but darker
+const _kAccent = Color(0xFFCE93D8); // lighter purple — chrome / grid
 const _kGreen = Color(0xFF69F0AE);
 const _kOrange = Color(0xFFFF6E40);
+const _kOrangeDeep = Color(0xFFE64A19);
 const _kCyan = Color(0xFF00E5FF);
+const _kCyanDeep = Color(0xFF0091EA);
 const _kRed = Color(0xFFFF5252);
 const _kWhite = Colors.white;
 
-/// "Accelerator" — tap-to-pump energy into an accelerating-ring meter;
-/// keep the needle inside the shrinking target band to charge a collision.
-/// Each successful collision advances a level: band narrows, drain speeds up.
+/// "Accelerator" — pump energy into a particle beam and hold resonance to
+/// force a collision. Each collision advances a level (band narrows, drain
+/// speeds up). At halftime a SECOND collider comes online: two beams drain at
+/// once and the player must sustain both, one thumb per beam.
 class AcceleratorGame extends StatefulWidget {
   final MiniGameSession session;
   const AcceleratorGame({Key? key, required this.session}) : super(key: key);
@@ -72,42 +84,58 @@ class _AcceleratorGameState extends State<AcceleratorGame>
   Duration _lastElapsed = Duration.zero;
   final math.Random _rng = math.Random();
 
-  // ── Core state ─────────────────────────────────────────────────────────────
-  double _energy = 0.0; // 0-1 normalised
-  double _dwellAcc = 0.0; // seconds spent in-band this run
-  int _level = 1;
+  // ── Rigs (one accelerator beam each) ────────────────────────────────────────
+  final List<_Rig> _rigs = [];
 
-  // ── Particle orbit angles (radians) ────────────────────────────────────────
-  double _angle1 = 0.0;
-  double _angle2 = math.pi;
-
-  // ── Juice ──────────────────────────────────────────────────────────────────
-  double _ringFlash = 0.0; // green bloom on level-up, 1 → 0
-  double _missFlash = 0.0; // red ring flash when out-of-band warning
+  // ── Global FX (shared across all rigs) ──────────────────────────────────────
   double _shake = 0.0; // screen-shake, 1 → 0
   double _idlePhase = 0.0;
+  double _splitAnim = 0.0; // 0 = single rig centred, 1 = two rigs split
   final List<_Spark> _sparks = [];
   final List<_Popup> _popups = [];
 
-  // ── Derived per-level values ──────────────────────────────────────────────
-  double get _drainRate => _kDrainBase + (_level - 1) * _kDrainStep;
-  double get _tapBoost => _kTapBoost * math.pow(0.95, _level - 1).toDouble();
-  double get _bandWidth =>
-      math.max(_kBandMinWidth, _kBandWidthL1 - (_level - 1) * _kBandShrinkPerLevel);
-  double get _bandMin => (_kBandCentre - _bandWidth / 2).clamp(0.0, 1.0);
-  double get _bandMax => (_kBandCentre + _bandWidth / 2).clamp(0.0, 1.0);
-  bool get _inBand => _energy >= _bandMin && _energy <= _bandMax;
+  // Last known viewport, so tap handlers can resolve rig geometry off-frame.
+  Size _size = const Size(400, 800);
 
   @override
   void initState() {
     super.initState();
+    // Rig #1 — the cyan beam, present from the start.
+    _rigs.add(_Rig(accent: _kCyan, accentDeep: _kCyanDeep, angle1: 0.0));
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Accelerator *correctly*,
+  /// not randomly: for each live beam it looks one tick ahead — if the needle
+  /// is below its green band, or the constant drain would push it below the
+  /// band before the next call, it taps that beam's PUMP handler. A needle
+  /// already sitting comfortably in-band is left alone so it never overshoots
+  /// out the top into the red. In the two-beam phase it services whichever
+  /// beam(s) need energy, one competent pump each. The host owns the clock, so
+  /// the round still ends on time; the bot just banks real dwell points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    for (var i = 0; i < _rigs.length; i++) {
+      final rig = _rigs[i];
+      // Already at/above the band top — let it drain rather than blow past.
+      if (rig.energy >= rig.bandMax) continue;
+      // Where the needle will sit after one tick of constant drain.
+      final projected = rig.energy - rig.drainRate * _kAutoTick;
+      // Below the band now, or about to fall out the bottom → feed it.
+      if (projected <= rig.bandMin) _pump(i);
+    }
   }
 
   void _onTick(Duration elapsed) {
@@ -118,45 +146,63 @@ class _AcceleratorGameState extends State<AcceleratorGame>
 
     final running = widget.session.isRunning;
 
-    // Orbit particles regardless of running state (idle-drift during countdown).
-    final orbitSpeed = running ? (0.8 + _energy * 2.4) : 0.25;
-    _angle1 = _wrap(_angle1 + orbitSpeed * dt);
-    _angle2 = _wrap(_angle2 + (orbitSpeed * 0.83 + 0.18) * dt);
-    _idlePhase += dt;
-
-    if (running) {
-      // Drain energy constantly.
-      _energy = (_energy - _drainRate * dt).clamp(0.0, 1.0);
-
-      // Dwell and scoring.
-      if (_inBand) {
-        _dwellAcc += dt;
-        // Drip points for sustained in-band time.
-        final drip = (_kDwellPointsPerSec * dt).round();
-        if (drip > 0) widget.session.addScore(drip);
-
-        if (_dwellAcc >= _kLevelUpDwell) {
-          _levelUp();
-        }
-      } else {
-        // Out of band: pull the charge meter back toward 0 instead of hard
-        // resetting, so the player can recover lost charge by getting the
-        // needle back in-band. Brief warning flash while charge remains.
-        if (_dwellAcc > 0.1) {
-          _missFlash = 0.6;
-        }
-        _dwellAcc = math.max(0.0, _dwellAcc - dt * _kDwellPullbackRate);
+    // ── Halftime: bring the second beam online exactly once ──────────────────
+    if (running && _rigs.length == 1) {
+      // Host owns the clock; halfway = remaining ≤ half the run length.
+      final halfMs = widget.session.spec.durationSeconds * 500;
+      if (widget.session.remaining.inMilliseconds <= halfMs) {
+        _spawnSecondBeam();
       }
     }
 
-    // Decay juice.
-    _ringFlash = math.max(0.0, _ringFlash - dt * 2.8);
-    _missFlash = math.max(0.0, _missFlash - dt * 3.5);
+    // Advance the split transition toward its target (only ever grows: once a
+    // second beam exists it never leaves).
+    if (_rigs.length > 1 && _splitAnim < 1.0) {
+      _splitAnim = math.min(1.0, _splitAnim + dt / _kSplitDuration);
+    }
+
+    _idlePhase += dt;
+
+    // ── Per-rig update ───────────────────────────────────────────────────────
+    for (final rig in _rigs) {
+      // Orbit particles regardless of running state (idle-drift during countdown).
+      final orbitSpeed = running ? (0.8 + rig.energy * 2.4) : 0.25;
+      rig.angle1 = _wrap(rig.angle1 + orbitSpeed * dt);
+      rig.angle2 = _wrap(rig.angle2 + (orbitSpeed * 0.83 + 0.18) * dt);
+
+      if (running) {
+        // Drain energy constantly.
+        rig.energy = (rig.energy - rig.drainRate * dt).clamp(0.0, 1.0);
+
+        // Dwell and scoring.
+        if (rig.inBand) {
+          rig.dwellAcc += dt;
+          final drip = (_kDwellPointsPerSec * dt).round();
+          if (drip > 0) widget.session.addScore(drip);
+
+          if (rig.dwellAcc >= _kLevelUpDwell) {
+            _levelUp(rig);
+          }
+        } else {
+          // Out of band: pull the charge meter back toward 0 instead of hard
+          // resetting, so the player can recover by getting back in-band.
+          if (rig.dwellAcc > 0.1) {
+            rig.missFlash = 0.6;
+          }
+          rig.dwellAcc = math.max(0.0, rig.dwellAcc - dt * _kDwellPullbackRate);
+        }
+      }
+
+      // Per-rig juice decay.
+      rig.ringFlash = math.max(0.0, rig.ringFlash - dt * 2.8);
+      rig.missFlash = math.max(0.0, rig.missFlash - dt * 3.5);
+    }
+
+    // ── Global juice decay ───────────────────────────────────────────────────
     _shake = math.max(0.0, _shake - dt * 4.5);
 
     for (final s in _sparks) {
       s.age += dt;
-      s.pos += s.vel * dt;
       s.vel *= math.pow(0.05, dt).toDouble();
     }
     _sparks.removeWhere((s) => s.age >= s.life);
@@ -175,35 +221,43 @@ class _AcceleratorGameState extends State<AcceleratorGame>
     return a < 0 ? a + tau : a;
   }
 
-  void _levelUp() {
-    final pts = _kPointsBase + (_level * _level * _kPointsBonusPerLevelSq);
-    widget.session.addScore(pts);
-    _level++;
-    _dwellAcc = 0.0;
-    _energy = _bandMin * 0.85; // reset energy below band so next dwell is fresh
-
-    _ringFlash = 1.0;
+  void _spawnSecondBeam() {
+    // Rig #2 — the orange beam. Starts fresh at level 1; rig #1 keeps its state.
+    _rigs.add(_Rig(accent: _kOrange, accentDeep: _kOrangeDeep, angle1: math.pi * 0.5));
     _shake = 1.0;
 
-    _popups.add(_Popup(
-      'LV$_level  +$pts',
-      const Offset(0, 0), // resolved to canvas center at paint time
-      _kGreen,
-      big: true,
-    ));
-
-    _spawnSparks(32);
+    final origin = Offset(_size.width / 2, _size.height * 0.5);
+    _popups.add(_Popup('SECOND BEAM ONLINE', origin, _kOrange, big: true));
+    _spawnSparks(40, origin);
   }
 
-  void _handleTap(Size size) {
+  void _levelUp(_Rig rig) {
+    final pts = _kPointsBase + (rig.level * rig.level * _kPointsBonusPerLevelSq);
+    widget.session.addScore(pts);
+    rig.level++;
+    rig.dwellAcc = 0.0;
+    rig.energy = rig.bandMin * 0.85; // reset energy below band for a fresh dwell
+
+    rig.ringFlash = 1.0;
+    _shake = 1.0;
+
+    final slot = _rigs.indexOf(rig);
+    final origin = _rigGeo(_size, _splitAnim, slot, _rigs.length).center;
+    _popups.add(_Popup('LV${rig.level}  +$pts', origin, _kGreen, big: true));
+    _spawnSparks(32, origin);
+  }
+
+  void _pump(int rigIndex) {
     if (!widget.session.isRunning) return;
-    _energy = (_energy + _tapBoost).clamp(0.0, 1.0);
+    if (rigIndex < 0 || rigIndex >= _rigs.length) return;
+    final rig = _rigs[rigIndex];
+    rig.energy = (rig.energy + rig.tapBoost).clamp(0.0, 1.0);
 
-    // Small visual tap feedback.
-    _spawnSparks(8, small: true);
+    final origin = _rigGeo(_size, _splitAnim, rigIndex, _rigs.length).center;
+    _spawnSparks(8, origin, small: true);
   }
 
-  void _spawnSparks(int count, {bool small = false}) {
+  void _spawnSparks(int count, Offset origin, {bool small = false}) {
     for (var i = 0; i < count; i++) {
       final a = _rng.nextDouble() * 2 * math.pi;
       final speed =
@@ -216,12 +270,11 @@ class _AcceleratorGameState extends State<AcceleratorGame>
         const Color(0xFFFFE082),
       ];
       _sparks.add(_Spark(
-        pos: Offset.zero, // placed at gauge marker in paint; fine for tap sparks
+        pos: origin,
         vel: Offset(math.cos(a), math.sin(a)) * speed,
         life: 0.35 + _rng.nextDouble() * 0.45,
         radius: 1.0 + _rng.nextDouble() * (small ? 1.4 : 2.4),
         color: palette[_rng.nextInt(palette.length)],
-        centered: !small,
       ));
     }
   }
@@ -230,82 +283,190 @@ class _AcceleratorGameState extends State<AcceleratorGame>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
+      if (!size.width.isFinite ||
+          !size.height.isFinite ||
+          size.width <= 0 ||
+          size.height <= 0) {
+        return const SizedBox.shrink();
+      }
+      _size = size;
+      final w = size.width;
+
       final dx = _shake > 0 ? (_rng.nextDouble() - 0.5) * 12 * _shake : 0.0;
       final dy = _shake > 0 ? (_rng.nextDouble() - 0.5) * 12 * _shake : 0.0;
 
-      return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => _handleTap(size),
-        child: ClipRect(
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: Transform.translate(
-                  offset: Offset(dx, dy),
-                  child: CustomPaint(
-                    painter: _AcceleratorPainter(
-                      energy: _energy,
-                      bandMin: _bandMin,
-                      bandMax: _bandMax,
-                      dwellFrac: (_dwellAcc / _kLevelUpDwell).clamp(0.0, 1.0),
-                      level: _level,
-                      angle1: _angle1,
-                      angle2: _angle2,
-                      ringFlash: _ringFlash,
-                      missFlash: _missFlash,
-                      idlePhase: _idlePhase,
-                      sparks: _sparks,
-                      popups: _popups,
-                      inBand: _inBand,
-                    ),
+      final eased = _smooth(_splitAnim);
+      final twoRigs = _rigs.length > 1;
+
+      // ── Bottom PUMP button metrics ─────────────────────────────────────────
+      const btnH = 66.0;
+      const btnBottom = 18.0;
+      const gap = 12.0;
+      final singleW = math.min(w * 0.66, 340.0);
+      final pairW = math.max(80.0, (w - gap * 3) / 2);
+
+      return ClipRect(
+        child: Stack(
+          children: [
+            // Everything visual lives on ONE painter (both rings, both gauges,
+            // particles, sparks, popups, flashes).
+            Positioned.fill(
+              child: Transform.translate(
+                offset: Offset(dx, dy),
+                child: CustomPaint(
+                  painter: _AcceleratorPainter(
+                    rigs: _rigs,
+                    split: _splitAnim,
+                    idlePhase: _idlePhase,
+                    sparks: _sparks,
+                    popups: _popups,
                   ),
                 ),
               ),
-              // Level badge — top right.
+            ),
+
+            // Per-rig level badges (small widgets — allowed alongside the painter).
+            ..._buildBadges(size),
+
+            // Single centred PUMP button — fades out as the split animates in.
+            Positioned(
+              bottom: btnBottom,
+              left: (w - singleW) / 2,
+              width: singleW,
+              height: btnH,
+              child: Opacity(
+                opacity: (1 - eased).clamp(0.0, 1.0),
+                child: IgnorePointer(
+                  ignoring: eased > 0.5,
+                  child: _PumpButton(
+                    color: _rigs[0].accent,
+                    colorDeep: _rigs[0].accentDeep,
+                    label: 'PUMP',
+                    onPump: () => _pump(0),
+                  ),
+                ),
+              ),
+            ),
+
+            // Two PUMP buttons once the second beam exists — fade in with split.
+            // Bottom-LEFT (cyan) drives the TOP beam; bottom-RIGHT (orange) the BOTTOM.
+            if (twoRigs)
               Positioned(
-                top: 10,
-                right: 12,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(10),
-                    border:
-                        Border.all(color: _kAccent.withValues(alpha: 0.45)),
-                  ),
-                  child: Text(
-                    'LV $_level',
-                    style: TextStyle(
-                      fontFamily: _kFont,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.4,
-                      color: _kAccent.withValues(alpha: 0.95),
+                bottom: btnBottom,
+                left: gap,
+                width: pairW,
+                height: btnH,
+                child: Opacity(
+                  opacity: eased.clamp(0.0, 1.0),
+                  child: IgnorePointer(
+                    ignoring: eased < 0.5,
+                    child: _PumpButton(
+                      color: _rigs[0].accent,
+                      colorDeep: _rigs[0].accentDeep,
+                      label: 'PUMP  TOP',
+                      onPump: () => _pump(0),
                     ),
                   ),
                 ),
               ),
-            ],
-          ),
+            if (twoRigs)
+              Positioned(
+                bottom: btnBottom,
+                left: w - gap - pairW,
+                width: pairW,
+                height: btnH,
+                child: Opacity(
+                  opacity: eased.clamp(0.0, 1.0),
+                  child: IgnorePointer(
+                    ignoring: eased < 0.5,
+                    child: _PumpButton(
+                      color: _rigs[1].accent,
+                      colorDeep: _rigs[1].accentDeep,
+                      label: 'PUMP  BOT',
+                      onPump: () => _pump(1),
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
       );
     });
   }
+
+  List<Widget> _buildBadges(Size size) {
+    final list = <Widget>[];
+    for (var i = 0; i < _rigs.length; i++) {
+      final geo = _rigGeo(size, _splitAnim, i, _rigs.length);
+      final top =
+          (geo.center.dy - geo.radius - 26.0).clamp(6.0, size.height - 30.0);
+      list.add(Positioned(top: top, right: 12, child: _badge(_rigs[i])));
+    }
+    return list;
+  }
+
+  Widget _badge(_Rig rig) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: rig.accent.withValues(alpha: 0.55)),
+      ),
+      child: Text(
+        'LV ${rig.level}',
+        style: TextStyle(
+          fontFamily: _kFont,
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 1.4,
+          color: rig.accent.withValues(alpha: 0.95),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-accelerator state. Each rig levels INDEPENDENTLY; feel constants are
+// shared top-level, the level-scaled derived values live here.
+
+class _Rig {
+  double energy = 0.0; // 0-1 normalised
+  double dwellAcc = 0.0; // seconds spent in-band this run
+  int level = 1;
+
+  double angle1;
+  double angle2 = math.pi;
+
+  double ringFlash = 0.0; // green bloom on level-up, 1 → 0
+  double missFlash = 0.0; // red ring flash when out-of-band warning
+
+  /// Identity colour — makes the button→beam mapping instantly legible.
+  final Color accent;
+  final Color accentDeep;
+
+  _Rig({required this.accent, required this.accentDeep, double angle1 = 0.0})
+      : angle1 = angle1;
+
+  double get drainRate => _kDrainBase + (level - 1) * _kDrainStep;
+  double get tapBoost => _kTapBoost * math.pow(0.95, level - 1).toDouble();
+  double get bandWidth => math.max(
+      _kBandMinWidth, _kBandWidthL1 - (level - 1) * _kBandShrinkPerLevel);
+  double get bandMin => (_kBandCentre - bandWidth / 2).clamp(0.0, 1.0);
+  double get bandMax => (_kBandCentre + bandWidth / 2).clamp(0.0, 1.0);
+  bool get inBand => energy >= bandMin && energy <= bandMax;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _Spark {
-  Offset pos;
+  Offset pos; // absolute canvas origin
   Offset vel;
   double age = 0.0;
   final double life;
   final double radius;
   final Color color;
-
-  /// If true the spark renders relative to canvas centre; otherwise absolute.
-  final bool centered;
 
   _Spark({
     required this.pos,
@@ -313,13 +474,12 @@ class _Spark {
     required this.life,
     required this.radius,
     required this.color,
-    this.centered = false,
   });
 }
 
 class _Popup {
   final String text;
-  final Offset origin; // if zero, centered
+  final Offset origin; // absolute canvas position
   final Color color;
   final bool big;
   final double life;
@@ -329,76 +489,120 @@ class _Popup {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Geometry. A single helper resolves ring centre + radius + gauge rect for a
+// rig from the split animation and its slot, so the painter, badges and tap
+// handlers all agree. Everything guarded against degenerate viewports.
 
-class _RingGeo {
+class _RigGeo {
   final Offset center;
   final double radius;
-  const _RingGeo(this.center, this.radius);
-
-  factory _RingGeo.of(Size size) {
-    final center = Offset(size.width / 2, size.height * 0.46);
-    final radius = math.min(size.width, size.height) * 0.31;
-    return _RingGeo(center, radius);
-  }
+  final Rect gauge;
+  const _RigGeo(this.center, this.radius, this.gauge);
 
   Offset pointAt(double angle) =>
       center + Offset(math.cos(angle), math.sin(angle)) * radius;
 }
 
+/// Smoothstep 0..1.
+double _smooth(double t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return t * t * (3 - 2 * t);
+}
+
+double _lerpD(double a, double b, double t) => a + (b - a) * t;
+
+Rect _gaugeRect(double top, double bottom, double h) {
+  final hiTop = math.max(5.0, h - 40.0);
+  final t = top.clamp(4.0, hiTop);
+  final hiBot = math.max(t + 30.0, h - 8.0);
+  final b = bottom.clamp(t + 30.0, hiBot);
+  return Rect.fromLTWH(24.0, t, 22.0, b - t);
+}
+
+_RigGeo _rigGeo(Size size, double split, int slot, int rigCount) {
+  final w = size.width;
+  final h = size.height;
+  final e = _smooth(split);
+
+  final singleR = math.max(24.0, math.min(w, h) * 0.31);
+  final twoR = math.max(24.0, math.min(w * 0.27, h * 0.15));
+
+  if (rigCount <= 1) {
+    return _RigGeo(
+      Offset(w / 2, h * 0.46),
+      singleR,
+      _gaugeRect(80.0, math.max(120.0, h - 96.0), h),
+    );
+  }
+
+  final r = _lerpD(singleR, twoR, e);
+  if (slot == 0) {
+    // Top beam: rises from centre to the upper third.
+    final cy = _lerpD(h * 0.46, h * 0.29, e);
+    final gTop = _lerpD(80.0, h * 0.09, e);
+    final gBot = _lerpD(math.max(120.0, h - 96.0), h * 0.46, e);
+    return _RigGeo(Offset(w / 2, cy), r, _gaugeRect(gTop, gBot, h));
+  } else {
+    // Bottom beam: sinks from centre to the lower third, clear of the buttons.
+    final cy = _lerpD(h * 0.46, h * 0.70, e);
+    final gTop = _lerpD(80.0, h * 0.52, e);
+    final gBot = _lerpD(math.max(120.0, h - 96.0), h - 96.0, e);
+    return _RigGeo(Offset(w / 2, cy), r, _gaugeRect(gTop, gBot, h));
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _AcceleratorPainter extends CustomPainter {
-  final double energy;
-  final double bandMin;
-  final double bandMax;
-  final double dwellFrac; // 0-1: progress toward next level-up
-  final int level;
-  final double angle1;
-  final double angle2;
-  final double ringFlash;
-  final double missFlash;
+  final List<_Rig> rigs;
+  final double split;
   final double idlePhase;
   final List<_Spark> sparks;
   final List<_Popup> popups;
-  final bool inBand;
 
   _AcceleratorPainter({
-    required this.energy,
-    required this.bandMin,
-    required this.bandMax,
-    required this.dwellFrac,
-    required this.level,
-    required this.angle1,
-    required this.angle2,
-    required this.ringFlash,
-    required this.missFlash,
+    required this.rigs,
+    required this.split,
     required this.idlePhase,
     required this.sparks,
     required this.popups,
-    required this.inBand,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final geom = _RingGeo.of(size);
+    if (!size.width.isFinite ||
+        !size.height.isFinite ||
+        size.width <= 0 ||
+        size.height <= 0) {
+      return;
+    }
 
-    _paintBackground(canvas, size, geom);
-    _paintRing(canvas, geom);
-    _paintParticle(canvas, geom, angle1, _kCyan);
-    _paintParticle(canvas, geom, angle2, _kOrange);
-    _paintGauge(canvas, size);
-    _paintDwellArc(canvas, geom);
-    _paintSparks(canvas, geom);
-    _paintPopups(canvas, size);
-    _paintRingFlash(canvas, size);
+    _paintBackground(canvas, size);
+
+    for (var i = 0; i < rigs.length; i++) {
+      final rig = rigs[i];
+      final geo = _rigGeo(size, split, i, rigs.length);
+      _paintRigBackdrop(canvas, geo, rig);
+      _paintRing(canvas, geo, rig);
+      _paintParticle(canvas, geo, rig.angle1, rig.accent);
+      _paintParticle(
+          canvas, geo, rig.angle2, Color.lerp(rig.accent, _kWhite, 0.35)!);
+      _paintGauge(canvas, geo, rig);
+      _paintDwellArc(canvas, geo, rig);
+      _paintRigFlash(canvas, geo, rig);
+    }
+
+    _paintSparks(canvas);
+    _paintPopups(canvas);
   }
 
-  // ── Background ──────────────────────────────────────────────────────────────
+  // ── Background (shared) ──────────────────────────────────────────────────────
 
-  void _paintBackground(Canvas canvas, Size size, _RingGeo geom) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF080811));
+  void _paintBackground(Canvas canvas, Size size) {
+    canvas.drawRect(
+        Offset.zero & size, Paint()..color = const Color(0xFF080811));
 
-    // Faint grid.
     final grid = Paint()
       ..color = _kAccent.withValues(alpha: 0.045)
       ..strokeWidth = 1;
@@ -409,22 +613,24 @@ class _AcceleratorPainter extends CustomPainter {
     for (double y = 0; y <= size.height; y += step) {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
     }
+  }
 
-    // Soft radial vignette behind ring.
+  // ── Per-rig backdrop (vignette + rotating ticks) ─────────────────────────────
+
+  void _paintRigBackdrop(Canvas canvas, _RigGeo geom, _Rig rig) {
     canvas.drawCircle(
       geom.center,
       geom.radius * 1.8,
       Paint()
         ..shader = RadialGradient(colors: [
-          _kAccentDeep.withValues(alpha: 0.12),
-          _kAccentDeep.withValues(alpha: 0.0),
+          rig.accentDeep.withValues(alpha: 0.12),
+          rig.accentDeep.withValues(alpha: 0.0),
         ]).createShader(
             Rect.fromCircle(center: geom.center, radius: geom.radius * 1.8)),
     );
 
-    // Rotating tick marks.
     final tick = Paint()
-      ..color = _kAccent.withValues(alpha: 0.20)
+      ..color = rig.accent.withValues(alpha: 0.20)
       ..strokeWidth = 1.4;
     final spin = idlePhase * 0.12;
     for (var i = 0; i < 36; i++) {
@@ -440,15 +646,16 @@ class _AcceleratorPainter extends CustomPainter {
 
   // ── Ring ────────────────────────────────────────────────────────────────────
 
-  void _paintRing(Canvas canvas, _RingGeo geom) {
-    // Determine ring tint from energy state.
+  void _paintRing(Canvas canvas, _RigGeo geom, _Rig rig) {
+    final dwellFrac = (rig.dwellAcc / _kLevelUpDwell).clamp(0.0, 1.0);
+
     final Color ringTint;
-    if (inBand) {
-      ringTint = Color.lerp(_kAccentDeep, _kGreen, 0.55 + 0.45 * dwellFrac)!;
-    } else if (energy > bandMax) {
+    if (rig.inBand) {
+      ringTint = Color.lerp(rig.accentDeep, _kGreen, 0.55 + 0.45 * dwellFrac)!;
+    } else if (rig.energy > rig.bandMax) {
       ringTint = _kRed;
     } else {
-      ringTint = _kAccentDeep;
+      ringTint = rig.accentDeep;
     }
 
     // Bloom.
@@ -468,19 +675,19 @@ class _AcceleratorPainter extends CustomPainter {
       geom.radius,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = inBand ? 3.5 : 2.8
-        ..color = ringTint.withValues(alpha: inBand ? 0.80 : 0.50),
+        ..strokeWidth = rig.inBand ? 3.5 : 2.8
+        ..color = ringTint.withValues(alpha: rig.inBand ? 0.80 : 0.50),
     );
 
     // Miss flash — outer red halo.
-    if (missFlash > 0) {
+    if (rig.missFlash > 0) {
       canvas.drawCircle(
         geom.center,
         geom.radius,
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 7
-          ..color = _kRed.withValues(alpha: 0.55 * missFlash)
+          ..color = _kRed.withValues(alpha: 0.55 * rig.missFlash)
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
       );
     }
@@ -489,7 +696,7 @@ class _AcceleratorPainter extends CustomPainter {
   // ── Particles ───────────────────────────────────────────────────────────────
 
   void _paintParticle(
-      Canvas canvas, _RingGeo geom, double angle, Color color) {
+      Canvas canvas, _RigGeo geom, double angle, Color color) {
     const tailCount = 14;
     for (var i = tailCount; i >= 1; i--) {
       final t = i / tailCount;
@@ -503,7 +710,10 @@ class _AcceleratorPainter extends CustomPainter {
     }
     final pos = geom.pointAt(angle);
     canvas.drawCircle(
-        pos, 15, Paint()..color = color.withValues(alpha: 0.30)
+        pos,
+        15,
+        Paint()
+          ..color = color.withValues(alpha: 0.30)
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10));
     canvas.drawCircle(pos, 6.5, Paint()..color = color);
     canvas.drawCircle(
@@ -512,36 +722,33 @@ class _AcceleratorPainter extends CustomPainter {
 
   // ── Gauge ───────────────────────────────────────────────────────────────────
 
-  void _paintGauge(Canvas canvas, Size size) {
-    // Vertical gauge on the left, full height minus padding.
-    const left = 24.0;
-    const top = 80.0;
-    final bottom = size.height - 80.0;
-    final gaugeH = bottom - top;
-    const gaugeW = 22.0;
+  void _paintGauge(Canvas canvas, _RigGeo geom, _Rig rig) {
+    final rect = geom.gauge;
+    final left = rect.left;
+    final top = rect.top;
+    final gaugeW = rect.width;
+    final gaugeH = rect.height;
+    if (gaugeH <= 4) return;
 
     // Background track.
-    final trackRR = RRect.fromRectAndRadius(
-      Rect.fromLTWH(left, top, gaugeW, gaugeH),
-      const Radius.circular(11),
-    );
+    final trackRR = RRect.fromRectAndRadius(rect, const Radius.circular(11));
     canvas.drawRRect(trackRR, Paint()..color = const Color(0xFF14141F));
     canvas.drawRRect(
       trackRR,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.2
-        ..color = _kAccent.withValues(alpha: 0.25),
+        ..color = rig.accent.withValues(alpha: 0.30),
     );
 
-    // Target band.
-    final bandTopY = top + gaugeH * (1.0 - bandMax);
-    final bandBotY = top + gaugeH * (1.0 - bandMin);
+    // Target band — highlighted in the rig's identity colour.
+    final bandTopY = top + gaugeH * (1.0 - rig.bandMax);
+    final bandBotY = top + gaugeH * (1.0 - rig.bandMin);
     final bandRect =
         Rect.fromLTRB(left + 2, bandTopY, left + gaugeW - 2, bandBotY);
     canvas.drawRect(
       bandRect,
-      Paint()..color = _kGreen.withValues(alpha: 0.22),
+      Paint()..color = rig.accent.withValues(alpha: 0.16),
     );
     canvas.drawRect(
       bandRect,
@@ -551,12 +758,12 @@ class _AcceleratorPainter extends CustomPainter {
         ..color = _kGreen.withValues(alpha: 0.70),
     );
 
-    // Energy fill — colour shifts: blue below band, green in band, red above.
-    final fillH = gaugeH * energy;
+    // Energy fill — rig colour below band, green in band, red above.
+    final fillH = gaugeH * rig.energy;
     final fillTop = top + gaugeH - fillH;
-    final fillColor = energy > bandMax
+    final fillColor = rig.energy > rig.bandMax
         ? _kRed
-        : (energy >= bandMin ? _kGreen : _kCyan);
+        : (rig.energy >= rig.bandMin ? _kGreen : rig.accent);
 
     if (fillH > 2) {
       final fillRR = RRect.fromRectAndCorners(
@@ -569,7 +776,7 @@ class _AcceleratorPainter extends CustomPainter {
     }
 
     // Indicator line at current energy level.
-    final indY = top + gaugeH * (1.0 - energy);
+    final indY = top + gaugeH * (1.0 - rig.energy);
     canvas.drawLine(
       Offset(left - 2, indY),
       Offset(left + gaugeW + 2, indY),
@@ -578,23 +785,12 @@ class _AcceleratorPainter extends CustomPainter {
         ..strokeWidth = 2.2
         ..strokeCap = StrokeCap.round,
     );
-
-    // TAP label below gauge.
-    _drawText(
-      canvas,
-      'TAP',
-      Offset(left + gaugeW / 2, bottom + 18),
-      fontSize: 10,
-      color: _kAccent.withValues(alpha: 0.65),
-      bold: true,
-    );
   }
 
   // ── Dwell arc ───────────────────────────────────────────────────────────────
 
-  /// A sweeping arc drawn inside the ring that fills as the player holds
-  /// the band — the "charging" indicator.
-  void _paintDwellArc(Canvas canvas, _RingGeo geom) {
+  void _paintDwellArc(Canvas canvas, _RigGeo geom, _Rig rig) {
+    final dwellFrac = (rig.dwellAcc / _kLevelUpDwell).clamp(0.0, 1.0);
     if (dwellFrac <= 0.01) return;
     final innerR = geom.radius * 0.62;
     final rect = Rect.fromCircle(center: geom.center, radius: innerR);
@@ -611,10 +807,9 @@ class _AcceleratorPainter extends CustomPainter {
         ..color = _kGreen.withValues(alpha: 0.60 + 0.35 * dwellFrac)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
     );
-    // Neon tip at the leading edge.
     final tipAngle = -math.pi / 2 + sweep;
-    final tipPos = geom.center +
-        Offset(math.cos(tipAngle), math.sin(tipAngle)) * innerR;
+    final tipPos =
+        geom.center + Offset(math.cos(tipAngle), math.sin(tipAngle)) * innerR;
     canvas.drawCircle(
         tipPos,
         4.5,
@@ -623,42 +818,44 @@ class _AcceleratorPainter extends CustomPainter {
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
   }
 
-  // ── Sparks ──────────────────────────────────────────────────────────────────
+  // ── Ring flash (localised per rig) ──────────────────────────────────────────
 
-  void _paintSparks(Canvas canvas, _RingGeo geom) {
+  void _paintRigFlash(Canvas canvas, _RigGeo geom, _Rig rig) {
+    if (rig.ringFlash <= 0.02) return;
+    final a = rig.ringFlash;
+    final rad = geom.radius * 1.6;
+    canvas.drawCircle(
+      geom.center,
+      rad,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          _kGreen.withValues(alpha: 0.35 * a),
+          _kGreen.withValues(alpha: 0.0),
+        ]).createShader(Rect.fromCircle(center: geom.center, radius: rad)),
+    );
+  }
+
+  // ── Sparks (absolute) ───────────────────────────────────────────────────────
+
+  void _paintSparks(Canvas canvas) {
     for (final s in sparks) {
       final t = (1 - s.age / s.life).clamp(0.0, 1.0);
-      // Centered sparks originate from the ring centre; others are absolute.
-      final origin = s.centered ? geom.center : Offset.zero;
-      final pos = origin + s.pos + s.vel * s.age;
-      final dir = s.vel.distance > 1 ? s.vel / s.vel.distance : const Offset(1, 0);
+      final pos = s.pos + s.vel * s.age;
+      final dir =
+          s.vel.distance > 1 ? s.vel / s.vel.distance : const Offset(1, 0);
       final paint = Paint()..color = s.color.withValues(alpha: t);
       canvas.drawLine(pos - dir * (5 * t), pos, paint..strokeWidth = 1.5);
       canvas.drawCircle(pos, s.radius * t, paint);
     }
   }
 
-  // ── Ring flash ──────────────────────────────────────────────────────────────
-
-  void _paintRingFlash(Canvas canvas, Size size) {
-    if (ringFlash <= 0.3) return;
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()
-        ..color = _kGreen.withValues(alpha: (ringFlash - 0.3) * 0.50),
-    );
-  }
-
   // ── Popups ──────────────────────────────────────────────────────────────────
 
-  void _paintPopups(Canvas canvas, Size size) {
+  void _paintPopups(Canvas canvas) {
     for (final p in popups) {
       final t = (p.age / p.life).clamp(0.0, 1.0);
       final alpha = (1 - t) * (1 - t);
       final rise = 44.0 * t;
-      final origin = p.origin == Offset.zero
-          ? Offset(size.width / 2, size.height * 0.35)
-          : p.origin;
 
       final tp = TextPainter(
         text: TextSpan(
@@ -681,36 +878,365 @@ class _AcceleratorPainter extends CustomPainter {
 
       tp.paint(
         canvas,
-        origin - Offset(tp.width / 2, tp.height / 2 + rise),
+        p.origin - Offset(tp.width / 2, tp.height / 2 + rise),
       );
     }
-  }
-
-  // ── Text helper ─────────────────────────────────────────────────────────────
-
-  void _drawText(
-    Canvas canvas,
-    String text,
-    Offset center, {
-    required double fontSize,
-    required Color color,
-    bool bold = false,
-  }) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontFamily: _kFont,
-          fontSize: fontSize,
-          fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-          color: color,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
   }
 
   @override
   bool shouldRepaint(covariant _AcceleratorPainter old) => true;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The interactive PUMP button — a widget (not painted on canvas) with press
+// feedback, colour-matched to the beam it drives. One tap = one pump.
+
+class _PumpButton extends StatefulWidget {
+  final Color color;
+  final Color colorDeep;
+  final String label;
+  final VoidCallback onPump;
+
+  const _PumpButton({
+    Key? key,
+    required this.color,
+    required this.colorDeep,
+    required this.label,
+    required this.onPump,
+  }) : super(key: key);
+
+  @override
+  State<_PumpButton> createState() => _PumpButtonState();
+}
+
+class _PumpButtonState extends State<_PumpButton> {
+  bool _down = false;
+
+  void _setDown(bool v) {
+    if (_down != v) setState(() => _down = v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bright = _down ? 0.25 : 0.0;
+    final top = Color.lerp(widget.color, _kWhite, bright)!;
+    final bottom = Color.lerp(widget.colorDeep, _kWhite, bright)!;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) {
+        _setDown(true);
+        widget.onPump();
+      },
+      onTapUp: (_) => _setDown(false),
+      onTapCancel: () => _setDown(false),
+      child: AnimatedScale(
+        scale: _down ? 0.94 : 1.0,
+        duration: const Duration(milliseconds: 70),
+        curve: Curves.easeOut,
+        child: Container(
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [top, bottom],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: _kWhite.withValues(alpha: _down ? 0.85 : 0.45),
+              width: 1.4,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: widget.color.withValues(alpha: _down ? 0.65 : 0.40),
+                blurRadius: _down ? 24 : 16,
+                spreadRadius: _down ? 1 : 0,
+              ),
+            ],
+          ),
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              fontFamily: _kFont,
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 2.0,
+              color: _kWhite.withValues(alpha: 0.98),
+              shadows: const [
+                Shadow(color: Colors.black45, blurRadius: 4),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards. Each card is drawn with the REAL rig
+// renderer (_AcceleratorPainter's own component methods on real _Rig state) so
+// the manual shows the literal ring, beam, gauge and PUMP button the player
+// will meet. Static, cheap, degenerate-size guarded.
+// ═════════════════════════════════════════════════════════════════════════════
+
+bool _legendBadSize(Size size) =>
+    !size.width.isFinite ||
+    !size.height.isFinite ||
+    size.width <= 0 ||
+    size.height <= 0;
+
+/// A painter instance whose component methods we borrow for the static cards.
+_AcceleratorPainter _legendArt({List<_Popup> popups = const []}) =>
+    _AcceleratorPainter(
+      rigs: const [],
+      split: 0,
+      idlePhase: 0.7,
+      sparks: const [],
+      popups: popups,
+    );
+
+/// Static canvas version of the interactive [_PumpButton] widget — same
+/// gradient, border, glow and label styling, so the card matches play.
+void _legendPumpButton(
+  Canvas canvas,
+  Rect r,
+  Color color,
+  Color colorDeep,
+  String label, {
+  double fontSize = 15,
+}) {
+  if (r.width <= 0 || r.height <= 0) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+
+  // Glow.
+  canvas.drawRRect(
+    rr.inflate(2),
+    Paint()
+      ..color = color.withValues(alpha: 0.40)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+  // Body gradient.
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [color, colorDeep],
+      ).createShader(r),
+  );
+  // Border.
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kWhite.withValues(alpha: 0.45),
+  );
+  // Label.
+  final tp = TextPainter(
+    text: TextSpan(
+      text: label,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.w900,
+        letterSpacing: 2.0,
+        color: _kWhite.withValues(alpha: 0.98),
+        shadows: const [Shadow(color: Colors.black45, blurRadius: 4)],
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, r.center - Offset(tp.width / 2, tp.height / 2));
+}
+
+void _legendLabel(
+  Canvas canvas,
+  String text,
+  Offset center,
+  Color color, {
+  double fontSize = 11,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.bold,
+        letterSpacing: 1.4,
+        color: color.withValues(alpha: 0.95),
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+// ── Frame 1: the rig + the verb — tap PUMP to feed the beam ──────────────────
+
+void _legendPump(Canvas canvas, Size size) {
+  if (_legendBadSize(size)) return;
+  final art = _legendArt();
+  final rig = _Rig(accent: _kCyan, accentDeep: _kCyanDeep, angle1: -math.pi / 3)
+    ..energy = 0.40;
+  final radius = math.max(12.0, math.min(size.width, size.height) * 0.24);
+  final geo =
+      _RigGeo(Offset(size.width / 2, size.height * 0.38), radius, Rect.zero);
+
+  art._paintRigBackdrop(canvas, geo, rig);
+  art._paintRing(canvas, geo, rig);
+  art._paintParticle(canvas, geo, rig.angle1, rig.accent);
+  art._paintParticle(
+      canvas, geo, rig.angle2 + 0.8, Color.lerp(rig.accent, _kWhite, 0.35)!);
+
+  _legendPumpButton(
+    canvas,
+    Rect.fromCenter(
+      center: Offset(size.width / 2, size.height * 0.86),
+      width: math.min(size.width * 0.55, 200.0),
+      height: math.min(44.0, size.height * 0.16),
+    ),
+    _kCyan,
+    _kCyanDeep,
+    'PUMP',
+  );
+}
+
+// ── Frame 2: scoring — hold the needle in the green band, charge a level ─────
+
+void _legendBand(Canvas canvas, Size size) {
+  if (_legendBadSize(size)) return;
+  final popup = _Popup(
+    'LV2  +38',
+    Offset(size.width * 0.64, size.height * 0.13),
+    _kGreen,
+    big: true,
+  );
+  final art = _legendArt(popups: [popup]);
+  final rig = _Rig(accent: _kCyan, accentDeep: _kCyanDeep, angle1: math.pi / 5)
+    ..energy = _kBandCentre // dead-centre of the target band → green
+    ..dwellAcc = _kLevelUpDwell * 0.65; // charge arc two-thirds full
+
+  final gauge = Rect.fromLTWH(
+      size.width * 0.16 - 13, size.height * 0.10, 26, size.height * 0.78);
+  final radius = math.max(12.0, math.min(size.width, size.height) * 0.21);
+  final geo =
+      _RigGeo(Offset(size.width * 0.64, size.height * 0.52), radius, gauge);
+
+  art._paintRing(canvas, geo, rig); // reads green: in-band
+  art._paintDwellArc(canvas, geo, rig); // the charge arc
+  art._paintParticle(canvas, geo, rig.angle1, rig.accent);
+  art._paintGauge(canvas, geo, rig); // band + green fill + needle
+  art._paintPopups(canvas); // the level-up reward
+}
+
+// ── Frame 3: the danger — constant drain low, red overshoot high ─────────────
+
+void _legendDrain(Canvas canvas, Size size) {
+  if (_legendBadSize(size)) return;
+  final art = _legendArt();
+
+  // Left gauge: stalled — energy drained out below the band.
+  final low = _Rig(accent: _kCyan, accentDeep: _kCyanDeep)..energy = 0.16;
+  // Right gauge: overshot — pumped past the band into the red.
+  final hot = _Rig(accent: _kCyan, accentDeep: _kCyanDeep)..energy = 0.94;
+
+  final gh = size.height * 0.64;
+  final lowGauge =
+      Rect.fromLTWH(size.width * 0.30 - 13, size.height * 0.08, 26, gh);
+  final hotGauge =
+      Rect.fromLTWH(size.width * 0.70 - 13, size.height * 0.08, 26, gh);
+  art._paintGauge(canvas, _RigGeo(Offset.zero, 1, lowGauge), low);
+  art._paintGauge(canvas, _RigGeo(Offset.zero, 1, hotGauge), hot);
+
+  // Drain chevrons beside the stalled gauge — energy always falls.
+  final chev = Paint()
+    ..color = _kCyan.withValues(alpha: 0.85)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final cx = lowGauge.right + 16;
+  for (var i = 0; i < 2; i++) {
+    final cy = lowGauge.top + gh * (0.38 + i * 0.16);
+    canvas.drawLine(Offset(cx - 7, cy - 5), Offset(cx, cy + 4), chev);
+    canvas.drawLine(Offset(cx + 7, cy - 5), Offset(cx, cy + 4), chev);
+  }
+
+  // Red warning glow at the overshot gauge's top.
+  canvas.drawCircle(
+    Offset(hotGauge.center.dx, hotGauge.top + 8),
+    16,
+    Paint()
+      ..color = _kRed.withValues(alpha: 0.35)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+
+  _legendLabel(canvas, 'TOO LOW', Offset(lowGauge.center.dx, lowGauge.bottom + 16),
+      _kCyan);
+  _legendLabel(canvas, 'TOO HIGH', Offset(hotGauge.center.dx, hotGauge.bottom + 16),
+      _kRed);
+}
+
+// ── Frame 4: the twist — halftime brings a second, colour-matched beam ───────
+
+void _legendTwoBeams(Canvas canvas, Size size) {
+  if (_legendBadSize(size)) return;
+  final art = _legendArt();
+  final cyanRig =
+      _Rig(accent: _kCyan, accentDeep: _kCyanDeep, angle1: -math.pi / 2.4)
+        ..energy = _kBandCentre;
+  final orangeRig =
+      _Rig(accent: _kOrange, accentDeep: _kOrangeDeep, angle1: math.pi * 0.7)
+        ..energy = 0.40;
+
+  final r = math.max(10.0, math.min(size.width * 0.15, size.height * 0.17));
+  final cGeo = _RigGeo(Offset(size.width * 0.28, size.height * 0.36), r, Rect.zero);
+  final oGeo = _RigGeo(Offset(size.width * 0.72, size.height * 0.36), r, Rect.zero);
+
+  for (final pair in [(cGeo, cyanRig), (oGeo, orangeRig)]) {
+    art._paintRigBackdrop(canvas, pair.$1, pair.$2);
+    art._paintRing(canvas, pair.$1, pair.$2);
+    art._paintParticle(canvas, pair.$1, pair.$2.angle1, pair.$2.accent);
+  }
+
+  final btnW = size.width * 0.34;
+  final btnH = math.min(38.0, size.height * 0.16);
+  final btnY = size.height * 0.82;
+  _legendPumpButton(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(size.width * 0.28, btnY), width: btnW, height: btnH),
+    _kCyan,
+    _kCyanDeep,
+    'PUMP  TOP',
+    fontSize: 11,
+  );
+  _legendPumpButton(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(size.width * 0.72, btnY), width: btnW, height: btnH),
+    _kOrange,
+    _kOrangeDeep,
+    'PUMP  BOT',
+    fontSize: 11,
+  );
+}
+
+/// The visual manual for Accelerator — wired into the registry spec.
+final List<LegendFrame> acceleratorLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap PUMP to feed energy into the beam', paint: _legendPump),
+  const LegendFrame(
+      caption: 'Hold energy in the green band to charge a level-up',
+      paint: _legendBand),
+  const LegendFrame(
+      caption: 'Beam drains fast — don\'t stall low or overshoot red',
+      paint: _legendDrain),
+  const LegendFrame(
+      caption: 'Halftime: 2nd beam online — match button colour to beam',
+      paint: _legendTwoBeams),
+];

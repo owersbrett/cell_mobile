@@ -266,12 +266,55 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Atom Builder *correctly*,
+  /// never randomly: it scans the free particles on the field, keeps only the
+  /// kinds the current noble target still needs (and, for electrons, only when
+  /// the nucleus has a spare proton to hold one — otherwise catching it is the
+  /// "NEEDS A PROTON" penalty), then catches the single most urgent one: the
+  /// particle closest to despawning (greatest [_FieldParticle.life]). It fires
+  /// the same [_collectParticle] handler a real tap uses, so scoring, fertilizer
+  /// banking and shell completion all run identically. It NEVER catches a kind
+  /// the target doesn't need (that's −10); if none is on screen it simply waits.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    _FieldParticle? best;
+    for (final p in _particles) {
+      if (!_kindNeeded(p.kind)) continue;
+      // Most urgent = closest to leaving the field (greatest life). Strict >
+      // keeps the first among ties, so the choice is deterministic.
+      if (best == null || p.life > best.life) best = p;
+    }
+    if (best == null) return; // nothing needed on screen — never grab a wrong one
+    _collectParticle(best);
+  }
+
+  /// Whether a particle of [kind] is currently a safe, scoring catch — i.e. the
+  /// target still needs it. Electrons only count when there is a free proton for
+  /// them to orbit ([_gotE] < [_gotP]); otherwise the game penalises the grab.
+  bool _kindNeeded(_ParticleKind kind) {
+    switch (kind) {
+      case _ParticleKind.proton:
+        return _gotP < _cap;
+      case _ParticleKind.neutron:
+        return _gotN < _cap;
+      case _ParticleKind.electron:
+        return _gotE < _cap && _gotE < _gotP;
+    }
   }
 
   // ---------------------------------------------------------------- loop --
@@ -542,6 +585,14 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     }
     if (hit == null) return;
 
+    _collectParticle(hit);
+  }
+
+  /// Fold a single field particle into the atom — the shared outcome of both a
+  /// player tap and the attract-mode autopilot. Applies the scoring rules (+5 for
+  /// a needed particle, −10 for one the target doesn't need, −3 for an electron
+  /// with no proton to orbit) and updates the nucleus / shell / fertilizer state.
+  void _collectParticle(_FieldParticle hit) {
     hit.dead = true;
 
     // An electron needs a proton to orbit. You can't collect one onto an
@@ -664,8 +715,10 @@ class _AtomBuilderGameState extends State<AtomBuilderGame>
     if (_nobleIndex < _kNobles.length - 1) _nobleIndex++;
   }
 
+  // Centered in the open play field — between the target panel (top) and the
+  // fact card (bottom) — so the nucleus + orbits don't collide with either.
   Offset _atomCenter(Size size) =>
-      Offset(size.width / 2, size.height * 0.72);
+      Offset(size.width / 2, size.height * 0.5);
 
   // ---------------------------------------------------------------- build --
 
@@ -1413,3 +1466,320 @@ class _AtomFieldPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _AtomFieldPainter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME particle /
+// atom recipes the live _AtomFieldPainter uses (colors, halos, glyphs,
+// sunflower nucleus, electron shells). Static + cheap: intro only.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legendText(
+  Canvas canvas,
+  String text,
+  Offset center,
+  double fontSize,
+  Color color, {
+  FontWeight weight = FontWeight.bold,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: weight,
+        color: color,
+        letterSpacing: 0.6,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// One free field particle, exactly as [_AtomFieldPainter._paintFalling] draws
+/// it (minus the motion trail): halo, colored body, white rim, highlight, glyph.
+void _legendParticle(Canvas canvas, Offset pos, _ParticleKind kind,
+    {double radius = 22}) {
+  final color = switch (kind) {
+    _ParticleKind.proton => _kProtonColor,
+    _ParticleKind.neutron => _kNeutronColor,
+    _ParticleKind.electron => _kElectronColor,
+  };
+  canvas.drawCircle(
+    pos,
+    radius + 7,
+    Paint()
+      ..color = color.withValues(alpha: 0.22)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+  );
+  canvas.drawCircle(pos, radius, Paint()..color = color);
+  canvas.drawCircle(
+    pos,
+    radius,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Colors.white.withValues(alpha: 0.55),
+  );
+  canvas.drawCircle(pos - Offset(radius * 0.27, radius * 0.32), radius * 0.23,
+      Paint()..color = Colors.white.withValues(alpha: 0.3));
+  final label = switch (kind) {
+    _ParticleKind.proton => '+',
+    _ParticleKind.neutron => 'n',
+    _ParticleKind.electron => '−',
+  };
+  _legendText(canvas, label, pos,
+      kind == _ParticleKind.neutron ? radius * 0.9 : radius * 1.1,
+      Colors.black.withValues(alpha: 0.85));
+}
+
+/// The built atom, mirroring [_AtomFieldPainter._paintAtom]: ambient glow
+/// (amber-shifted by [instability]), electron shells in period order
+/// ([_kShellCaps]), and the sunflower-spiral p/n nucleus.
+void _legendAtom(
+  Canvas canvas,
+  Offset c, {
+  required int protons,
+  required int neutrons,
+  required int electrons,
+  double scale = 1.0,
+  double instability = 0,
+}) {
+  if (scale <= 0) return;
+
+  // Ambient glow — flushes warning-amber as the core destabilises.
+  final glowColor = Color.lerp(_kAccent, _kWarn, instability)!;
+  canvas.drawCircle(
+    c,
+    50 * scale,
+    Paint()
+      ..color = glowColor.withValues(alpha: 0.10 + 0.18 * instability)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 22),
+  );
+  if (instability > 0.05) {
+    canvas.drawCircle(
+      c,
+      30 * scale,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _kWarn.withValues(alpha: 0.25 + 0.5 * instability),
+    );
+  }
+
+  // Electron shells fill in period order (2, 8, 8, 18, 18).
+  int remaining = electrons;
+  final shellPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.2;
+  for (int s = 0; s < _kShellCaps.length; s++) {
+    final inShell = math.min(remaining, _kShellCaps[s]);
+    remaining -= inShell;
+    final radius = (34.0 + s * 16.0) * scale;
+    shellPaint.color =
+        _kElectronColor.withValues(alpha: inShell > 0 ? 0.35 : 0.12);
+    canvas.drawCircle(c, radius, shellPaint);
+    for (int i = 0; i < inShell; i++) {
+      final a = s * 0.7 + (i / math.max(1, inShell)) * math.pi * 2;
+      final pos = c + Offset(math.cos(a), math.sin(a)) * radius;
+      canvas.drawCircle(
+        pos,
+        6 * scale,
+        Paint()
+          ..color = _kElectronColor.withValues(alpha: 0.45)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+      );
+      canvas.drawCircle(pos, 4.0 * scale, Paint()..color = _kElectronColor);
+      canvas.drawCircle(pos, 1.7 * scale,
+          Paint()..color = Colors.white.withValues(alpha: 0.9));
+    }
+    if (remaining <= 0) break;
+  }
+
+  // Nucleus: protons + neutrons packed in the sunflower spiral.
+  final nucleons = protons + neutrons;
+  if (nucleons == 0) {
+    canvas.drawCircle(
+      c,
+      10 * scale,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = _kAccent.withValues(alpha: 0.4),
+    );
+    return;
+  }
+  final nucleonR = 7.5 * scale;
+  final golden = math.pi * (3 - math.sqrt(5));
+  final kinds = <Color>[];
+  int pLeft = protons, nLeft = neutrons;
+  while (pLeft > 0 || nLeft > 0) {
+    if (pLeft > 0) {
+      kinds.add(_kProtonColor);
+      pLeft--;
+    }
+    if (nLeft > 0) {
+      kinds.add(_kNeutronColor);
+      nLeft--;
+    }
+  }
+  for (int i = 0; i < nucleons; i++) {
+    final r = nucleonR * 0.95 * math.sqrt(i + 0.5);
+    final a = i * golden;
+    final pos = c + Offset(math.cos(a), math.sin(a)) * r;
+    canvas.drawCircle(
+      pos,
+      nucleonR + 2.5,
+      Paint()
+        ..color = kinds[i].withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+    canvas.drawCircle(pos, nucleonR, Paint()..color = kinds[i]);
+    canvas.drawCircle(pos - Offset(nucleonR * 0.25, nucleonR * 0.25),
+        nucleonR * 0.3, Paint()..color = Colors.white.withValues(alpha: 0.5));
+  }
+}
+
+/// A HUD progress chip ("p 2/2"), same shape as [_ProgressChip].
+void _legendChip(Canvas canvas, Offset center, String label, Color color,
+    {double width = 52}) {
+  final rect = Rect.fromCenter(center: center, width: width, height: 20);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(8));
+  canvas.drawRRect(rr, Paint()..color = color.withValues(alpha: 0.3));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = color,
+  );
+  _legendText(canvas, label, center, 11, Colors.white);
+}
+
+// ── The frames ───────────────────────────────────────────────────────────────
+
+/// (a) The core objects + the verb: the three particle kinds, tap to catch.
+void _legendCatch(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final r = (w * 0.085).clamp(10.0, 24.0);
+  final xs = [w * 0.22, w * 0.5, w * 0.78];
+  const kinds = [
+    _ParticleKind.proton,
+    _ParticleKind.neutron,
+    _ParticleKind.electron,
+  ];
+  const names = ['PROTON', 'NEUTRON', 'ELECTRON'];
+  const colors = [_kProtonColor, _kNeutronColor, _kElectronColor];
+  final cy = h * 0.40;
+  for (int i = 0; i < 3; i++) {
+    _legendParticle(canvas, Offset(xs[i], cy), kinds[i], radius: r);
+    _legendText(canvas, names[i], Offset(xs[i], h * 0.68), 10, colors[i]);
+  }
+  // Tap-ripple cue on the proton.
+  final ring = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2
+    ..color = Colors.white.withValues(alpha: 0.8);
+  canvas.drawCircle(Offset(xs[0], cy), r + 8, ring);
+  ring.color = Colors.white.withValues(alpha: 0.35);
+  canvas.drawCircle(Offset(xs[0], cy), r + 14, ring);
+  _legendText(canvas, 'TAP TO CATCH', Offset(w * 0.5, h * 0.88), 11,
+      Colors.white.withValues(alpha: 0.7));
+}
+
+/// (b) How to score: a perfectly balanced helium atom, +5 catches, +50 stable.
+void _legendTarget(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final scale = (size.shortestSide / 200).clamp(0.4, 1.2);
+  _legendAtom(canvas, Offset(w * 0.5, h * 0.42),
+      protons: 2, neutrons: 2, electrons: 2, scale: scale);
+  _legendText(canvas, '+5', Offset(w * 0.16, h * 0.18), 16, _kGood);
+  _legendText(canvas, 'HELIUM — STABLE! +50', Offset(w * 0.5, h * 0.14), 12,
+      _kAccent);
+  final chipW = (w * 0.26).clamp(40.0, 56.0);
+  final cy = h * 0.85;
+  _legendChip(canvas, Offset(w * 0.22, cy), 'p 2/2', _kProtonColor,
+      width: chipW);
+  _legendChip(canvas, Offset(w * 0.5, cy), 'n 2/2', _kNeutronColor,
+      width: chipW);
+  _legendChip(canvas, Offset(w * 0.78, cy), 'e 2/2', _kElectronColor,
+      width: chipW);
+}
+
+/// (c) The danger: a proton-heavy core jitters amber and decays; neutrons glue.
+void _legendDecay(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final scale = (size.shortestSide / 210).clamp(0.4, 1.2);
+  final core = Offset(w * 0.38, h * 0.46);
+  _legendAtom(canvas, core,
+      protons: 5, neutrons: 1, electrons: 2, scale: scale, instability: 0.85);
+  _legendText(canvas, 'DECAY −1p', Offset(w * 0.38, h * 0.12), 13, _kWarn);
+
+  // A neutron inbound to glue the core back together.
+  final nr = (w * 0.06).clamp(8.0, 16.0);
+  final nPos = Offset(w * 0.84, h * 0.46);
+  _legendParticle(canvas, nPos, _ParticleKind.neutron, radius: nr);
+  final arrow = Paint()
+    ..color = _kNeutronColor.withValues(alpha: 0.8)
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  final aFrom = Offset(nPos.dx - nr - 6, nPos.dy);
+  final aTo = Offset(core.dx + 44 * scale, core.dy);
+  canvas.drawLine(aFrom, aTo, arrow);
+  canvas.drawLine(aTo, aTo + const Offset(8, -6), arrow);
+  canvas.drawLine(aTo, aTo + const Offset(8, 6), arrow);
+
+  _legendText(canvas, 'WRONG GRAB −10', Offset(w * 0.5, h * 0.88), 11, _kBad);
+}
+
+/// (d) The escalation: the noble-gas ladder — the atom keeps growing.
+void _legendLadder(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final base = (size.shortestSide / 210).clamp(0.3, 1.0);
+  final xs = [w * 0.18, w * 0.5, w * 0.84];
+  final scales = [base * 0.42, base * 0.52, base * 0.62];
+  const counts = [2, 10, 18]; // He, Ne, Ar — p = n = e at each checkpoint
+  const symbols = ['He', 'Ne', 'Ar'];
+  final cy = h * 0.42;
+  final arrow = Paint()
+    ..color = _kAccent.withValues(alpha: 0.7)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  for (int i = 0; i < 3; i++) {
+    _legendAtom(canvas, Offset(xs[i], cy),
+        protons: counts[i],
+        neutrons: counts[i],
+        electrons: counts[i],
+        scale: scales[i]);
+    _legendText(canvas, symbols[i], Offset(xs[i], h * 0.78), 12, _kAccent);
+    if (i < 2) {
+      final mx = (xs[i] + xs[i + 1]) / 2;
+      canvas.drawLine(Offset(mx - 6, cy), Offset(mx + 6, cy), arrow);
+      canvas.drawLine(Offset(mx + 6, cy), Offset(mx + 1, cy - 4), arrow);
+      canvas.drawLine(Offset(mx + 6, cy), Offset(mx + 1, cy + 4), arrow);
+    }
+  }
+  _legendText(canvas, 'THE SWARM SPEEDS UP', Offset(w * 0.5, h * 0.92), 10,
+      Colors.white.withValues(alpha: 0.7));
+}
+
+/// The visual manual for Atom Builder — wired into the registry spec.
+final List<LegendFrame> atomBuilderLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap flying protons +, neutrons n, electrons −',
+      paint: _legendCatch),
+  const LegendFrame(
+      caption: 'Balance p = n = e for the noble: +5, stable +50',
+      paint: _legendTarget),
+  const LegendFrame(
+      caption: 'Extra protons decay the core — glue with neutrons',
+      paint: _legendDecay),
+  const LegendFrame(
+      caption: 'Finish a shell to climb: He → Ne → Ar → Kr → Xe',
+      paint: _legendLadder),
+];

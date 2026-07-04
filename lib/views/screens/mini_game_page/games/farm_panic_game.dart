@@ -416,6 +416,10 @@ class _FarmPanicGameState extends State<FarmPanicGame>
       ..addListener(_onTick);
     _ticker.forward();
     _lastTime = _now();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
     _startGame();
   }
 
@@ -423,8 +427,138 @@ class _FarmPanicGameState extends State<FarmPanicGame>
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ---- ATTRACT autopilot ----------------------------------------------------
+  /// One hands-free move per host tick (~250ms). Reads the game's OWN entity
+  /// lists and calls the SAME resolve handlers the gestures use — no randomness,
+  /// no synthetic gestures, no coordinate hunting beyond feeding an entity its
+  /// own position. Each call fires the single most valuable/urgent action:
+  ///   1. Swat the bug nearest the crop line (a breach steals a whole potato).
+  ///   2. Harvest a ripe gold potato (biggest per-action reward).
+  ///   3. Collect banked cash before it drifts off-screen.
+  ///   4. Grab a flood power-up (waters every field at once).
+  ///   5. Yank the oldest weed before it damages the row.
+  /// It also drives IRRIGATION directly (no synthetic swipe): a critically dry
+  /// channel is watered right after bugs (keeping crops growing is the engine),
+  /// and any moderately dry channel is topped up when nothing else is pressing.
+  /// If nothing is actionable and cash is banked, it spends on a shop upgrade —
+  /// preferring WATER when the fields are drying so crops keep ripening.
+  /// Deterministic throughout: ties resolve to the first candidate found.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.playing || _size == Size.zero) return;
+
+    // 1) Most urgent bug = the one furthest down (largest y → closest breach).
+    _Bug? urgentBug;
+    for (final b in _bugs) {
+      if (b.dead) continue;
+      if (urgentBug == null || b.y > urgentBug.y) urgentBug = b;
+    }
+    if (urgentBug != null) {
+      _tryKillBug(Offset(urgentBug.x, urgentBug.y));
+      return;
+    }
+
+    // 1b) CRITICAL irrigation — a field near the growth cliff. Below ~0.25 flow
+    // growth halves; below 0.10 potatoes actually shrink (see _updatePotatoes),
+    // so a bone-dry channel stalls the whole harvest engine. Drive the driest
+    // channel directly (the manual upgrade already auto-waters when active).
+    if (_irrigTimer <= 0) {
+      final dry = _driestChannel();
+      if (dry != null && _channels[dry].flow < 0.28) {
+        _autoIrrigate(dry);
+        return;
+      }
+    }
+
+    // 2) A ripe potato ready to harvest.
+    final ripe = _firstRipe();
+    if (ripe != null) {
+      _harvestPotato(ripe);
+      return;
+    }
+
+    // 3) Banked cash token drifting upward.
+    for (final t in _tokens) {
+      if (t.banked) continue;
+      _tryBankToken(Offset(t.x, t.y));
+      return;
+    }
+
+    // 4) Flood power-up — one grab waters every channel.
+    for (final wb in _waterBursts) {
+      if (wb.collected) continue;
+      _tryCollectWaterBurst(Offset(wb.x, wb.y));
+      return;
+    }
+
+    // 5) Oldest un-pulled weed (closest to timing out into crop damage).
+    _Weed? weed;
+    for (final w in _weeds) {
+      if (w.pulled) continue;
+      if (weed == null || w.age > weed.age) weed = w;
+    }
+    if (weed != null) {
+      _tryPullWeed(Offset(weed.x, weed.y));
+      return;
+    }
+
+    // 6) Idle top-up irrigation — nothing pressing, so keep the driest channel
+    // comfortably above the growth taper instead of waiting for it to hit the
+    // cliff. Same direct-drive path as the critical case.
+    if (_irrigTimer <= 0) {
+      final dry = _driestChannel();
+      if (dry != null && _channels[dry].flow < 0.6) {
+        _autoIrrigate(dry);
+        return;
+      }
+    }
+
+    // 7) Idle: bank surplus cash into an upgrade. Prefer irrigation when the
+    // fields are drying (keeps crops growing → future harvests); otherwise take
+    // the first affordable item.
+    if (_irrigTimer <= 0 && _avgFlow < 0.4) {
+      for (final item in _shop) {
+        if (item.kind == _Upgrade.irrigation && _cash >= item.cost) {
+          _buy(item);
+          return;
+        }
+      }
+    }
+    for (final item in _shop) {
+      if (_cash >= item.cost) {
+        _buy(item);
+        return;
+      }
+    }
+  }
+
+  /// Index of the channel with the least water, or null if there are none.
+  /// Deterministic: ties resolve to the lowest index.
+  int? _driestChannel() {
+    if (_channels.isEmpty) return null;
+    int worst = 0;
+    for (int i = 1; i < _channels.length; i++) {
+      if (_channels[i].flow < _channels[worst].flow) worst = i;
+    }
+    return worst;
+  }
+
+  /// Autopilot irrigation: drive a channel the way a decisive player swipe would
+  /// (see _onPointerMove), but via the game's own state instead of a synthetic
+  /// pixel gesture. Raising [ch.flow] is the lowest-level effect a swipe has;
+  /// we also re-seat the handle on the water's edge and stamp the swipe time so
+  /// the low-flow teaching hint doesn't nag.
+  void _autoIrrigate(int idx) {
+    final ch = _channels[idx];
+    ch.flow = (ch.flow + _kSwipeFlowGain).clamp(0.0, 1.0);
+    ch.handle = 0.12 + 0.88 * ch.flow;
+    _lastSwipeTime = _elapsed;
+    if (!_swipeGuideDone) _swipeGuideDone = true;
   }
 
   void _startGame() {
@@ -2688,3 +2822,390 @@ class _FarmPanicPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _FarmPanicPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn statically with the SAME
+// components the live game uses (the channel trough + handle, the golden ripe
+// tuber, a bug, a weed, a storm, a shop chip). No elapsed/ticker: fixed phases.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _fpBackdrop(Canvas canvas, Size size, double groundY) {
+  final w = size.width, h = size.height;
+  // sky
+  canvas.drawRect(
+    Rect.fromLTWH(0, 0, w, groundY),
+    Paint()
+      ..shader = ui.Gradient.linear(
+        const Offset(0, 0),
+        Offset(0, groundY),
+        const [_kSkyTop, _kSkyMid, _kSkyHorizon],
+        const [0.0, 0.6, 1.0],
+      ),
+  );
+  // soil
+  canvas.drawRect(
+    Rect.fromLTWH(0, groundY, w, h - groundY),
+    Paint()
+      ..shader = ui.Gradient.linear(
+        Offset(0, groundY),
+        Offset(0, h),
+        const [_kSoilTop, _kSoilBot],
+      ),
+  );
+  // ground ridge line
+  canvas.drawLine(Offset(0, groundY), Offset(w, groundY),
+      Paint()..color = _kSoilRidge.withValues(alpha: 0.6)..strokeWidth = 2);
+}
+
+void _fpChevrons(
+    Canvas canvas, double x0, double x1, double y, Color color, double alpha) {
+  if (x1 <= x0 + 12) return;
+  final p = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round
+    ..color = color.withValues(alpha: alpha.clamp(0.0, 1.0));
+  const gap = 20.0, sz = 6.0;
+  for (double x = x0 + 10; x < x1 - 4; x += gap) {
+    canvas.drawPath(
+      Path()
+        ..moveTo(x - sz, y - sz * 0.7)
+        ..lineTo(x, y)
+        ..lineTo(x - sz, y + sz * 0.7),
+      p,
+    );
+  }
+}
+
+void _fpDashedRing(
+    Canvas canvas, Offset c, double r, Color color, double alpha) {
+  const segs = 12;
+  final paint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round
+    ..color = color.withValues(alpha: alpha.clamp(0.0, 1.0));
+  for (int i = 0; i < segs; i++) {
+    if (i.isOdd) continue;
+    final a0 = i / segs * 2 * pi;
+    final a1 = a0 + (2 * pi / segs) * 0.6;
+    canvas.drawArc(Rect.fromCircle(center: c, radius: r), a0, a1 - a0, false, paint);
+  }
+}
+
+/// One irrigation channel: recessed trough, blue water body sized by [flow], a
+/// draggable current handle with ‹ › side arrows (red when the field is
+/// starving). Mirrors the live `_drawChannel`.
+void _fpDrawChannel(
+    Canvas canvas, Size size, double cy, double flow, bool low) {
+  final w = size.width;
+  const chH = 18.0;
+  final trough = RRect.fromRectAndRadius(
+    Rect.fromCenter(center: Offset(w / 2, cy), width: w - 16, height: chH),
+    const Radius.circular(chH / 2),
+  );
+  canvas.drawRRect(trough, Paint()..color = _kTrough);
+  canvas.drawRRect(
+    trough,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = Colors.black.withValues(alpha: 0.4),
+  );
+
+  const innerL = 10.0;
+  final innerR = w - 10.0;
+  final span = innerR - innerL;
+  final coverage = innerL + span * (0.12 + 0.88 * flow);
+  final waterRect = RRect.fromRectAndRadius(
+    Rect.fromLTRB(innerL, cy - chH / 2 + 3, coverage, cy + chH / 2 - 3),
+    const Radius.circular(5),
+  );
+  canvas.drawRRect(
+    waterRect,
+    Paint()
+      ..shader = ui.Gradient.linear(
+        Offset(0, cy - chH / 2),
+        Offset(0, cy + chH / 2),
+        [
+          Color.lerp(_kWaterDeep, _kWater, 0.7)!
+              .withValues(alpha: 0.35 + 0.5 * flow),
+          _kWaterDeep.withValues(alpha: 0.30 + 0.45 * flow),
+        ],
+      ),
+  );
+  _fpChevrons(canvas, innerL + 4, coverage - 4, cy,
+      low ? _kDanger : Colors.white, low ? 0.55 : 0.65);
+
+  // draggable current handle
+  final hx = innerL + span * (low ? 0.30 : 0.5);
+  final handleColor = low ? _kDanger : _kWater;
+  final grip = RRect.fromRectAndRadius(
+    Rect.fromCenter(center: Offset(hx, cy), width: 16, height: chH + 6),
+    const Radius.circular(7),
+  );
+  canvas.drawRRect(
+      grip,
+      Paint()
+        ..color =
+            Color.lerp(handleColor, Colors.white, 0.15)!.withValues(alpha: 0.92));
+  canvas.drawRRect(
+      grip,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Colors.white.withValues(alpha: 0.7));
+  for (int r = -1; r <= 1; r++) {
+    canvas.drawLine(
+      Offset(hx + r * 3.5, cy - 5),
+      Offset(hx + r * 3.5, cy + 5),
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.30)
+        ..strokeWidth = 1.4,
+    );
+  }
+  final dragA = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.0
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round
+    ..color = Colors.white.withValues(alpha: low ? 0.95 : 0.72);
+  const ax = 14.0;
+  canvas.drawPath(
+    Path()
+      ..moveTo(hx - ax + 4, cy - 4)
+      ..lineTo(hx - ax, cy)
+      ..lineTo(hx - ax + 4, cy + 4),
+    dragA,
+  );
+  canvas.drawPath(
+    Path()
+      ..moveTo(hx + ax - 4, cy - 4)
+      ..lineTo(hx + ax, cy)
+      ..lineTo(hx + ax - 4, cy + 4),
+    dragA,
+  );
+}
+
+/// A potato plant at maturity [g]; when [ripe] a glowing golden tuber pops out
+/// of the foliage with a tap ring, else a growth ring shows progress. Condensed
+/// from the live `_drawPlant`.
+void _fpDrawPlant(
+    Canvas canvas, double baseX, double groundY, double g, bool ripe) {
+  canvas.drawOval(
+    Rect.fromCenter(center: Offset(baseX, groundY - 1), width: 18 + g * 8, height: 7),
+    Paint()..color = _kSoilRidge.withValues(alpha: 0.5),
+  );
+  final stalkH = 30 + g * 34;
+  final topY = groundY - stalkH;
+  final topX = baseX;
+  final stemColor = Color.lerp(const Color(0xFF6E4A2A), _kLeaf, g)!;
+  canvas.drawLine(
+    Offset(baseX, groundY),
+    Offset(topX, topY + 6),
+    Paint()
+      ..color = stemColor
+      ..strokeWidth = 2.6 + g * 1.4
+      ..strokeCap = StrokeCap.round,
+  );
+  final leaves = (2 + g * 5).round();
+  for (int i = 0; i < leaves; i++) {
+    final f = (i + 1) / (leaves + 1);
+    final ly = groundY - stalkH * f;
+    final side = i.isEven ? 1.0 : -1.0;
+    final leafLen = (8 + g * 9) * (0.7 + 0.4 * f);
+    final c = Color.lerp(_kLeafDark, _kLeaf, (g * 0.6 + f * 0.4).clamp(0.0, 1.0))!;
+    final tipX = baseX + side * leafLen;
+    final tipY = ly - leafLen * 0.5;
+    final path = Path()
+      ..moveTo(baseX, ly)
+      ..quadraticBezierTo(baseX + side * leafLen * 0.5, ly - leafLen * 0.1, tipX, tipY)
+      ..quadraticBezierTo(baseX + side * leafLen * 0.45, ly - leafLen * 0.05, baseX, ly + 1.5);
+    canvas.drawPath(path, Paint()..color = c);
+  }
+  if (ripe) {
+    final tc = Offset(topX, topY - 6);
+    canvas.drawCircle(
+        tc,
+        18,
+        Paint()
+          ..color = _kHarvestReady.withValues(alpha: 0.22)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9));
+    canvas.drawCircle(
+        tc,
+        16,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0
+          ..color = _kHarvestReady.withValues(alpha: 0.8));
+    PotatoArt.paint(canvas, center: tc, rx: 12.0, ry: 9.0, seed: baseX, color: _kPotatoGold);
+  } else {
+    final ringC = Offset(topX, topY - 8);
+    const rr = 7.0;
+    canvas.drawArc(Rect.fromCircle(center: ringC, radius: rr), -pi / 2, 2 * pi, false,
+        Paint()..style = PaintingStyle.stroke..strokeWidth = 2..color = Colors.white.withValues(alpha: 0.14));
+    canvas.drawArc(Rect.fromCircle(center: ringC, radius: rr), -pi / 2, 2 * pi * g, false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..strokeCap = StrokeCap.round
+          ..color = (g < 0.5 ? const Color(0xFFFFB300) : Color.lerp(const Color(0xFFFFEE58), _kLeaf, g))!
+              .withValues(alpha: 0.85));
+  }
+}
+
+/// A crop-eating bug with its directional motion smear (the "swipe me" tell).
+void _fpDrawBug(Canvas canvas, Offset c, double dir) {
+  const bodyW = 16.0, bodyH = 11.0;
+  for (int s = 1; s <= 2; s++) {
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(c.dx - dir * s * 5, c.dy), width: bodyW - s * 2, height: bodyH - s * 1.5),
+      Paint()..color = _kBugColor.withValues(alpha: 0.12 / s),
+    );
+  }
+  canvas.drawOval(
+    Rect.fromCenter(center: c, width: bodyW, height: bodyH),
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.3, -0.4),
+        colors: [
+          Color.lerp(_kBugColor, Colors.white, 0.35)!,
+          _kBugColor,
+          Color.lerp(_kBugColor, Colors.black, 0.4)!,
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCenter(center: c, width: bodyW, height: bodyH)),
+  );
+  for (int leg = 0; leg < 3; leg++) {
+    final lx = c.dx + (leg - 1) * 4.0;
+    canvas.drawLine(Offset(lx, c.dy + 4), Offset(lx - 4 + leg * 4.0, c.dy + 10),
+        Paint()..color = _kBugColor.withValues(alpha: 0.5)..strokeWidth = 1.2);
+  }
+  canvas.drawCircle(Offset(c.dx - 3, c.dy - 2), 2, Paint()..color = Colors.red.withValues(alpha: 0.9));
+  canvas.drawCircle(Offset(c.dx + 3, c.dy - 2), 2, Paint()..color = Colors.red.withValues(alpha: 0.9));
+}
+
+/// A weed with its dashed tap-ring (the "tap me" tell).
+void _fpDrawWeed(Canvas canvas, Offset base, double urgency) {
+  final ringCol = urgency > 0.5 ? _kDanger : _kWeedColor;
+  _fpDashedRing(canvas, Offset(base.dx, base.dy - 12), 18, ringCol, 0.7);
+  canvas.drawLine(
+    Offset(base.dx, base.dy + 6),
+    Offset(base.dx, base.dy - 24),
+    Paint()
+      ..color = _kWeedColor.withValues(alpha: 0.85)
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round,
+  );
+  for (int j = -1; j <= 1; j += 2) {
+    for (int k = 1; k <= 2; k++) {
+      canvas.drawLine(
+        Offset(base.dx, base.dy - 6 - k * 6),
+        Offset(base.dx + j * (8 + k * 3), base.dy - 12 - k * 7),
+        Paint()
+          ..color = Color.lerp(_kWeedColor, _kLeafDark, 0.2)!.withValues(alpha: 0.8)
+          ..strokeWidth = 1.6
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+  }
+}
+
+// ── Frame 1 — the irrigation verb ────────────────────────────────────────────
+void _fpLegendIrrigate(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 12 || h < 12) return;
+  final groundY = h * 0.20;
+  _fpBackdrop(canvas, size, groundY);
+  _fpDrawChannel(canvas, size, h * 0.44, 0.92, false);
+  _fpDrawChannel(canvas, size, h * 0.74, 0.20, true);
+  GameFx.text(canvas, 'DRAG →', Offset(w * 0.5, h * 0.44 - 24), 11,
+      _kWater, weight: FontWeight.w900);
+  GameFx.text(canvas, 'STARVING', Offset(w * 0.5, h * 0.74 + 26), 10,
+      _kDanger, weight: FontWeight.w900);
+}
+
+// ── Frame 2 — grow potatoes to score ─────────────────────────────────────────
+void _fpLegendGrow(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 12 || h < 12) return;
+  final groundY = h * 0.78;
+  _fpBackdrop(canvas, size, groundY);
+  _fpDrawChannel(canvas, size, h * 0.90, 0.85, false);
+  _fpDrawPlant(canvas, w * 0.24, groundY, 0.30, false);
+  _fpDrawPlant(canvas, w * 0.50, groundY, 0.68, false);
+  _fpDrawPlant(canvas, w * 0.78, groundY, 1.0, true);
+  GameFx.text(canvas, 'TAP', Offset(w * 0.78, h * 0.14), 11,
+      _kHarvestReady, weight: FontWeight.w900);
+}
+
+// ── Frame 3 — the dangers ────────────────────────────────────────────────────
+void _fpLegendDanger(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 12 || h < 12) return;
+  final groundY = h * 0.66;
+  _fpBackdrop(canvas, size, groundY);
+  _fpDrawBug(canvas, Offset(w * 0.30, h * 0.30), 1.0);
+  GameFx.text(canvas, 'SWIPE', Offset(w * 0.30, h * 0.30 - 22), 10,
+      _kBugColor, weight: FontWeight.w900);
+  _fpDrawWeed(canvas, Offset(w * 0.72, groundY - 2), 0.7);
+  GameFx.text(canvas, 'TAP', Offset(w * 0.72, h * 0.24), 10,
+      _kWeedColor, weight: FontWeight.w900);
+  _fpDrawChannel(canvas, size, h * 0.84, 0.14, true);
+  GameFx.text(canvas, 'DROUGHT', Offset(w * 0.5, h * 0.84 + 26), 10,
+      _kDanger, weight: FontWeight.w900);
+}
+
+// ── Frame 4 — escalation + the relief shop ───────────────────────────────────
+void _fpLegendEscalate(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 12 || h < 12) return;
+  final groundY = h * 0.62;
+  _fpBackdrop(canvas, size, groundY);
+  // storm cloud + rain streaks — escalating weather
+  final cloudC = Offset(w * 0.5, h * 0.24);
+  for (final o in const [Offset(-22, 0), Offset(0, -6), Offset(22, 0), Offset(10, 4), Offset(-10, 4)]) {
+    canvas.drawCircle(cloudC + o, 15, Paint()..color = const Color(0xFF3A4A55).withValues(alpha: 0.92));
+  }
+  for (int i = 0; i < 7; i++) {
+    final rx = w * (0.28 + i * 0.072);
+    canvas.drawLine(Offset(rx, h * 0.34), Offset(rx - 5, h * 0.46),
+        Paint()..color = _kWater.withValues(alpha: 0.65)..strokeWidth = 2..strokeCap = StrokeCap.round);
+  }
+  GameFx.text(canvas, 'STORM!', Offset(w * 0.5, h * 0.055), 13,
+      _kDanger, weight: FontWeight.w900);
+  // a shop relief chip
+  final chip = RRect.fromRectAndRadius(
+    Rect.fromCenter(center: Offset(w * 0.5, h * 0.80), width: w * 0.44, height: h * 0.22),
+    const Radius.circular(12),
+  );
+  canvas.drawRRect(chip, Paint()..color = Potatuhs.inkPanel.withValues(alpha: 0.85));
+  canvas.drawRRect(
+      chip,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8
+        ..color = _kWater.withValues(alpha: 0.8));
+  GameFx.text(canvas, '💧', Offset(w * 0.5, h * 0.755), 18, Colors.white);
+  GameFx.text(canvas, 'WATER', Offset(w * 0.5, h * 0.815), 9,
+      Potatuhs.textPrimary, weight: FontWeight.w800);
+  GameFx.text(canvas, '\$24', Offset(w * 0.5, h * 0.86), 10,
+      Potatuhs.gold, weight: FontWeight.w900);
+}
+
+/// The visual manual for Farm Panic — wired into the registry spec.
+final List<LegendFrame> farmPanicLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag the water handles to keep every channel flowing',
+      paint: _fpLegendIrrigate),
+  const LegendFrame(
+      caption: 'Watered crops grow — tap the ripe golden potato to harvest',
+      paint: _fpLegendGrow),
+  const LegendFrame(
+      caption: 'Swipe bugs, tap weeds — a dry channel starves your crops',
+      paint: _fpLegendDanger),
+  const LegendFrame(
+      caption: 'Storms & pests ramp up — spend banked cash on relief',
+      paint: _fpLegendEscalate),
+];

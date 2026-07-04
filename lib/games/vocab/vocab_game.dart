@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import '../../theme/potatuhs.dart';
+import '../fx.dart';
 import '../mini_game.dart';
 
 // ============================================================================
@@ -186,12 +188,41 @@ class _VocabGameState extends State<VocabGame>
     _buildPool();
     _loadNextQuestion();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this engine knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer answers to a human pace — else it banks a correct answer every tick
+    // (this is a multiple-choice quiz, so acting every ~250ms is superhuman).
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // ATTRACT autopilot
+  // ==========================================================================
+
+  /// One hands-free move per buffered host tick. Plays the vocab quiz
+  /// *correctly*, not randomly: while a definition awaits an answer it taps the
+  /// matching term ([VocabTerm.term]) through the game's own [_onOptionTap] —
+  /// promptly, so the speed bonus lands; while a post-answer reinforcement card
+  /// is up it skips ahead via [_skipCard]. Mid-transition it does nothing. The
+  /// host owns the clock and score HUD; the bot just banks real points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_answerState == _AnswerState.waiting) {
+      // Answer with the correct term — always right, no guessing.
+      _onOptionTap(_term.term);
+    } else {
+      // Reinforcement card is showing — advance to the next question.
+      _skipCard();
+    }
   }
 
   // ==========================================================================
@@ -621,7 +652,7 @@ class _VocabGameState extends State<VocabGame>
   Widget _buildPrompt() {
     return Column(
       children: [
-        Text(
+        const Text(
           'Which term means…',
           style: TextStyle(
             fontFamily: _kFont,
@@ -937,3 +968,290 @@ class _BgPainter extends CustomPainter {
   @override
   bool shouldRepaint(_BgPainter old) => true;
 }
+
+// ============================================================================
+// Visual manual — the legend carousel cards, drawn with the REAL components
+// the player meets: the definition prompt, the four term cards, the
+// correct/wrong highlight states, the +points speed bonus and the ×streak
+// chip. Same palette + card styling as the live game (see _buildOptionCard /
+// _buildPrompt / _buildHUD). Static, cheap, self-contained. FINANCE examples
+// from kFinanceVocab make the abstract mechanic concrete; captions stay
+// engine-generic so they read right for any vocab bank.
+// ============================================================================
+
+/// Wrapped, centred text using the Potatuhs body font — for the definition
+/// prompt, which can run to two lines.
+void _legendWrap(
+  Canvas canvas,
+  String s,
+  Offset center,
+  double maxWidth,
+  double fontSize,
+  Color color, {
+  FontWeight weight = FontWeight.w800,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: fontSize,
+        fontWeight: weight,
+        color: color,
+        height: 1.25,
+      ),
+    ),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+    maxLines: 3,
+    ellipsis: '…',
+  )..layout(maxWidth: maxWidth);
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// Draws one term option card, mirroring the live [_buildOptionCard] look:
+/// rounded rect, 1.6px border, the term centred. [state] tints it neutral,
+/// correct (green), wrong (red) or dimmed (a passed-over option).
+void _legendOption(
+  Canvas canvas,
+  Rect r,
+  String label,
+  int state, // 0 neutral · 1 correct · 2 wrong · 3 dim
+) {
+  Color border = _kCardBorder;
+  Color bg = _kCardBg;
+  Color textColor = _kTextPrimary;
+  switch (state) {
+    case 1:
+      border = _kGoodGreen.withValues(alpha: 0.9);
+      bg = _kGoodGreen.withValues(alpha: 0.12);
+      textColor = _kGoodGreen;
+      break;
+    case 2:
+      border = _kBadRed.withValues(alpha: 0.9);
+      bg = _kBadRed.withValues(alpha: 0.10);
+      textColor = _kBadRed;
+      break;
+    case 3:
+      border = _kCardBorder.withValues(alpha: 0.35);
+      textColor = _kTextSub;
+      break;
+  }
+
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  if (state == 1) {
+    canvas.drawRRect(
+      rr.inflate(3),
+      Paint()
+        ..color = _kGoodGreen.withValues(alpha: 0.25)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+    );
+  }
+  canvas.drawRRect(rr, Paint()..color = bg);
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = border,
+  );
+  GameFx.text(canvas, label, r.center, r.height < 34 ? 12 : 13, textColor,
+      weight: FontWeight.w700);
+}
+
+/// The small "TAG" chip the game shows above the prompt (bank title in play,
+/// a generic marker here).
+void _legendChip(Canvas canvas, Offset center, String label, Color accent) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: label,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: 11,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 1.6,
+        color: accent,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final w = tp.width + 22, h = 22.0;
+  final r = Rect.fromCenter(center: center, width: w, height: h);
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(11));
+  canvas.drawRRect(rr, Paint()..color = accent.withValues(alpha: 0.14));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = accent.withValues(alpha: 0.70),
+  );
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// A 2×2 grid of option cards inside [area]; [states] tints each of the four.
+void _legendGrid(Canvas canvas, Rect area, List<String> labels, List<int> states) {
+  const gap = 10.0;
+  final cw = (area.width - gap) / 2;
+  final ch = (area.height - gap) / 2;
+  for (int i = 0; i < 4 && i < labels.length; i++) {
+    final col = i % 2, row = i ~/ 2;
+    final r = Rect.fromLTWH(
+      area.left + col * (cw + gap),
+      area.top + row * (ch + gap),
+      cw,
+      ch,
+    );
+    _legendOption(canvas, r, labels[i], states[i]);
+  }
+}
+
+// -- Frame 1 · the core match: definition prompt → tap the term it describes.
+void _legendMatch(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+
+  _legendChip(canvas, Offset(w * 0.5, h * 0.08), 'FINANCE', _kAccent);
+  GameFx.text(canvas, 'Which term means…', Offset(w * 0.5, h * 0.19), 11.5,
+      _kTextSub,
+      weight: FontWeight.w600);
+  _legendWrap(
+    canvas,
+    'Using borrowed money to grow a position',
+    Offset(w * 0.5, h * 0.31),
+    w * 0.86,
+    15,
+    _kTextPrimary,
+    weight: FontWeight.w900,
+  );
+
+  final grid = Rect.fromLTWH(w * 0.10, h * 0.46, w * 0.80, h * 0.46);
+  _legendGrid(canvas, grid, ['Liquidity', 'Leverage', 'Yield', 'Hedging'],
+      [0, 1, 0, 0]);
+}
+
+// -- Frame 2 · scoring: faster correct answers bank more points.
+void _legendSpeed(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+
+  // The correct card, glowing, with its award floating above.
+  final card = Rect.fromCenter(
+      center: Offset(w * 0.5, h * 0.30), width: w * 0.52, height: h * 0.20);
+  _legendOption(canvas, card, 'Leverage', 1);
+  GameFx.text(canvas, '+120', Offset(w * 0.5, h * 0.09), 22, _kGoodGreen,
+      weight: FontWeight.w900, glow: 0.6);
+
+  // The speed bar: full = fast = max points, draining to the floor.
+  final bar = Rect.fromLTWH(w * 0.12, h * 0.62, w * 0.76, h * 0.09);
+  final rr = RRect.fromRectAndRadius(bar, const Radius.circular(6));
+  canvas.drawRRect(rr, Paint()..color = _kCardBg);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromLTWH(bar.left, bar.top, bar.width * 0.66, bar.height),
+      const Radius.circular(6),
+    ),
+    Paint()
+      ..shader = const LinearGradient(
+        colors: [_kGoodGreen, _kGold],
+      ).createShader(bar),
+  );
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kAccent.withValues(alpha: 0.6),
+  );
+  GameFx.text(canvas, 'FAST · 120', Offset(w * 0.26, h * 0.82), 11, _kGoodGreen,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'SLOW · 20', Offset(w * 0.76, h * 0.82), 11, _kTextSub,
+      weight: FontWeight.w700);
+}
+
+// -- Frame 3 · the danger: a wrong tap scores 0 and resets the streak.
+void _legendWrong(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+
+  GameFx.text(canvas, 'Which term means…', Offset(w * 0.5, h * 0.10), 11.5,
+      _kTextSub,
+      weight: FontWeight.w600);
+  _legendWrap(
+    canvas,
+    'A share of company profits paid to owners',
+    Offset(w * 0.5, h * 0.21),
+    w * 0.86,
+    13.5,
+    _kTextPrimary,
+    weight: FontWeight.w800,
+  );
+
+  // The tapped-wrong card in red, the true answer revealed in green beside it.
+  final grid = Rect.fromLTWH(w * 0.10, h * 0.36, w * 0.80, h * 0.46);
+  _legendGrid(canvas, grid, ['Yield', 'Dividend', 'Coupon', 'Royalty'],
+      [2, 1, 3, 3]);
+
+  GameFx.text(canvas, 'STREAK RESET', Offset(w * 0.5, h * 0.92), 12, _kBadRed,
+      weight: FontWeight.w900);
+}
+
+// -- Frame 4 · escalation: chain correct answers for a rising ×streak bonus.
+void _legendStreak(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+
+  // The gold ×3 multiplier chip, like the HUD badge.
+  final chip = Rect.fromCenter(
+      center: Offset(w * 0.5, h * 0.20), width: w * 0.30, height: h * 0.16);
+  final crr = RRect.fromRectAndRadius(chip, const Radius.circular(10));
+  canvas.drawRRect(crr, Paint()..color = _kGold.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    crr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kGold.withValues(alpha: 0.8),
+  );
+  GameFx.text(canvas, '×3', chip.center, 22, _kGold,
+      weight: FontWeight.w900, glow: 0.5);
+
+  // Three stacked correct answers feeding the multiplier.
+  const terms = ['Liquidity', 'Dividend', 'Compound interest'];
+  for (int i = 0; i < 3; i++) {
+    final r = Rect.fromLTWH(
+        w * 0.14, h * (0.42 + i * 0.18), w * 0.72, h * 0.13);
+    _legendOption(canvas, r, terms[i], 1);
+    // a small check mark to the left of each
+    final cx = w * 0.10, cy = r.center.dy;
+    final p = Paint()
+      ..color = _kGoodGreen
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(Offset(cx - 5, cy), Offset(cx - 1, cy + 4), p);
+    canvas.drawLine(Offset(cx - 1, cy + 4), Offset(cx + 6, cy - 5), p);
+  }
+}
+
+/// The visual manual for the shared VOCAB engine — wired into the registry
+/// spec (e.g. finance_vocab / "Finance Lingo"). Captions are engine-generic so
+/// they read right for any bank; the art shows FINANCE examples.
+final List<LegendFrame> vocabLegendFrames = [
+  const LegendFrame(
+    caption: 'Read the meaning, tap the term that fits',
+    paint: _legendMatch,
+  ),
+  const LegendFrame(
+    caption: 'Answer fast — the sooner you tap, the more points',
+    paint: _legendSpeed,
+  ),
+  const LegendFrame(
+    caption: 'A wrong tap scores 0 and breaks your streak',
+    paint: _legendWrong,
+  ),
+  const LegendFrame(
+    caption: 'Chain correct answers for a rising ×streak bonus',
+    paint: _legendStreak,
+  ),
+];

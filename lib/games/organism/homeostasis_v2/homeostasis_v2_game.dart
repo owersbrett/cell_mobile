@@ -62,6 +62,10 @@ const int _kWhiplashPenalty = 12; // docked for slamming through the set point
 const double _kClimaxWindow = 10.0; // final seconds escalate
 const double _kClimaxAllInMult = 2.5; // all-in bonus multiplier in the climax
 
+// ── ATTRACT autopilot ────────────────────────────────────────────────────────
+const double _kAutoTick = 0.25; // host drives hands-free at ~250ms
+const double _kAutoComfort = 0.85; // leave a gauge alone within 85% of its band
+
 /// Fraction of difficulty (0→1 across the round) at which each system wakes.
 /// Index 0 is live from the start; the rest ramp in — the staged onboarding.
 const List<double> _kWakeFrac = [0.0, 0.16, 0.34, 0.55];
@@ -141,6 +145,9 @@ class _HomeostasisV2GameState extends State<HomeostasisV2Game>
     super.initState();
     _gauges = _buildGauges();
     _initGauges();
+    // ATTRACT autopilot: this game knows how to keep itself in the green. The
+    // host only calls [_autoStep] when driving hands-free; harmless otherwise.
+    widget.session.autoPilot = _autoStep;
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
@@ -148,8 +155,52 @@ class _HomeostasisV2GameState extends State<HomeostasisV2Game>
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────────
+  /// One hands-free corrective response per host tick (~250ms). Plays
+  /// Homeostasis *correctly*, not randomly: it projects every active gauge one
+  /// drift step ahead, finds the system whose projected value sits furthest
+  /// from its set point, and — if that worst system is drifting toward (or is
+  /// already past) its band edge — taps the response that OPPOSES the deviation
+  /// (too high → the LOWER control, too low → the RAISE control) through the
+  /// game's own [_applyCorrection] handler, exactly as a competent player would.
+  /// This also recovers any shocked system, banking the +25 recovery and the
+  /// all-in bonus. Because it only ever acts on a system already beyond its
+  /// band, a single [_correctStep] can never slam the needle out the FAR band,
+  /// so it never triggers the whiplash penalty. When every system sits
+  /// comfortably in the green it does nothing — no fidgeting a healthy gauge.
+  /// Deterministic: the most-out-of-band system wins, ties resolve to the first
+  /// in gauge order. The host owns the clock, so the round still ends on time.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    final half = _halfBand;
+    final step = _correctStep;
+
+    _Gauge? worst;
+    var worstDist = -1.0;
+    for (final g in _gauges) {
+      if (!g.active) continue;
+      // Where this gauge will sit one host tick from now if its drift continues.
+      final projected = (g.value + g.drift * _kAutoTick).clamp(0.0, 1.0);
+      final dist = (projected - _kSetPoint).abs();
+      if (dist > worstDist) {
+        worstDist = dist;
+        worst = g; // '>' keeps the FIRST gauge on ties (gauge order)
+      }
+    }
+
+    // Every system is comfortably inside its band → leave them all alone.
+    if (worst == null || worstDist <= half * _kAutoComfort) return;
+
+    // One competent, whiplash-safe correction: oppose the deviation, nudging
+    // the worst system back toward its set point via the game's own handler.
+    final projected = (worst.value + worst.drift * _kAutoTick).clamp(0.0, 1.0);
+    _applyCorrection(worst, projected > _kSetPoint ? -step : step);
   }
 
   List<_Gauge> _buildGauges() => [
@@ -394,7 +445,7 @@ class _HomeostasisV2GameState extends State<HomeostasisV2Game>
     final actives = [for (final g in _gauges) g.active ? g : null]
       ..removeWhere((g) => g == null);
     final n = actives.length;
-    if (n == 0 || _w <= 1) return;
+    if (n == 0 || _w <= 1 || !_h.isFinite || _h <= 1) return;
 
     const trackTop = 70.0;
     const btnH = 54.0;
@@ -405,7 +456,10 @@ class _HomeostasisV2GameState extends State<HomeostasisV2Game>
     const stackBtnH = 46.0;
     const stackGap = 6.0;
     final btnAreaH = stacked ? (stackBtnH * 2 + stackGap) : btnH;
-    final trackBottom = (_h - btnAreaH - 18).clamp(trackTop + 50, _h);
+    // Guard: on very short viewports `_h` can fall below `trackTop + 50`, making
+    // hi < lo — .clamp then throws every frame → black screen. Keep hi >= lo.
+    final trackBottom =
+        (_h - btnAreaH - 18).clamp(trackTop + 50, math.max(trackTop + 50, _h));
     final colW = _w / n;
     final lerpAmt = math.min(1.0, dt * 6.0);
 
@@ -774,3 +828,253 @@ class _HomeostasisV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HomeostasisV2Painter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME primitives the
+// live game uses (dark track + green safe band + set-point line + colored
+// needle + ▲/▼ response buttons). Static, cheap, self-contained.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws one gauge track (matches `_paintColumn`): body, safe band, set-point,
+/// needle coloured by whether it sits in-band. [value] and [halfBand] in 0..1.
+void _legendTrack(Canvas canvas, Rect track, Color color, double value,
+    {double halfBand = _kHalfBandStart, String? name, bool driftUp = false}) {
+  if (track.height <= 6 || track.width <= 3) return;
+  final v = value.clamp(0.0, 1.0);
+
+  if (name != null) {
+    GameFx.text(canvas, name, Offset(track.center.dx, track.top - 14), 12,
+        color,
+        weight: FontWeight.w800);
+  }
+
+  final rr = RRect.fromRectAndRadius(track, const Radius.circular(11));
+  canvas.drawRRect(rr, Paint()..color = const Color(0xFF14110F));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = color.withValues(alpha: 0.35),
+  );
+
+  // Safe band.
+  final bandTop = track.bottom - track.height * (_kSetPoint + halfBand);
+  final bandBot = track.bottom - track.height * (_kSetPoint - halfBand);
+  final bandRect =
+      Rect.fromLTRB(track.left + 2, bandTop, track.right - 2, bandBot);
+  canvas.drawRect(bandRect, Paint()..color = _kGreen.withValues(alpha: 0.16));
+  canvas.drawRect(
+    bandRect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = _kGreen.withValues(alpha: 0.6),
+  );
+
+  // Set-point line.
+  final spY = track.bottom - track.height * _kSetPoint;
+  canvas.drawLine(Offset(track.left, spY), Offset(track.right, spY),
+      Paint()..color = _kGreen.withValues(alpha: 0.5)..strokeWidth = 1);
+
+  // Needle — green in-band, red above the band, amber below it.
+  final inBand = (v - _kSetPoint).abs() <= halfBand;
+  final ny = track.bottom - track.height * v;
+  final needleColor = inBand ? _kGreen : (v > _kSetPoint ? _kRed : _kAmber);
+  canvas.drawLine(
+    Offset(track.left - 6, ny),
+    Offset(track.right + 6, ny),
+    Paint()
+      ..color = needleColor
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round,
+  );
+  canvas.drawCircle(
+      Offset(track.right + 10, ny), 3.4, Paint()..color = needleColor);
+
+  // Drift arrow — teaches which way the value is heading.
+  if (!inBand) {
+    final ax = track.left - 15.0;
+    final tip = driftUp ? ny - 9 : ny + 9;
+    final base = driftUp ? ny - 1 : ny + 1;
+    final p = Path()
+      ..moveTo(ax, tip)
+      ..lineTo(ax - 4, base)
+      ..lineTo(ax + 4, base)
+      ..close();
+    canvas.drawPath(p, Paint()..color = needleColor.withValues(alpha: 0.85));
+  }
+}
+
+/// Draws one ▲/▼ response button (matches `_paintButton`).
+void _legendButton(
+    Canvas canvas, Rect r, String arrow, String label, Color color,
+    {double hint = 0}) {
+  if (r.width <= 2 || r.height <= 2) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(10));
+  canvas.drawRRect(
+      rr, Paint()..color = color.withValues(alpha: 0.16 + 0.5 * hint));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4 + hint
+      ..color = color.withValues(alpha: 0.5 + 0.5 * hint),
+  );
+  if (hint > 0) {
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..color = color.withValues(alpha: 0.7 * hint)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+  }
+  GameFx.text(canvas, arrow, Offset(r.center.dx, r.top + 15), 14,
+      Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, label, Offset(r.center.dx, r.bottom - 12),
+      label.length > 7 ? 9 : 10, Potatuhs.textPrimary.withValues(alpha: 0.9),
+      weight: FontWeight.w700);
+}
+
+/// Amber/red shock banner (matches `_paintStatus`).
+void _legendBanner(Canvas canvas, Size size, String label, {bool critical = false}) {
+  final c = critical ? _kRed : _kAmber;
+  final rect = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height * 0.09),
+      width: math.min(size.width - 28, 260),
+      height: 28);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(14));
+  canvas.drawRRect(rr, Paint()..color = c.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = c.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, '⚡ $label', rect.center, 13, c,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+// Frame 1 — the loop: one big gauge, off-band, tap the opposing response.
+void _legendVerb(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  final cx = w * 0.5;
+  final track = Rect.fromLTWH(cx - 24, h * 0.10, 48, h * 0.50);
+  _legendTrack(canvas, track, const Color(0xFFFF7043), 0.72,
+      name: 'TEMP', driftUp: true);
+
+  // Side-by-side controls: ▼ SWEAT lowers, ▲ SHIVER raises (needle is HIGH →
+  // hint the SWEAT button that pulls it back down).
+  final by = h * 0.70;
+  final bh = h * 0.24;
+  final bw = w * 0.32;
+  const gap = 10.0;
+  _legendButton(canvas, Rect.fromLTWH(cx - bw - gap / 2, by, bw, bh), '▼',
+      'SWEAT', const Color(0xFFFF7043),
+      hint: 0.85);
+  _legendButton(canvas, Rect.fromLTWH(cx + gap / 2, by, bw, bh), '▲', 'SHIVER',
+      const Color(0xFFFF7043));
+}
+
+// Frame 2 — scoring: needle sitting in the green band, +25 on recovery.
+void _legendScore(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  final cx = w * 0.5;
+  final track = Rect.fromLTWH(cx - 24, h * 0.16, 48, h * 0.58);
+  _legendTrack(canvas, track, _kAccent, 0.5, name: 'O₂');
+
+  // Green recovery bloom + a +25 pop at the needle.
+  final ny = track.bottom - track.height * 0.5;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(track.inflate(4), const Radius.circular(15)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = _kGreen.withValues(alpha: 0.7)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  GameFx.text(canvas, '+25', Offset(track.right + 34, ny), 16, _kGreen,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame 3 — the danger: over-correcting slams past the set point = WHIPLASH.
+void _legendWhiplash(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  final cx = w * 0.5;
+  final track = Rect.fromLTWH(cx - 24, h * 0.14, 48, h * 0.52);
+  // Needle slammed far BELOW the set point (through and out the low band).
+  _legendTrack(canvas, track, const Color(0xFFAB47BC), 0.14, name: 'SUGAR',
+      driftUp: false);
+
+  // Red penalty bloom + WHIPLASH pop.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(track.inflate(5), const Radius.circular(16)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = _kRed.withValues(alpha: 0.85)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+  );
+  final ny = track.bottom - track.height * 0.14;
+  GameFx.text(canvas, 'WHIPLASH', Offset(cx, ny + 6), 15, _kRed,
+      weight: FontWeight.w800, glow: 0.5);
+  _legendButton(canvas, Rect.fromLTWH(cx - w * 0.34 / 2, h * 0.78, w * 0.34, h * 0.16),
+      '−12', 'PENALTY', _kRed);
+}
+
+// Frame 4 — escalation: more systems wake; hold them ALL in the green at once.
+void _legendAllSystems(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  _legendBanner(canvas, size, 'EXERCISE');
+
+  final gauges = [
+    (const Color(0xFFFF7043), 'TEMP', 0.5),
+    (const Color(0xFF42A5F5), 'WATER', 0.5),
+    (const Color(0xFFAB47BC), 'SUGAR', 0.72),
+    (_kAccent, 'O₂', 0.5),
+  ];
+  final colW = w / gauges.length;
+  final trackTop = h * 0.24;
+  final trackBottom = h * 0.72;
+  final tw = (colW * 0.30).clamp(14.0, 34.0);
+  for (var i = 0; i < gauges.length; i++) {
+    final (col, name, val) = gauges[i];
+    final gx = colW * (i + 0.5);
+    _legendTrack(
+        canvas, Rect.fromLTWH(gx - tw / 2, trackTop, tw, trackBottom - trackTop),
+        col, val.toDouble(),
+        halfBand: _kHalfBandEnd, name: name, driftUp: true);
+    // Stacked ▲/▼ (the dense 4-metric layout).
+    final bw = (colW * 0.7).clamp(28.0, 90.0);
+    final bh = h * 0.10;
+    _legendButton(canvas, Rect.fromLTWH(gx - bw / 2, h * 0.76, bw, bh), '▲', '',
+        col);
+    _legendButton(
+        canvas, Rect.fromLTWH(gx - bw / 2, h * 0.76 + bh + 4, bw, bh), '▼', '',
+        col);
+  }
+}
+
+/// The visual manual for Homeostasis — wired into the registry spec.
+final List<LegendFrame> homeostasisLegendFrames = [
+  const LegendFrame(
+      caption: 'Off the green band? Tap ▼/▲ to nudge the needle back',
+      paint: _legendVerb),
+  const LegendFrame(
+      caption: 'Land in the green band: +25, then points tick up',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: "Don't slam past the set point — WHIPLASH docks points",
+      paint: _legendWhiplash),
+  const LegendFrame(
+      caption: 'More systems wake — hold them ALL green at once',
+      paint: _legendAllSystems),
+];

@@ -167,6 +167,219 @@ class _Particle {
 enum _Answer { waiting, correct, wrong }
 
 // ============================================================================
+// Visual manual — the legend carousel cards, drawn with the REAL components:
+// the same `_SamplePainter` histology, the same answer-button chrome, the same
+// deadline bar and reveal flash the live game uses. Cheap + static: rendered
+// once in the intro carousel, never per frame. All guard degenerate sizes.
+// ============================================================================
+
+/// Paints one real histology slide (via the game's own `_SamplePainter`) into
+/// [r], clipped + framed like the in-game slide. Deterministic from [seed].
+void _legendSlideInto(
+  Canvas canvas,
+  Rect r,
+  _Tissue tissue,
+  int subtype, {
+  double subtlety = 0.0,
+  int seed = 7,
+  Color frame = _kCardBorder,
+}) {
+  if (r.width < 6 || r.height < 6) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(10));
+  canvas.save();
+  canvas.clipRRect(rr);
+  canvas.drawRect(r, Paint()..color = _kSlide);
+  canvas.translate(r.left, r.top);
+  _SamplePainter(
+    tissue: tissue,
+    subtype: subtype,
+    seed: seed,
+    subtlety: subtlety,
+    sampleId: 0,
+  ).paint(canvas, r.size);
+  canvas.restore();
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = frame,
+  );
+}
+
+void _legendLabel(
+  Canvas canvas,
+  String s,
+  Offset center,
+  double sz,
+  Color color, {
+  FontWeight weight = FontWeight.w800,
+  double letterSpacing = 0.6,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: sz,
+        fontWeight: weight,
+        color: color,
+        letterSpacing: letterSpacing,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+void _legendIcon(
+    Canvas canvas, IconData icon, Offset center, double sz, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        fontSize: sz,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// Frame 1 — the four real slides side by side: the verb is "read the shape".
+void _legendFourTissues(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  const gap = 8.0;
+  final cw = (size.width - gap) / 2;
+  final ch = (size.height - gap) / 2 - 12; // leave room for a label chip
+  const tissues = _Tissue.values;
+  for (var i = 0; i < 4; i++) {
+    final col = i % 2, row = i ~/ 2;
+    final x = col * (cw + gap);
+    final y = row * (ch + gap + 12);
+    final r = Rect.fromLTWH(x, y, cw, ch);
+    _legendSlideInto(canvas, r, tissues[i], 0, seed: 5 + i * 13);
+    final meta = _kMeta[tissues[i]]!;
+    _legendLabel(canvas, meta.label, Offset(r.center.dx, r.bottom + 8), 10,
+        meta.accent,
+        letterSpacing: 0.8);
+  }
+}
+
+/// Frame 2 — the four real answer buttons; the correct one lit green: correct,
+/// fast calls score. Mirrors `_buildTypeButton` chrome.
+void _legendAnswers(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  const gap = 10.0;
+  final cw = (size.width - gap) / 2;
+  final ch = (size.height - gap) / 2;
+  const tissues = _Tissue.values;
+  const correctT = _Tissue.connective;
+  for (var i = 0; i < 4; i++) {
+    final col = i % 2, row = i ~/ 2;
+    final rect = Rect.fromLTWH(col * (cw + gap), row * (ch + gap), cw, ch);
+    final meta = _kMeta[tissues[i]]!;
+    final isCorrect = tissues[i] == correctT;
+    final border = isCorrect
+        ? _kGoodGreen.withValues(alpha: 0.9)
+        : meta.accent.withValues(alpha: 0.55);
+    final bg = isCorrect ? _kGoodGreen.withValues(alpha: 0.12) : _kCardBg;
+    final fg = isCorrect ? _kGoodGreen : _kTextPri;
+    final iconC = isCorrect ? _kGoodGreen : meta.accent;
+    final rr = RRect.fromRectAndRadius(rect, const Radius.circular(14));
+    canvas.drawRRect(rr, Paint()..color = bg);
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = border,
+    );
+    _legendIcon(canvas, meta.icon,
+        Offset(rect.center.dx - 34, rect.center.dy), 17, iconC);
+    _legendLabel(canvas, meta.label,
+        Offset(rect.center.dx + 8, rect.center.dy), 12, fg);
+    if (isCorrect) {
+      _legendLabel(canvas, '+130', Offset(rect.center.dx, rect.top + 12), 11,
+          _kGold,
+          weight: FontWeight.w900, letterSpacing: 0.4);
+    }
+  }
+}
+
+/// Frame 3 — the deadline bar drained to red + the wrong flash: a MISS.
+void _legendDeadline(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final r = Rect.fromLTWH(
+      size.width * 0.13, size.height * 0.08, size.width * 0.74,
+      size.height * 0.62);
+  _legendSlideInto(canvas, r, _Tissue.muscle, 0,
+      seed: 42, frame: _kBadRed.withValues(alpha: 0.85));
+  // Wrong-flash wash (same as the live reveal), clipped to the slide.
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(10));
+  canvas.save();
+  canvas.clipRRect(rr);
+  canvas.drawRect(r, Paint()..color = _kBadRed.withValues(alpha: 0.16));
+  canvas.restore();
+  // Deadline bar drained low, in danger red — same top-edge bar as play.
+  canvas.drawRect(
+    Rect.fromLTWH(r.left, r.top, r.width * 0.16, 4),
+    Paint()..color = _kBadRed,
+  );
+  _legendLabel(canvas, 'MISS', Offset(size.width * 0.5, size.height * 0.85), 16,
+      _kBadRed,
+      weight: FontWeight.w900, letterSpacing: 1.6);
+}
+
+/// Frame 4 — same tissue, obvious vs faint, with a long vs short deadline bar:
+/// the round ramps.
+void _legendRamp(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  const gap = 12.0;
+  final cw = (size.width - gap) / 2;
+  final ch = size.height * 0.60;
+  final top = size.height * 0.06;
+  final left = Rect.fromLTWH(0, top, cw, ch);
+  final right = Rect.fromLTWH(cw + gap, top, cw, ch);
+  _legendSlideInto(canvas, left, _Tissue.epithelial, 1, subtlety: 0.0, seed: 9);
+  _legendSlideInto(canvas, right, _Tissue.epithelial, 1,
+      subtlety: 0.82, seed: 9);
+  // Deadline bars: full under the clear slide, short under the faint one.
+  canvas.drawRect(Rect.fromLTWH(left.left, left.bottom + 8, left.width, 4),
+      Paint()..color = _kMembrane);
+  canvas.drawRect(
+      Rect.fromLTWH(right.left, right.bottom + 8, right.width * 0.4, 4),
+      Paint()..color = _kBadRed);
+  _legendLabel(canvas, 'CLEAR', Offset(left.center.dx, left.bottom + 24), 10,
+      _kGoodGreen);
+  _legendLabel(canvas, 'FAINT · FAST',
+      Offset(right.center.dx, right.bottom + 24), 10, _kBadRed);
+}
+
+/// The visual manual for Tissue Type v2 — wired into the registry spec.
+final List<LegendFrame> tissueTypeV2LegendFrames = [
+  const LegendFrame(
+    caption: 'Read the SHAPE: sheet, scatter, fibre, or star',
+    paint: _legendFourTissues,
+  ),
+  const LegendFrame(
+    caption: 'Tap the matching tissue — fast calls score more',
+    paint: _legendAnswers,
+  ),
+  const LegendFrame(
+    caption: 'Beat the drain bar — let it empty and it is a MISS',
+    paint: _legendDeadline,
+  ),
+  const LegendFrame(
+    caption: 'It ramps: tells fade and the deadline shrinks',
+    paint: _legendRamp,
+  ),
+];
+
+// ============================================================================
 // Widget
 // ============================================================================
 
@@ -231,13 +444,30 @@ class _TissueTypeV2GameState extends State<TissueTypeV2Game>
     _deck = List<_Variant>.from(_kVariants)..shuffle(_rng);
     _loadNext();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot — deterministic demo play. Quiz pacing: name the tissue,
+    // no pauses. Reveal→next advance is automatic in _simulate, so _autoStep
+    // only needs to answer the CORRECT tissue while awaiting.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _frame.dispose();
     super.dispose();
+  }
+
+  // -- Attract autopilot -------------------------------------------------------
+
+  /// One deterministic demo move: when a slide is awaiting an answer, tap the
+  /// correct tissue via the game's own handler. During the brief reveal flash we
+  /// return — _simulate advances to the next sample on its own timer.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_answer != _Answer.waiting) return;
+    _onTap(_sample.tissue);
   }
 
   // -- Sample management -------------------------------------------------------

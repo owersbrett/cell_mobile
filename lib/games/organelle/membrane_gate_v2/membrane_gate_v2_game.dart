@@ -187,13 +187,44 @@ class _MembraneGateV2GameState extends State<MembraneGateV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: the game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ─── ATTRACT autopilot ──────────────────────────────────────────────────
+  /// One correct, deterministic move per host tick (~250ms). This plays the
+  /// game the way a good player does: it IMPORTS the wanted molecules and
+  /// NEVER taps a toxin (letting the membrane bounce it). It targets the
+  /// wanted molecule nearest the membrane — the one about to be missed — and
+  /// imports it through the game's own [_act] handler. No synthetic taps, no
+  /// randomness. Molecules that reach the membrane are already resolved in
+  /// [_update], so every live wanted molecule here is still catchable.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Imports are blocked during a post-toxin lockout — but the bot never taps
+    // toxins, so this stays 0; guard anyway to avoid a wasted 'locked' beat.
+    if (_lockout > 0) return;
+    _Molecule? target;
+    var lowest = double.negativeInfinity; // largest dy = nearest the membrane
+    for (final m in _mols) {
+      if (m.dead || !m.def.wanted) continue; // toxins: do nothing, let them bounce
+      if (m.pos.dy > lowest) {
+        lowest = m.pos.dy;
+        target = m;
+      }
+    }
+    if (target == null) return; // nothing to import this tick
+    _act(target); // wanted → import + score, via the game's own handler
   }
 
   // ─── Difficulty ───────────────────────────────────────────────────────────
@@ -1020,3 +1051,375 @@ class _MembraneGateV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _MembraneGateV2Painter oldDelegate) => false;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each card is drawn STATICALLY with
+// the SAME components a player meets in play (the exact luminous wanted orb with
+// its import ring + ↓ chevron, the muddy jagged intruder with its ✕ badge, the
+// phospholipid bilayer + channel proteins). Self-contained top-level painters so
+// they render cheaply in the intro carousel; they reuse this file's taxonomy
+// constants (_kWanted / _kUnwanted / _kAccent / _kHazard) directly.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Legend draw primitives (mirror the painter's own glyph code) ────────────
+void _lOrbDot(Canvas canvas, Offset at, double r, Color c) {
+  if (r <= 0) return;
+  canvas.drawCircle(
+    at,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.4),
+        colors: [Color.lerp(c, Colors.white, 0.5)!, c],
+      ).createShader(Rect.fromCircle(center: at, radius: r)),
+  );
+}
+
+void _lGlyphText(Canvas canvas, String s, double size, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+        text: s,
+        style: TextStyle(
+            fontFamily: _kFont,
+            fontSize: size,
+            fontWeight: FontWeight.w800,
+            color: color)),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+}
+
+void _lPolygon(Canvas canvas, int sides, double r, Color c, double rot,
+    {bool fill = false, double wobble = 0}) {
+  if (r <= 0) return;
+  final path = Path();
+  for (var i = 0; i <= sides; i++) {
+    final a = rot + i / sides * math.pi * 2;
+    final rr = r * (1 + wobble * math.sin(a * 3));
+    final pt = Offset(math.cos(a) * rr, math.sin(a) * rr);
+    i == 0 ? path.moveTo(pt.dx, pt.dy) : path.lineTo(pt.dx, pt.dy);
+  }
+  path.close();
+  if (fill) {
+    canvas.drawPath(
+        path,
+        Paint()
+          ..shader = RadialGradient(
+            center: const Alignment(-0.3, -0.3),
+            colors: [Color.lerp(c, Colors.white, 0.35)!, c],
+          ).createShader(Rect.fromCircle(center: Offset.zero, radius: r)));
+  }
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Color.lerp(c, Colors.white, 0.4)!.withValues(alpha: 0.8));
+}
+
+void _lStar(Canvas canvas, int points, double outer, double inner, Color c) {
+  if (outer <= 0) return;
+  final path = Path();
+  for (var i = 0; i < points * 2; i++) {
+    final a = i / (points * 2) * math.pi * 2 - math.pi / 2;
+    final r = i.isEven ? outer : inner;
+    final pt = Offset(math.cos(a) * r, math.sin(a) * r);
+    i == 0 ? path.moveTo(pt.dx, pt.dy) : path.lineTo(pt.dx, pt.dy);
+  }
+  path.close();
+  canvas.drawPath(path, Paint()..color = c);
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Color.lerp(c, Colors.white, 0.5)!);
+}
+
+void _lJaggedRing(Canvas canvas, double r, Color color) {
+  if (r <= 0) return;
+  final path = Path();
+  const teeth = 11;
+  for (var i = 0; i <= teeth; i++) {
+    final a = i / teeth * math.pi * 2;
+    final rr = r * (i.isEven ? 1.0 : 0.80);
+    final pt = Offset(math.cos(a) * rr, math.sin(a) * rr);
+    i == 0 ? path.moveTo(pt.dx, pt.dy) : path.lineTo(pt.dx, pt.dy);
+  }
+  path.close();
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = color);
+}
+
+void _lGlyph(Canvas canvas, _MolDef def, double r) {
+  final c = def.color;
+  final unit = r / _kMolRadius;
+  switch (def.glyph) {
+    case _Glyph.gasPair:
+      _lOrbDot(canvas, Offset(-6 * unit, 0), 7 * unit, c);
+      _lOrbDot(canvas, Offset(6 * unit, 0), 7 * unit, c);
+      break;
+    case _Glyph.gasTriple:
+      _lOrbDot(canvas, Offset(-9 * unit, 0), 5.5 * unit, c.withValues(alpha: 0.9));
+      _lOrbDot(canvas, Offset.zero, 7 * unit, c);
+      _lOrbDot(canvas, Offset(9 * unit, 0), 5.5 * unit, c.withValues(alpha: 0.9));
+      break;
+    case _Glyph.water:
+      _lOrbDot(canvas, Offset(0, -1 * unit), 8 * unit, c);
+      _lOrbDot(canvas, Offset(-8 * unit, 6 * unit), 4.5 * unit, c.withValues(alpha: 0.85));
+      _lOrbDot(canvas, Offset(8 * unit, 6 * unit), 4.5 * unit, c.withValues(alpha: 0.85));
+      break;
+    case _Glyph.ion:
+      _lOrbDot(canvas, Offset.zero, r - 4, c);
+      _lGlyphText(canvas, def.label, 11 * unit, Potatuhs.ink);
+      break;
+    case _Glyph.hexagon:
+      _lPolygon(canvas, 6, r - 3, c, 0.4, fill: true);
+      break;
+    case _Glyph.amino:
+      _lPolygon(canvas, 4, r - 4, c, math.pi / 4, fill: true);
+      _lGlyphText(canvas, 'AA', 9 * unit, Potatuhs.ink);
+      break;
+    case _Glyph.spiky:
+      _lStar(canvas, 7, r, r - 8, c);
+      break;
+    case _Glyph.virus:
+      _lOrbDot(canvas, Offset.zero, r - 7, c);
+      final spike = Paint()
+        ..color = c.withValues(alpha: 0.9)
+        ..strokeWidth = 2.2
+        ..strokeCap = StrokeCap.round;
+      for (var i = 0; i < 8; i++) {
+        final a = i / 8 * math.pi * 2;
+        final d = Offset(math.cos(a), math.sin(a));
+        canvas.drawLine(d * (r - 7.0), d * (r + 1.0), spike);
+        canvas.drawCircle(d * (r + 2.0), 1.8, spike);
+      }
+      break;
+    case _Glyph.rod:
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromCenter(center: Offset.zero, width: r * 2.0, height: 13),
+              const Radius.circular(6.5)),
+          Paint()..color = c);
+      break;
+    case _Glyph.metal:
+      _lPolygon(canvas, 6, r - 4, c, 0, fill: true);
+      _lOrbDot(canvas, Offset.zero, 4, _kHazard);
+      break;
+    case _Glyph.blob:
+      _lPolygon(canvas, 9, r - 5, c, 0.6, fill: true, wobble: 0.18);
+      break;
+  }
+}
+
+/// Draws one molecule exactly as it reads in play: a luminous wanted orb with
+/// its pulsing IMPORT RING + ↓ chevron, or a muddy jagged intruder with its
+/// red hazard ✕ badge. [rescue] adds the gold prize halo.
+void _lMolecule(Canvas canvas, Offset at, _MolDef def, double r,
+    {bool rescue = false, bool badge = true}) {
+  if (r <= 0) return;
+  final c = def.color;
+  canvas.save();
+  canvas.translate(at.dx, at.dy);
+  if (def.wanted) {
+    canvas.drawCircle(
+        Offset.zero,
+        r + 4,
+        Paint()
+          ..color = c.withValues(alpha: 0.30)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7));
+    canvas.drawCircle(
+        Offset.zero,
+        r + 8,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = _kAccent.withValues(alpha: 0.42));
+    if (rescue) {
+      canvas.drawCircle(
+          Offset.zero,
+          r + 12,
+          Paint()
+            ..color = Potatuhs.gold.withValues(alpha: 0.22)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12));
+    }
+  } else {
+    canvas.drawCircle(
+        Offset.zero,
+        r + 3,
+        Paint()
+          ..color = c.withValues(alpha: 0.14)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6));
+    _lJaggedRing(canvas, r + 5, _kHazard.withValues(alpha: 0.5));
+  }
+  _lGlyph(canvas, def, r);
+  canvas.restore();
+
+  if (!badge) return;
+  if (def.wanted) {
+    final cy = -r - 12;
+    final chev = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = _kAccent.withValues(alpha: 0.85);
+    canvas.drawLine(at.translate(-5, cy), at.translate(0, cy + 5), chev);
+    canvas.drawLine(at.translate(5, cy), at.translate(0, cy + 5), chev);
+  } else {
+    final bx = at.translate(r * 0.78, -r * 0.78);
+    canvas.drawCircle(bx, 7, Paint()..color = _kHazard);
+    canvas.drawCircle(
+        bx,
+        7,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = Colors.white.withValues(alpha: 0.9));
+    final x = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(bx.translate(-2.6, -2.6), bx.translate(2.6, 2.6), x);
+    canvas.drawLine(bx.translate(2.6, -2.6), bx.translate(-2.6, 2.6), x);
+  }
+}
+
+/// The phospholipid bilayer + the three channel proteins, drawn statically.
+void _lMembrane(Canvas canvas, Size size, double mY) {
+  const headR = 4.6;
+  const gap = 13.0;
+  final headPaint = Paint()..color = Potatuhs.orange.withValues(alpha: 0.85);
+  final tailPaint = Paint()
+    ..color = Potatuhs.sienna.withValues(alpha: 0.5)
+    ..strokeWidth = 1.4
+    ..strokeCap = StrokeCap.round;
+  final topY = mY - 9;
+  final botY = mY + 9;
+  for (double x = gap; x < size.width; x += gap) {
+    canvas.drawLine(Offset(x, topY + headR), Offset(x, mY - 1), tailPaint);
+    canvas.drawLine(Offset(x, botY - headR), Offset(x, mY + 1), tailPaint);
+    canvas.drawCircle(Offset(x, topY), headR, headPaint);
+    canvas.drawCircle(Offset(x, botY), headR, headPaint);
+  }
+  const labels = ['aquaporin', 'glucose', 'ion channel'];
+  const cols = [Color(0xFF34C9F0), Color(0xFFFFD54F), Color(0xFF5C9DFF)];
+  final slots = [0.25, 0.5, 0.75];
+  for (var i = 0; i < slots.length; i++) {
+    final cx = size.width * slots[i];
+    final col = cols[i];
+    final r = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(cx, mY), width: 22, height: 30),
+        const Radius.circular(8));
+    canvas.drawRRect(
+        r,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              col.withValues(alpha: 0.6),
+              col.withValues(alpha: 0.28),
+            ],
+          ).createShader(r.outerRect));
+    canvas.drawLine(
+        Offset(cx, mY - 11),
+        Offset(cx, mY + 11),
+        Paint()
+          ..color = Potatuhs.inkDeep.withValues(alpha: 0.8)
+          ..strokeWidth = 4
+          ..strokeCap = StrokeCap.round);
+    GameFx.text(canvas, labels[i], Offset(cx, mY + 26), 8.5,
+        col.withValues(alpha: 0.85));
+  }
+}
+
+// ── Frame 1: the core read + verb — tap the bright, leave the dull ───────────
+void _legendRead(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final y = size.height * 0.46;
+  final r = (size.shortestSide * 0.13).clamp(16.0, 30.0);
+  _lMolecule(canvas, Offset(size.width * 0.30, y), _kWanted[0], r);
+  _lMolecule(canvas, Offset(size.width * 0.70, y), _kUnwanted[0], r);
+  GameFx.text(canvas, 'TAP to import', Offset(size.width * 0.30, y + r + 22),
+      11, _kAccent);
+  GameFx.text(canvas, "DON'T tap", Offset(size.width * 0.70, y + r + 22),
+      11, _kHazard);
+}
+
+// ── Frame 2: the danger — intruders bounce; tapping one LOCKS you out ─────────
+void _legendDanger(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final mY = size.height * 0.68;
+  _lMembrane(canvas, size, mY);
+  final r = (size.shortestSide * 0.11).clamp(14.0, 26.0);
+  final y = size.height * 0.34;
+  _lMolecule(canvas, Offset(size.width * 0.26, y), _kUnwanted[0], r); // Toxin
+  _lMolecule(canvas, Offset(size.width * 0.5, y), _kUnwanted[1], r); // Virus
+  _lMolecule(canvas, Offset(size.width * 0.74, y), _kUnwanted[4], r); // Waste
+  GameFx.text(canvas, 'let them bounce', Offset(size.width * 0.5, mY + 44),
+      11, _kHazard);
+}
+
+// ── Frame 3: scoring — catch high for PERFECT, chain to grow the multiplier ──
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final r = (size.shortestSide * 0.12).clamp(15.0, 28.0);
+  // High catch = PERFECT.
+  _lMolecule(canvas, Offset(size.width * 0.32, size.height * 0.30),
+      _kWanted[2], r); // H₂O
+  GameFx.text(canvas, 'PERFECT +bonus', Offset(size.width * 0.32,
+      size.height * 0.30 - r - 16), 10, Potatuhs.gold);
+  // Gold rescue nutrient.
+  _lMolecule(canvas, Offset(size.width * 0.70, size.height * 0.56),
+      _kWanted[5], r * 1.2, rescue: true); // Glucose rescue
+  GameFx.text(canvas, 'RESCUE ×3', Offset(size.width * 0.70,
+      size.height * 0.56 + r * 1.2 + 18), 10, Potatuhs.gold);
+  GameFx.text(canvas, 'chain imports → ×6', Offset(size.width * 0.5,
+      size.height * 0.90), 11, Potatuhs.textSecondary);
+}
+
+// ── Frame 4: the climax — final 10s FINAL PUSH surge, imports score ×1.5 ─────
+void _legendClimax(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final rect = Offset.zero & size;
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        radius: 1.1,
+        colors: [
+          _kHazard.withValues(alpha: 0.0),
+          _kHazard.withValues(alpha: 0.12),
+        ],
+        stops: const [0.55, 1.0],
+      ).createShader(rect),
+  );
+  final r = (size.shortestSide * 0.16).clamp(20.0, 40.0);
+  _lMolecule(canvas, Offset(size.width * 0.5, size.height * 0.46),
+      _kWanted[5], r, rescue: true);
+  GameFx.text(canvas, 'FINAL PUSH!', Offset(size.width * 0.5,
+      size.height * 0.20), 18, _kHazard, display: true, glow: 0.4);
+  GameFx.text(canvas, 'imports score ×1.5', Offset(size.width * 0.5,
+      size.height * 0.46 + r + 22), 11, Potatuhs.textSecondary);
+}
+
+/// The visual manual for Membrane Gate v2 — wired into the registry spec.
+final List<LegendFrame> membraneGateV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap bright glowing molecules to import them',
+      paint: _legendRead),
+  const LegendFrame(
+      caption: 'Leave dull ✕-marked intruders — let them bounce',
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'Catch high = PERFECT; chain imports to grow ×mult',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Final 10s FINAL PUSH: faster, imports score ×1.5',
+      paint: _legendClimax),
+];

@@ -18,17 +18,50 @@ class MiniGameSession extends ChangeNotifier {
   /// Shown during intro/results in party mode ("Tater — Team Red"). Null in solo.
   final String? playerLabel;
 
+  /// Per-game autopilot hook for ATTRACT mode. A game that knows how to play
+  /// itself sets this in its `initState` to a callback that reads its OWN state
+  /// and makes one smart move (dismiss a card, replay the sequence, tap the
+  /// correct answer…). The host calls it on the autopilot cadence (~250ms)
+  /// while [isRunning]; games that don't set it fall back to the generic driver.
+  /// Not a notifier field — it's an imperative hook, cleared on the game's
+  /// dispose. See `MiniGameHost._botTick` and `docs`/the reference autopilot.
+  void Function()? autoPilot;
+
+  /// Minimum time between [autoPilot] calls in ATTRACT mode. Default zero = the
+  /// host drives it every ~250ms tick (right for action games — catching,
+  /// steering, timing). Games where acting every tick looks SUPERHUMAN — the
+  /// multiple-choice / typing quizzes that would else bank a correct answer 4×/s
+  /// — set this to ~1s so the bot answers at a human, watchable pace. The host
+  /// paces the calls; the game logic doesn't change.
+  Duration autoPilotInterval = Duration.zero;
+
   MiniGamePhase _phase = MiniGamePhase.intro;
   int _score = 0;
   Duration _remaining = Duration.zero;
   Duration _bonusTime = Duration.zero;
   int _bestStreak = 0;
+  bool _paused = false;
 
   MiniGamePhase get phase => _phase;
   int get score => _score;
   Duration get remaining => _remaining;
   Duration get bonusTime => _bonusTime;
-  bool get isRunning => _phase == MiniGamePhase.playing;
+
+  /// True while a round is live AND not paused. Games gate their own ticking on
+  /// this, so pausing (host [hostSetPaused]) halts them without extra wiring.
+  bool get isRunning => _phase == MiniGamePhase.playing && !_paused;
+
+  /// True while the host has frozen a live round (pause modal up). Lets a game
+  /// distinguish a PAUSE (freeze + later resume) from the round actually ending
+  /// — needed by games with their own wall-clock stopwatch (e.g. The Wait).
+  bool get isPaused => _paused && _phase == MiniGamePhase.playing;
+
+  /// Host-only: freeze/unfreeze the run. Flips [isRunning] so games stop/resume.
+  void hostSetPaused(bool paused) {
+    if (_paused == paused) return;
+    _paused = paused;
+    notifyListeners();
+  }
 
   /// Longest run of consecutive successes a game reported via [noteStreak].
   /// Surfaced on the results screen as a streak award (20/30 = mastery).
@@ -50,11 +83,11 @@ class MiniGameSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  void addTime(Duration d) {
-    if (!isRunning) return;
-    _bonusTime += d;
-    notifyListeners();
-  }
+  /// DISABLED (no-op). Every round is a fixed, host-owned length. A game that
+  /// added clock time on scoring let ATTRACT mode's always-scoring autopilot
+  /// extend the round forever (the loop hung on Molecule Mixer). No game may
+  /// lengthen its own round; kept as a method so existing call sites compile.
+  void addTime(Duration d) {}
 
   /// Game-initiated early finish (fail states, perfect clears).
   void endEarly() {
@@ -75,6 +108,7 @@ class MiniGameSession extends ChangeNotifier {
     _remaining = Duration(seconds: spec.durationSeconds);
     _bonusTime = Duration.zero;
     _bestStreak = 0;
+    _paused = false;
     _setPhase(MiniGamePhase.intro);
   }
 

@@ -14,8 +14,8 @@ const List<String> kUxPassGames = [
   'cell_type', 'osmosis', 'transcribe',
   // tissue
   'twitch', 'skin_layers', 'tissue_type',
-  // organ
-  'heartbeat', 'nephron', 'body_map',
+  // organ (nephron judged → v2 promoted to canonical id)
+  'heartbeat', 'body_map',
   // atoms
   'electron_shells', 'isotopes', 'half_life',
   // molecular
@@ -30,7 +30,7 @@ const List<String> kUxPassGames = [
   'tzimtzum', 'the_wait', 'quantum_foam',
   // somethings
   'pattern_lock',
-  // particles
+  // particles (decay_chain: v2 judged winner → promoted to canonical id, no separate _v2)
   'standard_model', 'decay_chain',
   // infinities
   'converge', 'hilberts_hotel',
@@ -55,12 +55,20 @@ void main() {
     );
   });
 
+  // Games that no longer carry a separate <id>_v2 spec, so the alternative
+  // requirement doesn't apply:
+  //  • decay_chain    — v2 judged the winner, PROMOTED onto the canonical id.
+  //  • standard_model — v2 judged the winner, PROMOTED onto the canonical id.
+  //  • isotopes       — v2 retired; v1 stands on its own for now.
+  const noSeparateV2 = {'decay_chain', 'standard_model', 'isotopes'};
+
   test('all 41 UX-pass games have an enabled <id>_v2 alternative wired', () {
     final enabledIds =
         MiniGameRegistry.enabledSpecs.map((s) => s.id).toSet();
     final missing = [
       for (final id in kUxPassGames)
-        if (!enabledIds.contains('${id}_v2')) '  ${id}_v2',
+        if (!noSeparateV2.contains(id) && !enabledIds.contains('${id}_v2'))
+          '  ${id}_v2',
     ];
     expect(
       missing,

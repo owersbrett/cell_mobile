@@ -78,7 +78,238 @@ const double _kSpaceFull = 900.0;
 /// How long the bloom/result beat lingers between withdrawals.
 const double _kBloomTime = 0.85;
 
+/// ATTRACT autopilot cadence (seconds) — the host calls [_autoStep] at ~this
+/// rate. Used to project the guide's ideal travel over one hands-free step so
+/// the bot keeps its edge centred on the guide ring (the constant-rate pace).
+const double _kAutoTick = 0.25;
+
 enum _Phase { ready, tracing, bloom }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME primitives
+// the live game uses (the violet light orb, the dashed guide ring, the
+// tolerance band, the bloom). Static, cheap, degenerate-size guarded.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Light-edge radius for a withdrawal 0..1 — mirrors the game's `_lightR`.
+double _tzR(double maxR, double withdrawal) =>
+    maxR * (1.0 - _kTravel * withdrawal);
+
+/// The vessel field: dark created-space core + the accent boundary rim.
+void _tzField(Canvas canvas, Offset center, double maxR) {
+  canvas.drawCircle(
+    center,
+    maxR * 1.04,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [Potatuhs.inkDeep, Potatuhs.inkDeep.withValues(alpha: 0.0)],
+        stops: const [0.62, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: maxR * 1.04)),
+  );
+  canvas.drawCircle(
+    center,
+    maxR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kAccent.withValues(alpha: 0.18),
+  );
+}
+
+/// The Ein-Sof light orb — violet glow whose edge the player drags inward.
+/// [align] 0..1 warms the control rim toward green as it meets the guide.
+void _tzLight(Canvas canvas, Offset center, double maxR, double w,
+    double align, {bool knob = true}) {
+  final lr = _tzR(maxR, w).clamp(maxR * 0.06, maxR);
+  canvas.drawCircle(
+    center,
+    lr,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Color.lerp(_kAccent, Colors.white, 0.78)!.withValues(alpha: 0.95),
+          _kAccent.withValues(alpha: 0.6),
+          _kAccent.withValues(alpha: 0.0),
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: lr)),
+  );
+  final rimColor = Color.lerp(_kAccent, _kGood, align)!;
+  canvas.drawCircle(
+    center,
+    lr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..color = rimColor.withValues(alpha: 0.95)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 2 + 4 * align),
+  );
+  if (knob) {
+    GameFx.orb(canvas, Offset(center.dx, center.dy - lr), 7, rimColor,
+        glow: 0.7 + align);
+  }
+}
+
+/// The pace ghost: a dashed guide ring + soft tolerance band. [matched] glows
+/// it green (on-pace). Mirrors the game's `_paintGuide`.
+void _tzGuide(Canvas canvas, Offset center, double maxR, double ghostW,
+    double tol, bool matched) {
+  final col = matched ? _kGood : _kAccent;
+  final bandOuter = _tzR(maxR, (ghostW - tol).clamp(0.0, 1.0));
+  final bandInner = _tzR(maxR, (ghostW + tol).clamp(0.0, 1.0));
+  canvas.drawCircle(
+    center,
+    (bandOuter + bandInner) / 2,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = (bandOuter - bandInner).abs().clamp(2.0, 60.0)
+      ..color = col.withValues(alpha: 0.10),
+  );
+  final gr = _tzR(maxR, ghostW);
+  final paint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = matched ? 3.6 : 2.6
+    ..strokeCap = StrokeCap.round
+    ..color = col.withValues(alpha: 0.92)
+    ..maskFilter = MaskFilter.blur(BlurStyle.normal, matched ? 3 : 1);
+  const dashes = 40;
+  for (var i = 0; i < dashes; i++) {
+    if (i.isOdd) continue;
+    final a0 = i / dashes * 2 * math.pi;
+    final a1 = a0 + (2 * math.pi / dashes) * 0.6;
+    canvas.drawArc(
+        Rect.fromCircle(center: center, radius: gr), a0, a1 - a0, false, paint);
+  }
+}
+
+/// An inward-pointing arrow (the "drag toward center" affordance).
+void _tzInArrow(Canvas canvas, Offset from, Offset to, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(from, to, p);
+  final dir = (to - from);
+  final len = dir.distance;
+  if (len < 1) return;
+  final u = dir / len;
+  final n = Offset(-u.dy, u.dx);
+  const head = 7.0;
+  canvas.drawLine(to, to - u * head + n * head * 0.7, p);
+  canvas.drawLine(to, to - u * head - n * head * 0.7, p);
+}
+
+// Frame 1 — the core object + verb: drag the light's edge inward.
+void _legendTzVerb(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final center = Offset(size.width / 2, size.height * 0.44);
+  final maxR = size.shortestSide * 0.34;
+  if (maxR < 8) return;
+  _tzField(canvas, center, maxR);
+  _tzLight(canvas, center, maxR, 0.10, 0.0);
+  // Inward arrow from the light edge toward the created space at the center.
+  final edgeY = center.dy - _tzR(maxR, 0.10);
+  _tzInArrow(canvas, Offset(center.dx, edgeY - 6),
+      Offset(center.dx, center.dy - maxR * 0.22), _kAccent);
+  GameFx.text(canvas, 'DRAG INWARD', Offset(size.width / 2, size.height * 0.88),
+      13, _kAccent,
+      weight: FontWeight.w800);
+}
+
+// Frame 2 — how to score: keep your edge ON the dashed guide ring.
+void _legendTzOnGuide(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final center = Offset(size.width / 2, size.height * 0.44);
+  final maxR = size.shortestSide * 0.34;
+  if (maxR < 8) return;
+  _tzField(canvas, center, maxR);
+  // Light edge sits exactly on the guide → aligned, both glow green.
+  _tzGuide(canvas, center, maxR, 0.5, _kBaseTol, true);
+  _tzLight(canvas, center, maxR, 0.5, 1.0);
+  GameFx.text(canvas, 'STEADY · ON PACE',
+      Offset(size.width / 2, size.height * 0.88), 13, _kGood,
+      weight: FontWeight.w800);
+}
+
+// Frame 3 — the danger: ahead = TOO FAST, behind = TOO TIMID (both lose).
+void _legendTzDanger(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final maxR = size.shortestSide * 0.24;
+  if (maxR < 6) return;
+  final cy = size.height * 0.42;
+  final lx = Offset(size.width * 0.28, cy);
+  final rx = Offset(size.width * 0.72, cy);
+  // Left: collapsed too hard — light well inside the guide.
+  _tzField(canvas, lx, maxR);
+  _tzGuide(canvas, lx, maxR, 0.4, _kBaseTol, false);
+  _tzLight(canvas, lx, maxR, 0.78, 0.0, knob: false);
+  GameFx.text(canvas, 'TOO FAST', Offset(lx.dx, size.height * 0.78), 12, _kWarn,
+      weight: FontWeight.w800);
+  // Right: barely contracted — light lagging outside the guide.
+  _tzField(canvas, rx, maxR);
+  _tzGuide(canvas, rx, maxR, 0.62, _kBaseTol, false);
+  _tzLight(canvas, rx, maxR, 0.14, 0.0, knob: false);
+  GameFx.text(canvas, 'TOO TIMID', Offset(rx.dx, size.height * 0.78), 12,
+      _kWarn,
+      weight: FontWeight.w800);
+}
+
+// Frame 4 — the escalation: each vessel is faster with a TIGHTER band, then
+// the final withdrawal blooms into created space.
+void _legendTzClimax(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final center = Offset(size.width / 2, size.height * 0.44);
+  final maxR = size.shortestSide * 0.34;
+  if (maxR < 8) return;
+  _tzField(canvas, center, maxR);
+  // A very tight late-game guide band near the center (the band bites).
+  _tzGuide(canvas, center, maxR, 0.78, _kMinTol, true);
+  // The bloom: a bright green-gold core where space is created.
+  final br = maxR * 0.2;
+  canvas.drawCircle(
+    center,
+    br,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Colors.white.withValues(alpha: 0.95),
+          _kGood.withValues(alpha: 0.7),
+          _kGood.withValues(alpha: 0.0),
+        ],
+        stops: const [0.0, 0.5, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: br)),
+  );
+  // Outward spark lines — the burst.
+  final sp = Paint()
+    ..color = Potatuhs.gold.withValues(alpha: 0.8)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  for (var i = 0; i < 8; i++) {
+    final a = i / 8 * 2 * math.pi;
+    final u = Offset(math.cos(a), math.sin(a));
+    canvas.drawLine(center + u * br * 1.2, center + u * br * 1.9, sp);
+  }
+  GameFx.text(canvas, 'FINAL WITHDRAWAL',
+      Offset(size.width / 2, size.height * 0.88), 13, Potatuhs.gold,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Tzimtzum v2 — wired into the registry spec.
+final List<LegendFrame> tzimtzumV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Press and drag the glowing light inward',
+      paint: _legendTzVerb),
+  const LegendFrame(
+      caption: 'Keep your edge ON the dashed guide: steady = max score',
+      paint: _legendTzOnGuide),
+  const LegendFrame(
+      caption: 'Rushing ahead or lagging behind both lose points',
+      paint: _legendTzDanger),
+  const LegendFrame(
+      caption: 'Each vessel is faster and tighter — then space blooms',
+      paint: _legendTzClimax),
+];
 
 class TzimtzumV2Game extends StatefulWidget {
   final MiniGameSession session;
@@ -133,13 +364,39 @@ class _TzimtzumV2GameState extends State<TzimtzumV2Game>
   @override
   void initState() {
     super.initState();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Tzimtzum v2 *correctly*,
+  /// not randomly: it traces the withdrawal at the game's OWN ideal steady rate
+  /// by keeping the controlled light edge on the guide ring. The guide (pace
+  /// ghost) rises `ghostW` 0→1 over `_dur`, i.e. a constant 1/_dur per second —
+  /// that IS the ideal steady rate. It aims `_targetW` (the drag target the
+  /// per-tick scorer chases) at where the guide will be half an autopilot
+  /// cadence from now, so across the ~250ms gap the held edge stays centred on
+  /// the guide instead of lagging a full step — a steady inward trace, never a
+  /// jerk. Marking `_pressed` makes the tracing branch chase the target, exactly
+  /// as a real drag would. Only the tracing phase acts; ready/bloom self-advance
+  /// on the ticker. The host owns the clock, so the round still ends on time;
+  /// the bot just banks real points by withdrawing at the constant rate.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.tracing) return; // ready / bloom self-advance
+    final lead = 0.5 * _kAutoTick / _dur; // half a cadence of ideal travel
+    _targetW = (_ghostW + lead).clamp(0.0, 1.0);
+    _pressed = true; // a steady inward drag is in progress (gates the chase)
   }
 
   // ── Withdrawal lifecycle ───────────────────────────────────────────────

@@ -141,6 +141,361 @@ const Map<_CellType, List<String>> _kFacts = {
 };
 
 // ============================================================================
+// Visual manual — the legend carousel cards, each drawn with the REAL cell
+// components (same primitives + palette the live _StagePainter uses, frozen
+// to a static pose). Shown by MiniGameHost on the intro screen.
+// ============================================================================
+
+/// A blobby membrane path in cell-local space (centred on origin) — the static
+/// twin of _StagePainter._membrane.
+Path _legMembrane(double r, double seed, {double deform = 0.06, int lobes = 6}) {
+  final path = Path();
+  const steps = 60;
+  for (var i = 0; i <= steps; i++) {
+    final a = i / steps * 2 * math.pi;
+    final wob = 1 +
+        deform * math.sin(a * lobes + seed) +
+        deform * 0.5 * math.cos(a * (lobes + 3) - seed);
+    final p = Offset(math.cos(a) * r * wob, math.sin(a) * r * wob);
+    if (i == 0) {
+      path.moveTo(p.dx, p.dy);
+    } else {
+      path.lineTo(p.dx, p.dy);
+    }
+  }
+  path.close();
+  return path;
+}
+
+void _legFillBody(Canvas canvas, Path path, double r, Color color) {
+  canvas.drawPath(
+    path,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.35, -0.4),
+        colors: [
+          Color.lerp(color, Colors.white, 0.30)!.withValues(alpha: 0.55),
+          color.withValues(alpha: 0.34),
+          Color.lerp(color, Colors.black, 0.5)!.withValues(alpha: 0.5),
+        ],
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(Rect.fromCircle(center: Offset.zero, radius: r)),
+  );
+}
+
+void _legNucleus(Canvas canvas, Offset at, double r, Color tint) {
+  canvas.drawCircle(
+    at,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Color.lerp(tint, Colors.white, 0.4)!,
+          tint,
+          Color.lerp(tint, Colors.black, 0.4)!,
+        ],
+      ).createShader(Rect.fromCircle(center: at, radius: r)),
+  );
+  canvas.drawCircle(
+      at,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.5));
+  canvas.drawCircle(at.translate(r * 0.2, -r * 0.1), r * 0.32,
+      Paint()..color = Color.lerp(tint, Colors.black, 0.45)!);
+}
+
+/// A plant cell: rigid walled box, chloroplasts, big central vacuole, nucleus.
+void _legPlant(Canvas canvas, Offset center, double r, {int chloroplasts = 6}) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final box = RRect.fromRectAndRadius(
+    Rect.fromCenter(center: Offset.zero, width: r * 1.9, height: r * 1.9),
+    Radius.circular(r * 0.22),
+  );
+  canvas.drawRRect(
+      box, Paint()..color = const Color(0xFF6B8E3D).withValues(alpha: 0.9));
+  _legFillBody(canvas, Path()..addRRect(box.deflate(r * 0.10)), r, _kPlant);
+  canvas.drawRRect(
+      box,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.05
+        ..color = const Color(0xFF8FB45A));
+  // Big central vacuole.
+  canvas.drawCircle(Offset(r * 0.06, r * 0.06), r * 0.62,
+      Paint()..color = const Color(0xFF9FD8E8).withValues(alpha: 0.22));
+  // Chloroplasts hugging the wall.
+  for (var i = 0; i < chloroplasts; i++) {
+    final a = i / (chloroplasts == 0 ? 1 : chloroplasts) * 2 * math.pi;
+    final c = Offset(math.cos(a) * r * 0.6, math.sin(a) * r * 0.6);
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.rotate(a + 1.0);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: r * 0.34, height: r * 0.16),
+          Radius.circular(r * 0.08)),
+      Paint()..color = const Color(0xFF2E7D32),
+    );
+    final lp = Paint()
+      ..color = const Color(0xFF8BC34A).withValues(alpha: 0.85)
+      ..strokeWidth = 1.1;
+    for (var g = -1; g <= 1; g++) {
+      canvas.drawLine(
+          Offset(-r * 0.1, g * r * 0.04), Offset(r * 0.1, g * r * 0.04), lp);
+    }
+    canvas.restore();
+  }
+  _legNucleus(canvas, Offset(r * 0.46, -r * 0.40), r * 0.22,
+      const Color(0xFF7E57C2));
+  canvas.restore();
+}
+
+/// A fungal cell: round chitin wall, nucleus, granules, NO chloroplasts.
+void _legFungal(Canvas canvas, Offset center, double r) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final path = _legMembrane(r, 1.3, deform: 0.03, lobes: 5);
+  canvas.drawPath(
+      path, Paint()..color = const Color(0xFFBE8A3A).withValues(alpha: 0.95));
+  _legFillBody(
+      canvas, _legMembrane(r * 0.9, 1.3, deform: 0.03, lobes: 5), r, _kFungal);
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.05
+        ..color = const Color(0xFFE0B050));
+  for (var i = 0; i < 6; i++) {
+    final a = i / 6 * 2 * math.pi;
+    final c = Offset(math.cos(a) * r * 0.5, math.sin(a) * r * 0.5);
+    if (i.isEven) {
+      canvas.drawCircle(c, r * 0.12,
+          Paint()..color = const Color(0xFFF3E2BE).withValues(alpha: 0.30));
+    } else {
+      canvas.drawCircle(c, r * 0.05, Paint()..color = const Color(0xFF7A5A28));
+    }
+  }
+  _legNucleus(canvas, Offset(r * 0.30, r * 0.28), r * 0.22,
+      const Color(0xFF8D6E63));
+  canvas.restore();
+}
+
+/// An animal cell: wall-less round blob, central nucleus, mitochondria.
+void _legAnimal(Canvas canvas, Offset center, double r) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final path = _legMembrane(r, 2.4, deform: 0.08, lobes: 5);
+  _legFillBody(canvas, path, r, _kAnimal);
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Colors.white.withValues(alpha: 0.55));
+  for (var i = 0; i < 5; i++) {
+    final a = i / 5 * 2 * math.pi + 0.4;
+    final c = Offset(math.cos(a) * r * 0.55, math.sin(a) * r * 0.5);
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.rotate(a);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: r * 0.30, height: r * 0.14),
+          Radius.circular(r * 0.07)),
+      Paint()..color = const Color(0xFFEF8E3D),
+    );
+    canvas.restore();
+  }
+  _legNucleus(canvas, Offset.zero, r * 0.30, const Color(0xFF5C6BC0));
+  canvas.restore();
+}
+
+/// A bacterial cell: tiny rod, NO nucleus (free nucleoid), ribosomes, wall,
+/// capsule and a whip flagellum.
+void _legBacterial(Canvas canvas, Offset center, double r) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final bodyRect =
+      Rect.fromCenter(center: Offset.zero, width: r * 2.4, height: r * 1.3);
+  final radius = Radius.circular(bodyRect.height / 2);
+  // Flagellum.
+  final flag = Path();
+  final startX = -bodyRect.width / 2;
+  flag.moveTo(startX, 0);
+  for (var i = 0; i <= 24; i++) {
+    final t = i / 24;
+    flag.lineTo(startX - t * r * 1.5, math.sin(t * 12) * r * 0.18 * t);
+  }
+  canvas.drawPath(
+    flag,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = _kBacterial.withValues(alpha: 0.7),
+  );
+  // Capsule + body.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(bodyRect.inflate(r * 0.16), radius),
+    Paint()..color = _kBacterial.withValues(alpha: 0.14),
+  );
+  final body = RRect.fromRectAndRadius(bodyRect, radius);
+  _legFillBody(canvas, Path()..addRRect(body), r, _kBacterial);
+  canvas.drawRRect(
+      body,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.07
+        ..color = const Color(0xFF80DEEA));
+  // Nucleoid — a free DNA tangle (NO membrane: the big tell).
+  final dna = Path();
+  for (var i = 0; i <= 40; i++) {
+    final ang = i / 40 * 6.28 * 2;
+    final rr = r * (0.18 + 0.10 * math.sin(ang * 1.5));
+    final p = Offset(math.cos(ang) * rr, math.sin(ang) * rr * 1.4);
+    if (i == 0) {
+      dna.moveTo(p.dx, p.dy);
+    } else {
+      dna.lineTo(p.dx, p.dy);
+    }
+  }
+  canvas.drawPath(
+    dna,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = const Color(0xFFB2EBF2).withValues(alpha: 0.85),
+  );
+  // Ribosome dots.
+  final rib = Paint()..color = const Color(0xFF00838F);
+  final maxX = bodyRect.width / 2 - r * 0.15;
+  final maxY = bodyRect.height / 2 - r * 0.15;
+  for (var i = 0; i < 10; i++) {
+    final a = i / 10 * 2 * math.pi;
+    canvas.drawCircle(
+        Offset(math.cos(a) * maxX * 0.6, math.sin(a) * maxY * 0.6),
+        r * 0.045,
+        rib);
+  }
+  canvas.restore();
+}
+
+/// Card 1 — the four kingdoms lined up with their tells and colours.
+void _legendKinds(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cy = size.height * 0.44;
+  final xs = [0.16, 0.39, 0.62, 0.85].map((f) => size.width * f).toList();
+  final r = size.shortestSide * 0.15;
+  _legPlant(canvas, Offset(xs[0], cy), r);
+  _legAnimal(canvas, Offset(xs[1], cy), r * 0.95);
+  _legBacterial(canvas, Offset(xs[2], cy), r * 0.5); // tiny = the tell
+  _legFungal(canvas, Offset(xs[3], cy), r * 0.85);
+  const labels = ['PLANT', 'ANIMAL', 'BACTERIA', 'FUNGUS'];
+  final cols = [_kPlant, _kAnimal, _kBacterial, _kFungal];
+  for (var i = 0; i < 4; i++) {
+    GameFx.text(canvas, labels[i], Offset(xs[i], size.height * 0.82), 10,
+        cols[i],
+        weight: FontWeight.w800);
+  }
+}
+
+/// Card 2 — answer fast, and a streak stacks a score multiplier.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legAnimal(canvas, Offset(size.width * 0.5, size.height * 0.38),
+      size.shortestSide * 0.24);
+  final badge = Rect.fromCenter(
+    center: Offset(size.width * 0.5, size.height * 0.80),
+    width: (size.width * 0.5).clamp(0.0, size.width),
+    height: size.height * 0.17,
+  );
+  final rr = RRect.fromRectAndRadius(badge, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = _kGold.withValues(alpha: 0.16));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = _kGold.withValues(alpha: 0.7));
+  GameFx.text(canvas, 'x3  STREAK', badge.center, 15, _kGold,
+      weight: FontWeight.w900, glow: 0.4);
+}
+
+/// Card 3 — a wrong call flashes red and resets the streak (no points lost).
+void _legendMiss(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legFungal(canvas, Offset(size.width * 0.5, size.height * 0.40),
+      size.shortestSide * 0.22);
+  // The real wrong-answer flash: a red ring around the whole stage.
+  canvas.drawRect(
+    Rect.fromLTWH(2, 2, size.width - 4, size.height - 4),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..color = _kBad.withValues(alpha: 0.6),
+  );
+  final badge = Rect.fromCenter(
+    center: Offset(size.width * 0.5, size.height * 0.82),
+    width: (size.width * 0.56).clamp(0.0, size.width),
+    height: size.height * 0.16,
+  );
+  final rr = RRect.fromRectAndRadius(badge, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = _kBad.withValues(alpha: 0.12));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = _kBad.withValues(alpha: 0.7));
+  GameFx.text(canvas, 'STREAK RESET', badge.center, 13, _kBad,
+      weight: FontWeight.w900);
+}
+
+/// Card 4 — late-round escalation: the tells thin out and specimens blur.
+void _legendSubtle(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cy = size.height * 0.44;
+  final r = size.shortestSide * 0.16;
+  // Clear specimen (many chloroplasts).
+  _legPlant(canvas, Offset(size.width * 0.28, cy), r, chloroplasts: 7);
+  // Subtle specimen (one chloroplast) drawn faded — the harder call.
+  final layer = Rect.fromLTWH(0, 0, size.width, size.height);
+  canvas.saveLayer(
+      layer, Paint()..color = Colors.white.withValues(alpha: 0.45));
+  _legPlant(canvas, Offset(size.width * 0.74, cy), r, chloroplasts: 1);
+  canvas.restore();
+  // Arrow from clear to subtle.
+  final ax = size.width * 0.5;
+  final p = Paint()
+    ..color = Potatuhs.textSecondary
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(Offset(ax - 16, cy), Offset(ax + 16, cy), p);
+  canvas.drawLine(Offset(ax + 16, cy), Offset(ax + 8, cy - 7), p);
+  canvas.drawLine(Offset(ax + 16, cy), Offset(ax + 8, cy + 7), p);
+}
+
+/// The visual manual for Cell Type — wired into the registry spec.
+final List<LegendFrame> cellTypeLegendFrames = [
+  const LegendFrame(
+      caption: 'Name the kingdom: PLANT · ANIMAL · BACTERIA · FUNGUS',
+      paint: _legendKinds),
+  const LegendFrame(
+      caption: 'Answer fast for more points; 3 right in a row adds a x mult',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'A wrong call resets your streak — no points lost, keep moving',
+      paint: _legendMiss),
+  const LegendFrame(
+      caption: 'Late round the tells thin out and cells blur — read closely',
+      paint: _legendSubtle),
+];
+
+// ============================================================================
 // Widget
 // ============================================================================
 
@@ -196,13 +551,38 @@ class _CellTypeGameState extends State<CellTypeGame>
     super.initState();
     cell = _generate(0);
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to classify itself. Registered
+    // always (harmless in normal play — the host only calls it in autoplay).
+    // See [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer moves to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     repaint.dispose();
     super.dispose();
+  }
+
+  // -- ATTRACT autopilot -------------------------------------------------------
+
+  /// One hands-free move per host tick (~250ms), buffered to 1100ms. Plays Cell
+  /// Type *correctly*, not randomly: while a specimen awaits classification it
+  /// taps the true type ([_Cell.type]) through the game's own [_classify] —
+  /// promptly, so the speed bonus lands; while the fact flare is up it advances
+  /// via [_skipFlare]. Mid-transition it does nothing. Host owns clock + HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (answer == _Answer.waiting) {
+      // Classify with the correct type — always right, no guessing.
+      _classify(cell.type);
+    } else {
+      // Fact flare is showing — advance to the next specimen.
+      _skipFlare();
+    }
   }
 
   // -- Difficulty --------------------------------------------------------------

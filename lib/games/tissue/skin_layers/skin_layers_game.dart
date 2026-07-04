@@ -129,6 +129,224 @@ const Map<_LayerId, _Layer> _kLayers = {
 
 _Layer _layer(_LayerId id) => _kLayers[id]!;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME band + tile
+// style the live game uses (color-tinted rounded pills, teal = healthy link,
+// red = broken depth order), so the manual shows the LITERAL components.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kLegendGood = Color(0xFF80CBC4); // matches _SkinLayersGameState._good
+const Color _kLegendBreak = Color(0xFFFF5252);
+
+/// Draws one skin-layer pill exactly as the game does: color-tinted rounded
+/// rect, teal border when [correct], plus the layer's emoji and name (or its
+/// abbreviation when [compact], the tray-pill form).
+void _legendBand(Canvas canvas, Rect rect, _LayerId id,
+    {bool correct = false, bool compact = false}) {
+  if (rect.width <= 0 || rect.height <= 0) return;
+  final l = _layer(id);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = l.color.withValues(alpha: 0.30));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = correct ? 2.2 : 1.5
+        ..color = correct ? _kLegendGood : l.color.withValues(alpha: 0.75));
+
+  final iconSize = (rect.height * 0.42).clamp(12.0, 20.0);
+  final labelSize = (rect.height * 0.30).clamp(8.0, 12.0);
+  final c = rect.center;
+  if (compact) {
+    GameFx.text(canvas, l.emoji, c.translate(0, -rect.height * 0.16), iconSize,
+        Colors.white);
+    GameFx.text(canvas, l.abbrev, c.translate(0, rect.height * 0.30), labelSize,
+        Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+  } else {
+    GameFx.text(
+        canvas, l.emoji, c.translate(-rect.width * 0.32, 0), iconSize, Colors.white);
+    GameFx.text(canvas, l.name, c.translate(rect.width * 0.05, 0), labelSize,
+        Colors.white.withValues(alpha: 0.94), weight: FontWeight.w700);
+  }
+}
+
+/// Empty depth band — the drop target before a tile lands in it.
+void _legendEmptyBand(Canvas canvas, Rect rect, int number) {
+  if (rect.width <= 0 || rect.height <= 0) return;
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = Colors.white.withValues(alpha: 0.04));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.18));
+  GameFx.text(canvas, '$number', Offset(rect.left + 12, rect.center.dy), 10,
+      Colors.white.withValues(alpha: 0.30), weight: FontWeight.w700);
+}
+
+/// A short vertical SURFACE → DEEP guide ribbon beside a stack, as in play.
+void _legendDepthGuide(Canvas canvas, double x, double top, double bottom) {
+  canvas.drawLine(
+      Offset(x, top),
+      Offset(x, bottom),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.14)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round);
+  GameFx.text(canvas, 'SURFACE', Offset(x, top - 9), 8,
+      Colors.white.withValues(alpha: 0.40), weight: FontWeight.w700);
+  GameFx.text(canvas, 'DEEP', Offset(x, bottom + 9), 8,
+      Colors.white.withValues(alpha: 0.40), weight: FontWeight.w700);
+}
+
+/// A horizontal boundary line between two bands (teal healthy / red break).
+void _legendBoundary(Canvas canvas, Rect a, Rect b, Color color) {
+  final y = (a.bottom + b.top) / 2;
+  canvas.drawLine(
+      Offset(a.left + 6, y),
+      Offset(a.right - 6, y),
+      Paint()
+        ..color = color
+        ..strokeWidth = 2.4
+        ..strokeCap = StrokeCap.round);
+}
+
+List<Rect> _legendStackRects(Size size, int n,
+    {double top = 0.14, double bottom = 0.78, double widthFrac = 0.66}) {
+  if (n <= 0) return const [];
+  const gap = 6.0;
+  final t = size.height * top, bot = size.height * bottom;
+  final avail = bot - t;
+  final bandH = ((avail - gap * (n - 1)) / n).clamp(18.0, 60.0);
+  final totalH = bandH * n + gap * (n - 1);
+  final startY = t + (avail - totalH) / 2;
+  final w = (size.width * widthFrac).clamp(90.0, 320.0);
+  final left = (size.width - w) / 2 + 8; // shift right to clear the guide
+  return [
+    for (var i = 0; i < n; i++)
+      Rect.fromLTWH(left, startY + i * (bandH + gap), w, bandH),
+  ];
+}
+
+// Frame 1 — the core loop: empty depth bands + shuffled tray tiles to drag in.
+void _legendDrag(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const order = [_LayerId.epidermis, _LayerId.dermis, _LayerId.hypodermis];
+  final rects = _legendStackRects(size, order.length, bottom: 0.60);
+  if (rects.isEmpty) return;
+  _legendDepthGuide(
+      canvas, rects.first.left - 14, rects.first.top, rects.last.bottom);
+  for (var i = 0; i < rects.length; i++) {
+    _legendEmptyBand(canvas, rects[i], i + 1);
+  }
+  // Shuffled tray pills below, ready to drag up.
+  const tray = [_LayerId.dermis, _LayerId.hypodermis, _LayerId.epidermis];
+  final pillW = (size.width * 0.24).clamp(60.0, 110.0);
+  const pillH = 40.0;
+  final ty = size.height * 0.88;
+  final startX = size.width / 2 - (tray.length - 1) * (pillW + 10) / 2;
+  for (var i = 0; i < tray.length; i++) {
+    final rect = Rect.fromCenter(
+        center: Offset(startX + i * (pillW + 10), ty),
+        width: pillW,
+        height: pillH);
+    _legendBand(canvas, rect, tray[i], compact: true);
+  }
+}
+
+// Frame 2 — score by stacking in correct depth order: teal links read healthy.
+void _legendCorrect(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const order = [_LayerId.epidermis, _LayerId.dermis, _LayerId.hypodermis];
+  final rects = _legendStackRects(size, order.length);
+  if (rects.isEmpty) return;
+  _legendDepthGuide(
+      canvas, rects.first.left - 14, rects.first.top, rects.last.bottom);
+  for (var i = 0; i < rects.length; i++) {
+    _legendBand(canvas, rects[i], order[i], correct: true);
+  }
+  for (var i = 0; i < rects.length - 1; i++) {
+    _legendBoundary(
+        canvas, rects[i], rects[i + 1], _kLegendGood.withValues(alpha: 0.9));
+  }
+}
+
+// Frame 3 — the danger: wrong order flags RED where the stack breaks.
+void _legendWrong(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  // Deep fat placed above the dermis — an obvious depth-order break.
+  const placed = [_LayerId.epidermis, _LayerId.hypodermis, _LayerId.dermis];
+  const correctFor = [true, false, false];
+  final rects = _legendStackRects(size, placed.length);
+  if (rects.isEmpty) return;
+  _legendDepthGuide(
+      canvas, rects.first.left - 14, rects.first.top, rects.last.bottom);
+  for (var i = 0; i < rects.length; i++) {
+    _legendBand(canvas, rects[i], placed[i], correct: correctFor[i]);
+  }
+  // Top link ok-ish, the fat→dermis link is the break.
+  _legendBoundary(
+      canvas, rects[0], rects[1], _kLegendBreak.withValues(alpha: 0.95));
+  _legendBoundary(
+      canvas, rects[1], rects[2], _kLegendBreak.withValues(alpha: 0.95));
+}
+
+// Frame 4 — escalation: fill a section and it comes alive; sections grow deeper.
+void _legendAlive(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  // A deeper, longer section (strata + a structure) — the late-game shape.
+  const order = [
+    _LayerId.corneum,
+    _LayerId.basale,
+    _LayerId.sweatGland,
+    _LayerId.reticular,
+    _LayerId.hypodermis,
+  ];
+  final rects = _legendStackRects(size, order.length, top: 0.16, bottom: 0.80);
+  if (rects.isEmpty) return;
+  _legendDepthGuide(
+      canvas, rects.first.left - 14, rects.first.top, rects.last.bottom);
+  for (var i = 0; i < rects.length; i++) {
+    _legendBand(canvas, rects[i], order[i], correct: true);
+  }
+  // Alive glow ring around the completed stack.
+  final bounds = Rect.fromLTRB(rects.first.left, rects.first.top,
+      rects.first.right, rects.last.bottom);
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(bounds.inflate(6), const Radius.circular(16)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _kLegendGood.withValues(alpha: 0.5));
+  // Sweat beads / sparks rising, as in the alive phase.
+  for (var i = 0; i < 6; i++) {
+    final px = bounds.left + bounds.width * (0.15 + 0.14 * i);
+    final py = bounds.top - 6 - (i.isEven ? 10 : 20);
+    canvas.drawCircle(
+        Offset(px, py), 2.6, Paint()..color = _kLegendGood.withValues(alpha: 0.8));
+  }
+  GameFx.text(canvas, 'SKIN ALIVE +BONUS',
+      Offset(size.width / 2, bounds.top - 30), 11, _kLegendGood,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Skin Layers — wired into the registry spec.
+final List<LegendFrame> skinLayersLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag each layer tile into its depth band',
+      paint: _legendDrag),
+  const LegendFrame(
+      caption: 'Stack in order — surface on top, deep at the bottom',
+      paint: _legendCorrect),
+  const LegendFrame(
+      caption: 'Wrong depth order flags RED — fix the break',
+      paint: _legendWrong),
+  const LegendFrame(
+      caption: 'Fill a section: skin comes alive and banks a bonus',
+      paint: _legendAlive),
+];
+
 // ── Mutable play objects ─────────────────────────────────────────────────────
 
 class _Tile {
@@ -201,12 +419,45 @@ class _SkinLayersGameState extends State<SkinLayersGame>
       ..addListener(_onTick)
       ..forward();
     _newSection(first: true);
+    // ATTRACT autopilot: this game knows how to rebuild the skin itself. The
+    // host calls [_autoStep] ~every 250ms only while driving hands-free. See
+    // [_autoStep]. Dormant in normal play.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free placement per host tick. Plays Skin Layers *correctly*,
+  /// never wrong: it walks the stack top → bottom, finds the first empty band,
+  /// and drops the tile whose layer belongs at that depth (`_correct[i]`) into
+  /// it via the game's own [_placeTile] handler — so every drop reads healthy
+  /// and boundaries never flag red. When the last band lands, the section
+  /// completes and enters the alive phase, which self-advances to the next,
+  /// deeper section on its own timer.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.stack) return; // alive phase advances on its own
+    for (var i = 0; i < _nSlots; i++) {
+      if (_tileInSlot(i) != null) continue; // band already filled
+      final want = _correct[i]; // the layer that belongs at this depth
+      _Tile? match;
+      for (final t in _tiles) {
+        if (t.slot == null && t.layer == want) {
+          match = t;
+          break;
+        }
+      }
+      if (match == null) return; // its tile is mid-drag; try again next tick
+      final chosen = match;
+      setState(() => _placeTile(chosen, i)); // exactly one placement per tick
+      return;
+    }
   }
 
   // ── Section composition ──────────────────────────────────────────────────────

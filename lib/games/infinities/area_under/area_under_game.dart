@@ -45,8 +45,228 @@ const double _kSpeedWindow = 14.0; // seconds over which the speed bonus decays
 const double _kFeedbackSecs = 2.0; // how long the result card lingers
 const double _kMeterMaxErr = 0.30; // relative error that reads as an empty meter
 const int _kStreakStep = 3; // +1× multiplier every N tight locks
+const int _kAutoNStep = 3; // rectangles the autopilot adds per host tick
 
 enum _Phase { ready, playing, feedback }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME plot vocabulary
+// the live game uses (gold true region, orange curve, teal/rose midpoint
+// Riemann rectangles, the MATCH meter with its tolerance notch).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws one miniature Area-Under plot into [plot]: grid frame, x-axis, the
+/// shaded true region, optional midpoint Riemann rectangles (n of them) and
+/// the curve itself — the exact rendering recipe of [_AreaPainter], scaled down.
+void _legendPlot(
+  Canvas canvas,
+  Rect plot,
+  double Function(double) f, {
+  required double a,
+  required double b,
+  int n = 0,
+  bool shadeRegion = true,
+}) {
+  if (plot.width <= 4 || plot.height <= 4 || b <= a) return;
+
+  // y window with headroom, always including 0 (mirrors _AreaPainter).
+  var lo = 0.0, hi = 0.0;
+  const samples = 80;
+  for (var i = 0; i <= samples; i++) {
+    final y = f(a + (b - a) * i / samples);
+    if (y < lo) lo = y;
+    if (y > hi) hi = y;
+  }
+  final yLo = lo - 0.06 * (hi - lo + 1);
+  final yHi = hi + 0.10 * (hi - lo + 1);
+  final ySpan = math.max(1e-6, yHi - yLo);
+
+  double sx(double x) => plot.left + (x - a) / (b - a) * plot.width;
+  double sy(double y) => plot.bottom - (y - yLo) / ySpan * plot.height;
+  final y0 = sy(0);
+
+  // Frame.
+  canvas.drawRect(
+    plot,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kAxis.withValues(alpha: 0.6),
+  );
+
+  // True region under the curve, shaded gold.
+  if (shadeRegion) {
+    final region = Path()..moveTo(sx(a), y0);
+    for (var i = 0; i <= samples; i++) {
+      final x = a + (b - a) * i / samples;
+      region.lineTo(sx(x), sy(f(x)));
+    }
+    region.lineTo(sx(b), y0);
+    region.close();
+    canvas.drawPath(region, Paint()..color = _kRegion.withValues(alpha: 0.20));
+  }
+
+  // Midpoint Riemann rectangles — teal above the axis, rose below.
+  if (n > 0) {
+    final w = (b - a) / n;
+    for (var i = 0; i < n; i++) {
+      final xMid = a + (i + 0.5) * w;
+      final h = f(xMid);
+      final topY = sy(h);
+      final rect = Rect.fromLTRB(
+        sx(a + i * w) + 0.5,
+        math.min(topY, y0),
+        sx(a + (i + 1) * w) - 0.5,
+        math.max(topY, y0),
+      );
+      final col = h < 0 ? _kRectNeg : _kRect;
+      canvas.drawRect(rect, Paint()..color = col.withValues(alpha: 0.24));
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1
+          ..color = col.withValues(alpha: 0.8),
+      );
+      canvas.drawCircle(Offset(sx(xMid), topY), 1.5,
+          Paint()..color = col.withValues(alpha: 0.9));
+    }
+  }
+
+  // The curve.
+  final path = Path();
+  for (var i = 0; i <= samples; i++) {
+    final x = a + (b - a) * i / samples;
+    final p = Offset(sx(x), sy(f(x)));
+    i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = _kCurve
+      ..strokeCap = StrokeCap.round,
+  );
+
+  // The x-axis — the baseline of the area.
+  canvas.drawLine(Offset(plot.left, y0), Offset(plot.right, y0),
+      Paint()..color = _kAxis..strokeWidth = 1.4);
+  _legendText(canvas, 'a', Offset(sx(a), y0 + 9), _kSub, 10);
+  _legendText(canvas, 'b', Offset(sx(b), y0 + 9), _kSub, 10);
+}
+
+void _legendText(Canvas canvas, String text, Offset center, Color color,
+    double size, {FontWeight weight = FontWeight.w800}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: size,
+        fontWeight: weight,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+// Frame 1 — the target: a curve with the true area shaded gold beneath it.
+void _legendTarget(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final plot = Rect.fromLTRB(size.width * 0.12, size.height * 0.14,
+      size.width * 0.88, size.height * 0.74);
+  _legendPlot(canvas, plot, (x) => 4 - x * x, a: -2, b: 2);
+  _legendText(canvas, 'f(x)', plot.topRight.translate(-16, 12), _kCurve, 11);
+  _legendText(canvas, 'THE SHADED AREA IS THE TARGET',
+      Offset(size.width * 0.5, size.height * 0.88), _kRegion, 10);
+}
+
+// Frame 2 — the verb: crank n and the rectangles hug the curve tighter.
+void _legendConverge(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final left = Rect.fromLTRB(size.width * 0.07, size.height * 0.16,
+      size.width * 0.47, size.height * 0.72);
+  final right = Rect.fromLTRB(size.width * 0.53, size.height * 0.16,
+      size.width * 0.93, size.height * 0.72);
+  double f(double x) => 4 - x * x;
+  _legendPlot(canvas, left, f, a: -2, b: 2, n: 3);
+  _legendPlot(canvas, right, f, a: -2, b: 2, n: 16);
+  _legendText(canvas, 'n = 3', Offset(left.center.dx, size.height * 0.84),
+      _kRect, 12);
+  _legendText(canvas, 'n = 16 → ∞', Offset(right.center.dx, size.height * 0.84),
+      _kRect, 12);
+}
+
+// Frame 3 — how to score: the MATCH meter past its notch + LOCK IT IN.
+void _legendLock(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+
+  // The MATCH meter, filled past the tolerance notch (as the live control).
+  final bar = Rect.fromLTWH(size.width * 0.12, size.height * 0.26,
+      size.width * 0.76, size.height * 0.10);
+  if (bar.width <= 4 || bar.height <= 2) return;
+  final rr = RRect.fromRectAndRadius(bar, Radius.circular(bar.height / 2));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.35));
+  final fill = Rect.fromLTWH(bar.left, bar.top, bar.width * 0.86, bar.height);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(fill, Radius.circular(bar.height / 2)),
+    Paint()..color = _kGood,
+  );
+  final notchX = bar.left + bar.width * 0.72;
+  canvas.drawLine(Offset(notchX, bar.top - 4), Offset(notchX, bar.bottom + 4),
+      Paint()..color = _kGood..strokeWidth = 2);
+  _legendText(canvas, 'MATCH', Offset(bar.left + 22, bar.top - 12), _kSub, 9);
+  _legendText(canvas, 'CLOSE ENOUGH', Offset(bar.right - 40, bar.top - 12),
+      _kGood, 9);
+
+  // The LOCK IT IN button (the live confirm control, drawn to canvas).
+  final btn = Rect.fromLTWH(size.width * 0.16, size.height * 0.52,
+      size.width * 0.68, size.height * 0.20);
+  final brr = RRect.fromRectAndRadius(btn, const Radius.circular(12));
+  canvas.drawRRect(brr, Paint()..color = _kGood);
+  canvas.drawRRect(
+    brr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Colors.black.withValues(alpha: 0.55),
+  );
+  _legendText(canvas, 'LOCK IT IN', btn.center, Potatuhs.ink, 13,
+      weight: FontWeight.w900);
+  _legendText(canvas, 'TIGHT LOCKS BUILD A ×STREAK',
+      Offset(size.width * 0.5, size.height * 0.86), _kRegion, 10);
+}
+
+// Frame 4 — the twist: signed area, rose rectangles below the axis.
+void _legendSigned(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final plot = Rect.fromLTRB(size.width * 0.12, size.height * 0.14,
+      size.width * 0.88, size.height * 0.74);
+  _legendPlot(canvas, plot, (x) => x * x - 2, a: 0, b: 3, n: 9);
+  _legendText(canvas, '− BELOW', Offset(size.width * 0.30, size.height * 0.86),
+      _kRectNeg, 11);
+  _legendText(canvas, '+ ABOVE', Offset(size.width * 0.70, size.height * 0.86),
+      _kRect, 11);
+}
+
+/// The visual manual for Area Under — wired into the registry spec.
+final List<LegendFrame> areaUnderLegendFrames = [
+  const LegendFrame(
+      caption: 'The gold area under the curve is your target',
+      paint: _legendTarget),
+  const LegendFrame(
+      caption: 'Slide n up — more rectangles hug the curve tighter',
+      paint: _legendConverge),
+  const LegendFrame(
+      caption: 'Meter past the notch? LOCK IT IN — tight locks streak',
+      paint: _legendLock),
+  const LegendFrame(
+      caption: 'Rose rects below the axis count as NEGATIVE area',
+      paint: _legendSigned),
+];
 
 class AreaUnderGame extends StatefulWidget {
   final MiniGameSession session;
@@ -97,13 +317,38 @@ class _AreaUnderGameState extends State<AreaUnderGame>
     _curve = _bank.first;
     _recompute();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays Area Under the way
+  /// the mechanic intends: while the estimate is still outside the round's
+  /// tolerance, it CRANKS the rectangle count up a notch — the exact code path
+  /// the slider/＋ button drives ([_setN]) — so the Riemann sum visibly closes
+  /// on the true area and the MATCH meter climbs. Only once the estimate is
+  /// inside tolerance ([_withinTol], i.e. the meter has cleared the notch) does
+  /// it LOCK IN via the same handler a tap would ([_confirm]) — a real, scoring
+  /// lock, never a premature bad one. The feedback phase advances itself on the
+  /// ticker, so there is nothing to do between rounds. Fully deterministic.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.playing) return; // feedback/ready self-advance
+    if (_withinTol) {
+      _confirm(); // meter past the notch → bank the lock
+    } else if (_n < _kNMax) {
+      _setN(_n + _kAutoNStep); // add rectangles, hug the curve tighter
+    }
   }
 
   // ── Loop ──────────────────────────────────────────────────────────────────

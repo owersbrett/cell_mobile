@@ -37,6 +37,9 @@ const double _kHoldStep = 0.035; // hold time shed per level
 const int _kPointsBase = 60; // base points per state held
 const int _kPointsPerLevel = 12;
 
+// Look-ahead used by the ATTRACT autopilot: roughly one host tick (~250ms).
+const double _kAutoTick = 0.25;
+
 // ── State colours ──────────────────────────────────────────────────────────
 const Color _kSolid = Color(0xFF5B8DEF); // cold blue
 const Color _kLiquid = Color(0xFF22C3C9); // teal
@@ -83,6 +86,263 @@ class _Mol {
   final double fx, fy; // wander frequencies
   const _Mol(this.lx, this.ly, this.px, this.py, this.fx, this.fy);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME beaker +
+// lattice look the live game paints (state colours, substances, molecule orbs)
+// so the player recognises the literal components on the intro screen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The beaker outline the matter lives in.
+void _legBeaker(Canvas canvas, Rect box, Color glow) {
+  final rr = RRect.fromRectAndRadius(box, const Radius.circular(14));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.28));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = glow.withValues(alpha: 0.6),
+  );
+}
+
+/// A static snapshot of the molecule lattice at [agitation] (0 locked → ~1
+/// flying apart) — the same orbs + bonds the live [_PhasePainter] draws.
+void _legMolecules(Canvas canvas, Rect box, double agitation, Color color,
+    {int cols = 5, int rows = 5, int seed = 7}) {
+  final inset = box.deflate(math.min(box.width, box.height) * 0.14);
+  final w = inset.width, h = inset.height;
+  if (w <= 1 || h <= 1) return;
+  final amp = agitation;
+  final r = math.min(w / cols, h / rows) * 0.30;
+  final rng = math.Random(seed);
+  final pts = <Offset>[];
+  for (var row = 0; row < rows; row++) {
+    for (var c = 0; c < cols; c++) {
+      final lx = (c + 0.5) / cols;
+      final ly = (row + 0.5) / rows;
+      final ang = rng.nextDouble() * math.pi * 2;
+      final mag = rng.nextDouble();
+      var x = inset.left + lx * w + math.cos(ang) * mag * amp * w * 0.42;
+      var y = inset.top + ly * h + math.sin(ang) * mag * amp * h * 0.42;
+      x = x.clamp(inset.left + r, inset.right - r);
+      y = y.clamp(inset.top + r, inset.bottom - r);
+      pts.add(Offset(x, y));
+    }
+  }
+  final bondAlpha = (1.0 - amp * 2.4).clamp(0.0, 1.0);
+  if (bondAlpha > 0.02) {
+    final bond = Paint()
+      ..color = color.withValues(alpha: 0.35 * bondAlpha)
+      ..strokeWidth = 1.4;
+    for (var row = 0; row < rows; row++) {
+      for (var c = 0; c < cols; c++) {
+        final i = row * cols + c;
+        if (c < cols - 1) canvas.drawLine(pts[i], pts[i + 1], bond);
+        if (row < rows - 1) canvas.drawLine(pts[i], pts[i + cols], bond);
+      }
+    }
+  }
+  final molColor = Color.lerp(color, _kHeat, (amp - 0.45).clamp(0.0, 0.5) * 2)!;
+  for (final p in pts) {
+    GameFx.orb(canvas, p, r, molColor, glow: 0.5 + amp);
+  }
+}
+
+/// A HEAT / COOL hold-button chip, matching the in-game button look.
+void _legButton(Canvas canvas, Rect r, String label, Color color) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [color, Color.lerp(color, Colors.black, 0.35)!],
+      ).createShader(r),
+  );
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Potatuhs.ink,
+  );
+  GameFx.text(canvas, label, r.center, 15, Colors.white,
+      weight: FontWeight.w800);
+}
+
+/// Frame 1 — the core loop: a beaker of matter + the HEAT / COOL controls.
+void _legendControl(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final box = Rect.fromLTWH(size.width * 0.24, size.height * 0.08,
+      size.width * 0.52, size.height * 0.50);
+  _legBeaker(canvas, box, _kLiquid);
+  _legMolecules(canvas, box, 0.45, _kLiquid, seed: 5);
+  final bh = size.height * 0.15;
+  final bw = size.width * 0.40;
+  final by = size.height * 0.80 - bh / 2;
+  _legButton(canvas, Rect.fromLTWH(size.width * 0.06, by, bw, bh), 'COOL',
+      _kCool);
+  _legButton(canvas, Rect.fromLTWH(size.width * 0.54, by, bw, bh), 'HEAT',
+      _kHeat);
+}
+
+/// Frame 2 — the three states of matter to reach and hold.
+void _legendStates(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  const agits = [0.04, 0.45, 0.96];
+  const cols = [_kSolid, _kLiquid, _kGas];
+  const names = ['SOLID', 'LIQUID', 'GAS'];
+  final bw = size.width * 0.26;
+  final bh = size.height * 0.50;
+  final gap = (size.width - bw * 3) / 4;
+  for (var i = 0; i < 3; i++) {
+    final left = gap + i * (bw + gap);
+    final box = Rect.fromLTWH(left, size.height * 0.16, bw, bh);
+    _legBeaker(canvas, box, cols[i]);
+    _legMolecules(canvas, box, agits[i], cols[i],
+        cols: 4, rows: 4, seed: i * 11 + 3);
+    GameFx.text(canvas, names[i], Offset(box.center.dx, box.bottom + 18), 12,
+        cols[i],
+        weight: FontWeight.w800);
+  }
+}
+
+/// Frame 3 — the latent-heat catch: temperature stalls flat on each plateau,
+/// and a plateau counts as NO state. Reuses water's real phase boundaries.
+void _legendPlateau(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final sub = _kSubstances[0]; // WATER
+  final rect = Rect.fromLTWH(size.width * 0.10, size.height * 0.26,
+      size.width * 0.80, size.height * 0.42);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rect, const Radius.circular(10)),
+    Paint()..color = Colors.black.withValues(alpha: 0.22),
+  );
+  final left = rect.left, right = rect.right;
+  final top = rect.top, bottom = rect.bottom;
+  final w = right - left, h = rect.height;
+
+  double tempFor(double e) {
+    if (e < sub.meltStart) return (e / sub.meltStart) * 0.30;
+    if (e < sub.meltEnd) return 0.30;
+    if (e < sub.boilStart) {
+      return 0.30 + (e - sub.meltEnd) / (sub.boilStart - sub.meltEnd) * 0.40;
+    }
+    if (e < sub.boilEnd) return 0.70;
+    return 0.70 + (e - sub.boilEnd) / (1.0 - sub.boilEnd) * 0.30;
+  }
+
+  // Shade the two latent-heat plateaus.
+  for (final band in [
+    [sub.meltStart, sub.meltEnd, _kSolid],
+    [sub.boilStart, sub.boilEnd, _kGas],
+  ]) {
+    final x0 = left + (band[0] as double) * w;
+    final x1 = left + (band[1] as double) * w;
+    canvas.drawRect(Rect.fromLTRB(x0, top, x1, bottom),
+        Paint()..color = (band[2] as Color).withValues(alpha: 0.16));
+  }
+
+  final path = Path();
+  const samples = 48;
+  for (var i = 0; i <= samples; i++) {
+    final e = i / samples;
+    final px = left + e * w;
+    final py = bottom - tempFor(e) * (h - 8) - 4;
+    if (i == 0) {
+      path.moveTo(px, py);
+    } else {
+      path.lineTo(px, py);
+    }
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = Colors.white.withValues(alpha: 0.7)
+      ..strokeJoin = StrokeJoin.round,
+  );
+
+  // A dot stuck mid-melt: energy going in, temperature flat.
+  final de = (sub.meltStart + sub.meltEnd) / 2;
+  final dx = left + de * w;
+  final dy = bottom - tempFor(de) * (h - 8) - 4;
+  canvas.drawCircle(Offset(dx, dy), 6, Paint()..color = _kHeat);
+  canvas.drawCircle(
+      Offset(dx, dy), 6, Paint()..color = Colors.white.withValues(alpha: 0.4));
+
+  GameFx.text(canvas, 'PLATEAU = NO STATE', Offset(size.width / 2, top - 16),
+      12, _kHeat,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'ENERGY IN  →', Offset(left + 52, bottom + 14), 9,
+      Potatuhs.textFaint,
+      weight: FontWeight.w700);
+}
+
+/// Frame 4 — the escalation danger: overshoot past the target and the streak
+/// resets to 1.
+void _legendOvershoot(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  const cols = [_kSolid, _kLiquid, _kGas];
+  const names = ['SOLID', 'LIQUID', 'GAS'];
+  final cy = size.height * 0.46;
+  final xs = [size.width * 0.22, size.width * 0.5, size.width * 0.78];
+  final rad = math.min(size.width, size.height) * 0.09;
+  for (var i = 0; i < 3; i++) {
+    final target = i == 1;
+    canvas.drawCircle(Offset(xs[i], cy), rad,
+        Paint()..color = cols[i].withValues(alpha: target ? 0.9 : 0.45));
+    if (target) {
+      canvas.drawCircle(
+        Offset(xs[i], cy),
+        rad + 5,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..color = _kGood,
+      );
+    }
+    GameFx.text(canvas, names[i], Offset(xs[i], cy + rad + 16), 11, cols[i],
+        weight: FontWeight.w800);
+  }
+
+  // Overshoot arrow: past the LIQUID target and out through GAS.
+  final ay = size.height * 0.18;
+  final ap = Paint()
+    ..color = _kHeat
+    ..strokeWidth = 3.5
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final tipX = xs[2] + rad;
+  canvas.drawLine(Offset(xs[1], ay), Offset(tipX, ay), ap);
+  canvas.drawLine(Offset(tipX, ay), Offset(tipX - 11, ay - 8), ap);
+  canvas.drawLine(Offset(tipX, ay), Offset(tipX - 11, ay + 8), ap);
+  GameFx.text(canvas, 'OVERSHOOT', Offset((xs[1] + xs[2]) / 2, ay - 14), 10,
+      _kHeat,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'STREAK  →  x1', Offset(size.width / 2, size.height * 0.82),
+      13, _kHeat,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Phase Change — wired into the registry spec.
+final List<LegendFrame> phaseChangeLegendFrames = [
+  const LegendFrame(
+      caption: 'Hold HEAT or COOL to drive the energy up or down',
+      paint: _legendControl),
+  const LegendFrame(
+      caption: 'Reach & HOLD the target: SOLID, LIQUID or GAS',
+      paint: _legendStates),
+  const LegendFrame(
+      caption: 'Push energy THROUGH the flat plateaus to cross',
+      paint: _legendPlateau),
+  const LegendFrame(
+      caption: 'Overshoot past the target and your streak resets to 1',
+      paint: _legendOvershoot),
+];
 
 class PhaseChangeGame extends StatefulWidget {
   final MiniGameSession session;
@@ -136,12 +396,63 @@ class _PhaseChangeGameState extends State<PhaseChangeGame>
     super.initState();
     _mols = _buildLattice();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Phase Change *correctly*,
+  /// not randomly: it derives the target state's energy band from the current
+  /// substance, then holds [_energy] inside it. Above the band → COOL; below the
+  /// band, or about to fall out the bottom under constant ambient loss before the
+  /// next call → HEAT; comfortably in-band → let it drift so it never overshoots.
+  /// It only ever sets the game's own HEAT / COOL hold flags (the same inputs the
+  /// buttons drive); the ticker and the host clock do the rest.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // Target state's energy band (the same boundaries [_stateOf] classifies by).
+    final s = _sub;
+    final double lo, hi;
+    switch (_targetIdx) {
+      case 0: // SOLID — below the melting point.
+        lo = 0.0;
+        hi = s.meltStart;
+        break;
+      case 2: // GAS — above the boiling point.
+        lo = s.boilEnd;
+        hi = 1.0;
+        break;
+      default: // LIQUID — between the two plateaus.
+        lo = s.meltEnd;
+        hi = s.boilStart;
+    }
+
+    // Ambient loss always drains energy; project where we'll sit next tick.
+    final projected = _energy - _lossRate * _kAutoTick;
+
+    if (_energy > hi) {
+      // Overshot the band (or the target sits below us) → shed energy.
+      _cooling = true;
+      _heating = false;
+    } else if (_energy < lo || projected < lo) {
+      // Below the band now, or about to fall out the bottom → add energy.
+      _heating = true;
+      _cooling = false;
+    } else {
+      // Comfortably in-band — let it drift rather than blow past.
+      _heating = false;
+      _cooling = false;
+    }
   }
 
   List<_Mol> _buildLattice() {

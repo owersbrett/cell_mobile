@@ -40,6 +40,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -269,7 +270,8 @@ class OrbitalInsertionGame extends StatefulWidget {
 
 class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
   final Random _rng = Random();
 
   // ── planet (per-round body) ────────────────────────────────────────────────
@@ -312,15 +314,50 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
   void initState() {
     super.initState();
     _rollPlanet(initial: true);
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game can aim and fling itself. Registered here,
+    // dormant in normal play — the host only invokes it in hands-free mode.
+    // See [_autoStep]. Cleared on dispose.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent move per host tick (~250ms): when the launcher is idle (no
+  /// flier mid-flight, no capture still confirming) it flings a moon TANGENTIAL
+  /// to the planet at exactly the circular-orbit speed — the dead centre of the
+  /// capture band. For a launch at distance r from the planet, the circular
+  /// speed is v = √(mu / r); it yields a near-zero-eccentricity capture (max
+  /// score, hugs the stable ring) and sits squarely between crash (too slow)
+  /// and escape (too fast — v_escape = √2·v_circ). A velocity perpendicular to
+  /// the planet direction is what makes the orbit round. Reuses the game's own
+  /// [_launch] handler (same path a drag-release takes). Deterministic; never
+  /// re-flings while a moon is still in play.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_canvasSize == Size.zero) return;
+    if (!_canLaunch) return; // a flier or pending capture is still resolving
+
+    final size = _canvasSize;
+    final origin = _launcherPx(size);
+    final pc = _planetCenter(size);
+    final rel = origin - pc; // moon position relative to the planet
+    final r = rel.distance;
+    if (r < _kMinGravDist) return;
+
+    // Circular-orbit speed at this radius (planet frame) → e ≈ 0 capture.
+    final vCirc = sqrt(_mu / r);
+    // Unit tangent (perpendicular to the planet direction) — makes it round.
+    final tangent = Offset(-rel.dy, rel.dx) / r;
+    // _launch classifies in the planet frame (subtracts _planetVel); add the
+    // planet's drift back so the planet-frame velocity stays purely tangential.
+    _launch(tangent * vCirc + _planetVel(size));
   }
 
   // ── planet generation ──────────────────────────────────────────────────────
@@ -408,8 +445,13 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
       (_launcherPx(s) - _planetCenter(s)).distance.clamp(60.0, 1e9);
 
   // ── main tick ──────────────────────────────────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the game must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     if (_canvasSize == Size.zero) {
       setState(() => _t += dt);
       return;
@@ -649,7 +691,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     double px = origin.dx, py = origin.dy, vx = v.dx, vy = v.dy;
     final pts = <Offset>[origin];
     const minSq = _kMinGravDist * _kMinGravDist;
-    final subDt = _kPreviewDt / _kPreviewSub;
+    const subDt = _kPreviewDt / _kPreviewSub;
     final hz = _hazardPx(size);
 
     for (int i = 0; i < _kPreviewSteps; i++) {
@@ -758,7 +800,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
                     ),
                     Text(
                       'World ${_systemIndex + 1}',
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontFamily: Potatuhs.bodyFont,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
@@ -786,7 +828,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
                     _canLaunch
                         ? 'FLING A MOON · NOT TOO FAST, NOT TOO SLOW'
                         : 'WATCHING THE ORBIT…',
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontFamily: Potatuhs.displayFont,
                       fontSize: 11,
                       color: Potatuhs.gold,
@@ -1166,27 +1208,44 @@ class _OrbitPainter extends CustomPainter {
     final f = flier;
     if (f == null) return;
     final tr = f.trail;
-    for (int i = 1; i < tr.length; i++) {
-      final frac = i / tr.length;
-      canvas.drawLine(
-        tr[i - 1],
-        tr[i],
-        Paint()
-          ..color = (f.fate == _Outcome.crash ? Potatuhs.orange
-                  : Potatuhs.glaucous)
-              .withValues(alpha: frac * 0.5)
-          ..strokeWidth = 4
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
-      );
-      canvas.drawLine(
-        tr[i - 1],
-        tr[i],
-        Paint()
-          ..color = Colors.white.withValues(alpha: frac * 0.7)
-          ..strokeWidth = 1.8
-          ..strokeCap = StrokeCap.round,
-      );
+    // Trail in a few alpha bands (old → new), each band ONE polyline path with
+    // one blurred glow stroke + one crisp core stroke — not a blurred draw per
+    // segment (that was a Gaussian pass per segment per frame).
+    const bands = 3;
+    final n = tr.length;
+    final fateColor =
+        f.fate == _Outcome.crash ? Potatuhs.orange : Potatuhs.glaucous;
+    if (n >= 2) {
+      for (var b = 0; b < bands; b++) {
+        // Overlap each band by one point so the polyline stays connected.
+        final start = max(0, n * b ~/ bands - 1);
+        final end = n * (b + 1) ~/ bands;
+        if (end - start < 2) continue;
+        final path = Path()..moveTo(tr[start].dx, tr[start].dy);
+        for (var i = start + 1; i < end; i++) {
+          path.lineTo(tr[i].dx, tr[i].dy);
+        }
+        final frac = (b + 1) / bands;
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = fateColor.withValues(alpha: 0.5 * frac)
+            ..strokeWidth = 4
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+        );
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Colors.white.withValues(alpha: 0.7 * frac)
+            ..strokeWidth = 1.8
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round,
+        );
+      }
     }
     if (f.alive) {
       GameFx.orb(canvas, Offset(f.x, f.y), _kMoonRadius, Potatuhs.textSecondary,

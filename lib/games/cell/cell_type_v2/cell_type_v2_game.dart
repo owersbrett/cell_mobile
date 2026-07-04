@@ -244,14 +244,30 @@ class _CellTypeV2GameState extends State<CellTypeV2Game>
     super.initState();
     cell = _generate(0);
     focus = 1; // ready-state specimen shows fully resolved
+    // ATTRACT autopilot: the host calls [_autoStep] every ~1.1s hands-free.
+    // Dormant unless the host is driving; a live player never sees it.
+    widget.session.autoPilot = _autoStep;
+    // QUIZ pacing — read a specimen, then classify (the required buffer).
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     repaint.dispose();
     super.dispose();
+  }
+
+  /// ATTRACT step — deterministic, always correct. The bot reads the true type
+  /// immediately (before the specimen fully resolves) and classifies it through
+  /// the game's own [_classify], which instantly confirms and loads the next
+  /// specimen. The reveal ([focus]) advances on its own on the ticker, so there
+  /// is no separate advance to drive. Host owns the clock + HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    _classify(cell.type);
   }
 
   // ── Difficulty ───────────────────────────────────────────────────────────
@@ -1125,3 +1141,363 @@ class _StagePainter extends CustomPainter {
   @override
   bool shouldRepaint(_StagePainter oldDelegate) => false;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// VISUAL MANUAL — legend carousel cards, shown once on the pre-game intro.
+// Top-level painters draw the LITERAL specimens in the game's own visual
+// vocabulary (procedural wall, chloroplasts, nucleus, free nucleoid, flagellum)
+// rendered fully-resolved: static, cheap, no ticker or state. The live cell
+// painters are instance methods needing running state, so these standalone
+// helpers mirror them at focus = 1 using the same palette constants.
+// ════════════════════════════════════════════════════════════════════════════
+
+Path _legendMembrane(double r, double seed, {double deform = 0.06, int lobes = 6}) {
+  final path = Path();
+  const steps = 72;
+  for (var i = 0; i <= steps; i++) {
+    final a = i / steps * 2 * math.pi;
+    final wob = 1 +
+        deform * math.sin(a * lobes + seed) +
+        deform * 0.5 * math.cos(a * (lobes + 3) - seed);
+    final p = Offset(math.cos(a) * r * wob, math.sin(a) * r * wob);
+    if (i == 0) {
+      path.moveTo(p.dx, p.dy);
+    } else {
+      path.lineTo(p.dx, p.dy);
+    }
+  }
+  path.close();
+  return path;
+}
+
+void _legendFillBody(Canvas canvas, Path path, double r, Color color) {
+  canvas.drawPath(
+    path,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.35, -0.4),
+        colors: [
+          Color.lerp(color, Colors.white, 0.30)!.withValues(alpha: 0.55),
+          color.withValues(alpha: 0.34),
+          Color.lerp(color, Colors.black, 0.5)!.withValues(alpha: 0.5),
+        ],
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(Rect.fromCircle(center: Offset.zero, radius: r)),
+  );
+}
+
+void _legendNucleus(Canvas canvas, Offset at, double r, Color tint) {
+  canvas.drawCircle(
+    at,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Color.lerp(tint, Colors.white, 0.4)!,
+          tint,
+          Color.lerp(tint, Colors.black, 0.4)!,
+        ],
+      ).createShader(Rect.fromCircle(center: at, radius: r)),
+  );
+  canvas.drawCircle(
+      at,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.5));
+  canvas.drawCircle(at.translate(r * 0.2, -r * 0.1), r * 0.32,
+      Paint()..color = Color.lerp(tint, Colors.black, 0.45)!);
+}
+
+// -- The four literal specimens (fully resolved) ------------------------------
+void _legendPlant(Canvas canvas, Offset center, double r) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final box = RRect.fromRectAndRadius(
+    Rect.fromCenter(center: Offset.zero, width: r * 1.9, height: r * 1.9),
+    Radius.circular(r * 0.22),
+  );
+  canvas.drawRRect(
+      box, Paint()..color = const Color(0xFF6B8E3D).withValues(alpha: 0.9));
+  final inner = box.deflate(r * 0.10);
+  _legendFillBody(canvas, Path()..addRRect(inner), r, _kPlant);
+  canvas.drawRRect(
+      box,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.05
+        ..color = const Color(0xFF8FB45A));
+  // Central vacuole.
+  canvas.drawCircle(Offset(r * 0.06, r * 0.06), r * 0.62,
+      Paint()..color = const Color(0xFF9FD8E8).withValues(alpha: 0.22));
+  // Chloroplasts — the green tell.
+  const spots = [
+    Offset(-0.45, -0.4), Offset(0.5, -0.3), Offset(-0.3, 0.5),
+    Offset(0.45, 0.45), Offset(0.0, -0.6), Offset(-0.55, 0.15),
+  ];
+  for (final sp in spots) {
+    final c = Offset(sp.dx * r, sp.dy * r);
+    final ang = math.atan2(sp.dy, sp.dx) + 1.0;
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.rotate(ang);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: r * 0.34, height: r * 0.16),
+          Radius.circular(r * 0.08)),
+      Paint()..color = const Color(0xFF2E7D32),
+    );
+    final lp = Paint()
+      ..color = const Color(0xFF8BC34A).withValues(alpha: 0.85)
+      ..strokeWidth = 1.1;
+    for (var g = -1; g <= 1; g++) {
+      canvas.drawLine(Offset(-r * 0.1, g * r * 0.04),
+          Offset(r * 0.1, g * r * 0.04), lp);
+    }
+    canvas.restore();
+  }
+  _legendNucleus(canvas, Offset(-0.46 * r, 0.40 * r), r * 0.22,
+      const Color(0xFF7E57C2));
+  canvas.restore();
+}
+
+void _legendAnimal(Canvas canvas, Offset center, double r) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final path = _legendMembrane(r, 1.3, deform: 0.08, lobes: 5);
+  _legendFillBody(canvas, path, r, _kAnimal);
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Colors.white.withValues(alpha: 0.55));
+  const spots = [
+    Offset(-0.4, -0.3), Offset(0.45, -0.2), Offset(-0.25, 0.45),
+    Offset(0.4, 0.4), Offset(0.0, 0.55),
+  ];
+  for (final sp in spots) {
+    final c = Offset(sp.dx * r, sp.dy * r);
+    final ang = math.atan2(sp.dy, sp.dx);
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.rotate(ang);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset.zero, width: r * 0.30, height: r * 0.14),
+        Radius.circular(r * 0.07),
+      ),
+      Paint()..color = const Color(0xFFEF8E3D),
+    );
+    canvas.restore();
+  }
+  _legendNucleus(canvas, Offset(0.1 * r, 0.05 * r), r * 0.30,
+      const Color(0xFF5C6BC0));
+  canvas.restore();
+}
+
+void _legendBacterial(Canvas canvas, Offset center, double r) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final bodyRect =
+      Rect.fromCenter(center: Offset.zero, width: r * 2.4, height: r * 1.3);
+  final radius = Radius.circular(bodyRect.height / 2);
+  // Flagellum (static).
+  final p = Path();
+  final startX = -bodyRect.width / 2;
+  p.moveTo(startX, 0);
+  for (var i = 0; i <= 24; i++) {
+    final t = i / 24;
+    final x = startX - t * r * 1.5;
+    final y = math.sin(t * 12) * r * 0.18 * t;
+    p.lineTo(x, y);
+  }
+  canvas.drawPath(
+    p,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = _kBacterial.withValues(alpha: 0.7),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(bodyRect.inflate(r * 0.16), radius),
+    Paint()..color = _kBacterial.withValues(alpha: 0.14),
+  );
+  final body = RRect.fromRectAndRadius(bodyRect, radius);
+  _legendFillBody(canvas, Path()..addRRect(body), r, _kBacterial);
+  canvas.drawRRect(
+      body,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.07
+        ..color = const Color(0xFF80DEEA));
+  // Nucleoid — free DNA (no nucleus, the big tell).
+  final dna = Path();
+  for (var i = 0; i <= 40; i++) {
+    final t = i / 40;
+    final ang = t * 6.28 * 2;
+    final rr = r * (0.18 + 0.10 * math.sin(ang * 1.5));
+    final x = math.cos(ang) * rr;
+    final y = math.sin(ang) * rr * 1.4;
+    if (i == 0) {
+      dna.moveTo(x, y);
+    } else {
+      dna.lineTo(x, y);
+    }
+  }
+  canvas.drawPath(
+    dna,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = const Color(0xFFB2EBF2).withValues(alpha: 0.85),
+  );
+  canvas.restore();
+}
+
+void _legendFungal(Canvas canvas, Offset center, double r) {
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  final path = _legendMembrane(r, 0.7, deform: 0.03, lobes: 5);
+  canvas.drawPath(
+      path, Paint()..color = const Color(0xFFBE8A3A).withValues(alpha: 0.95));
+  final innerPath = _legendMembrane(r * 0.9, 0.7, deform: 0.03, lobes: 5);
+  _legendFillBody(canvas, innerPath, r, _kFungal);
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.05
+        ..color = const Color(0xFFE0B050));
+  const spots = [
+    Offset(-0.35, -0.3), Offset(0.4, -0.2), Offset(-0.2, 0.4),
+    Offset(0.35, 0.35), Offset(0.05, 0.5),
+  ];
+  for (var i = 0; i < spots.length; i++) {
+    final sp = spots[i];
+    final c = Offset(sp.dx * r, sp.dy * r);
+    if (i.isEven) {
+      canvas.drawCircle(c, r * 0.12,
+          Paint()..color = const Color(0xFFF3E2BE).withValues(alpha: 0.30));
+    } else {
+      canvas.drawCircle(
+          c, r * 0.05, Paint()..color = const Color(0xFF7A5A28));
+    }
+  }
+  _legendNucleus(canvas, Offset(-0.34 * r, 0.30 * r), r * 0.22,
+      const Color(0xFF8D6E63));
+  canvas.restore();
+}
+
+// -- Frame arc ----------------------------------------------------------------
+// (a) the four specimens you name · (b) how to score (snap-read + bonus ring) ·
+// (c) the danger (walled look-alikes) · (d) the FINAL CELLS escalation.
+
+void _legendCTypes(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final r = math.min(size.width, size.height) * 0.115;
+  final xs = [size.width * 0.30, size.width * 0.70];
+  final ys = [size.height * 0.30, size.height * 0.68];
+  final cells = [_legendPlant, _legendAnimal, _legendBacterial, _legendFungal];
+  const labels = ['PLANT', 'ANIMAL', 'BACTERIAL', 'FUNGAL'];
+  final accents = [_kPlant, _kAnimal, _kBacterial, _kFungal];
+  for (var i = 0; i < 4; i++) {
+    final c = Offset(xs[i % 2], ys[i ~/ 2]);
+    cells[i](canvas, c, r);
+    GameFx.text(canvas, labels[i], Offset(c.dx, c.dy + r * 1.7), 10.5,
+        accents[i],
+        weight: FontWeight.w800);
+  }
+}
+
+void _legendCBonus(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final center = Offset(size.width * 0.5, size.height * 0.46);
+  final r = math.min(size.width, size.height) * 0.20;
+  final ringR = r * 1.5;
+  // Defocus haze — the specimen loads hazy.
+  canvas.drawCircle(
+    center,
+    r * 1.1,
+    Paint()
+      ..color = _kAnimal.withValues(alpha: 0.18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+  );
+  _legendAnimal(canvas, center, r);
+  // Bonus-ring track + gold arc (payout while still hazy).
+  canvas.drawCircle(
+      center,
+      ringR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = Colors.white.withValues(alpha: 0.08));
+  canvas.drawArc(
+    Rect.fromCircle(center: center, radius: ringR),
+    -math.pi / 2,
+    -0.7 * 2 * math.pi,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.5
+      ..strokeCap = StrokeCap.round
+      ..color = _kGold.withValues(alpha: 0.85),
+  );
+  GameFx.text(canvas, '×1.8 READ', Offset(center.dx, center.dy - ringR - 16),
+      13, _kGold,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+void _legendCConfusable(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final r = math.min(size.width, size.height) * 0.15;
+  final cy = size.height * 0.42;
+  final lx = size.width * 0.30, rx = size.width * 0.70;
+  _legendPlant(canvas, Offset(lx, cy), r);
+  _legendFungal(canvas, Offset(rx, cy), r);
+  GameFx.text(canvas, 'PLANT', Offset(lx, cy + r * 1.75), 11, _kPlant,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'FUNGAL', Offset(rx, cy + r * 1.75), 11, _kFungal,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'WALL + GREEN', Offset(lx, cy + r * 2.2), 9, _kGood,
+      weight: FontWeight.w700);
+  GameFx.text(canvas, 'WALL, NO GREEN', Offset(rx, cy + r * 2.2), 9, _kBad,
+      weight: FontWeight.w700);
+}
+
+void _legendCSurge(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final rect = Offset.zero & size;
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [Colors.transparent, _kBad.withValues(alpha: 0.24)],
+        stops: const [0.6, 1.0],
+      ).createShader(rect),
+  );
+  final center = Offset(size.width * 0.5, size.height * 0.54);
+  final r = math.min(size.width, size.height) * 0.17;
+  _legendBacterial(canvas, center, r);
+  GameFx.text(canvas, 'FINAL CELLS  ×2', Offset(size.width / 2, size.height * 0.16),
+      16, _kBad,
+      display: true, glow: 0.8);
+}
+
+/// The visual manual for Cell Type v2 — wired into the registry spec.
+final List<LegendFrame> cellTypeV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Name each cell: plant, animal, bacterial or fungal',
+      paint: _legendCTypes),
+  const LegendFrame(
+      caption: 'Tap while still hazy — the gold ring pays a bonus',
+      paint: _legendCBonus),
+  const LegendFrame(
+      caption: "Walled but no green? It's FUNGAL, not plant",
+      paint: _legendCConfusable),
+  const LegendFrame(
+      caption: 'Final 8s: cells rush in and every read scores ×2',
+      paint: _legendCSurge),
+];

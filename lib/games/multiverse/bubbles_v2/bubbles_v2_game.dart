@@ -144,12 +144,76 @@ class _BubblesV2GameState extends State<BubblesV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep]. Cleared in dispose.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free action per host tick (~250ms). Reads this game's OWN state
+  /// and calls its OWN harvest handler — no randomness, no synthetic taps.
+  ///
+  /// Two priorities, matching the game's core skill (triage the warnings, then
+  /// bank the ripest):
+  ///   1. DEFUSE the most imminent unavoidable collision. Scan warned pairs
+  ///      (edge-gap < [_kWarnGap], i.e. the ones raising a red arc); the pair
+  ///      with the SMALLEST gap is closest to spoiling. Harvest a harvestable
+  ///      (mature/gold) bubble in that pair — that defuses it and banks the
+  ///      +SAVE clutch bonus. Prefer the more valuable (bigger) member.
+  ///   2. Else HARVEST the ripest bubble — a bigger mature bubble carries the
+  ///      larger size bonus, so it is worth the most points.
+  /// One action per tick; if nothing valuable exists, return.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // Priority 1 — defuse the most imminent reachable collision.
+    _Bubble? defuse;
+    double worstGap = double.infinity;
+    for (var i = 0; i < _bubbles.length; i++) {
+      final a = _bubbles[i];
+      if (!a.alive) continue;
+      for (var j = i + 1; j < _bubbles.length; j++) {
+        final c = _bubbles[j];
+        if (!c.alive) continue;
+        final gap = (a.pos - c.pos).distance - a.radius - c.radius;
+        if (gap >= _kWarnGap) continue; // not an imminent (warned) pair
+        // Only a mature (gold) bubble is harvestable; harvesting either member
+        // defuses the pair, so pick the more valuable mature one if present.
+        _Bubble? target;
+        if (a.mature && c.mature) {
+          target = a.radius >= c.radius ? a : c;
+        } else if (a.mature) {
+          target = a;
+        } else if (c.mature) {
+          target = c;
+        }
+        if (target == null) continue; // neither is ripe enough to harvest yet
+        if (gap < worstGap) {
+          worstGap = gap;
+          defuse = target;
+        }
+      }
+    }
+    if (defuse != null) {
+      _harvest(defuse);
+      return;
+    }
+
+    // Priority 2 — harvest the ripest (biggest = highest-scoring) bubble.
+    _Bubble? ripest;
+    for (final b in _bubbles) {
+      if (!b.alive || !b.mature) continue;
+      if (ripest == null || b.radius > ripest.radius) ripest = b;
+    }
+    if (ripest != null) _harvest(ripest);
   }
 
   // Ramp 0→1 over the run; surges in the final climax window.
@@ -637,3 +701,202 @@ class _BubblesV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BubblesV2Painter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the REAL bubble style
+// the live game paints (violet = inflating, gold = ripe, red arc = collision
+// warning). Static (no ticker) so they render cheaply in the intro carousel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws ONE bubble exactly as [_BubblesV2Painter._paintBubble] does — glow +
+/// translucent membrane + rim + specular + ripe pip — but frozen (no wobble /
+/// pulse). Pass a finite [warnDir] to add the red collision-warning arc facing
+/// that angle. Geometry is clamped so a degenerate size never draws NaN.
+void _legendBubble(
+  Canvas canvas,
+  Offset pos,
+  double radius, {
+  required bool ripe,
+  double warnDir = double.nan,
+}) {
+  final r = radius.clamp(1.0, 4000.0);
+  final core = ripe ? _kRipeA : _kAccent;
+
+  // Soft glow halo.
+  canvas.drawCircle(
+    pos,
+    r + (ripe ? 8 : 4),
+    Paint()
+      ..color = core.withValues(alpha: ripe ? 0.32 : 0.16)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+  );
+
+  // Translucent membrane body.
+  canvas.drawCircle(
+    pos,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.45),
+        colors: [
+          core.withValues(alpha: 0.34),
+          core.withValues(alpha: 0.10),
+          (ripe ? _kRipeB : _kIndigo).withValues(alpha: 0.04),
+        ],
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(Rect.fromCircle(center: pos, radius: r)),
+  );
+
+  // Membrane rim.
+  canvas.drawCircle(
+    pos,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = ripe ? 2.4 : 1.4
+      ..color = core.withValues(alpha: ripe ? 0.95 : 0.6),
+  );
+
+  // Specular highlight.
+  canvas.drawCircle(
+    pos.translate(-r * 0.34, -r * 0.36),
+    r * 0.18,
+    Paint()..color = Colors.white.withValues(alpha: 0.45),
+  );
+
+  // Ripe marker pip.
+  if (ripe) {
+    canvas.drawCircle(
+      pos,
+      3.2,
+      Paint()..color = _kRipeA.withValues(alpha: 0.9),
+    );
+  }
+
+  // Collision-warning arc facing the threat.
+  if (!warnDir.isNaN) {
+    canvas.drawArc(
+      Rect.fromCircle(center: pos, radius: r + 4),
+      warnDir - 0.9,
+      1.8,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.0
+        ..strokeCap = StrokeCap.round
+        ..color = _kWarn.withValues(alpha: 0.85),
+    );
+  }
+}
+
+/// A small rightward chevron cue (used to show "inflates onward").
+void _legendChevron(Canvas canvas, Offset c, double s, Color color) {
+  final p = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..color = color;
+  canvas.drawLine(c.translate(-s * 0.5, -s), c.translate(s * 0.5, 0), p);
+  canvas.drawLine(c.translate(s * 0.5, 0), c.translate(-s * 0.5, s), p);
+}
+
+// FRAME 1 — the vacuum nucleates a tiny bubble that inflates and ripens gold.
+void _legendInflate(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final cy = size.height * 0.5;
+  final xs = [size.width * 0.22, size.width * 0.5, size.width * 0.78];
+  final radii = [_kStartRadius + 3, 16.0, 30.0];
+  final mn = math.min(size.width, size.height);
+  for (var i = 0; i < 3; i++) {
+    _legendBubble(canvas, Offset(xs[i], cy), radii[i], ripe: i == 2);
+    if (i < 2) {
+      _legendChevron(
+        canvas,
+        Offset((xs[i] + xs[i + 1]) / 2, cy),
+        mn * 0.045,
+        _kIndigo.withValues(alpha: 0.8),
+      );
+    }
+  }
+}
+
+// FRAME 2 — tap a ripe GOLD bubble to harvest it (gold pop ring blooms out).
+void _legendHarvest(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final c = Offset(size.width * 0.5, size.height * 0.5);
+  final r = math.min(size.width, size.height) * 0.24;
+  _legendBubble(canvas, c, r, ripe: true);
+  // The harvest pop: a gold ring blooming outward (as _paintBubble draws).
+  canvas.drawCircle(
+    c,
+    r * 1.7,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0
+      ..color = _kRipeA.withValues(alpha: 0.55),
+  );
+  canvas.drawCircle(
+    c,
+    r * 2.15,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kRipeA.withValues(alpha: 0.28),
+  );
+}
+
+// FRAME 3 — a RED warning arc: two bubbles about to collide; harvest one.
+void _legendWarn(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final cy = size.height * 0.5;
+  final r = math.min(size.width, size.height) * 0.2;
+  final gap = r * 0.5;
+  final left = Offset(size.width * 0.5 - r - gap * 0.5, cy);
+  final right = Offset(size.width * 0.5 + r + gap * 0.5, cy);
+  // Each bubble warns on the side facing the other (right bubble is ripe/gold,
+  // so it is the one you can harvest to defuse).
+  _legendBubble(canvas, left, r, ripe: false, warnDir: 0); // faces right
+  _legendBubble(canvas, right, r, ripe: true, warnDir: math.pi); // faces left
+}
+
+// FRAME 4 — the climax cascade: the sea fills with bubbles, warnings bloom.
+void _legendClimax(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final w = size.width, h = size.height;
+  final u = math.min(w, h);
+  // Scattered field of inflating + ripe bubbles; two pairs raise warnings.
+  final spots = <List<double>>[
+    // x-frac, y-frac, radius, ripe(1/0), warnDir (NaN = none)
+    [0.24, 0.30, 0.11, 1, double.nan],
+    [0.44, 0.28, 0.09, 0, math.pi],
+    [0.72, 0.34, 0.12, 1, 0],
+    [0.30, 0.66, 0.10, 0, double.nan],
+    [0.55, 0.62, 0.13, 1, math.pi],
+    [0.78, 0.70, 0.10, 0, double.nan],
+  ];
+  for (final s in spots) {
+    _legendBubble(
+      canvas,
+      Offset(w * s[0], h * s[1]),
+      u * s[2],
+      ripe: s[3] == 1,
+      warnDir: s[4],
+    );
+  }
+}
+
+/// The visual manual for Bubbles v2 — wired into the registry spec.
+final List<LegendFrame> bubblesV2LegendFrames = [
+  const LegendFrame(
+      caption: 'The vacuum nucleates bubbles that inflate on their own',
+      paint: _legendInflate),
+  const LegendFrame(
+      caption: 'Tap a GOLD bubble to harvest it — bigger banks more',
+      paint: _legendHarvest),
+  const LegendFrame(
+      caption: 'A red arc warns a collision — harvest one to save both',
+      paint: _legendWarn),
+  const LegendFrame(
+      caption: 'Climax: the sea cascades — you cannot save them all',
+      paint: _legendClimax),
+];

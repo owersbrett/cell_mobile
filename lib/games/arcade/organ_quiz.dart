@@ -123,12 +123,40 @@ class _OrganQuizGameState extends State<OrganQuizGame>
     _buildPools();
     _loadNextQuestion();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer answers to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ============================================================================
+  // ATTRACT autopilot
+  // ============================================================================
+
+  /// One hands-free move per host tick (~250ms). Plays Organ Rush *correctly*,
+  /// not randomly: while a question awaits an answer it taps the correct organ
+  /// ([OrganQuestion.answer]) through the game's own [_onOptionTap] — promptly,
+  /// so the speed bonus lands; while the post-answer fun-fact flare is up it
+  /// skips ahead via [_skipFactFlare]. Mid-transition it does nothing. The host
+  /// owns the clock and score HUD; the bot just banks real points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_answerState == _AnswerState.waiting) {
+      // Answer with the correct organ — always correct, no guessing.
+      _onOptionTap(_question.answer);
+    } else {
+      // Fact flare is showing — advance to the next question.
+      _skipFactFlare();
+    }
   }
 
   // ============================================================================
@@ -867,3 +895,268 @@ class _BgPainter extends CustomPainter {
   @override
   bool shouldRepaint(_BgPainter old) => true;
 }
+
+// ============================================================================
+// Visual manual — the legend carousel cards, drawn with the REAL Organ Rush
+// components (realm chip, prompt line, 2×2 option cards, streak badge) in the
+// game's own palette. Static + cheap: rendered once on the intro screen, never
+// per frame. All draw code guards degenerate sizes (bail on <= 0).
+// ============================================================================
+
+/// Centred, wrapping text helper using the game's font — mirrors the on-card
+/// typography the player sees in play.
+void _organLegendText(
+  Canvas canvas,
+  String s,
+  Offset center,
+  double fontSize,
+  Color color, {
+  FontWeight weight = FontWeight.w700,
+  double maxWidth = 200,
+  double letterSpacing = 0,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: weight,
+        color: color,
+        letterSpacing: letterSpacing,
+      ),
+    ),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+    maxLines: 2,
+    ellipsis: '…',
+  )..layout(maxWidth: maxWidth);
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// One answer card — same rounded-rect, border and state colours as the live
+/// `_buildOptionCard`: neutral, correct (green glow) or wrong (red).
+void _organLegendCard(
+  Canvas canvas,
+  Rect r,
+  String label, {
+  Color? border,
+  Color? bg,
+  Color? textColor,
+  bool glow = false,
+}) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  if (glow) {
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..color = _kGoodGreen.withValues(alpha: 0.25)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+    );
+  }
+  canvas.drawRRect(rrect, Paint()..color = bg ?? _kCardBg);
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = border ?? _kCardBorder,
+  );
+  _organLegendText(canvas, label, r.center, 14, textColor ?? _kTextPrimary,
+      maxWidth: r.width - 12);
+}
+
+/// The HUMAN/PLANT realm chip — the pill + icon the game shows above the prompt.
+void _organLegendChip(Canvas canvas, Offset center, OrganRealm realm) {
+  final color = realm == OrganRealm.human ? _kHumanAccent : _kPlantAccent;
+  final label = realm == OrganRealm.human ? 'HUMAN' : 'PLANT';
+  final r = Rect.fromCenter(center: center, width: 96, height: 26);
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(13));
+  canvas.drawRRect(rrect, Paint()..color = color.withValues(alpha: 0.14));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = color.withValues(alpha: 0.70),
+  );
+  final iconC = Offset(r.left + 18, center.dy);
+  if (realm == OrganRealm.human) {
+    _organLegendHeart(canvas, iconC, 6, color);
+  } else {
+    _organLegendLeaf(canvas, iconC, 7, color);
+  }
+  _organLegendText(canvas, label, Offset(center.dx + 8, center.dy), 12, color,
+      weight: FontWeight.w800, letterSpacing: 1.4, maxWidth: 60);
+}
+
+void _organLegendHeart(Canvas canvas, Offset c, double s, Color color) {
+  final path = Path()
+    ..moveTo(c.dx, c.dy + s * 0.9)
+    ..cubicTo(c.dx - s * 1.4, c.dy - s * 0.2, c.dx - s * 0.5, c.dy - s * 1.1,
+        c.dx, c.dy - s * 0.35)
+    ..cubicTo(c.dx + s * 0.5, c.dy - s * 1.1, c.dx + s * 1.4, c.dy - s * 0.2,
+        c.dx, c.dy + s * 0.9)
+    ..close();
+  canvas.drawPath(path, Paint()..color = color);
+}
+
+void _organLegendLeaf(Canvas canvas, Offset c, double s, Color color) {
+  canvas.save();
+  canvas.translate(c.dx, c.dy);
+  canvas.rotate(-0.6);
+  final path = Path()
+    ..moveTo(0, -s)
+    ..quadraticBezierTo(s * 0.9, 0, 0, s)
+    ..quadraticBezierTo(-s * 0.9, 0, 0, -s)
+    ..close();
+  canvas.drawPath(path, Paint()..color = color);
+  canvas.restore();
+}
+
+/// The gold ×N streak badge from the HUD.
+void _organLegendStreakBadge(Canvas canvas, Offset center, int mult) {
+  final r = Rect.fromCenter(center: center, width: 96, height: 24);
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(6));
+  canvas.drawRRect(rrect, Paint()..color = _kGold.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kGold.withValues(alpha: 0.7),
+  );
+  _organLegendText(canvas, '×$mult STREAK', center, 12, _kGold,
+      weight: FontWeight.w800, letterSpacing: 0.5, maxWidth: 88);
+}
+
+/// A 2×2 option grid, optionally flagging the correct (green) / wrong (red) card.
+void _organLegendGrid(
+  Canvas canvas,
+  Size size,
+  List<String> labels, {
+  int correctIndex = -1,
+  int wrongIndex = -1,
+}) {
+  final area = Rect.fromLTWH(size.width * 0.10, size.height * 0.40,
+      size.width * 0.80, size.height * 0.52);
+  const gap = 8.0;
+  final cw = (area.width - gap) / 2;
+  final ch = (area.height - gap) / 2;
+  if (cw <= 0 || ch <= 0) return;
+  for (int i = 0; i < 4 && i < labels.length; i++) {
+    final col = i % 2, row = i ~/ 2;
+    final r = Rect.fromLTWH(
+        area.left + col * (cw + gap), area.top + row * (ch + gap), cw, ch);
+    if (i == correctIndex) {
+      _organLegendCard(canvas, r, labels[i],
+          border: _kGoodGreen,
+          bg: _kGoodGreen.withValues(alpha: 0.12),
+          textColor: _kGoodGreen,
+          glow: true);
+    } else if (i == wrongIndex) {
+      _organLegendCard(canvas, r, labels[i],
+          border: _kBadRed,
+          bg: _kBadRed.withValues(alpha: 0.10),
+          textColor: _kBadRed);
+    } else {
+      _organLegendCard(canvas, r, labels[i]);
+    }
+  }
+}
+
+// -- Frames ------------------------------------------------------------------
+
+void _organLegendCore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _organLegendChip(
+      canvas, Offset(size.width * 0.5, size.height * 0.12), OrganRealm.human);
+  _organLegendText(
+      canvas,
+      'pumps blood through your body',
+      Offset(size.width * 0.5, size.height * 0.27),
+      15,
+      _kTextPrimary,
+      weight: FontWeight.w900,
+      maxWidth: size.width * 0.82);
+  _organLegendGrid(canvas, size, const ['Heart', 'Lungs', 'Liver', 'Kidneys']);
+}
+
+void _organLegendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  // The reward state: a correct card glowing green.
+  final r = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.56),
+      width: size.width * 0.52,
+      height: size.height * 0.30);
+  _organLegendCard(canvas, r, 'Heart',
+      border: _kGoodGreen,
+      bg: _kGoodGreen.withValues(alpha: 0.12),
+      textColor: _kGoodGreen,
+      glow: true);
+  _organLegendText(canvas, '+120', Offset(size.width * 0.5, size.height * 0.22),
+      30, _kGoodGreen,
+      weight: FontWeight.w900, maxWidth: size.width);
+  _organLegendStreakBadge(
+      canvas, Offset(size.width * 0.5, size.height * 0.86), 3);
+}
+
+void _organLegendMiss(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _organLegendText(
+      canvas,
+      'filters waste from your blood',
+      Offset(size.width * 0.5, size.height * 0.12),
+      14,
+      _kTextPrimary,
+      weight: FontWeight.w900,
+      maxWidth: size.width * 0.82);
+  // Player tapped Liver (red) — Kidneys was right (green).
+  _organLegendGrid(canvas, size, const ['Kidneys', 'Spleen', 'Liver', 'Bladder'],
+      correctIndex: 0, wrongIndex: 2);
+}
+
+void _organLegendRealms(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _organLegendChip(
+      canvas, Offset(size.width * 0.30, size.height * 0.28), OrganRealm.human);
+  _organLegendChip(
+      canvas, Offset(size.width * 0.70, size.height * 0.28), OrganRealm.plant);
+  // Arrow: human → plant, round after round.
+  final y = size.height * 0.28;
+  final p = Paint()
+    ..color = _kTextSub
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(Offset(size.width * 0.44, y), Offset(size.width * 0.56, y), p);
+  canvas.drawLine(
+      Offset(size.width * 0.56, y), Offset(size.width * 0.53, y - 4), p);
+  canvas.drawLine(
+      Offset(size.width * 0.56, y), Offset(size.width * 0.53, y + 4), p);
+  final rH = Rect.fromCenter(
+      center: Offset(size.width * 0.30, size.height * 0.66),
+      width: size.width * 0.34,
+      height: size.height * 0.24);
+  _organLegendCard(canvas, rH, 'Lungs');
+  final rP = Rect.fromCenter(
+      center: Offset(size.width * 0.70, size.height * 0.66),
+      width: size.width * 0.34,
+      height: size.height * 0.24);
+  _organLegendCard(canvas, rP, 'Roots');
+}
+
+/// The visual manual for Organ Rush — wired into the registry spec.
+final List<LegendFrame> organRushLegendFrames = [
+  const LegendFrame(
+      caption: 'Read the clue, tap the organ that fits',
+      paint: _organLegendCore),
+  const LegendFrame(
+      caption: 'Answer fast for big points — streaks add a multiplier',
+      paint: _organLegendScore),
+  const LegendFrame(
+      caption: 'A wrong tap resets your streak, but costs no points',
+      paint: _organLegendMiss),
+  const LegendFrame(
+      caption: 'Realms alternate: human organs, then plant parts',
+      paint: _organLegendRealms),
+];

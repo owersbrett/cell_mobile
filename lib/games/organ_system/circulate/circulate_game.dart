@@ -107,12 +107,64 @@ class _CirculateGameState extends State<CirculateGame>
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
+    // ATTRACT autopilot: this game knows how to circulate for itself. The host
+    // only calls this in autoplay; dormant during normal hands-on play. See
+    // [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One correct routing move per host tick (~250ms), driven off the game's OWN
+  /// state and handlers — no synthetic taps, no randomness. Policy that plays
+  /// the systemic/pulmonary balance well:
+  ///   1. If the reserve can't fund the next delivery, route blue blood to the
+  ///      lungs to recharge ([_routeRecharge]).
+  ///   2. Otherwise deliver oxygenated blood to the neediest low organ
+  ///      ([_routeDelivery]) — always the correct destination, never a full one.
+  ///   3. If every organ is comfortable, keep the reserve topped for the coming
+  ///      drain (recharge only while it isn't already full/inbound).
+  /// In-flight recharge pulses are counted so it never over-queues the lungs.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // Recharge O₂ already inbound but not yet landed at the heart.
+    var inFlightRecharge = 0;
+    for (final p in _pulses) {
+      if (p.target < 0) inFlightRecharge++;
+    }
+    final projReserve = _reserve + inFlightRecharge * _rechargeAdd;
+
+    // Neediest organ (lowest O₂) — the correct delivery target.
+    int neediest = -1;
+    var lowO2 = 2.0;
+    for (var i = 0; i < _organs.length; i++) {
+      if (_organs[i].o2 < lowO2) {
+        lowO2 = _organs[i].o2;
+        neediest = i;
+      }
+    }
+
+    // 1. Can't afford a delivery → recharge at the lungs (unless already full).
+    if (_reserve < _deliverCost) {
+      if (projReserve < 0.985) _routeRecharge();
+      return;
+    }
+
+    // 2. Deliver to the neediest organ while it genuinely needs oxygen.
+    if (neediest >= 0 && lowO2 < 0.6) {
+      _routeDelivery(neediest);
+      return;
+    }
+
+    // 3. Everyone comfortable → keep the reserve topped for the coming drain.
+    if (projReserve < 0.985) _routeRecharge();
   }
 
   // Real organs of the systemic circuit, ordered by how soon they're added.
@@ -499,3 +551,186 @@ class _CirculatePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CirculatePainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME components the
+// live [_CirculatePainter] renders (heart, lungs, organ + O₂ ring, blood pulse)
+// so the manual shows the EXACT anatomy the player meets. Static and cheap.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _mHeart(Canvas canvas, Offset c, double reserve, double r) {
+  final bloodCol = Color.lerp(_deoxy, _oxy, reserve.clamp(0.0, 1.0))!;
+  GameFx.orb(canvas, c, r, bloodCol, glow: 0.9);
+  GameFx.text(canvas, 'HEART', c.translate(0, r + 12), 10,
+      Colors.white.withValues(alpha: 0.78), weight: FontWeight.w800);
+}
+
+void _mLungs(Canvas canvas, Offset c, double r) {
+  GameFx.orb(canvas, c, r, _deoxy, glow: 0.7);
+  GameFx.text(canvas, 'LUNGS', c.translate(0, -r - 12), 10,
+      Colors.white.withValues(alpha: 0.78), weight: FontWeight.w800);
+}
+
+void _mOrgan(Canvas canvas, Offset c, double o2, String label,
+    {double rr = 17, bool alarm = false}) {
+  final low = o2 < _CirculateGameState._lowO2;
+  final base = o2 <= 0.0
+      ? _danger
+      : Color.lerp(_danger, _good, o2.clamp(0.0, 1.0))!;
+  if (low) {
+    canvas.drawCircle(c, rr + 10 + (alarm ? 3 : 0),
+        Paint()..color = _danger.withValues(alpha: 0.18));
+  }
+  GameFx.orb(canvas, c, rr, base, glow: low ? 0.75 : 0.5);
+  final sweep = o2.clamp(0.0, 1.0) * 2 * math.pi;
+  canvas.drawArc(
+    Rect.fromCircle(center: c, radius: rr + 4),
+    -math.pi / 2,
+    sweep,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = (low ? _danger : _good).withValues(alpha: 0.85),
+  );
+  GameFx.text(canvas, label, c.translate(0, rr + 13), 9.5,
+      Colors.white.withValues(alpha: 0.80), weight: FontWeight.w700);
+  if (low) {
+    GameFx.text(canvas, o2 <= 0.0 ? 'STARVED' : 'LOW O₂',
+        c.translate(0, rr + 25), 8.5,
+        _danger.withValues(alpha: 0.9), weight: FontWeight.w800);
+  }
+}
+
+void _mArtery(Canvas canvas, Offset from, Offset to, {bool low = false}) {
+  canvas.drawLine(
+    from,
+    to,
+    Paint()
+      ..color = (low ? _danger : _oxy).withValues(alpha: low ? 0.30 : 0.16)
+      ..strokeWidth = 2,
+  );
+}
+
+void _mPulse(Canvas canvas, Offset pos, bool oxygenated) {
+  final col = oxygenated ? _oxy : _deoxy;
+  canvas.drawCircle(
+      pos,
+      7,
+      Paint()
+        ..color = col.withValues(alpha: 0.30)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5));
+  canvas.drawCircle(pos, 4.5, Paint()..color = col);
+}
+
+void _mReserveBar(Canvas canvas, Offset heart, double r, double reserve) {
+  const barH = 60.0, barW = 11.0;
+  final left = heart.dx - r - 22;
+  final top = heart.dy - barH / 2;
+  final track = Rect.fromLTWH(left, top, barW, barH);
+  final rrect = RRect.fromRectAndRadius(track, const Radius.circular(6));
+  canvas.drawRRect(rrect, Paint()..color = Colors.black.withValues(alpha: 0.4));
+  final fillH = barH * reserve.clamp(0.0, 1.0);
+  final fillCol = reserve < 0.34 ? _danger : _oxy;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top + (barH - fillH), barW, fillH),
+        const Radius.circular(6)),
+    Paint()..color = fillCol,
+  );
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = Colors.white.withValues(alpha: 0.25),
+  );
+  GameFx.text(canvas, 'O₂', Offset(left + barW / 2, top - 9), 9,
+      Colors.white.withValues(alpha: 0.6), weight: FontWeight.w800);
+}
+
+/// Frame 1 — the core verb: route red blood from the heart out to a low organ.
+void _legendDeliver(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final heart = Offset(w * 0.24, h * 0.52);
+  final organ = Offset(w * 0.74, h * 0.38);
+  _mArtery(canvas, heart, organ, low: true);
+  _mPulse(canvas, Offset.lerp(heart, organ, 0.5)!, true);
+  _mHeart(canvas, heart, 0.9, 26);
+  _mOrgan(canvas, organ, 0.18, 'Brain', alarm: true);
+}
+
+/// Frame 2 — scoring: the emptier the organ you rescue, the bigger the payoff.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final low = Offset(w * 0.31, h * 0.50);
+  final full = Offset(w * 0.71, h * 0.50);
+  _mOrgan(canvas, low, 0.06, 'Muscle', rr: 18, alarm: true);
+  _mOrgan(canvas, full, 0.72, 'Liver', rr: 18);
+  GameFx.text(canvas, '+24', low.translate(0, -34), 16, _good,
+      weight: FontWeight.w800, glow: 0.5);
+  GameFx.text(canvas, '+6', full.translate(0, -34), 13,
+      _good.withValues(alpha: 0.7), weight: FontWeight.w800);
+}
+
+/// Frame 3 — the recharge loop: a blue reserve must go back to the lungs.
+void _legendRecharge(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final heart = Offset(w * 0.44, h * 0.62);
+  final lungs = Offset(w * 0.44, h * 0.22);
+  canvas.drawLine(
+    heart,
+    lungs,
+    Paint()
+      ..color = _deoxy.withValues(alpha: 0.30)
+      ..strokeWidth = 2.5,
+  );
+  _mPulse(canvas, Offset.lerp(heart, lungs, 0.5)!, false);
+  _mLungs(canvas, lungs, 20);
+  _mHeart(canvas, heart, 0.08, 26);
+  _mReserveBar(canvas, heart, 26, 0.08);
+}
+
+/// Frame 4 — escalation: more organs join and demand climbs; keep them all fed.
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  final w = size.width, h = size.height;
+  final heart = Offset(w * 0.5, h * 0.5);
+  const specs = [
+    [0.20, 0.20, 0.10],
+    [0.82, 0.24, 0.05],
+    [0.86, 0.72, 0.14],
+    [0.22, 0.78, 0.08],
+    [0.60, 0.86, 0.55],
+  ];
+  const names = ['Brain', 'Liver', 'Kidney', 'Muscle', 'Limbs'];
+  for (var i = 0; i < specs.length; i++) {
+    final o = Offset(w * specs[i][0], h * specs[i][1]);
+    _mArtery(canvas, heart, o, low: specs[i][2] < 0.34);
+  }
+  _mHeart(canvas, heart, 0.5, 24);
+  for (var i = 0; i < specs.length; i++) {
+    final o = Offset(w * specs[i][0], h * specs[i][1]);
+    _mOrgan(canvas, o, specs[i][2], names[i], rr: 13, alarm: specs[i][2] < 0.34);
+  }
+}
+
+/// The visual manual for Circulate — wired into the registry spec.
+final List<LegendFrame> circulateLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap a low organ to route red blood from the heart',
+      paint: _legendDeliver),
+  const LegendFrame(
+      caption: 'Rescue near-empty organs for up to +24',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Reserve runs blue? Tap the lungs to recharge O₂',
+      paint: _legendRecharge),
+  const LegendFrame(
+      caption: 'More organs join, demand climbs — deliver faster',
+      paint: _legendEscalate),
+];

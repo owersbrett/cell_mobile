@@ -8,6 +8,7 @@ import 'package:cell_mobile/games/play_config.dart';
 import 'package:cell_mobile/games/rank_store.dart';
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
+import 'package:cell_mobile/games/quick_match/quick_match_page.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -105,13 +106,31 @@ class _MiniGamePageState extends State<MiniGamePage> {
     // picked on the home page (solo / 1v1 / …) flows through here.
     final spec = MiniGameRegistry.byId(chosen.specId ?? '');
     if (spec == null) return _missingGameScaffold(chosen, backToPicker);
+
+    // Quick-hop strip: ◀ n/total ▶ across the FULL playable catalog (cross-
+    // scale, catalog order) so a triage pass never returns to the list.
+    final hopList = _playableCatalog();
+    final hopIndex = hopList.indexWhere((g) => g.id == chosen.id);
     return MiniGameHost(
+      key: ValueKey(spec.id), // a hop must reset the host, not mutate it
       spec: spec,
       onExit: backToPicker,
       opponentCount: PlayConfig.opponentCount,
       disruption: PlayConfig.disruptionActive,
+      hopLabel: hopIndex < 0 ? null : '${hopIndex + 1}/${hopList.length}',
+      onHopGame: hopIndex < 0
+          ? null
+          : (delta) => setState(() => _chosen = hopList[
+              (hopIndex + delta + hopList.length) % hopList.length]),
     );
   }
+
+  /// Every catalog game whose registry spec resolves, in catalog order — the
+  /// quick-hop ring.
+  List<CatalogGame> _playableCatalog() => [
+        for (final g in GameCatalog.games)
+          if (g.specId != null && MiniGameRegistry.byId(g.specId!) != null) g,
+      ];
 
   /// Safety net for a catalog entry whose specId doesn't resolve. Should never
   /// happen (every game is registry now) — shows a back-stop, not a crash.
@@ -192,6 +211,16 @@ class _GamePickerState extends State<_GamePicker> {
     return list;
   }
 
+  /// Quick match: host a friends room for a registry game (null for legacy
+  /// games — no spec means nothing to hand the room).
+  VoidCallback? _friendsLauncher(CatalogGame game) {
+    final spec = MiniGameRegistry.byId(game.specId ?? '');
+    if (spec == null) return null;
+    return () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => QuickMatchPage.host(spec: spec)),
+        );
+  }
+
   Future<void> _editGame(CatalogGame game) async {
     await showModalBottomSheet<void>(
       context: context,
@@ -268,6 +297,7 @@ class _GamePickerState extends State<_GamePicker> {
                   hasNote: RankStore.hasNote(games[i].id),
                   onTap: () => widget.onPick(games[i]),
                   onEdit: () => _editGame(games[i]),
+                  onFriends: _friendsLauncher(games[i]),
                 ),
               ),
             ),
@@ -284,12 +314,14 @@ class _GameCard extends StatelessWidget {
   final bool hasNote;
   final VoidCallback onTap;
   final VoidCallback onEdit;
+  final VoidCallback? onFriends; // quick match — registry games only
   const _GameCard({
     required this.game,
     required this.rank,
     required this.hasNote,
     required this.onTap,
     required this.onEdit,
+    this.onFriends,
   });
 
   @override
@@ -380,6 +412,18 @@ class _GameCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
+            if (onFriends != null) ...[
+              GestureDetector(
+                onTap: onFriends,
+                behavior: HitTestBehavior.opaque,
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(Icons.group,
+                      color: accent.withValues(alpha: 0.8), size: 26),
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
             Icon(Icons.play_circle_fill, color: accent, size: 32),
           ],
         ),

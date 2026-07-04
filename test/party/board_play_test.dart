@@ -26,6 +26,9 @@ void _playToCompletion(PartyController c, {int maxSteps = 200000}) {
       case PartyPhase.chooseBranch:
         c.choosePath(c.branchOptions.first);
         break;
+      case PartyPhase.cardDecision:
+        c.chooseCardOption(0);
+        break;
       case PartyPhase.shopOffer:
         c.skipPotato();
         break;

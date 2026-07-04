@@ -61,6 +61,261 @@ const _kCrops = <_Crop>[
 
 _Crop _crop(_Family f) => _kCrops.firstWhere((c) => c.family == f);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME components the
+// live game uses (crop chips, soil plots, the nitrogen bar, the GROW button).
+// Cheap + static: rendered once in the intro carousel, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Soil colours reused verbatim from _FarmPainter._drawPlot.
+const _kLoamRich = Color(0xFF3A2A1C);
+const _kLoamPoor = Color(0xFF6B4A2F);
+const _kLoamPest = Color(0xFF7A5230);
+const _kNitroLow = Color(0xFFD84315);
+const _kNitroHigh = Color(0xFF7CB342);
+const _kPestTick = Color(0xFFE53935);
+const _kMono = Color(0xFFFF7043);
+
+// One crop glyph, mirroring _FarmPainter._drawCropGlyph (family silhouettes).
+void _legendGlyph(Canvas canvas, Rect r, _Crop c, {double alpha = 0.9}) {
+  final cx = r.center.dx;
+  final cy = r.center.dy - 2;
+  final s0 = math.min(r.width, r.height);
+  if (s0 <= 0) return;
+  final base = c.color.withValues(alpha: alpha);
+  switch (c.family) {
+    case _Family.cereal: // corn — stalks with kernel heads
+      for (int i = -1; i <= 1; i++) {
+        final x = cx + i * s0 * 0.16;
+        final top = cy - s0 * 0.26;
+        canvas.drawLine(
+            Offset(x, cy + s0 * 0.18),
+            Offset(x, top),
+            Paint()
+              ..color = const Color(0xFF8BC34A).withValues(alpha: alpha)
+              ..strokeWidth = 2.4);
+        canvas.drawCircle(Offset(x, top), s0 * 0.06, Paint()..color = base);
+      }
+      break;
+    case _Family.legume: // beans — leafy mound
+      for (int i = 0; i < 5; i++) {
+        final ang = -math.pi / 2 + (i - 2) * 0.5;
+        final lx = cx + math.cos(ang) * s0 * 0.18;
+        final ly = cy + math.sin(ang) * s0 * 0.16;
+        canvas.drawCircle(Offset(lx, ly), s0 * 0.07, Paint()..color = base);
+      }
+      break;
+    case _Family.root: // potatoes — tubers under a leafy tuft
+      for (int i = -1; i <= 1; i++) {
+        canvas.drawOval(
+          Rect.fromCenter(
+              center: Offset(cx + i * s0 * 0.15, cy + s0 * 0.12),
+              width: s0 * 0.16,
+              height: s0 * 0.11),
+          Paint()..color = base,
+        );
+      }
+      canvas.drawCircle(Offset(cx, cy - s0 * 0.05), s0 * 0.08,
+          Paint()..color = const Color(0xFF66BB6A).withValues(alpha: alpha));
+      break;
+    case _Family.brassica: // cabbage — concentric leafy head
+      for (int i = 3; i >= 1; i--) {
+        canvas.drawCircle(Offset(cx, cy), s0 * 0.07 * i,
+            Paint()..color = c.color.withValues(alpha: alpha * (0.4 + 0.2 * i)));
+      }
+      break;
+  }
+}
+
+// One soil plot with furrows, an optional crop, pests and the nitrogen bar —
+// the literal field the player taps, mirroring _FarmPainter._drawPlot.
+void _legendPlot(
+  Canvas canvas,
+  Rect r, {
+  required double nitrogen,
+  _Family? crop,
+  double pest = 0,
+  bool highlight = false,
+}) {
+  if (r.width <= 0 || r.height <= 0) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  final loam = Color.lerp(_kLoamPoor, _kLoamRich, nitrogen)!;
+  final soil = Color.lerp(loam, _kLoamPest, pest * 0.6)!;
+  canvas.drawRRect(rr, Paint()..color = soil);
+
+  final furrow = Paint()
+    ..color = Colors.black.withValues(alpha: 0.12)
+    ..strokeWidth = 1;
+  for (double y = r.top + 8; y < r.bottom - 6; y += 9) {
+    canvas.drawLine(Offset(r.left + 6, y), Offset(r.right - 6, y), furrow);
+  }
+
+  if (crop != null) _legendGlyph(canvas, r, _crop(crop));
+
+  if (pest > 0.35) {
+    final n = (pest * 4).round().clamp(1, 4);
+    for (int i = 0; i < n; i++) {
+      canvas.drawCircle(Offset(r.left + 10 + i * 9.0, r.top + 12), 2.6,
+          Paint()..color = _kPestTick.withValues(alpha: 0.9));
+    }
+  }
+
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = highlight ? 1.8 : 1.5
+        ..color = highlight
+            ? const Color(0xFFFFD54F).withValues(alpha: 0.75)
+            : Colors.white.withValues(alpha: 0.10));
+
+  // Nitrogen bar along the bottom edge.
+  final barY = r.bottom - 7, barL = r.left + 8, barW = r.width - 16;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(barL, barY, barW, 4), const Radius.circular(2)),
+    Paint()..color = Colors.black.withValues(alpha: 0.35),
+  );
+  final nColor = Color.lerp(_kNitroLow, _kNitroHigh, nitrogen)!;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(barL, barY, barW * nitrogen.clamp(0.0, 1.0), 4),
+        const Radius.circular(2)),
+    Paint()..color = nColor,
+  );
+  GameFx.text(canvas, 'N', Offset(barL + 4, barY - 8), 7,
+      Colors.white.withValues(alpha: 0.4),
+      weight: FontWeight.w800);
+}
+
+// One crop-tray chip, mirroring _FarmPainter._drawTray.
+void _legendChip(Canvas canvas, Rect rect, _Crop c, {bool selected = false}) {
+  if (rect.width <= 0 || rect.height <= 0) return;
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..color = selected
+            ? c.color.withValues(alpha: 0.30)
+            : Potatuhs.inkPanel.withValues(alpha: 0.85));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = selected ? 2.4 : 1.2
+        ..color = c.color.withValues(alpha: selected ? 1.0 : 0.5));
+  GameFx.orb(canvas, Offset(rect.center.dx, rect.top + 18), 8, c.color,
+      glow: selected ? 1.0 : 0.4);
+  GameFx.text(canvas, c.name, Offset(rect.center.dx, rect.top + 36), 11,
+      Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, c.tag, Offset(rect.center.dx, rect.top + 50), 8, c.color,
+      weight: FontWeight.w700);
+}
+
+// The GROW SEASON button, mirroring _FarmPainter._drawGrow.
+void _legendGrow(Canvas canvas, Rect r) {
+  if (r.width <= 0 || r.height <= 0) return;
+  final rr = RRect.fromRectAndRadius(r, Radius.circular(r.height / 2));
+  canvas.drawRRect(rr, Paint()..shader = Potatuhs.ctaGradient.createShader(r));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = Potatuhs.ink.withValues(alpha: 0.8));
+  GameFx.text(canvas, 'GROW SEASON  >', r.center, 15, Potatuhs.ink,
+      display: true, weight: FontWeight.w800);
+}
+
+// (a) Core objects + verb: the four crop-family cards in the tray.
+void _legendCrops(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const gap = 8.0;
+  final w = size.width;
+  final chipW = (w - 24 - (_kCrops.length - 1) * gap) / _kCrops.length;
+  final chipH = (size.height * 0.62).clamp(0.0, 92.0);
+  final top = size.height * 0.5 - chipH / 2;
+  for (int i = 0; i < _kCrops.length; i++) {
+    final rect = Rect.fromLTWH(12 + i * (chipW + gap), top, chipW, chipH);
+    _legendChip(canvas, rect, _kCrops[i], selected: i == 0);
+  }
+}
+
+// (b) How to score: a planted field + a yield pop, then GROW to bank it.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.36),
+      width: size.width * 0.42,
+      height: size.height * 0.42);
+  _legendPlot(canvas, r, nitrogen: 0.82, crop: _Family.cereal, highlight: true);
+  GameFx.text(canvas, '+58', Offset(r.center.dx, r.top - 10), 18,
+      _crop(_Family.cereal).color,
+      display: true, weight: FontWeight.w800, glow: 0.5);
+  final gr = Rect.fromLTWH(
+      size.width * 0.16, size.height * 0.72, size.width * 0.68, 46);
+  _legendGrow(canvas, gr);
+}
+
+// (c) The danger: repeat a family — soil drains, pests swarm the plot.
+void _legendMonoculture(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.42),
+      width: size.width * 0.46,
+      height: size.height * 0.46);
+  _legendPlot(canvas, r, nitrogen: 0.16, crop: _Family.cereal, pest: 0.85);
+  GameFx.text(canvas, 'MONOCROP', Offset(size.width * 0.5, size.height * 0.82),
+      15, _kMono,
+      display: true, weight: FontWeight.w800, glow: 0.4);
+}
+
+// (d) The payoff / escalation: rotate families to keep soil rich for a bonus.
+void _legendRotate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cy = size.height * 0.40;
+  final pw = size.width * 0.32, ph = size.height * 0.40;
+  // Last season: nitrogen-fixing legume (soil recovering).
+  final left = Rect.fromCenter(
+      center: Offset(size.width * 0.28, cy), width: pw, height: ph);
+  _legendPlot(canvas, left, nitrogen: 0.5, crop: _Family.legume);
+  // This season: heavy feeder on the now-rich soil.
+  final right = Rect.fromCenter(
+      center: Offset(size.width * 0.72, cy), width: pw, height: ph);
+  _legendPlot(canvas, right, nitrogen: 0.9, crop: _Family.cereal);
+  // Rotation arrow between them.
+  final ay = cy;
+  final p = Paint()
+    ..color = _kNitroHigh
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(Offset(size.width * 0.45, ay), Offset(size.width * 0.55, ay), p);
+  canvas.drawLine(
+      Offset(size.width * 0.55, ay), Offset(size.width * 0.51, ay - 5), p);
+  canvas.drawLine(
+      Offset(size.width * 0.55, ay), Offset(size.width * 0.51, ay + 5), p);
+  GameFx.text(canvas, 'CLEAN ROTATION  +45',
+      Offset(size.width * 0.5, size.height * 0.80), 14, const Color(0xFF9CCC65),
+      display: true, weight: FontWeight.w800, glow: 0.4);
+}
+
+/// The visual manual for Crop Rotation — wired into the registry spec.
+final List<LegendFrame> cropRotationLegendFrames = [
+  const LegendFrame(
+      caption: 'Pick a crop family from the tray to plant',
+      paint: _legendCrops),
+  const LegendFrame(
+      caption: 'GROW the season to bank each field\'s harvest',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Repeat a family: soil drains, pests swarm',
+      paint: _legendMonoculture),
+  const LegendFrame(
+      caption: 'Rotate families to keep soil rich for a bonus',
+      paint: _legendRotate),
+];
+
 // ---------------------------------------------------------------------------
 // Field model
 // ---------------------------------------------------------------------------
@@ -144,12 +399,71 @@ class _CropRotationGameState extends State<CropRotationGame>
       ..addListener(_tick);
     _ticker.forward();
     _lastT = DateTime.now().microsecondsSinceEpoch / 1e6;
+    // ATTRACT autopilot: this game knows how to farm itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). Dormant
+    // unless the host is driving hands-free. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One competent move per host tick (~250ms). This plays Crop Rotation the way
+  /// the game intends — no coordinate math, no random taps: it reads its OWN
+  /// fields, and either plants the neediest empty field with a well-rotated crop
+  /// (using the same select-then-plant path a tap would take) or, once every
+  /// field is planted, GROWs the season to bank the harvest. Deterministic.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // Empty (unplanted) fields still waiting on a crop.
+    final empty = _plots.where((p) => p.planned == null).toList();
+    if (empty.isEmpty) {
+      // Whole farm is planted — resolve the season (the GROW handler).
+      _growSeason();
+      return;
+    }
+
+    // Serve the neediest field first: lowest soil nitrogen (pest pressure nudges
+    // it up the queue too, since a fouled plot needs attention).
+    empty.sort((a, b) =>
+        (a.nitrogen + a.pest * 0.15).compareTo(b.nitrogen + b.pest * 0.15));
+    final field = empty.first;
+    final family = _autoFamilyFor(field);
+
+    // Plant via the game's own select + plant path (mirrors _onTapUp): pick the
+    // crop up from the tray, then drop it on the field.
+    setState(() {
+      _selected = family;
+      field.planned = family;
+    });
+  }
+
+  /// Pick a good crop family for [field], NEVER repeating the family that grew
+  /// there last season (the core rotation rule). Priorities: break a pest cycle
+  /// with roots (potatoes), reload depleted soil with a legume, otherwise bank
+  /// the biggest harvest the rotation allows.
+  _Family _autoFamilyFor(_Plot field) {
+    // Candidates exclude last season's family — always rotate.
+    final candidates =
+        _Family.values.where((f) => f != field.lastFamily).toList();
+
+    // High pest/disease pressure → roots break the cycle hard.
+    if (field.pest > 0.5 && candidates.contains(_Family.root)) {
+      return _Family.root;
+    }
+    // Depleted soil → a legume fixes nitrogen and reloads the bar.
+    if (field.nitrogen < 0.45 && candidates.contains(_Family.legume)) {
+      return _Family.legume;
+    }
+    // Healthy soil → take the highest-yield crop the rotation permits.
+    candidates.sort((a, b) => _crop(b).baseYield.compareTo(_crop(a).baseYield));
+    return candidates.first;
   }
 
   void _initPlots(int n) {

@@ -565,12 +565,50 @@ class _SortSpudsGameState extends State<SortSpudsGame>
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_tick)
       ..forward();
+    // ATTRACT autopilot: this game knows how to grade itself. Registered
+    // always (harmless in normal play — the host only calls it in autoplay).
+    // See [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent grade per host tick (~250ms). This plays Sort the Spuds
+  /// *correctly*, not randomly: it reads its OWN belt state, finds the most
+  /// urgent leading spud (the one closest to falling off the end), and routes
+  /// it to the bin the game itself scores as correct — REJECT for a defect,
+  /// else the true size bin — via the same [_dispatch] a real tap uses. It
+  /// never picks a wrong bin, so a rotten spud is never waved into a sale crate.
+  ///
+  /// Left at the default (act-every-tick) pace on purpose: this is a conveyor
+  /// ACTION game. At peak difficulty the two belts spawn spuds faster than
+  /// once per 250ms, so one sort per tick is needed just to keep the line
+  /// clear — it is not superhuman.
+  void _autoStep() {
+    if (!widget.session.isRunning || _size == Size.zero) return;
+    final geo = _Geo(_size, split: _split);
+    // Across the active belt(s), take the leading spud that is furthest along
+    // (most urgent); ties don't matter — either is a valid competent move.
+    _Spud? pick;
+    int pickLane = 0;
+    for (int b = 0; b < _activeBelts; b++) {
+      final s = _leading(b);
+      if (s == null) continue;
+      if (pick == null || s.pos > pick.pos) {
+        pick = s;
+        pickLane = b;
+      }
+    }
+    if (pick == null) return; // nothing on the belt yet — wait
+    // `trueBin` is the game's own recorded correct destination (0/1/2 = size,
+    // 3 = REJECT for rotten/green/blemished). Route there; never a wrong bin.
+    _dispatch(pick, pick.trueBin, geo, pickLane);
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;

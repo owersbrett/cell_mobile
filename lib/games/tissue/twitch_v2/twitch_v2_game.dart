@@ -69,6 +69,227 @@ const Color _kFused = Color(0xFF69F0AE); // tetanus fused green
 const Color _kFatigue = Color(0xFFE19816); // fatigue amber (brand sienna)
 const Color _kRed = Color(0xFFFF5252);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, each drawn with the REAL components
+// (the same nerve, sarcomere, and HUD bars the live game paints).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws one sarcomere at [shorten] (0 relaxed → 1 fully contracted), centred at
+/// [cx],[cy] over width [w]. Mirrors [_TwitchV2Painter._paintSarcomere] so the
+/// legend shows the literal actin-over-myosin the player watches shorten.
+void _legendSarcomere(
+    Canvas canvas, double cx, double cy, double w, double shorten,
+    {Color? active}) {
+  final restHalf = w * 0.31;
+  final contractedHalf = w * 0.165;
+  final half = restHalf + (contractedHalf - restHalf) * shorten;
+  final myosinHalf = w * 0.125;
+  final rowGap = w * 0.052;
+  const rows = 3;
+  final zColor = Color.lerp(_kZdisc, active ?? _kZdisc, 0.6 * shorten)!;
+
+  for (final dir in [-1.0, 1.0]) {
+    final zx = cx + dir * half;
+    canvas.drawLine(
+      Offset(zx, cy - rowGap * 1.7),
+      Offset(zx, cy + rowGap * 1.7),
+      Paint()
+        ..color = zColor.withValues(alpha: 0.9)
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+  for (var r = 0; r < rows; r++) {
+    final y = cy + (r - (rows - 1) / 2) * rowGap;
+    for (final dir in [-1.0, 1.0]) {
+      final zx = cx + dir * half;
+      canvas.drawLine(
+        Offset(zx, y),
+        Offset(cx + dir * (myosinHalf * 0.35), y),
+        Paint()
+          ..color = _kActin.withValues(alpha: 0.85)
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+    canvas.drawLine(
+      Offset(cx - myosinHalf, y),
+      Offset(cx + myosinHalf, y),
+      Paint()
+        ..color = Color.lerp(_kMyosin, _kMuscle, 0.3 + 0.5 * shorten)!
+        ..strokeWidth = 7
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+}
+
+/// Frame 1 — the verb: a signal races the nerve into the strike zone; tap then.
+void _legendBeat(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final y = size.height * 0.55;
+  final left = size.width * 0.10;
+  final right = size.width * 0.90;
+  final span = right - left;
+
+  canvas.drawLine(
+    Offset(left, y),
+    Offset(right, y),
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round,
+  );
+
+  final zoneHalfPx = _kBaseWindow * span;
+  final targetX = left + _kTargetPhase * span;
+  final zoneRect =
+      Rect.fromLTRB(targetX - zoneHalfPx, y - 22, targetX + zoneHalfPx, y + 22);
+  canvas.drawRRect(RRect.fromRectAndRadius(zoneRect, const Radius.circular(8)),
+      Paint()..color = _kSignal.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(zoneRect, const Radius.circular(8)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kSignal.withValues(alpha: 0.7),
+  );
+  canvas.drawLine(Offset(targetX, y - 26), Offset(targetX, y + 26),
+      Paint()..color = _kSignal.withValues(alpha: 0.85)..strokeWidth = 2);
+
+  // Junction orb at the muscle end.
+  GameFx.orb(canvas, Offset(left + span, y), 9, _kMuscle, glow: 0.9);
+
+  // The travelling signal, arriving in-zone (green = on the beat).
+  final pulseX = targetX - zoneHalfPx * 0.4;
+  for (var i = 1; i <= 5; i++) {
+    final tx = pulseX - i * span * 0.02;
+    if (tx < left) continue;
+    canvas.drawCircle(Offset(tx, y), 4.5 * (1 - i / 6),
+        Paint()..color = _kSignal.withValues(alpha: 0.18 * (1 - i / 6)));
+  }
+  GameFx.orb(canvas, Offset(pulseX, y), 8.5, _kFused, glow: 1.4);
+
+  GameFx.text(canvas, 'STRIKE ZONE', Offset(targetX, y + 42), 10,
+      _kSignal.withValues(alpha: 0.85), weight: FontWeight.w800);
+}
+
+/// Frame 2 — how to score: a clean hit fires a contraction; the sarcomere
+/// shortens and the FORCE bar fills.
+void _legendContract(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  _legendSarcomere(canvas, size.width * 0.5, size.height * 0.40, size.width,
+      0.62,
+      active: _kMuscle);
+
+  // Force bar filling.
+  final margin = size.width * 0.14;
+  final barW = size.width - margin * 2;
+  final by = size.height * 0.74;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, by, barW, 9), const Radius.circular(5)),
+    Paint()..color = Colors.white.withValues(alpha: 0.10),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, by, barW * 0.62, 9), const Radius.circular(5)),
+    Paint()..color = _kMuscle.withValues(alpha: 0.92),
+  );
+  GameFx.text(canvas, 'FORCE', Offset(size.width * 0.5, by + 22), 11,
+      _kMuscle.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+/// Frame 3 — the twist & the danger: stack taps into TETANUS (green, past the
+/// line) for bonus, but the FATIGUE strip fills and eats it away.
+void _legendTetanus(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  _legendSarcomere(canvas, size.width * 0.5, size.height * 0.34, size.width,
+      0.92,
+      active: _kFused);
+
+  final margin = size.width * 0.14;
+  final barW = size.width - margin * 2;
+  final by = size.height * 0.66;
+
+  // Force bar pushed past the tetanus line → fused green.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, by, barW, 9), const Radius.circular(5)),
+    Paint()..color = Colors.white.withValues(alpha: 0.10),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, by, barW * 0.92, 9), const Radius.circular(5)),
+    Paint()..color = _kFused.withValues(alpha: 0.92),
+  );
+  final tx = margin + barW * _kTetanusThreshold;
+  canvas.drawLine(Offset(tx, by - 5), Offset(tx, by + 14),
+      Paint()..color = _kFused.withValues(alpha: 0.8)..strokeWidth = 1.5);
+
+  // Fatigue strip filling amber→red beneath.
+  final fy = by + 14;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, fy, barW, 5), const Radius.circular(3)),
+    Paint()..color = Colors.white.withValues(alpha: 0.07),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(margin, fy, barW * 0.7, 5), const Radius.circular(3)),
+    Paint()..color = Color.lerp(_kFatigue, _kRed, 0.5)!.withValues(alpha: 0.85),
+  );
+
+  GameFx.text(canvas, 'TETANUS', Offset(size.width * 0.5, by - 26), 15, _kFused,
+      display: true, glow: 0.5);
+  GameFx.text(canvas, 'FATIGUE', Offset(size.width * 0.5, fy + 20), 10,
+      _kFatigue.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+/// Frame 4 — the escalation: the last 10s trigger FINAL BURST — fastest
+/// cadence, signals bunched, 1.5× payout.
+void _legendBurst(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final y = size.height * 0.50;
+  final left = size.width * 0.10;
+  final right = size.width * 0.90;
+  final span = right - left;
+
+  canvas.drawLine(
+    Offset(left, y),
+    Offset(right, y),
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round,
+  );
+  // Junction.
+  GameFx.orb(canvas, Offset(right, y), 9, _kMuscle, glow: 1.0);
+  // Signals bunched tight → fast cadence.
+  for (final f in [0.30, 0.52, 0.74]) {
+    GameFx.orb(canvas, Offset(left + f * span, y), 7, _kSignal, glow: 1.1);
+  }
+  GameFx.text(canvas, 'FINAL BURST', Offset(size.width * 0.5, size.height * 0.24),
+      17, _kSignal, display: true, glow: 0.7);
+  GameFx.text(canvas, '1.5× PAYOUT', Offset(size.width * 0.5, size.height * 0.74),
+      12, _kSignal.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+/// The visual manual for Twitch v2 — wired into the registry spec.
+final List<LegendFrame> twitchV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the instant the signal hits the strike zone',
+      paint: _legendBeat),
+  const LegendFrame(
+      caption: 'A clean hit fires a contraction — force builds',
+      paint: _legendContract),
+  const LegendFrame(
+      caption: 'Stack fast taps into TETANUS — but it FATIGUES',
+      paint: _legendTetanus),
+  const LegendFrame(
+      caption: 'Last 10s: FINAL BURST — fastest pace, 1.5× points',
+      paint: _legendBurst),
+];
+
 /// "Twitch" v2 — drive muscle contraction by TIMING taps to a nerve signal.
 /// A signal travels the axon toward the neuromuscular junction; tap as it
 /// arrives in the strike zone to fire a contraction. Actin slides over myosin
@@ -93,6 +314,7 @@ class _TwitchV2GameState extends State<TwitchV2Game>
   double _phase = 0.0; // 0→1 within the current signal travel
   bool _beatResolved = false; // already tapped/missed for this signal
   bool _prevRunning = false;
+  Size _lastSize = Size.zero; // latest laid-out size, for autopilot fires
 
   // ── Contraction / scoring ──────────────────────────────────────────────────
   double _contraction = 0.0; // 0 (relaxed) → 1 (fully shortened)
@@ -150,12 +372,56 @@ class _TwitchV2GameState extends State<TwitchV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+
+    // ATTRACT autopilot: this game knows how to fire on its own beat. The host
+    // calls it on the autopilot cadence (~250ms) while running; it is a no-op
+    // during hands-on play. See [_autoStep]. Registered always (harmless).
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent hands-free FIRE per host tick (~250ms). This is a rhythm
+  /// game: the signal races continuously toward the junction on a recurring
+  /// beat, so it can sweep clean through the strike window between two ~250ms
+  /// ticks — a naive "fire if in-zone now" would land off-beat most beats.
+  /// Instead we read the beat's phase + rate and look exactly one tick ahead:
+  ///
+  ///   • Only ever fire when firing NOW already scores — i.e. the CURRENT phase
+  ///     is inside the on-beat window ([_window]) around the junction target
+  ///     ([_kTargetPhase]). [_handleTap] scores off the live `_phase`, and a
+  ///     fire outside the window wastes the signal (streak reset), so we never
+  ///     do it — never off-beat.
+  ///   • Among the in-window ticks, fire on the LOCAL MINIMUM of |phase −
+  ///     target|: only when NOW is at least as close to the beat as the NEXT
+  ///     tick will be (`errNow <= errNext`). If a tighter tick is still ahead we
+  ///     wait for it — this pulls each fire toward PERFECT.
+  ///
+  /// The [_beatResolved] latch means at most one fire per beat; it clears when
+  /// the signal wraps, so we keep firing across beats to build/hold tetanus.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_beatResolved) return; // this beat already fired/missed.
+
+    // The signal advances at this rate while running; look one host tick ahead.
+    final phaseSpeed = 1.0 / _period;
+    const tick = 0.25; // host autopilot cadence, seconds.
+
+    final errNow = (_phase - _kTargetPhase).abs();
+    if (errNow > _window) return; // off-beat → a fire would waste it.
+
+    // Predict the beat one tick out; if a closer-to-target tick is still ahead,
+    // wait for it rather than settle for an off-center hit.
+    final errNext = (_phase + phaseSpeed * tick - _kTargetPhase).abs();
+    if (errNow > errNext) return;
+
+    _handleTap(_lastSize);
   }
 
   void _resetRun() {
@@ -305,6 +571,7 @@ class _TwitchV2GameState extends State<TwitchV2Game>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
+      _lastSize = size;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTapDown: (_) => _handleTap(size),

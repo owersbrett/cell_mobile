@@ -228,12 +228,35 @@ class _CosmicTimelineV2GameState extends State<CosmicTimelineV2Game>
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
+    // ATTRACT autopilot: this game knows how to play itself. The host only
+    // calls [_autoStep] in autoplay; it is dormant in normal play. Each step
+    // banks one correct placement (a scored answer), so pace it at a human,
+    // watchable ~1.1s rather than every ~250ms tick (which would look
+    // superhuman and could bank 4 answers/sec).
+    widget.session.autoPilot = _autoStep;
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free move per host tick: place the current incoming epoch into
+  /// its TRUE chronological gap on the rail, using the game's own
+  /// [_correctGapFor] (the load-bearing order data) and [_resolve] handler.
+  /// Because we always resolve into the correct gap, every placement is scored
+  /// and never a wrong-gap penalty. While a card is mid-flight ([_fly] != null)
+  /// or none is incoming, we idle — the ticker commits the fly and draws the
+  /// next card, then the following autopilot call resolves it.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_incoming == null || _fly != null) return; // mid-resolve; wait a tick
+    final gap = _correctGapFor(_incoming!);
+    setState(() => _resolve(gap)); // one scored placement per tick
   }
 
   // ── Conveyor setup ───────────────────────────────────────────────────────────
@@ -332,11 +355,21 @@ class _CosmicTimelineV2GameState extends State<CosmicTimelineV2Game>
 
   double _gapX(int gap) {
     if (_railCenters.isEmpty) return _sz.width / 2;
-    if (gap <= 0) return _railCenters.first - _cardW * 0.7;
-    if (gap >= _railCenters.length) {
-      return _railCenters.last + _cardW * 0.7;
+    double x;
+    if (gap <= 0) {
+      x = _railCenters.first - _cardW * 0.7;
+    } else if (gap >= _railCenters.length) {
+      x = _railCenters.last + _cardW * 0.7;
+    } else {
+      x = (_railCenters[gap - 1] + _railCenters[gap]) / 2;
     }
-    return (_railCenters[gap - 1] + _railCenters[gap]) / 2;
+    // Keep edge gaps on-screen on narrow phones: with a full 5-card rail on a
+    // ~360px viewport the outer gaps land AT (or past) the screen edge, putting
+    // the caret, fly-in target and score pop half offscreen. Clamp into a
+    // visible margin (display/target geometry only — tap→gap mapping uses card
+    // centers, not this).
+    if (_sz.width > 28) x = x.clamp(14.0, _sz.width - 14.0);
+    return x;
   }
 
   /// Resolve the current incoming card. [gapTapped] null = the timer ran out.
@@ -441,9 +474,14 @@ class _CosmicTimelineV2GameState extends State<CosmicTimelineV2Game>
     _incX = w / 2;
     _incY = h * 0.42;
     final n = _rail.length.clamp(1, _maxRail);
-    const gap = 10.0;
+    // Tighter inter-card gap on narrow phones so a full 5-card rail still fits
+    // with breathing room at the edges.
+    final gap = w < 340 ? 6.0 : 10.0;
     final avail = w - 24;
-    _cardW = ((avail - gap * (n - 1)) / n).clamp(48.0, 104.0);
+    // Min 40 (not 48): below ~304px a 48px floor forced the outer cards to
+    // touch / overhang the screen edges. Labels already switch to the short
+    // abbrev under 70px, so 40px cards stay legible.
+    _cardW = ((avail - gap * (n - 1)) / n).clamp(40.0, 104.0);
     _cardH = (_cardW * 1.12).clamp(54.0, 116.0);
     final totalW = _cardW * n + gap * (n - 1);
     final startX = (w - totalW) / 2 + _cardW / 2;
@@ -517,7 +555,12 @@ class _TimelinePainter extends CustomPainter {
     final goal = cascade
         ? 'CASCADE — TAP THE GAP, FAST!'
         : 'TAP THE GAP WHERE THE EPOCH FITS';
-    GameFx.text(canvas, goal, Offset(size.width / 2, 14), 11,
+    // The PLACED counter owns the top-right (~58px wide centered at w-42).
+    // Shrink the goal line to fit the remaining width — at 11px it is ~195px
+    // wide and collided with the counter on <340px phones.
+    final goalSize =
+        _fitFontSize(goal, 11, math.max(80.0, size.width - 148));
+    GameFx.text(canvas, goal, Offset(size.width / 2, 14), goalSize,
         cascade
             ? const Color(0xFFFF8AB0)
             : Colors.white.withValues(alpha: 0.55),
@@ -618,7 +661,13 @@ class _TimelinePainter extends CustomPainter {
     final e = s._incoming;
     if (e == null) return;
     final pos = Offset(s._incX, s._incY);
-    GameFx.text(canvas, 'WHERE DOES IT GO?', Offset(pos.dx, pos.dy - 64), 10,
+    // Label rides the (enlarged, "dragging") incoming card instead of sitting a
+    // fixed 64px above it — on short viewports the fixed offset collided with
+    // the deep-time ribbon at 0.20h. Never let it climb above the ribbon.
+    final dragH = (s._cardH + 14).clamp(64.0, 140.0);
+    final labelY =
+        math.max(pos.dy - (dragH * 0.5 + 12), size.height * 0.20 + 16);
+    GameFx.text(canvas, 'WHERE DOES IT GO?', Offset(pos.dx, labelY), 10,
         Colors.white.withValues(alpha: 0.5), weight: FontWeight.w700);
     _drawCard(canvas, pos, _epoch(e), revealWhen: false, dragging: true);
 
@@ -721,11 +770,26 @@ class _TimelinePainter extends CustomPainter {
   void _drawFactCard(Canvas canvas, Size size) {
     if (s._factAge >= 3.6 || s._factText.isEmpty) return;
     final a = (1 - (s._factAge - 3.0).clamp(0.0, 0.6) / 0.6).clamp(0.0, 1.0);
-    final y = size.height * 0.88;
+    final cardW = (size.width - 32).clamp(120.0, 460.0);
+
+    // The fact is the education payload — NEVER ellipsize it. Lay it out fully,
+    // shrinking the font a notch at a time on narrow screens until it fits a
+    // sane height, and size the panel to the measured text (the old fixed 50px
+    // / 3-line panel truncated the longest facts on phones).
+    var fs = 10.5;
+    var tp = _factPainter(s._factText, fs, cardW - 18,
+        Colors.white.withValues(alpha: 0.92 * a));
+    while (tp.height > 56 && fs > 8.0) {
+      fs -= 0.75;
+      tp = _factPainter(s._factText, fs, cardW - 18,
+          Colors.white.withValues(alpha: 0.92 * a));
+    }
+    final cardH = math.max(50.0, tp.height + 16);
+
+    // Anchor near 0.88h but keep the (possibly taller) panel fully on-screen.
+    final cy = math.min(size.height * 0.88, size.height - 6 - cardH / 2);
     final rect = Rect.fromCenter(
-        center: Offset(size.width / 2, y),
-        width: (size.width - 32).clamp(160.0, 460.0),
-        height: 50);
+        center: Offset(size.width / 2, cy), width: cardW, height: cardH);
     final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
     canvas.drawRRect(
         rr, Paint()..color = Colors.black.withValues(alpha: 0.42 * a));
@@ -735,30 +799,337 @@ class _TimelinePainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.2
           ..color = s._factColor.withValues(alpha: 0.5 * a));
-    _wrapText(canvas, s._factText, rect, 10.5,
-        Colors.white.withValues(alpha: 0.92 * a));
+    tp.paint(canvas, rect.center - Offset(tp.width / 2, tp.height / 2));
   }
 
-  void _wrapText(
-      Canvas canvas, String text, Rect rect, double size, Color color) {
-    final tp = TextPainter(
+  TextPainter _factPainter(
+      String text, double fontSize, double maxWidth, Color color) {
+    return TextPainter(
       text: TextSpan(
         text: text,
         style: TextStyle(
           fontFamily: 'Outfit',
-          fontSize: size,
+          fontSize: fontSize,
           fontWeight: FontWeight.w600,
           color: color,
         ),
       ),
       textAlign: TextAlign.center,
       textDirection: TextDirection.ltr,
-      maxLines: 3,
-      ellipsis: '…',
-    )..layout(maxWidth: rect.width - 18);
-    tp.paint(canvas, rect.center - Offset(tp.width / 2, tp.height / 2));
+    )..layout(maxWidth: math.max(60.0, maxWidth));
+  }
+
+  /// Largest font size ≤ [base] at which [text] fits within [maxWidth]
+  /// (single line, header use). Width scales linearly with font size, so one
+  /// corrective re-measure converges.
+  double _fitFontSize(String text, double base, double maxWidth) {
+    var fs = base;
+    for (var i = 0; i < 2; i++) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(
+              fontFamily: 'Outfit', fontSize: fs, fontWeight: FontWeight.w700),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      if (tp.width <= maxWidth) return fs;
+      fs = math.max(7.5, fs * maxWidth / tp.width);
+    }
+    return fs;
   }
 
   @override
   bool shouldRepaint(covariant _TimelinePainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each frame draws the LITERAL
+// in-game components (the ordered rail, the incoming card, gap carets, teal
+// flow, the red-snap arrow, the deep-time ribbon + CASCADE timer) using the
+// same shapes and palette as _TimelinePainter, sized to a static card. Cheap
+// and self-contained: no ticker, size-guarded, drawn once in the intro.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _legAccent = _CosmicTimelineV2GameState._accent; // cosmic violet
+const Color _legGood = _CosmicTimelineV2GameState._good; // teal flow
+const Color _legRed = Color(0xFFFF5252); // red-snap (matches live game)
+const Color _legPink = Color(0xFFFF5C8A); // CASCADE hot pink (matches game)
+
+/// One rail card, mirroring `_TimelinePainter._drawCard`.
+void _legCard(Canvas canvas, Offset center, _Epoch ep, double w, double h,
+    {bool revealWhen = false, bool emphasized = false, Color? border}) {
+  final rect = Rect.fromCenter(center: center, width: w, height: h);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+  if (emphasized) {
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.inflate(6), const Radius.circular(16)),
+      Paint()..color = ep.color.withValues(alpha: 0.22),
+    );
+  }
+  canvas.drawRRect(rr,
+      Paint()..color = ep.color.withValues(alpha: emphasized ? 0.42 : 0.30));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = emphasized ? 2.2 : 1.6
+        ..color = border ?? ep.color.withValues(alpha: 0.85));
+  final iconSize = (h * 0.30).clamp(14.0, 26.0);
+  final labelSize = (w * 0.17).clamp(7.5, 11.0);
+  GameFx.text(canvas, ep.emoji, center.translate(0, -h * 0.22), iconSize,
+      Colors.white);
+  GameFx.text(canvas, w < 70 ? ep.abbrev : ep.name, center.translate(0, h * 0.04),
+      labelSize, Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+  if (revealWhen) {
+    GameFx.text(canvas, ep.when, center.translate(0, h * 0.30),
+        (w * 0.15).clamp(7.0, 10.0), _legGood.withValues(alpha: 0.95),
+        weight: FontWeight.w800);
+  }
+}
+
+/// Downward insertion caret, mirroring `_TimelinePainter._caret`.
+void _legCaret(Canvas canvas, double x, double y, Color color) {
+  if (!_ok(x) || !_ok(y)) return;
+  final path = Path()
+    ..moveTo(x - 5, y - 5)
+    ..lineTo(x + 5, y - 5)
+    ..lineTo(x, y + 4)
+    ..close();
+  canvas.drawPath(path, Paint()..color = color);
+}
+
+/// Flow / snap arrow between two rail points, mirroring `_TimelinePainter._arrow`.
+void _legArrow(Canvas canvas, Offset a, Offset b, Color color, double cardW,
+    {double width = 2.5}) {
+  final paint = Paint()
+    ..color = color
+    ..strokeWidth = width
+    ..strokeCap = StrokeCap.round;
+  final dir = b - a;
+  final len = dir.distance;
+  if (len <= 0.01) return;
+  final n = dir / len;
+  final start = a + n * (cardW * 0.5 + 2);
+  final end = b - n * (cardW * 0.5 + 2);
+  if ((end - start).distance <= 0) return;
+  canvas.drawLine(start, end, paint);
+  final perp = Offset(-n.dy, n.dx);
+  canvas.drawLine(end, end - n * 7 + perp * 4, paint);
+  canvas.drawLine(end, end - n * 7 - perp * 4, paint);
+}
+
+/// Insertion-gap x, mirroring `_TimelinePainter`/state `_gapX`.
+double _legGapX(List<double> centers, double cardW, int gap, double w) {
+  if (centers.isEmpty) return w / 2;
+  double x;
+  if (gap <= 0) {
+    x = centers.first - cardW * 0.7;
+  } else if (gap >= centers.length) {
+    x = centers.last + cardW * 0.7;
+  } else {
+    x = (centers[gap - 1] + centers[gap]) / 2;
+  }
+  if (w > 28) x = x.clamp(14.0, w - 14.0);
+  return x;
+}
+
+/// Lays out a centred rail of [n] cards; returns their x-centres.
+List<double> _legRailCenters(double w, double cardW, int n) {
+  const gap = 10.0;
+  final totalW = cardW * n + gap * (n - 1);
+  final startX = (w - totalW) / 2 + cardW / 2;
+  return [for (var i = 0; i < n; i++) startX + i * (cardW + gap)];
+}
+
+void _legTrack(Canvas canvas, List<double> centers, double cardW, double y) {
+  if (centers.isEmpty) return;
+  canvas.drawLine(
+      Offset(centers.first - cardW * 0.8, y),
+      Offset(centers.last + cardW * 0.8, y),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.08)
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round);
+}
+
+// ── Frame 1: the core verb — tap the gap ─────────────────────────────────────
+void _legendPlace(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 4 || h <= 4) return;
+  final railY = h * 0.66;
+  final cardW = (w * 0.24).clamp(40.0, 92.0);
+  final cardH = cardW * 1.12;
+  final rail = [
+    _epoch(_EpochId.bigBang),
+    _epoch(_EpochId.firstStars),
+    _epoch(_EpochId.now),
+  ];
+  final n = rail.length;
+  final centers = _legRailCenters(w, cardW, n);
+  _legTrack(canvas, centers, cardW, railY);
+  for (var i = 0; i < n - 1; i++) {
+    _legArrow(canvas, Offset(centers[i], railY), Offset(centers[i + 1], railY),
+        _legGood.withValues(alpha: 0.85), cardW);
+  }
+  for (var g = 0; g <= n; g++) {
+    _legCaret(canvas, _legGapX(centers, cardW, g, w), railY - cardH * 0.5 - 8,
+        _legAccent.withValues(alpha: 0.75));
+  }
+  for (var i = 0; i < n; i++) {
+    _legCard(canvas, Offset(centers[i], railY), rail[i], cardW, cardH,
+        revealWhen: true);
+  }
+  // Incoming card to place.
+  final inc = _epoch(_EpochId.sun);
+  final incC = Offset(w / 2, h * 0.27);
+  _legCard(canvas, incC, inc, cardW + 8, cardH + 8, emphasized: true);
+  GameFx.text(canvas, 'WHERE DOES IT GO?',
+      Offset(incC.dx, incC.dy - (cardH + 8) * 0.5 - 10), 10,
+      Colors.white.withValues(alpha: 0.6), weight: FontWeight.w700);
+  _legCaret(canvas, incC.dx, incC.dy + (cardH + 8) * 0.5 + 12,
+      Colors.white.withValues(alpha: 0.4));
+}
+
+// ── Frame 2: how you score — land the gap, reveal the date ────────────────────
+void _legendScore(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 4 || h <= 4) return;
+  final railY = h * 0.60;
+  final cardW = (w * 0.24).clamp(40.0, 92.0);
+  final cardH = cardW * 1.12;
+  final rail = [
+    _epoch(_EpochId.firstStars),
+    _epoch(_EpochId.sun), // just landed in its gap
+    _epoch(_EpochId.now),
+  ];
+  final n = rail.length;
+  final centers = _legRailCenters(w, cardW, n);
+  _legTrack(canvas, centers, cardW, railY);
+  for (var i = 0; i < n - 1; i++) {
+    _legArrow(canvas, Offset(centers[i], railY), Offset(centers[i + 1], railY),
+        _legGood.withValues(alpha: 0.85), cardW);
+  }
+  // Burst around the landed card.
+  final sunC = Offset(centers[1], railY);
+  for (var i = 0; i < 6; i++) {
+    final a = i * math.pi / 3;
+    GameFx.orb(canvas, sunC.translate(math.cos(a) * cardW * 0.7,
+            math.sin(a) * cardH * 0.6), 2.6, _legGood.withValues(alpha: 0.8),
+        glow: 0.6, specular: false);
+  }
+  for (var i = 0; i < n; i++) {
+    final landed = i == 1;
+    _legCard(canvas, Offset(centers[i], railY), rail[i], cardW, cardH,
+        revealWhen: true,
+        emphasized: landed,
+        border: landed ? _legGood : null);
+  }
+  GameFx.text(canvas, '+28', sunC.translate(0, -cardH * 0.5 - 16),
+      (cardW * 0.22).clamp(12.0, 20.0), _legGood, weight: FontWeight.w800,
+      glow: 0.6);
+}
+
+// ── Frame 3: the danger — a wrong gap snaps red ──────────────────────────────
+void _legendWrong(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 4 || h <= 4) return;
+  final railY = h * 0.66;
+  final cardW = (w * 0.24).clamp(40.0, 92.0);
+  final cardH = cardW * 1.12;
+  final rail = [
+    _epoch(_EpochId.bigBang),
+    _epoch(_EpochId.firstStars),
+    _epoch(_EpochId.now),
+  ];
+  final n = rail.length;
+  final centers = _legRailCenters(w, cardW, n);
+  _legTrack(canvas, centers, cardW, railY);
+  for (var i = 0; i < n; i++) {
+    _legCard(canvas, Offset(centers[i], railY), rail[i], cardW, cardH,
+        revealWhen: true);
+  }
+  // Wrong tap at gap 1, correct gap is 2 — red snap between the carets.
+  final caretY = railY - cardH * 0.5 - 8;
+  final wrongX = _legGapX(centers, cardW, 1, w);
+  final rightX = _legGapX(centers, cardW, 2, w);
+  _legArrow(canvas, Offset(wrongX, caretY), Offset(rightX, caretY),
+      _legRed.withValues(alpha: 0.95), cardW * 0.2, width: 3);
+  GameFx.orb(canvas, Offset(rightX, caretY), 5, _legGood, glow: 0.9,
+      specular: false);
+  GameFx.text(canvas, 'WRONG GAP', Offset(wrongX, caretY - 16), 10, _legRed,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// ── Frame 4: escalation — locked ribbon + the CASCADE timer ──────────────────
+void _legendCascade(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 4 || h <= 4) return;
+  // Deep-time ribbon: locked epochs plotted at log(time-since-Big-Bang).
+  final y = h * 0.30;
+  final left = 16.0, right = w - 16.0;
+  if (right - left < 8) return;
+  canvas.drawLine(
+      Offset(left, y),
+      Offset(right, y),
+      Paint()
+        ..shader = LinearGradient(colors: [
+          _legAccent.withValues(alpha: 0.25),
+          _legGood.withValues(alpha: 0.7),
+        ]).createShader(Rect.fromLTWH(left, y, right - left, 1))
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round);
+  const locked = [
+    _EpochId.bigBang,
+    _EpochId.firstStars,
+    _EpochId.sun,
+    _EpochId.dinosaurs,
+    _EpochId.now,
+  ];
+  for (final id in locked) {
+    final ep = _epoch(id);
+    final fx = left + _logFrac(ep.tSec) * (right - left);
+    if (!_ok(fx)) continue;
+    GameFx.orb(canvas, Offset(fx, y), 4, ep.color.withValues(alpha: 0.9),
+        glow: 0.7, specular: false);
+  }
+  GameFx.text(canvas, 'log(time) — locked epochs', Offset(w / 2, y - 14), 8,
+      Colors.white.withValues(alpha: 0.4));
+
+  // CASCADE incoming card with a near-empty (red) timer bar.
+  final inc = _epoch(_EpochId.dinoEnd);
+  final cardW = (w * 0.26).clamp(44.0, 100.0);
+  final cardH = cardW * 1.12;
+  final incC = Offset(w / 2, h * 0.62);
+  _legCard(canvas, incC, inc, cardW, cardH, emphasized: true, border: _legPink);
+  GameFx.text(canvas, 'CASCADE', Offset(incC.dx, incC.dy - cardH * 0.5 - 14),
+      (cardW * 0.20).clamp(12.0, 18.0), _legPink, weight: FontWeight.w800,
+      glow: 0.6);
+  final barW = (cardW + 24).clamp(80.0, 200.0);
+  final bx = incC.dx - barW / 2;
+  final by = incC.dy + cardH * 0.5 + 12;
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(bx, by, barW, 6), const Radius.circular(3)),
+      Paint()..color = Colors.white.withValues(alpha: 0.10));
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(bx, by, barW * 0.18, 6), const Radius.circular(3)),
+      Paint()..color = _legRed);
+}
+
+/// The visual manual for Cosmic Timeline v2 — wired into the registry spec.
+final List<LegendFrame> cosmicTimelineV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the gap where the new epoch fits the ordered rail',
+      paint: _legendPlace),
+  const LegendFrame(
+      caption: 'Nail the gap: it flows in teal and reveals its date',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Wrong gap? A red arrow snaps to the right spot — no score',
+      paint: _legendWrong),
+  const LegendFrame(
+      caption: 'Old epochs lock the ribbon; the final CASCADE races fast',
+      paint: _legendCascade),
+];

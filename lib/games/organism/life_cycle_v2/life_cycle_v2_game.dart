@@ -315,6 +315,253 @@ class _Frame extends ChangeNotifier {
 }
 
 // ============================================================================
+// Visual manual — legend carousel cards. Drawn with the SAME vocabulary the
+// live game uses (the turning ring, glowing "you are here" node, per-step timer
+// arc, green miss-reveal, red closing climax), so a player meets the real
+// components before play. Static + cheap: rendered once in the intro carousel.
+// A worked butterfly cycle (egg → caterpillar → chrysalis → butterfly), placed
+// in SHUFFLED slots so spatial order ≠ cycle order, exactly as in play.
+// ============================================================================
+
+// The four butterfly stages (glyph, name) — the literal nodes of a real round.
+const List<List<String>> _kLegendStages = [
+  ['🥚', 'egg'],
+  ['🐛', 'caterpillar'],
+  ['🟢', 'chrysalis'],
+  ['🦋', 'butterfly'],
+];
+
+// cycleIndex → clock-face slot angle (radians), shuffled so the walk is not a
+// simple clockwise neighbour hop.
+const List<double> _kLegendSlot = [
+  math.pi, // egg        → left
+  -math.pi / 2, // caterpillar → top
+  0.0, // chrysalis   → right
+  math.pi / 2, // butterfly   → bottom
+];
+
+/// Ring geometry for a legend card, guarded against degenerate sizes.
+({Offset center, double radius, double nodeR}) _legendRing(Size size) {
+  final center = Offset(size.width * 0.5, size.height * 0.44);
+  final radius = math.min(size.width * 0.32, size.height * 0.30).clamp(24.0, 150.0);
+  final nodeR = (radius * 0.28).clamp(11.0, 30.0);
+  return (center: center, radius: radius, nodeR: nodeR);
+}
+
+List<Offset> _legendNodePositions(Offset center, double radius) => [
+      for (final a in _kLegendSlot) center + Offset(math.cos(a), math.sin(a)) * radius,
+    ];
+
+void _legendGlyph(Canvas canvas, String str, Offset c, double sz, {Color? color}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: str,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: sz,
+        fontWeight: FontWeight.w900,
+        color: color ?? _kText,
+      ),
+    ),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, c - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// The cycle ring stroke — accent (or red at the climax), mirrors `_paintRing`.
+void _legendRingStroke(Canvas canvas, Offset center, double radius, Color color) {
+  canvas.drawCircle(
+    center,
+    radius,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = color.withValues(alpha: 0.30),
+  );
+}
+
+/// One stage node in a given state, mirroring `_paintNodes`.
+void _legendNode(
+  Canvas canvas,
+  Offset pos,
+  double nodeR,
+  int cycleIndex,
+  Color accent, {
+  required String state, // 'current' | 'next' | 'wrong' | 'revealed' | 'idle'
+}) {
+  switch (state) {
+    case 'current':
+      GameFx.orb(canvas, pos, nodeR * 1.2, accent, glow: 1.5);
+      break;
+    case 'revealed':
+      GameFx.orb(canvas, pos, nodeR * 1.12, _kGood, glow: 1.6);
+      break;
+    case 'wrong':
+      GameFx.orb(canvas, pos, nodeR, _kBad, glow: 1.2);
+      break;
+    default: // idle / next candidate — neutral; the player must know the order
+      GameFx.orb(canvas, pos, nodeR, Color.lerp(Potatuhs.inkPanel, accent, 0.30)!,
+          glow: 0.4, specular: false);
+  }
+  _legendGlyph(canvas, _kLegendStages[cycleIndex][0], pos, nodeR * 1.15);
+  final nameColor = state == 'current'
+      ? accent
+      : state == 'revealed'
+          ? _kGood
+          : state == 'wrong'
+              ? _kBad
+              : _kSub;
+  GameFx.text(canvas, _kLegendStages[cycleIndex][1], pos.translate(0, nodeR + 11), 10,
+      nameColor,
+      weight: state == 'current' ? FontWeight.w900 : FontWeight.w700);
+}
+
+// Frame 1 — the verb: tap the node that comes NEXT (an arrow shows the walk).
+void _legendWalk(Canvas canvas, Size size) {
+  if (size.shortestSide < 12) return;
+  final accent = _metaColor(_Meta.complete);
+  GameFx.atmosphere(canvas, size, accent, 0);
+  final g = _legendRing(size);
+  _legendRingStroke(canvas, g.center, g.radius, accent);
+  final pos = _legendNodePositions(g.center, g.radius);
+  // egg (0) glows now; caterpillar (1) is the correct NEXT.
+  _legendGlyph(canvas, '🦋', g.center.translate(0, -g.radius * 0.14), g.radius * 0.40);
+  for (var i = 0; i < 4; i++) {
+    _legendNode(canvas, pos[i], g.nodeR, i, accent,
+        state: i == 0 ? 'current' : 'idle');
+  }
+  // A guiding arrow from the glowing stage to the next one.
+  final from = pos[0], to = pos[1];
+  final dir = (to - from);
+  final len = dir.distance;
+  if (len > 1) {
+    final u = dir / len;
+    final a = from + u * (g.nodeR + 4);
+    final b = to - u * (g.nodeR + 4);
+    final ap = Paint()
+      ..color = _kGood.withValues(alpha: 0.85)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(a, b, ap);
+    final perp = Offset(-u.dy, u.dx);
+    canvas.drawLine(b, b - u * 9 + perp * 6, ap);
+    canvas.drawLine(b, b - u * 9 - perp * 6, ap);
+  }
+  GameFx.text(canvas, 'TAP THE NEXT STAGE', Offset(size.width * 0.5, 26), 13, accent,
+      weight: FontWeight.w900, glow: 0.3);
+}
+
+// Frame 2 — scoring: the shrinking timer arc; sooner = more points.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.shortestSide < 12) return;
+  final accent = _metaColor(_Meta.complete);
+  GameFx.atmosphere(canvas, size, accent, 0);
+  final g = _legendRing(size);
+  _legendRingStroke(canvas, g.center, g.radius, accent);
+  final pos = _legendNodePositions(g.center, g.radius);
+  for (var i = 0; i < 4; i++) {
+    _legendNode(canvas, pos[i], g.nodeR, i, accent,
+        state: i == 0 ? 'current' : 'idle');
+  }
+  // The per-step timer arc around the glowing node (partway spent = green→amber).
+  const frac = 0.4;
+  final arcR = g.nodeR * 1.5;
+  canvas.drawArc(
+    Rect.fromCircle(center: pos[0], radius: arcR),
+    -math.pi / 2,
+    -2 * math.pi * (1 - frac),
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.2
+      ..strokeCap = StrokeCap.round
+      ..color = Color.lerp(_kGood, _kBad, frac)!.withValues(alpha: 0.9),
+  );
+  GameFx.text(canvas, '+100', pos[0].translate(0, -arcR - 14), 16, _kGood,
+      weight: FontWeight.w900, glow: 0.5);
+  GameFx.text(canvas, 'SORT FAST FOR MORE POINTS', Offset(size.width * 0.5, 26), 12,
+      accent,
+      weight: FontWeight.w900, glow: 0.3);
+}
+
+// Frame 3 — the danger: a wrong tap; the correct node flashes green, streak dies.
+void _legendMiss(Canvas canvas, Size size) {
+  if (size.shortestSide < 12) return;
+  final accent = _metaColor(_Meta.complete);
+  GameFx.atmosphere(canvas, size, accent, 0);
+  final g = _legendRing(size);
+  _legendRingStroke(canvas, g.center, g.radius, accent);
+  final pos = _legendNodePositions(g.center, g.radius);
+  // egg is current; caterpillar (1) is correct → flashes green; butterfly (3)
+  // was tapped by mistake → red.
+  for (var i = 0; i < 4; i++) {
+    final state = i == 0
+        ? 'current'
+        : i == 1
+            ? 'revealed'
+            : i == 3
+                ? 'wrong'
+                : 'idle';
+    _legendNode(canvas, pos[i], g.nodeR, i, accent, state: state);
+  }
+  GameFx.text(canvas, 'WRONG NODE = 0, STREAK RESETS', Offset(size.width * 0.5, 26),
+      12, _kBad,
+      weight: FontWeight.w900, glow: 0.4);
+}
+
+// Frame 4 — the escalation: final 10s, the ring reddens and the wheel speeds up.
+void _legendClimax(Canvas canvas, Size size) {
+  if (size.shortestSide < 12) return;
+  final accent = _metaColor(_Meta.complete);
+  GameFx.atmosphere(canvas, size, accent, 0);
+  final g = _legendRing(size);
+  // The ring turns red in the closing climax.
+  _legendRingStroke(canvas, g.center, g.radius, _kBad);
+  // Motion streaks around the ring to imply the faster spin.
+  final streak = Paint()
+    ..color = _kBad.withValues(alpha: 0.5)
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  for (var i = 0; i < 4; i++) {
+    final a0 = i / 4 * 2 * math.pi;
+    canvas.drawArc(
+      Rect.fromCircle(center: g.center, radius: g.radius + 9),
+      a0,
+      0.5,
+      false,
+      streak,
+    );
+  }
+  final pos = _legendNodePositions(g.center, g.radius);
+  for (var i = 0; i < 4; i++) {
+    _legendNode(canvas, pos[i], g.nodeR, i, accent,
+        state: i == 0 ? 'current' : 'idle');
+  }
+  GameFx.text(canvas, 'HURRY — TAP WHAT COMES NEXT', Offset(size.width * 0.5, 26), 12,
+      _kBad,
+      weight: FontWeight.w900, glow: 0.6);
+}
+
+/// The visual manual for Life Cycle v2 — wired into the registry spec.
+final List<LegendFrame> lifeCycleV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the node that comes NEXT around the ring',
+      paint: _legendWalk),
+  const LegendFrame(
+      caption: 'Tap sooner for more: 100 points fading to 25',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Miss and the right stage flashes green; streak resets',
+      paint: _legendMiss),
+  const LegendFrame(
+      caption: 'Final 10s: the ring reddens and the wheel speeds up',
+      paint: _legendClimax),
+];
+
+// ============================================================================
 // Widget
 // ============================================================================
 
@@ -368,13 +615,33 @@ class _LifeCycleV2GameState extends State<LifeCycleV2Game>
     super.initState();
     _loadRound(); // populate an idle wheel immediately
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to walk its own wheel. Registered
+    // always (harmless in normal play — the host only calls it in autoplay).
+    // See [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Each correct tap banks a scored transition — buffer to a human pace so it
+    // doesn't clear the whole cycle in a few ticks.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _frame.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ──
+  /// One hands-free move per host tick. Plays Life Cycle v2 *correctly*: taps the
+  /// node that comes NEXT ([_nextStage]) via the game's own [_onCorrect] handler —
+  /// always right, deterministic, no synthetic tap or guessing. While a miss
+  /// reveal is dwelling the ticker self-resolves it, so we simply wait; before
+  /// play is live we do nothing. The host owns the clock and score HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning || !_started) return;
+    if (_dwell > 0) return; // miss reveal is animating — the ticker advances it
+    _onCorrect(); // walk to the correct next stage
   }
 
   // ── difficulty (round/time-driven → fair, not draw-luck) ──

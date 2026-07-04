@@ -190,7 +190,7 @@ class _Spark {
 
 class CornersGame extends StatefulWidget {
   final MiniGameSession session;
-  const CornersGame({Key? key, required this.session}) : super(key: key);
+  const CornersGame({super.key, required this.session});
 
   @override
   State<CornersGame> createState() => _CornersGameState();
@@ -215,12 +215,51 @@ class _CornersGameState extends State<CornersGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ------------------------------------------------------------- autopilot --
+  /// One hands-free move per host tick (~250ms). Plays Corners *correctly*, not
+  /// randomly: it finds the shape most worth advancing and taps it once via the
+  /// real handler ([_tapShape]) — never overshooting a shape's corner count.
+  ///
+  /// Selection (deterministic, ties keep the first shape in [_shapes]):
+  ///   1. Only shapes that are on-screen and still short of their target —
+  ///      `!resolved && taps < corners` — are candidates, so a finished shape
+  ///      is never tapped again (no overshoot, no lost EXACT).
+  ///   2. A claimed shape (already in progress, on its own draining timer)
+  ///      outranks an unclaimed one — finish what you started before it lapses.
+  ///   3. Within the same claim state, the one closest to done (fewest remaining
+  ///      taps) wins; that banks an EXACT before spending taps elsewhere.
+  ///   4. Remaining tie-break: the most urgent (lowest [life]) shape.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    _Shape? best;
+    for (final s in _shapes) {
+      if (s.resolved || s.taps >= s.corners) continue; // done ⇒ don't overshoot
+      if (best == null || _betterTarget(s, best)) best = s;
+    }
+    if (best == null) return; // nothing tappable this instant
+    _tapShape(best);
+  }
+
+  /// True if [a] is a better shape to tap this tick than [b] (see [_autoStep]).
+  bool _betterTarget(_Shape a, _Shape b) {
+    if (a.claimed != b.claimed) return a.claimed; // in-progress beats fresh
+    final ra = a.corners - a.taps, rb = b.corners - b.taps;
+    if (ra != rb) return ra < rb; // closer to done wins
+    return a.life < b.life; // otherwise the more urgent one
   }
 
   // ------------------------------------------------------------------ loop --
@@ -361,14 +400,20 @@ class _CornersGameState extends State<CornersGame>
       }
     }
     if (hit == null) return;
+    _tapShape(hit);
+  }
 
-    hit.taps++;
-    hit.pulse = 1;
-    if (!hit.claimed) {
-      hit.claimed = true;
-      hit.life = _kClaimLife;
+  /// Apply a single tap to [s] — the shared effect of any tap on a shape,
+  /// whether it came from a finger ([_onTapDown]) or the autopilot ([_autoStep]).
+  /// Claims the shape on the first tap, tops its timer up on later ones.
+  void _tapShape(_Shape s) {
+    s.taps++;
+    s.pulse = 1;
+    if (!s.claimed) {
+      s.claimed = true;
+      s.life = _kClaimLife;
     } else {
-      hit.life = math.min(_kMaxLife, hit.life + _kTapGrant);
+      s.life = math.min(_kMaxLife, s.life + _kTapGrant);
     }
   }
 
@@ -537,7 +582,7 @@ class _CornersPainter extends CustomPainter {
       _drawText(
         canvas,
         _shapeName(s),
-        s.pos + Offset(0, _kResolveNameDropOffset),
+        s.pos + const Offset(0, _kResolveNameDropOffset),
         fontSize: _kResolveNameFontSize,
         color: _kBrandGold.withValues(alpha: opacity),
         bold: true,
@@ -647,3 +692,206 @@ class _CornersPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CornersPainter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME wireframe style
+// (edges + glow, corner dots, drain ring, score text) the live game paints.
+// Static + cheap: rendered once on the intro screen, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+List<Offset> _legendPolyPts(Offset c, double r, int sides, double rot) {
+  final pts = <Offset>[];
+  for (var i = 0; i < sides; i++) {
+    final a = rot + i / sides * math.pi * 2 - math.pi / 2;
+    pts.add(c + Offset(math.cos(a), math.sin(a)) * r);
+  }
+  return pts;
+}
+
+List<Offset> _legendSolidPts(
+    _SolidGeo geo, Offset c, double r, double rot, double tilt) {
+  final k = r / geo.maxR;
+  final cy = math.cos(rot), sy = math.sin(rot);
+  final ct = math.cos(tilt), st = math.sin(tilt);
+  final out = <Offset>[];
+  for (final v in geo.verts) {
+    final x = v[0], y = v[1], z = v[2];
+    final x1 = x * cy + z * sy;
+    final z1 = -x * sy + z * cy;
+    final y2 = y * ct - z1 * st;
+    out.add(c + Offset(x1, y2) * k);
+  }
+  return out;
+}
+
+/// Edges (glow + stroke) and corner dots — the exact look of a live shape.
+/// [edges] null ⇒ flat polygon (points connect in order, closed).
+void _legendWire(Canvas canvas, List<Offset> pts, List<List<int>>? edges,
+    {required bool claimed}) {
+  final lineColor = claimed ? _kBrandGold : _kAccent;
+  final vertColor = claimed ? _kBrandOrange : _kBrandGold;
+  final stroke = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round
+    ..color = lineColor;
+  final glow = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 4
+    ..strokeCap = StrokeCap.round
+    ..color = lineColor.withValues(alpha: 0.30)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+
+  if (edges != null) {
+    for (final e in edges) {
+      canvas.drawLine(pts[e[0]], pts[e[1]], glow);
+      canvas.drawLine(pts[e[0]], pts[e[1]], stroke);
+    }
+  } else {
+    final path = Path()..moveTo(pts.first.dx, pts.first.dy);
+    for (final p in pts.skip(1)) {
+      path.lineTo(p.dx, p.dy);
+    }
+    path.close();
+    canvas.drawPath(path, glow);
+    canvas.drawPath(path, stroke);
+  }
+
+  for (final p in pts) {
+    canvas.drawCircle(
+        p,
+        7,
+        Paint()
+          ..color = vertColor.withValues(alpha: 0.5)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5));
+    canvas.drawCircle(p, 3.6, Paint()..color = vertColor);
+  }
+}
+
+/// The drain ring around a shape, at [lifeFrac] remaining (gold → hot orange).
+void _legendRing(Canvas canvas, Offset c, double r, double lifeFrac) {
+  final ringColor = Color.lerp(_kWarn, _kBrandGold, lifeFrac)!;
+  canvas.drawArc(
+    Rect.fromCircle(center: c, radius: r),
+    -math.pi / 2,
+    math.pi * 2 * lifeFrac,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = ringColor.withValues(alpha: 0.85),
+  );
+}
+
+void _legendText(Canvas canvas, String text, Offset center,
+    {required double fontSize, required Color color, Color? glow}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.bold,
+        color: color,
+        shadows: glow != null ? [Shadow(color: glow, blurRadius: 12)] : null,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+// Frame 1 — the core object + verb: a fresh (unclaimed) pentagon, its glowing
+// corner dots being the things to count, one tap per dot.
+void _legendShape(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width / 2, size.height * 0.46);
+  final r = math.min(size.width, size.height) * 0.28;
+  final pts = _legendPolyPts(c, r, 5, 0.35);
+  _legendWire(canvas, pts, null, claimed: false);
+  _legendText(canvas, 'PENTAGON = 5 CORNERS',
+      Offset(size.width / 2, size.height * 0.88),
+      fontSize: 12, color: _kBrandGold, glow: _kBrandOrange);
+}
+
+// Frame 2 — a claimed shape mid-count: gold wireframe, tap tally in the
+// middle, drain ring ticking down. Keep tapping before it empties.
+void _legendClaim(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width / 2, size.height * 0.50);
+  final r = math.min(size.width, size.height) * 0.26;
+  final pts = _legendPolyPts(c, r, 6, 0.2);
+  _legendWire(canvas, pts, null, claimed: true);
+  _legendRing(canvas, c, r + 12, 0.55);
+  _legendText(canvas, '3', c, fontSize: 26, color: Colors.white, glow: _kBrandGold);
+}
+
+// Frame 3 — scoring + the penalty: an exact hit resolving in gold sparks with
+// its EXACT bonus, next to a low, hot-orange drain ring (an off count fading
+// for fewer points).
+void _legendExact(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.38, size.height * 0.50);
+  final r = math.min(size.width, size.height) * 0.22;
+  final pts = _legendPolyPts(c, r, 4, math.pi / 4);
+  _legendWire(canvas, pts, null, claimed: true);
+  // Frozen spark burst — same gold/orange alternation the live resolve fires.
+  for (var i = 0; i < 12; i++) {
+    final a = (i / 12) * math.pi * 2;
+    final pos = c + Offset(math.cos(a), math.sin(a)) * (r + 20);
+    canvas.drawCircle(
+      pos,
+      3.4,
+      Paint()
+        ..color = (i.isEven ? _kBrandGold : _kBrandOrange).withValues(alpha: 0.9)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+  }
+  _legendText(canvas, 'EXACT +20', c - Offset(0, r + 34),
+      fontSize: 20, color: _kBrandGold, glow: _kBrandOrange);
+  // The off-count neighbour: timer nearly gone, ring gone hot, smaller payout.
+  final c2 = Offset(size.width * 0.80, size.height * 0.56);
+  final r2 = r * 0.68;
+  _legendWire(canvas, _legendPolyPts(c2, r2, 3, -0.3), null, claimed: true);
+  _legendRing(canvas, c2, r2 + 12, 0.14);
+  _legendText(canvas, '+4', c2 - Offset(0, r2 + 26),
+      fontSize: 15, color: _kGood, glow: _kGood);
+}
+
+// Frame 4 — the escalation: flat polygons give way to spinning 3D solids;
+// every wireframe vertex is a corner that must be counted.
+void _legendSolids(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final unit = math.min(size.width, size.height);
+  final cube = _solidByCorners(8);
+  final icosa = _solidByCorners(12);
+  final pc = Offset(size.width * 0.32, size.height * 0.46);
+  _legendWire(canvas, _legendSolidPts(cube, pc, unit * 0.24, 0.7, 0.6), cube.edges,
+      claimed: false);
+  final pi2 = Offset(size.width * 0.74, size.height * 0.52);
+  _legendWire(canvas, _legendSolidPts(icosa, pi2, unit * 0.20, 1.9, 0.5),
+      icosa.edges,
+      claimed: false);
+  _legendText(canvas, 'CUBE = 8', Offset(pc.dx, size.height * 0.86),
+      fontSize: 11, color: _kBrandGold, glow: _kBrandOrange);
+  _legendText(canvas, 'ICOSA = 12', Offset(pi2.dx, size.height * 0.90),
+      fontSize: 11, color: _kBrandGold, glow: _kBrandOrange);
+}
+
+/// The visual manual for Corners — wired into the registry spec.
+final List<LegendFrame> cornersLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap each shape once per corner — count them',
+      paint: _legendShape),
+  const LegendFrame(
+      caption: 'First tap claims it — finish before the ring drains',
+      paint: _legendClaim),
+  const LegendFrame(
+      caption: 'Land the EXACT count for bonus — off-counts pay less',
+      paint: _legendExact),
+  const LegendFrame(
+      caption: 'Late game: spinning 3D solids — count every vertex',
+      paint: _legendSolids),
+];

@@ -221,6 +221,213 @@ class _Reveal {
   _Reveal(this.glyph, this.fracDrop, this.fracTrue, this.color);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME primitives the
+// live game uses (the log-ladder spine + decade ticks, the faint named anchors,
+// the glowing marker orb, the slide-to-truth reveal, the timer bar, the gold
+// cascade). Static + self-contained: they render once in the intro carousel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// A compact demo ladder — same span + anchors as the live SIZE ladder.
+const double _legLo = -18, _legHi = 27;
+
+double _legY(double e, double top, double bot) {
+  final f = ((e - _legLo) / (_legHi - _legLo)).clamp(0.0, 1.0);
+  return bot - f * (bot - top);
+}
+
+/// Draws the log-ladder spine the player reads: a vertical rail, decade ticks
+/// with 10ⁿ labels, exactly like [_PoTV2Painter._drawLadder].
+void _legLadder(
+    Canvas canvas, double spineX, double top, double bot, double dim) {
+  canvas.drawLine(
+    Offset(spineX, top),
+    Offset(spineX, bot),
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.22 * dim)
+      ..strokeWidth = 2,
+  );
+  for (double n = _legLo; n <= _legHi + 0.01; n += 9) {
+    final y = _legY(n, top, bot);
+    canvas.drawLine(
+      Offset(spineX - 6, y),
+      Offset(spineX + 6, y),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.16 * dim)
+        ..strokeWidth = 1,
+    );
+    GameFx.text(canvas, '10${_sup(n.round())}', Offset(spineX - 30, y), 10,
+        Colors.white.withValues(alpha: 0.5 * dim),
+        weight: FontWeight.w700);
+  }
+}
+
+/// The glowing marker orb + glyph the player drags along the spine.
+void _legMarker(
+    Canvas canvas, double spineX, double y, String glyph, Color acc) {
+  canvas.drawLine(
+    Offset(spineX - 36, y),
+    Offset(spineX + 36, y),
+    Paint()
+      ..color = acc.withValues(alpha: 0.35)
+      ..strokeWidth = 1.2,
+  );
+  GameFx.orb(canvas, Offset(spineX, y), 20, acc.withValues(alpha: 0.9),
+      glow: 1.0, specular: false);
+  GameFx.text(canvas, glyph, Offset(spineX, y), 22, Colors.white);
+}
+
+// Frame 1 — the core object + verb: read the named thing, drag its marker.
+void _legendPlace(Canvas canvas, Size size) {
+  if (size.width < 20 || size.height < 20) return;
+  final w = size.width;
+  final spineX = w * 0.44;
+  final top = size.height * 0.24, bot = size.height * 0.9;
+
+  // The live prompt: glyph + generated name.
+  GameFx.text(canvas, '☀️  A star 8× the Sun\'s width',
+      Offset(w / 2, size.height * 0.1), 15, Colors.white,
+      weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, 'SIZE · meters', Offset(w / 2, size.height * 0.16), 10,
+      _accent.withValues(alpha: 0.9), weight: FontWeight.w700);
+
+  _legLadder(canvas, spineX, top, bot, 1.0);
+
+  // Faint named anchors on the right — the scaffold you interpolate between.
+  for (final a in _sizeLadder.anchors) {
+    final y = _legY(a.key, top, bot);
+    canvas.drawLine(
+      Offset(spineX + 8, y),
+      Offset(spineX + 20, y),
+      Paint()
+        ..color = _accent.withValues(alpha: 0.16)
+        ..strokeWidth = 1,
+    );
+    GameFx.text(canvas, a.value,
+        Offset(spineX + 24 + a.value.length * 3.2, y), 9.5,
+        _accent.withValues(alpha: 0.34));
+  }
+
+  final my = _legY(3, top, bot);
+  _legMarker(canvas, spineX, my, '☀️', _accent);
+  // Up/down drag cue above the marker.
+  final p = Paint()
+    ..color = _accent
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final ay = my - 40;
+  canvas.drawLine(Offset(spineX - 8, ay + 6), Offset(spineX, ay - 3), p);
+  canvas.drawLine(Offset(spineX + 8, ay + 6), Offset(spineX, ay - 3), p);
+}
+
+// Frame 2 — how to score: drop dead-on the true power of ten for PERFECT.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width < 20 || size.height < 20) return;
+  final w = size.width;
+  final spineX = w * 0.44;
+  final top = size.height * 0.2, bot = size.height * 0.86;
+
+  _legLadder(canvas, spineX, top, bot, 1.0);
+
+  // The slide-to-truth reveal: a dim drop dot, the error band, the ✓ truth orb.
+  final yDrop = _legY(4.6, top, bot);
+  final yTrue = _legY(5.0, top, bot);
+  final rx = spineX + 30;
+  canvas.drawLine(
+    Offset(rx, yDrop),
+    Offset(rx, yTrue),
+    Paint()
+      ..color = _good.withValues(alpha: 0.5)
+      ..strokeWidth = 3,
+  );
+  canvas.drawCircle(
+      Offset(rx, yDrop), 4, Paint()..color = Colors.white.withValues(alpha: 0.35));
+  GameFx.orb(canvas, Offset(rx, yTrue), 14, _good, glow: 1.0, specular: false);
+  GameFx.text(canvas, '✓', Offset(rx, yTrue), 14, Colors.white,
+      weight: FontWeight.w900);
+
+  // The marker resting on the truth + the score pop.
+  _legMarker(canvas, spineX, yTrue, '☀️', _good);
+  GameFx.text(canvas, 'PERFECT +150', Offset(w / 2, size.height * 0.955), 15,
+      _good, weight: FontWeight.w900, glow: 0.5);
+}
+
+// Frame 3 — the danger: a per-item timer drains and auto-snaps a forced guess.
+void _legendTimer(Canvas canvas, Size size) {
+  if (size.width < 20 || size.height < 20) return;
+  final w = size.width;
+  final spineX = w * 0.44;
+  final top = size.height * 0.24, bot = size.height * 0.88;
+
+  // The draining timer bar — same look as [_PoTV2Painter._drawTimerBar].
+  final ty = size.height * 0.11;
+  final x0 = w * 0.12, x1 = w * 0.88;
+  canvas.drawLine(Offset(x0, ty), Offset(x1, ty),
+      Paint()..color = Colors.white12..strokeWidth = 4);
+  const frac = 0.32;
+  canvas.drawLine(
+    Offset(x0, ty),
+    Offset(x0 + (x1 - x0) * frac, ty),
+    Paint()
+      ..color = Color.lerp(_bad, _mid, (frac / 0.5).clamp(0, 1))!
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round,
+  );
+  GameFx.text(canvas, '⏳ TIME LOW', Offset(w / 2, size.height * 0.055), 12,
+      _bad, weight: FontWeight.w800);
+
+  _legLadder(canvas, spineX, top, bot, 1.0);
+  final my = _legY(1.0, top, bot);
+  _legMarker(canvas, spineX, my, '⬤', _mid);
+  GameFx.text(canvas, 'auto-snaps if it empties',
+      Offset(w / 2, size.height * 0.94), 11, Colors.white54);
+}
+
+// Frame 4 — the escalation: the last-12s CASCADE, items rapid-fire, score ×3.
+void _legendCascade(Canvas canvas, Size size) {
+  if (size.width < 20 || size.height < 20) return;
+  final w = size.width;
+  final spineX = w * 0.44;
+  final top = size.height * 0.26, bot = size.height * 0.9;
+  const gold = Potatuhs.gold;
+
+  GameFx.text(canvas, '⚡ CASCADE ×3', Offset(w / 2, size.height * 0.12), 20,
+      gold, weight: FontWeight.w900, glow: 0.7);
+
+  _legLadder(canvas, spineX, top, bot, 0.85);
+
+  // Rapid-fire markers streaking down the spine — the climax spike.
+  const exps = [14.0, 6.0, -3.0];
+  const glyphs = ['✨', '🧫', '⬤'];
+  for (int i = 0; i < exps.length; i++) {
+    final y = _legY(exps[i], top, bot);
+    final a = 1.0 - i * 0.28;
+    GameFx.orb(canvas, Offset(spineX, y), 18 * a + 4, gold.withValues(alpha: a),
+        glow: 1.0, specular: false);
+    GameFx.text(canvas, glyphs[i], Offset(spineX, y), 20 * a + 4, Colors.white);
+  }
+  GameFx.text(canvas, 'per-item time collapses',
+      Offset(w / 2, size.height * 0.955), 11, gold.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+}
+
+/// The visual manual for Powers of Ten v2 — wired into the registry spec.
+const List<LegendFrame> powersOfTenV2LegendFrames = [
+  LegendFrame(
+      caption: 'Drag the glowing marker up the log ladder of tens',
+      paint: _legendPlace),
+  LegendFrame(
+      caption: 'Drop it dead-on its true power of ten for PERFECT',
+      paint: _legendScore),
+  LegendFrame(
+      caption: 'Beat the timer bar or it snaps a forced guess',
+      paint: _legendTimer),
+  LegendFrame(
+      caption: 'Last 12s: items cascade and score ramps to ×3',
+      paint: _legendCascade),
+];
+
 // ---------------------------------------------------------------------------
 // Widget
 // ---------------------------------------------------------------------------
@@ -262,6 +469,13 @@ class _PowersOfTenV2GameState extends State<PowersOfTenV2Game>
 
   int _streak = 0;
 
+  // ── attract autopilot ──
+  // Buffered so each perfect drop is readable: one tick snaps the marker to the
+  // item's true magnitude (visible), the next drops it, then a few idle ticks
+  // let the reveal slide + fact show before the next item is answered.
+  int _autoBuffer = 0;
+  static const int _kAutoBufferTicks = 2;
+
   // ── reveals / juice ──
   final List<_Reveal> _reveals = [];
   final List<FxParticle> _particles = [];
@@ -278,12 +492,42 @@ class _PowersOfTenV2GameState extends State<PowersOfTenV2Game>
       ..addListener(_tick)
       ..forward();
     _lastWall = _now();
+    // ATTRACT autopilot: this game knows every item's true magnitude, so it can
+    // play itself perfectly. Registered always (harmless in normal play — the
+    // host only calls it in autoplay). See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays Powers of Ten v2
+  /// *correctly*: it snaps the marker to the current item's true order of
+  /// magnitude ([_trueExp]) and drops via the game's own [_drop] handler —
+  /// always a PERFECT placement. The cascade/climax needs no special handling:
+  /// it is the same drop loop running faster (shorter item timers read off the
+  /// host clock), so answering the current item each cycle covers it too. A
+  /// short buffer keeps each answer readable; the host owns the clock so the
+  /// round still ends on time.
+  void _autoStep() {
+    if (!widget.session.isRunning || !_started) return;
+    if (_autoBuffer > 0) {
+      _autoBuffer--;
+      return;
+    }
+    // Two beats: first snap the marker onto the truth (visible), then drop it.
+    if (_markerExp != _trueExp) {
+      _markerExp = _trueExp;
+      _touched = true;
+      return;
+    }
+    _drop(); // resolves the current item (perfect) and loads the next
+    _autoBuffer = _kAutoBufferTicks;
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;

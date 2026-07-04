@@ -54,6 +54,10 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # Recommended lint ruleset for Flutter apps. Provides the ruleset that
+  # analysis_options.yaml activates via `include: package:flutter_lints/flutter.yaml`.
+  flutter_lints: ^4.0.0
+
 flutter_icons:
   ios: true
   android: true

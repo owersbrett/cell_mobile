@@ -189,12 +189,59 @@ class _FoodWebV2GameState extends State<FoodWebV2Game>
       ..addListener(_onTick)
       ..forward();
     _resetRun();
+    // ATTRACT-mode autopilot — host calls this ~4×/sec while attracting.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── Attract autopilot ────────────────────────────────────────────────────────
+  // ONE deterministic feed per tick: route energy UP to the consumer that is
+  // closest to draining out. For that hungriest consumer we pick a valid,
+  // affordable source (energy climbs exactly one trophic level; producers are an
+  // infinite source and are preferred so we don't starve another consumer). This
+  // uses the game's OWN validity (`_canFeed`) and feed handler (`_feed`) — no
+  // randomness, no synthetic drags, never an invalid flow.
+  void _autoStep() {
+    if (!widget.session.isRunning || _nodes.isEmpty) return;
+
+    int? bestFrom, bestTo;
+    var bestTargetEnergy = double.infinity;
+
+    for (var ti = 0; ti < _nodes.length; ti++) {
+      final tgt = _nodes[ti];
+      // Only consumers actually drain and can starve; feed the hungriest first.
+      if (!tgt.isConsumer) continue;
+      if (tgt.energy >= bestTargetEnergy) continue; // can't beat current pick
+
+      // Best affordable, valid source for this target (prefer infinite producers,
+      // then the most-fed consumer so we spend from the healthiest supplier).
+      int? srcI;
+      var srcRank = -1.0;
+      for (var si = 0; si < _nodes.length; si++) {
+        if (si == ti) continue;
+        final src = _nodes[si];
+        if (!_canFeed(src, tgt)) continue;
+        if (!src.isProducer && src.energy < _kFeedCost) continue; // can't afford
+        final rank = src.isProducer ? 2.0 : src.energy;
+        if (rank > srcRank) {
+          srcRank = rank;
+          srcI = si;
+        }
+      }
+      if (srcI == null) continue;
+
+      bestTargetEnergy = tgt.energy;
+      bestFrom = srcI;
+      bestTo = ti;
+    }
+
+    if (bestFrom != null && bestTo != null) _feed(bestFrom, bestTo);
   }
 
   double get _dur {
@@ -848,3 +895,238 @@ class _FoodWebV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _FoodWebV2Painter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME primitives the
+// live board uses: trophic-coloured orbs with an energy ring + emoji, the white
+// rubber-band + energy packet of a feed, the red dashed fizzle of a wrong drag,
+// and the orange ENERGY SURGE of the climax. Static + cheap: rendered once on
+// the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legendEmoji(Canvas canvas, String glyph, Offset center, double sz) {
+  if (sz <= 0) return;
+  final tp = TextPainter(
+    text: TextSpan(text: glyph, style: TextStyle(fontSize: sz)),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+// One organism, exactly as _paintNodes draws it: orb + energy ring (or the
+// producer source glow) + emoji + name. `energy == null` ⇒ infinite producer.
+void _legendOrg(
+  Canvas canvas,
+  Offset p,
+  double r,
+  Color color,
+  String emoji, {
+  double? energy,
+  bool starving = false,
+  String? name,
+}) {
+  if (r < 1) return;
+  if (starving) {
+    canvas.drawCircle(
+        p, r + 10, Paint()..color = _cRed.withValues(alpha: 0.30));
+  }
+  GameFx.orb(canvas, p, r, color, glow: 0.7);
+  if (energy != null) {
+    final e = energy.clamp(0.0, 1.0);
+    final rect = Rect.fromCircle(center: p, radius: r + 5);
+    canvas.drawArc(
+        rect,
+        -math.pi / 2,
+        2 * math.pi,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..color = Colors.white.withValues(alpha: 0.10));
+    final eCol = starving ? _cRed : Color.lerp(_cRed, color, e)!;
+    canvas.drawArc(
+        rect,
+        -math.pi / 2,
+        2 * math.pi * e,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round
+          ..color = eCol.withValues(alpha: 0.9));
+  } else {
+    // Producer source glow — energy radiating out (photosynthesis, infinite).
+    canvas.drawCircle(
+        p,
+        r + 6,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..color = _cProducer.withValues(alpha: 0.26));
+  }
+  _legendEmoji(canvas, emoji, p, r * 1.05);
+  if (name != null) {
+    GameFx.text(canvas, name, p.translate(0, r + 9), 9,
+        Colors.white.withValues(alpha: 0.78),
+        weight: FontWeight.w700);
+  }
+}
+
+// The feed action: the white rubber-band drag + a bright energy packet climbing
+// UP it (as _paintRubberBand + _paintPackets draw), with the valid-target ring.
+void _legendFeed(Canvas canvas, Offset from, Offset to, Color col,
+    {double t = 0.58}) {
+  canvas.drawLine(
+    from,
+    to,
+    Paint()
+      ..color = col.withValues(alpha: 0.35)
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round,
+  );
+  // Target-highlight ring (drawn around the predator while dragging).
+  canvas.drawCircle(
+    to,
+    22,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = col.withValues(alpha: 0.6),
+  );
+  final pos = Offset.lerp(from, to, Curves.easeIn.transform(t))!;
+  canvas.drawCircle(
+    pos,
+    5,
+    Paint()
+      ..color = col
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+  );
+  canvas.drawCircle(pos, 2.4, Paint()..color = const Color(0xFFEFFFD6));
+}
+
+// A wrong-drag fizzle: the red dashed line _paintFizzles draws on an invalid feed.
+void _legendFizzle(Canvas canvas, Offset a, Offset b) {
+  final total = (b - a).distance;
+  if (total < 1) return;
+  final u = (b - a) / total;
+  const dash = 8.0, gap = 6.0;
+  final paint = Paint()
+    ..color = _cApex.withValues(alpha: 0.85)
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  var d = 0.0;
+  while (d < total) {
+    canvas.drawLine(a + u * d, a + u * math.min(d + dash, total), paint);
+    d += dash + gap;
+  }
+}
+
+// Frame 1 — the core objects + the verb: energy climbs the pyramid, drag from a
+// fed organism UP to what eats it.
+void _legendPyramid(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  final r = (h * 0.075).clamp(12.0, 20.0);
+  final grass = Offset(w * 0.5, h * 0.82);
+  final rabbit = Offset(w * 0.5, h * 0.60);
+  final frog = Offset(w * 0.5, h * 0.38);
+  final hawk = Offset(w * 0.5, h * 0.17);
+  // Faint who-eats-what edges, as the board shows them.
+  final edge = Paint()
+    ..color = _accent.withValues(alpha: 0.10)
+    ..strokeWidth = 1.2;
+  canvas.drawLine(grass, rabbit, edge);
+  canvas.drawLine(rabbit, frog, edge);
+  canvas.drawLine(frog, hawk, edge);
+  _legendOrg(canvas, hawk, r, _cApex, '🦅', energy: 0.55, name: 'Hawk');
+  _legendOrg(canvas, frog, r, _cSecondary, '🐸', energy: 0.6, name: 'Frog');
+  _legendOrg(canvas, rabbit, r, _cPrimary, '🐇', energy: 0.7, name: 'Rabbit');
+  _legendOrg(canvas, grass, r, _cProducer, '🌿', name: 'Grass');
+  // The feed verb: drag grass UP to the rabbit that eats it.
+  _legendFeed(canvas, grass, rabbit, _accent);
+}
+
+// Frame 2 — how to score: triage. Feeding a STARVING organism (empty red ring)
+// is worth the most points.
+void _legendTriage(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  final r = (h * 0.075).clamp(12.0, 20.0);
+  final grass = Offset(w * 0.5, h * 0.80);
+  final starving = Offset(w * 0.30, h * 0.42);
+  final full = Offset(w * 0.70, h * 0.42);
+  _legendOrg(canvas, starving, r, _cPrimary, '🐁',
+      energy: 0.06, starving: true, name: 'Mouse');
+  _legendOrg(canvas, full, r, _cPrimary, '🐇',
+      energy: 0.92, name: 'Rabbit');
+  _legendOrg(canvas, grass, r, _cProducer, '🌿', name: 'Grass');
+  _legendFeed(canvas, grass, starving, _accent);
+  GameFx.text(canvas, '+20', starving.translate(0, -r - 12), 14, _accent,
+      weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, '+8', full.translate(0, -r - 12), 12,
+      Potatuhs.textFaint,
+      weight: FontWeight.w800);
+}
+
+// Frame 3 — the danger: energy only flows UP. A wrong drag (down, or the wrong
+// prey) fizzles red and resets your streak.
+void _legendWrong(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  final r = (h * 0.075).clamp(12.0, 20.0);
+  final grass = Offset(w * 0.5, h * 0.78);
+  final hawk = Offset(w * 0.5, h * 0.30);
+  _legendOrg(canvas, hawk, r, _cApex, '🦅', energy: 0.5, name: 'Hawk');
+  _legendOrg(canvas, grass, r, _cProducer, '🌿', name: 'Grass');
+  // Apex can't eat grass — red dashed fizzle.
+  _legendFizzle(canvas, hawk, grass);
+  GameFx.text(canvas, "Hawk doesn't eat Grass", Offset(w * 0.5, h * 0.54), 12,
+      _cApex,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+// Frame 4 — the escalation: the final-10s ENERGY SURGE doubles drain AND points.
+void _legendSurge(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  // Warm surge wash behind the board.
+  canvas.drawRect(
+    Offset.zero & size,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Potatuhs.orange.withValues(alpha: 0.20),
+          Potatuhs.orange.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromCircle(
+          center: Offset(w * 0.5, h * 0.5), radius: w * 0.6)),
+  );
+  final r = (h * 0.075).clamp(12.0, 20.0);
+  final grass = Offset(w * 0.5, h * 0.80);
+  final frog = Offset(w * 0.5, h * 0.55);
+  final hawk = Offset(w * 0.5, h * 0.32);
+  _legendOrg(canvas, hawk, r, _cApex, '🦅', energy: 0.35, name: 'Hawk');
+  _legendOrg(canvas, frog, r, _cSecondary, '🐸', energy: 0.45, name: 'Frog');
+  _legendOrg(canvas, grass, r, _cProducer, '🌿', name: 'Grass');
+  _legendFeed(canvas, frog, hawk, Potatuhs.orange, t: 0.5);
+  GameFx.text(canvas, 'ENERGY SURGE ×2', Offset(w * 0.5, h * 0.14), 17,
+      Potatuhs.orange,
+      display: true, weight: FontWeight.w800, glow: 0.6);
+}
+
+/// The visual manual for Food Web v2 — wired into the registry spec.
+final List<LegendFrame> foodWebV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Drag energy UP from a fed organism to what eats it',
+      paint: _legendPyramid),
+  const LegendFrame(
+      caption: 'Feed the STARVING (red ring) first — they score the most',
+      paint: _legendTriage),
+  const LegendFrame(
+      caption: 'Wrong feeds fizzle red — energy only ever climbs UP',
+      paint: _legendWrong),
+  const LegendFrame(
+      caption: 'Final 10s: ENERGY SURGE doubles drain and doubles points',
+      paint: _legendSurge),
+];

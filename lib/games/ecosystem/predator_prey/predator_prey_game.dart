@@ -139,6 +139,10 @@ class _PredatorPreyGameState extends State<PredatorPreyGame>
       _hist.add(_Pt(_prey, _pred, double.nan));
     }
     widget.session.addListener(_onSession);
+    // ATTRACT autopilot: this game can steer its own ecosystem. Registered
+    // always (harmless in normal play — the host only calls it hands-free).
+    // See [_autoStep]. Dormant unless the host is driving in attract mode.
+    widget.session.autoPilot = _autoStep;
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
@@ -146,9 +150,61 @@ class _PredatorPreyGameState extends State<PredatorPreyGame>
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     widget.session.removeListener(_onSession);
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays the ecosystem the
+  /// way the game teaches it: steer BOTH lines toward their equilibria and hold
+  /// the boom–bust cycle inside the green band. It reads the game's OWN state
+  /// (populations, equilibria, live derivatives), projects one short step ahead
+  /// so it corrects BEFORE a line leaves the band, and issues exactly one of the
+  /// game's own levers — release/cull hares, release/cull lynx, or drop a refuge
+  /// when the prey is about to collapse. Deterministic; no randomness, no taps.
+  /// When both lines sit comfortably centred it does nothing.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    final preyEq = _preyEq;
+    final predEq = _predEq;
+
+    // Project one short horizon ahead using the live derivatives, so we act on
+    // where each population is HEADING, not just where it sits right now.
+    const horizon = 0.4;
+    final preyNext = (_prey + _dPrey * horizon).clamp(0.0, _kMaxPop);
+    final predNext = (_pred + _dPred * horizon).clamp(0.0, _kMaxPop);
+
+    // Emergency: prey is about to breach the balance floor and the refuge is
+    // ready — halving predation is the strongest recovery lever, so use it.
+    if (preyNext < preyEq * 0.45 && _protectCd <= 0 && _protectActive <= 0) {
+      _protect();
+      return;
+    }
+
+    // A comfort band tighter than the scoring band (0.4..2.6): correct only when
+    // a line is drifting out of the inner zone, and leave it be once centred.
+    const lo = 0.6, hi = 1.7;
+    final preyLow = preyNext < preyEq * lo;
+    final preyHigh = preyNext > preyEq * hi;
+    final predLow = predNext < predEq * lo;
+    final predHigh = predNext > predEq * hi;
+
+    // Relative distance from equilibrium — pick the single most urgent lever.
+    double urgency(double v, double eq, bool out) =>
+        out ? (v - eq).abs() / eq : 0.0;
+    final preyU = urgency(preyNext, preyEq, preyLow || preyHigh);
+    final predU = urgency(predNext, predEq, predLow || predHigh);
+
+    if (preyU <= 0 && predU <= 0) return; // comfortably centred — do nothing
+
+    if (preyU >= predU) {
+      _nudgePrey(preyLow ? _kPreyNudge : -_kPreyNudge);
+    } else {
+      _nudgePred(predLow ? _kPredNudge : -_kPredNudge);
+    }
   }
 
   void _onSession() {
@@ -814,3 +870,291 @@ class _EcoPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _EcoPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each is drawn with the SAME graph
+// look the live game uses (the scrolling population panel, the gold K line, the
+// red extinction floor, the green balance band, the glow-pass species curves,
+// the control keys) so the player meets the LITERAL components before play.
+// Static + cheap: rendered once on the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The graph panel rect the cards draw into — mirrors the live `_paintGraph`
+/// rounded surface. Returns a degenerate rect for tiny sizes (guarded by
+/// callers, which bail before drawing).
+Rect _legPanel(Size size) => Rect.fromLTWH(size.width * 0.06,
+    size.height * 0.15, size.width * 0.88, size.height * 0.70);
+
+/// Draws the graph surface (gradient fill + faint green hairline stroke), the
+/// same treatment `_EcoPainter._paintGraph` gives the live board.
+void _legDrawPanel(Canvas canvas, Rect r) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Potatuhs.inkPanel.withValues(alpha: 0.92),
+          Potatuhs.inkDeep.withValues(alpha: 0.96),
+        ],
+      ).createShader(r),
+  );
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kPrey.withValues(alpha: 0.18),
+  );
+}
+
+void _legDash(Canvas canvas, Offset a, Offset b, Color color) {
+  final paint = Paint()
+    ..color = color
+    ..strokeWidth = 1.0;
+  final total = (b - a).distance;
+  if (total <= 0) return;
+  final dir = (b - a) / total;
+  for (double d = 0; d < total; d += 10) {
+    canvas.drawLine(a + dir * d, a + dir * math.min(d + 5, total), paint);
+  }
+}
+
+/// A glowing population curve through [pts] (canvas coords) — the exact glow
+/// pass + crisp core + head dot the live `_drawLine` renders.
+void _legCurve(Canvas canvas, List<Offset> pts, Color col) {
+  if (pts.length < 2) return;
+  final path = Path()..moveTo(pts.first.dx, pts.first.dy);
+  for (var i = 1; i < pts.length; i++) {
+    path.lineTo(pts[i].dx, pts[i].dy);
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = col.withValues(alpha: 0.28)
+      ..strokeWidth = 6
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = col
+      ..strokeWidth = 2.4
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round,
+  );
+  final head = pts.last;
+  canvas.drawCircle(head, 6, Paint()..color = col.withValues(alpha: 0.35));
+  canvas.drawCircle(head, 3.4, Paint()..color = col);
+}
+
+/// Samples a normalized curve [yNorm] (0 = floor, 1 = ceiling) across [r].
+List<Offset> _legWave(Rect r, double Function(double t) yNorm, {int n = 52}) {
+  final pts = <Offset>[];
+  for (var i = 0; i < n; i++) {
+    final t = i / (n - 1);
+    final x = r.left + t * r.width;
+    final y = r.bottom - yNorm(t).clamp(0.0, 1.0) * r.height;
+    pts.add(Offset(x, y));
+  }
+  return pts;
+}
+
+/// One control key (a cull/release/protect button), matching the live
+/// `_nudgeKey` tint + border treatment.
+void _legKey(Canvas canvas, Rect r, Color col, String glyph, double glyphSize) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(11));
+  canvas.drawRRect(rr, Paint()..color = col.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = col.withValues(alpha: 0.75),
+  );
+  GameFx.text(canvas, glyph, r.center, glyphSize, Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+}
+
+// ── Frame 1 · the two coupled lines: hares feed lynx, both boom and bust ──────
+void _legendCycle(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final r = _legPanel(size);
+  _legDrawPanel(canvas, r);
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(r, const Radius.circular(12)));
+
+  // Carrying-capacity ceiling + extinction floor guides, as on the real graph.
+  final kY = r.top + r.height * 0.14;
+  _legDash(canvas, Offset(r.left, kY), Offset(r.right, kY),
+      Potatuhs.gold.withValues(alpha: 0.45));
+  GameFx.text(canvas, 'CARRYING CAPACITY (K)',
+      Offset(r.center.dx, kY + 8), 8, Potatuhs.gold.withValues(alpha: 0.8));
+
+  // Prey (green) leads; predators (orange) lag a quarter cycle behind — the
+  // signature boom→bust phase offset.
+  final prey = _legWave(
+      r, (t) => 0.55 + 0.30 * math.sin(2 * math.pi * 1.35 * t - 0.4));
+  final pred = _legWave(r,
+      (t) => 0.42 + 0.27 * math.sin(2 * math.pi * 1.35 * t - 0.4 - math.pi / 2));
+  _legCurve(canvas, prey, _kPrey);
+  _legCurve(canvas, pred, _kPred);
+
+  GameFx.text(canvas, 'HARES', Offset(r.left + 32, r.top + 20), 9, _kPrey,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'LYNX', Offset(r.left + 32, r.top + 34), 9, _kPred,
+      weight: FontWeight.w800);
+  canvas.restore();
+}
+
+// ── Frame 2 · the player verb: cull / release each species, protect a patch ───
+void _legendLevers(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final w = size.width, h = size.height;
+  final keyH = (h * 0.20).clamp(28.0, 54.0);
+  final rowY = h * 0.30;
+  final colW = w * 0.40;
+
+  void pair(double cx, Color col, String name) {
+    final half = (colW - 8) / 2;
+    final minus = Rect.fromLTWH(cx - half - 4, rowY, half, keyH);
+    final plus = Rect.fromLTWH(cx + 4, rowY, half, keyH);
+    _legKey(canvas, minus, col, '−', 22);
+    _legKey(canvas, plus, col, '+', 22);
+    GameFx.text(canvas, name, Offset(cx, rowY - 12), 10, col,
+        weight: FontWeight.w800);
+    GameFx.text(canvas, 'cull · release', Offset(cx, rowY + keyH + 10), 8,
+        Potatuhs.textFaint);
+  }
+
+  pair(w * 0.28, _kPrey, 'HARES');
+  pair(w * 0.72, _kPred, 'LYNX');
+
+  // The full-width refuge button below.
+  final pr = Rect.fromLTWH(w * 0.14, h * 0.68, w * 0.72, keyH);
+  final rr = RRect.fromRectAndRadius(pr, const Radius.circular(13));
+  canvas.drawRRect(rr, Paint()..color = Potatuhs.airForce.withValues(alpha: 0.16));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = Potatuhs.airForce.withValues(alpha: 0.85),
+  );
+  GameFx.text(canvas, 'PROTECT A PATCH', pr.center, 12, Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+}
+
+// ── Frame 3 · how to score: hold both lines in the green balance band ─────────
+void _legendBalance(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final r = _legPanel(size);
+  _legDrawPanel(canvas, r);
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(r, const Radius.circular(12)));
+
+  // The green balance band — the healthy window around equilibrium.
+  final bandTop = r.top + r.height * 0.30;
+  final bandBot = r.top + r.height * 0.66;
+  canvas.drawRect(Rect.fromLTRB(r.left, bandTop, r.right, bandBot),
+      Paint()..color = _kPrey.withValues(alpha: 0.10));
+  final cy = (bandTop + bandBot) / 2;
+  _legDash(canvas, Offset(r.left, cy), Offset(r.right, cy),
+      _kPrey.withValues(alpha: 0.35));
+  GameFx.text(canvas, 'BALANCE ZONE', Offset(r.center.dx, bandTop + 12), 8.5,
+      _kPrey.withValues(alpha: 0.85), weight: FontWeight.w800);
+
+  // Both lines held gently inside the band — small tame ripples, not big swings.
+  final prey = _legWave(r, (t) => 0.56 + 0.05 * math.sin(2 * math.pi * 2 * t));
+  final pred =
+      _legWave(r, (t) => 0.44 + 0.05 * math.sin(2 * math.pi * 2 * t + 1.0));
+  _legCurve(canvas, prey, _kPrey);
+  _legCurve(canvas, pred, _kPred);
+  canvas.restore();
+
+  GameFx.text(canvas, '+4/s  →  +12/s', Offset(r.center.dx, r.bottom - 14), 13,
+      Potatuhs.gold, weight: FontWeight.w800, glow: 0.4);
+}
+
+// ── Frame 4 · the danger: let a line hit the floor and it collapses (−40) ─────
+void _legendCollapse(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final r = _legPanel(size);
+  _legDrawPanel(canvas, r);
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(r, const Radius.circular(12)));
+
+  // The red extinction floor near the bottom.
+  final fY = r.bottom - r.height * 0.14;
+  _legDash(canvas, Offset(r.left, fY), Offset(r.right, fY),
+      _kRed.withValues(alpha: 0.6));
+  GameFx.text(canvas, 'EXTINCTION FLOOR', Offset(r.center.dx, fY - 10), 8.5,
+      _kRed.withValues(alpha: 0.9), weight: FontWeight.w800);
+
+  // A hare line diving off a peak straight into the floor.
+  final crash = _legWave(r, (t) {
+    final peak = math.exp(-math.pow(t - 0.28, 2) / 0.012) * 0.55;
+    return (0.30 + peak - t * 0.34).clamp(0.06, 0.95);
+  });
+  _legCurve(canvas, crash, _kPrey);
+
+  // Red danger flash at the crash point.
+  final head = crash.last;
+  canvas.drawCircle(
+      head, 10, Paint()..color = _kRed.withValues(alpha: 0.35));
+  canvas.restore();
+
+  GameFx.text(canvas, '−40', Offset(r.center.dx, r.bottom - 12), 15, _kRed,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+// ── Frame 5 · the escalation: late round, hawks arrive and hunt the lynx ──────
+void _legendHawks(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final r = _legPanel(size);
+  _legDrawPanel(canvas, r);
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(r, const Radius.circular(12)));
+
+  final prey =
+      _legWave(r, (t) => 0.55 + 0.22 * math.sin(2 * math.pi * 1.5 * t));
+  final pred = _legWave(
+      r, (t) => 0.46 + 0.20 * math.sin(2 * math.pi * 1.5 * t - math.pi / 2));
+  // Hawks fade in over the back half and push the lynx down.
+  final apex = _legWave(r, (t) {
+    final ramp = ((t - 0.5) / 0.5).clamp(0.0, 1.0);
+    return 0.20 + ramp * (0.28 + 0.12 * math.sin(2 * math.pi * 1.5 * t));
+  });
+  _legCurve(canvas, prey, _kPrey);
+  _legCurve(canvas, pred, _kPred);
+  _legCurve(canvas, apex, _kApex);
+
+  GameFx.text(canvas, 'HAWKS', Offset(r.right - 34, r.top + 18), 9, _kApex,
+      weight: FontWeight.w800);
+  canvas.restore();
+}
+
+/// The visual manual for Predator & Prey — wired into the registry spec.
+final List<LegendFrame> predatorPreyLegendFrames = [
+  const LegendFrame(
+      caption: 'Hares feed lynx; lynx starve — both boom and bust',
+      paint: _legendCycle),
+  const LegendFrame(
+      caption: 'Release or cull each species; protect a patch',
+      paint: _legendLevers),
+  const LegendFrame(
+      caption: 'Hold both lines in the balance zone: +4/s to +12/s',
+      paint: _legendBalance),
+  const LegendFrame(
+      caption: 'Let a line hit the extinction floor and lose 40',
+      paint: _legendCollapse),
+  const LegendFrame(
+      caption: 'Late round, hawks arrive and hunt the lynx',
+      paint: _legendHawks),
+];

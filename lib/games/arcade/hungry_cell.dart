@@ -224,13 +224,105 @@ class _HungryCellGameState extends State<HungryCellGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to steer itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free STEERING decision per host tick (~250ms). This is a driving
+  /// game, not a tapping one, so the bot doesn't fire synthetic taps — it does
+  /// exactly what a thumb dragging the screen does: it sets [_touchTargetScreen]
+  /// (the same field the drag handlers write) and lets the normal glide physics
+  /// in [_update] chase it.
+  ///
+  /// Each call it reads its own world state and picks the highest value/distance
+  /// goal among the live pickups — glowing organelles (+20), predators small
+  /// enough to eat (+30), and nutrient pellets (+2) — so a nearby organelle wins
+  /// over a distant pellet, and a pellet at the membrane wins over a far
+  /// organelle. It then steers toward that goal, but if a predator too big to
+  /// eat is inside its danger zone it blends in a repulsion vector away from that
+  /// threat, so the cell curves around viruses instead of driving through them.
+  /// Deterministic; re-aims every tick (continuous pursuit).
+  void _autoStep() {
+    final session = widget.session;
+    if (!session.isRunning || !_worldReady || _screenSize == null) return;
+
+    final me = _playerPos;
+    final r = _playerRadius;
+
+    // ── Pick the best goal by value / distance ───────────────────────────────
+    Offset? goal;
+    var bestScore = -1.0;
+    void consider(Offset pos, double value) {
+      final d = (pos - me).distance;
+      final score = value / (d + 40.0); // +40 avoids divide-by-zero blowups
+      if (score > bestScore) {
+        bestScore = score;
+        goal = pos;
+      }
+    }
+
+    for (final o in _organelles) {
+      consider(o.pos, 20.0);
+    }
+    for (final v in _predators) {
+      // Only predators we can actually eat count as food (mirror [_update]).
+      if (r > v.radius * 1.05) consider(v.pos, 30.0);
+    }
+    for (final n in _nutrients) {
+      consider(n.pos, 2.0);
+    }
+
+    if (goal == null) return; // nothing to pursue — leave heading as-is
+
+    // Desired heading toward the goal.
+    var aimDir = goal! - me;
+    final aimLen = aimDir.distance;
+    if (aimLen < 1) return; // already on top of it; keep current heading
+    aimDir = aimDir / aimLen;
+
+    // ── Bias away from the nearest threatening (uneatable) predator ───────────
+    _Predator? threat;
+    var threatDist = double.infinity;
+    for (final v in _predators) {
+      if (v.radius <= r * 0.95) continue; // small ones can't hurt us
+      final d = (v.pos - me).distance;
+      if (d < threatDist) {
+        threatDist = d;
+        threat = v;
+      }
+    }
+    if (threat != null) {
+      // Danger zone scales with both radii; closer threats push harder.
+      final danger = r + threat.radius + 130.0;
+      if (threatDist < danger) {
+        final away = me - threat.pos;
+        final awayLen = away.distance;
+        if (awayLen > 1) {
+          final proximity = 1.0 - (threatDist / danger); // 0..1, 1 = touching
+          final weight = 2.6 * proximity;
+          aimDir = aimDir + (away / awayLen) * weight;
+          final adjLen = aimDir.distance;
+          if (adjLen > 0.01) aimDir = aimDir / adjLen;
+        }
+      }
+    }
+
+    // Aim a fixed distance ahead so the glide runs at full throttle (the steering
+    // in [_update] ramps throttle up over the first ~100px). Convert the world
+    // aim point into the screen-space target the drag handlers set.
+    final aimWorld = me + aimDir * 240.0;
+    _touchTargetScreen = aimWorld - _viewOrigin;
   }
 
   // ─── Derived ────────────────────────────────────────────────────────────────
@@ -720,7 +812,7 @@ class _HungryCellPainter extends CustomPainter {
     }
   }
 
-  void _paintNutrient(Canvas canvas, _Nutrient n) {
+  static void _paintNutrient(Canvas canvas, _Nutrient n) {
     final pulse = 0.5 + 0.5 * math.sin(n.phase);
     final glow = Paint()
       ..color = _kNutrientColor.withValues(alpha: 0.22 + 0.14 * pulse)
@@ -732,7 +824,7 @@ class _HungryCellPainter extends CustomPainter {
     canvas.drawCircle(n.pos.translate(-1, -1), 1.1, hi);
   }
 
-  void _paintOrganelle(Canvas canvas, _OrganellePickup o) {
+  static void _paintOrganelle(Canvas canvas, _OrganellePickup o) {
     final pulse = 0.5 + 0.5 * math.sin(o.phase);
     final color = o.kind.color;
 
@@ -762,7 +854,7 @@ class _HungryCellPainter extends CustomPainter {
     canvas.restore();
   }
 
-  void _paintMitochondria(Canvas canvas, Color color, double phase) {
+  static void _paintMitochondria(Canvas canvas, Color color, double phase) {
     canvas.rotate(0.5 + 0.1 * math.sin(phase));
     final body = Paint()..color = color.withValues(alpha: 0.85);
     final rect = RRect.fromRectAndRadius(
@@ -780,7 +872,7 @@ class _HungryCellPainter extends CustomPainter {
     canvas.drawPath(path, cristae);
   }
 
-  void _paintGolgi(Canvas canvas, Color color) {
+  static void _paintGolgi(Canvas canvas, Color color) {
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
@@ -797,7 +889,7 @@ class _HungryCellPainter extends CustomPainter {
     }
   }
 
-  void _paintRibosome(Canvas canvas, Color color, double phase) {
+  static void _paintRibosome(Canvas canvas, Color color, double phase) {
     final big = Paint()..color = color.withValues(alpha: 0.9);
     final dim = Paint()..color = color.withValues(alpha: 0.55);
     const offsets = [
@@ -818,7 +910,7 @@ class _HungryCellPainter extends CustomPainter {
 
   /// Predator cells: wobbly blob filled with a distinct color, with a size
   /// indicator ring so the player can tell at a glance whether to attack or flee.
-  void _paintPredator(Canvas canvas, _Predator v) {
+  static void _paintPredator(Canvas canvas, _Predator v) {
     canvas.save();
     canvas.translate(v.pos.dx, v.pos.dy);
 
@@ -1123,3 +1215,242 @@ class _HungryCellPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HungryCellPainter oldDelegate) => false;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards drawn with the REAL in-game
+// components (the same static painters [_HungryCellPainter] uses in play).
+// Static, cheap, self-contained: rendered once on the intro screen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Popup-style label, same look as the in-game score popups.
+void _legendLabel(
+    Canvas canvas, String text, Offset center, double fontSize, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.bold,
+        color: color,
+        shadows: [
+          Shadow(color: color.withValues(alpha: 0.7), blurRadius: 10),
+        ],
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center.translate(-tp.width / 2, -tp.height / 2));
+}
+
+/// The player cell — same membrane / cytoplasm / rim / nucleus draw as
+/// [_HungryCellPainter._paintPlayer], with a fixed wobble phase so the card
+/// is static.
+void _legendPlayerCell(Canvas canvas, Offset c, double r) {
+  if (r <= 0) return;
+  canvas.save();
+  canvas.translate(c.dx, c.dy);
+
+  final membrane = Path();
+  const steps = 64;
+  for (var i = 0; i <= steps; i++) {
+    final a = i / steps * math.pi * 2;
+    final wobble = 1 + 0.05 * math.sin(5 * a + 1.3) + 0.03 * math.sin(8 * a - 2.1);
+    final p = Offset(math.cos(a), math.sin(a)) * (r * wobble);
+    if (i == 0) {
+      membrane.moveTo(p.dx, p.dy);
+    } else {
+      membrane.lineTo(p.dx, p.dy);
+    }
+  }
+  membrane.close();
+
+  final outerGlow = Paint()
+    ..color = _kAccent.withValues(alpha: 0.30)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16);
+  canvas.drawPath(membrane, outerGlow);
+
+  final cytoplasm = Paint()
+    ..shader = RadialGradient(
+      colors: [
+        _kAccent.withValues(alpha: 0.34),
+        _kAccent.withValues(alpha: 0.12),
+      ],
+    ).createShader(Rect.fromCircle(center: Offset.zero, radius: r * 1.1));
+  canvas.drawPath(membrane, cytoplasm);
+
+  final rim = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..color = _kAccent.withValues(alpha: 0.95);
+  canvas.drawPath(membrane, rim);
+
+  final nucleusR = r * 0.38;
+  canvas.drawCircle(Offset.zero, nucleusR,
+      Paint()..color = const Color(0xFFCE93D8).withValues(alpha: 0.55));
+  canvas.drawCircle(
+      Offset(nucleusR * 0.22, -nucleusR * 0.18),
+      nucleusR * 0.34,
+      Paint()..color = const Color(0xFF7B1FA2).withValues(alpha: 0.85));
+
+  canvas.restore();
+}
+
+/// A predator, drawn by the game's own [_HungryCellPainter._paintPredator].
+void _legendPredator(Canvas canvas, Offset c, double r, double colorT) {
+  if (r <= 0) return;
+  _HungryCellPainter._paintPredator(
+    canvas,
+    _Predator(
+      pos: c,
+      heading: 0,
+      speed: 0,
+      spin: 0,
+      radius: r,
+      phase: 1.7,
+      color: _HungryCellGameState._lerpPredatorColor(colorT),
+    ),
+  );
+}
+
+// ── Frame 1 — steer: drag anywhere, the cell glides to your finger ──────────
+void _legendSteer(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = (size.shortestSide * 0.17).clamp(12.0, 34.0);
+  final cell = Offset(size.width * 0.28, size.height * 0.58);
+  final target = Offset(size.width * 0.76, size.height * 0.36);
+
+  // The touch-target ring, same style as _paintTarget (fixed pulse).
+  final ring = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.5
+    ..color = _kAccent.withValues(alpha: 0.45);
+  canvas.drawCircle(target, 16, ring);
+  canvas.drawCircle(target, 9,
+      ring..color = _kAccent.withValues(alpha: 0.25));
+
+  // Glide arrow from cell to target.
+  final dir = target - cell;
+  final len = dir.distance;
+  if (len > 1) {
+    final u = dir / len;
+    final from = cell + u * (r + 10);
+    final to = target - u * 24;
+    final arrow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = _kAccent.withValues(alpha: 0.75);
+    canvas.drawLine(from, to, arrow);
+    final n = Offset(-u.dy, u.dx);
+    canvas.drawLine(to, to - u * 10 + n * 7, arrow);
+    canvas.drawLine(to, to - u * 10 - n * 7, arrow);
+  }
+
+  _legendPlayerCell(canvas, cell, r);
+}
+
+// ── Frame 2 — feed: pellets +2, glowing organelles +20 and the EAT × boost ──
+void _legendFeed(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+
+  // Nutrient pellets, drawn by the game's own painter.
+  final pellets = [
+    Offset(size.width * 0.20, size.height * 0.34),
+    Offset(size.width * 0.31, size.height * 0.54),
+    Offset(size.width * 0.18, size.height * 0.68),
+  ];
+  for (var i = 0; i < pellets.length; i++) {
+    _HungryCellPainter._paintNutrient(
+        canvas, _Nutrient(pellets[i], 0.9 + i * 1.4));
+  }
+  _legendLabel(canvas, '+2',
+      Offset(size.width * 0.24, size.height * 0.87), 14, _kNutrientColor);
+
+  // Organelle pickups — the glowing +20 grabs.
+  _HungryCellPainter._paintOrganelle(
+    canvas,
+    _OrganellePickup(Offset(size.width * 0.63, size.height * 0.38),
+        _OrganelleKind.mitochondria, 1.1),
+  );
+  _HungryCellPainter._paintOrganelle(
+    canvas,
+    _OrganellePickup(Offset(size.width * 0.83, size.height * 0.62),
+        _OrganelleKind.ribosome, 2.3),
+  );
+  _legendLabel(canvas, '+20  EAT ×',
+      Offset(size.width * 0.71, size.height * 0.87), 14,
+      _OrganelleKind.mitochondria.color);
+}
+
+// ── Frame 3 — the size rule: eat smaller cells, flee bigger ones ─────────────
+void _legendSizeRule(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final base = (size.shortestSide * 0.15).clamp(10.0, 30.0);
+  final cy = size.height * 0.46;
+
+  // Smaller predator (food) · you · larger predator (danger).
+  _legendPredator(canvas, Offset(size.width * 0.18, cy), base * 0.60, 0.15);
+  _legendLabel(canvas, '+30',
+      Offset(size.width * 0.18, size.height * 0.84), 15, _kNutrientColor);
+
+  _legendPlayerCell(canvas, Offset(size.width * 0.50, cy), base);
+  _legendLabel(canvas, 'YOU',
+      Offset(size.width * 0.50, size.height * 0.84), 12,
+      _kAccent.withValues(alpha: 0.95));
+
+  _legendPredator(canvas, Offset(size.width * 0.82, cy), base * 1.55, 0.85);
+  _legendLabel(canvas, '-25',
+      Offset(size.width * 0.82, size.height * 0.84), 15, _kPredatorColor);
+}
+
+// ── Frame 4 — escalation: predators multiply, speed up and home in ──────────
+void _legendHunt(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final base = (size.shortestSide * 0.14).clamp(9.0, 26.0);
+  final me = Offset(size.width * 0.50, size.height * 0.62);
+
+  final hunters = <(Offset, double, double)>[
+    (Offset(size.width * 0.18, size.height * 0.26), base * 1.5, 0.05),
+    (Offset(size.width * 0.80, size.height * 0.24), base * 1.25, 0.55),
+    (Offset(size.width * 0.86, size.height * 0.70), base * 1.05, 0.95),
+  ];
+  final chase = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round
+    ..color = _kPredatorColor.withValues(alpha: 0.65);
+  for (final (pos, r, t) in hunters) {
+    _legendPredator(canvas, pos, r, t);
+    // Homing chevrons pointing at the player.
+    final dir = me - pos;
+    final len = dir.distance;
+    if (len > 1) {
+      final u = dir / len;
+      final n = Offset(-u.dy, u.dx);
+      for (var k = 0; k < 2; k++) {
+        final tip = pos + u * (r + 14 + k * 12.0);
+        canvas.drawLine(tip - u * 7 + n * 6, tip, chase);
+        canvas.drawLine(tip - u * 7 - n * 6, tip, chase);
+      }
+    }
+  }
+
+  _legendPlayerCell(canvas, me, base * 0.9);
+}
+
+/// The visual manual for Hungry Cell — wired into the registry spec.
+final List<LegendFrame> hungryCellLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag anywhere — your cell glides toward your finger',
+      paint: _legendSteer),
+  const LegendFrame(
+      caption: 'Slurp pellets +2 · organelles +20 raise your EAT ×',
+      paint: _legendFeed),
+  const LegendFrame(
+      caption: 'Eat smaller cells +30 — bigger ones bite for -25',
+      paint: _legendSizeRule),
+  const LegendFrame(
+      caption: 'Late game: predators multiply, speed up, hunt YOU',
+      paint: _legendHunt),
+];

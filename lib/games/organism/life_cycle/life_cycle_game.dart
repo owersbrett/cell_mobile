@@ -297,6 +297,206 @@ const List<_Organism> _kOrganisms = [
 ];
 
 // ============================================================================
+// Visual manual — the legend carousel cards, drawn with the REAL components
+// (the same life-cycle wheel, "?" mystery node, and option cards the live game
+// uses). Static, cheap; rendered once on the intro screen, never per-frame.
+// ============================================================================
+
+/// A centred glyph, matching the wheel painter's `_glyph` style.
+void _legendGlyph(Canvas canvas, String s, Offset center, double size,
+    {Color? color}) {
+  if (size <= 0) return;
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: size,
+        fontWeight: FontWeight.w900,
+        color: color ?? _kText,
+      ),
+    ),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// Draws a 2×2 grid of option cards (the real card look) inside [region].
+/// [correctIdx] renders green, [wrongIdx] renders red, others neutral.
+void _legendCards(
+  Canvas canvas,
+  Rect region,
+  List<String> labels, {
+  int correctIdx = -1,
+  int wrongIdx = -1,
+}) {
+  const spacing = 10.0;
+  final cw = (region.width - spacing) / 2;
+  final ch = (region.height - spacing) / 2;
+  if (cw <= 0 || ch <= 0) return;
+  final fontSize = (ch * 0.26).clamp(9.0, 15.0);
+  for (var i = 0; i < 4 && i < labels.length; i++) {
+    final col = i % 2, row = i ~/ 2;
+    final rect = Rect.fromLTWH(
+      region.left + col * (cw + spacing),
+      region.top + row * (ch + spacing),
+      cw,
+      ch,
+    );
+    Color bg = _kCardBg, border = _kCardBorder, text = _kText;
+    if (i == correctIdx) {
+      bg = _kGood.withValues(alpha: 0.12);
+      border = _kGood.withValues(alpha: 0.9);
+      text = _kGood;
+    } else if (i == wrongIdx) {
+      bg = _kBad.withValues(alpha: 0.10);
+      border = _kBad.withValues(alpha: 0.9);
+      text = _kBad;
+    }
+    final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+    canvas.drawRRect(rr, Paint()..color = bg);
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = border,
+    );
+    GameFx.text(canvas, labels[i], rect.center, fontSize, text,
+        weight: FontWeight.w700);
+  }
+}
+
+/// Frame A — the turning cycle: current stage glows, the NEXT slot is a "?".
+void _legendPredict(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const accent = Potatuhs.orange; // complete-metamorphosis colour
+  final center = Offset(size.width * 0.5, size.height * 0.46);
+  final radius = math.min(size.width * 0.32, size.height * 0.32);
+  if (radius <= 8) return;
+
+  const stages = ['🥚', '🐛', '🟢', '🦋'];
+  const stageIdx = 1; // caterpillar = current
+  const n = 4;
+  const nextIdx = (stageIdx + 1) % n;
+
+  // The cycle ring.
+  canvas.drawCircle(
+    center,
+    radius,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = accent.withValues(alpha: 0.25),
+  );
+
+  for (var i = 0; i < n; i++) {
+    final a = i / n * 2 * math.pi - math.pi / 2;
+    final p = center + Offset(math.cos(a), math.sin(a)) * radius;
+    final isCurrent = i == stageIdx;
+    final isNext = i == nextIdx;
+    final nodeR = isCurrent ? radius * 0.30 : radius * 0.22;
+    if (isCurrent) {
+      GameFx.orb(canvas, p, nodeR, accent, glow: 1.4);
+      _legendGlyph(canvas, stages[i], p, nodeR * 1.05);
+    } else if (isNext) {
+      canvas.drawCircle(
+          p, nodeR, Paint()..color = Potatuhs.inkPanel.withValues(alpha: 0.92));
+      canvas.drawCircle(
+        p,
+        nodeR,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.8
+          ..color = accent.withValues(alpha: 0.7),
+      );
+      _legendGlyph(canvas, '?', p, nodeR * 1.1, color: accent);
+    } else {
+      GameFx.orb(canvas, p, nodeR,
+          Color.lerp(Potatuhs.inkPanel, accent, 0.25)!,
+          glow: 0.3, specular: false);
+      _legendGlyph(canvas, stages[i], p, nodeR);
+    }
+  }
+  _legendGlyph(canvas, '🦋', center, radius * 0.5);
+}
+
+/// Frame B — score: pick the correct next stage; fast picks + streaks pay more.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  // Points + streak cue at the top.
+  GameFx.text(canvas, '+120  ×2', Offset(size.width * 0.5, size.height * 0.12),
+      (size.height * 0.09).clamp(14.0, 26.0), Potatuhs.gold,
+      weight: FontWeight.w900, glow: 0.5);
+  final region = Rect.fromLTWH(
+      size.width * 0.10, size.height * 0.26, size.width * 0.80, size.height * 0.62);
+  _legendCards(
+    canvas,
+    region,
+    const ['egg', 'chrysalis', 'tadpole', 'seedling'],
+    correctIdx: 1, // chrysalis follows caterpillar
+  );
+}
+
+/// Frame C — miss: wrong pick scores 0 and resets the streak; answer revealed.
+void _legendMiss(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  GameFx.text(canvas, 'Next: chrysalis',
+      Offset(size.width * 0.5, size.height * 0.12),
+      (size.height * 0.07).clamp(12.0, 20.0), _kGood,
+      weight: FontWeight.w900);
+  final region = Rect.fromLTWH(
+      size.width * 0.10, size.height * 0.26, size.width * 0.80, size.height * 0.62);
+  _legendCards(
+    canvas,
+    region,
+    const ['chrysalis', 'nymph', 'egg', 'plant'],
+    correctIdx: 0, // revealed answer
+    wrongIdx: 1, // what the player tapped
+  );
+}
+
+/// Frame D — escalation: late rounds fill options with SIBLING stages from the
+/// same cycle, so you must know the ORDER, not just recognise a word.
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final accent = _metaColor(_Meta.plant);
+  GameFx.text(canvas, '🥔 POTATO', Offset(size.width * 0.5, size.height * 0.12),
+      (size.height * 0.07).clamp(12.0, 20.0), accent,
+      weight: FontWeight.w900, glow: 0.4);
+  final region = Rect.fromLTWH(
+      size.width * 0.10, size.height * 0.26, size.width * 0.80, size.height * 0.62);
+  // All four are stages of the potato's own cycle — order is the whole test.
+  _legendCards(
+    canvas,
+    region,
+    const ['sprout', 'plant', 'flower', 'tuber'],
+    correctIdx: 1, // plant follows sprout
+  );
+}
+
+/// The visual manual for Life Cycle — wired into the registry spec.
+final List<LegendFrame> lifeCycleLegendFrames = [
+  const LegendFrame(
+    caption: 'A cycle turns — the current stage glows, the next is a "?"',
+    paint: _legendPredict,
+  ),
+  const LegendFrame(
+    caption: 'Tap the correct next stage; fast picks & streaks score more',
+    paint: _legendScore,
+  ),
+  const LegendFrame(
+    caption: 'Miss = 0 points, streak resets — the answer is revealed',
+    paint: _legendMiss,
+  ),
+  const LegendFrame(
+    caption: 'Later, all options are sibling stages — know the ORDER',
+    paint: _legendEscalate,
+  ),
+];
+
+// ============================================================================
 // Widget
 // ============================================================================
 
@@ -343,12 +543,34 @@ class _LifeCycleGameState extends State<LifeCycleGame>
     super.initState();
     _loadRound();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: play the game correctly, hands-free. This is a
+    // per-round multiple-choice quiz (tap the correct next stage), so buffer
+    // the host's ~250ms tick to a human-readable pace so each pick + reveal is
+    // legible. See [_autoStep]. Dormant unless the host is driving.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per buffered host tick. Plays LIFE CYCLE *correctly*:
+  /// when a question is up, it taps the known-correct next stage ([_answerName])
+  /// through the real tap handler ([_onTap]) — banking real points/streak; when
+  /// the answer flare is showing, it dismisses it ([_skipFlare]) to advance to
+  /// the next round. Deterministic, always correct, no synthetic taps.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_state == _Answer.waiting) {
+      _onTap(_answerName); // pick the correct next stage
+    } else {
+      _skipFlare(); // dismiss the reveal → next round
+    }
   }
 
   // ── difficulty ──

@@ -25,6 +25,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -469,6 +470,328 @@ final List<_LevelBlueprint> _kLevelLadder = [
   ),
 ];
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each frame draws the LITERAL
+// in-game components (gravity well, moving catcher + ghosts, cannon, planetlet)
+// with the same GameFx primitives, colors and constants the live game uses.
+// Static, cheap, size-guarded — rendered once in the host's intro carousel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A point on the same tilted ellipse the catchers trace (t frozen at 0).
+Offset _legendEllipse(
+    Offset center, double rx, double ry, double tilt, double ang) {
+  final lx = cos(ang) * rx;
+  final ly = sin(ang) * ry;
+  return Offset(
+    center.dx + lx * cos(tilt) - ly * sin(tilt),
+    center.dy + lx * sin(tilt) + ly * cos(tilt),
+  );
+}
+
+/// Quadratic bezier sample — stands in for a curved shot path in the manual.
+Offset _legendQuad(Offset a, Offset b, Offset c, double u) {
+  final mu = 1 - u;
+  return a * (mu * mu) + b * (2 * mu * u) + c * (u * u);
+}
+
+/// A gravity well — influence gradient + rings + shaded orb + pull label,
+/// mirroring `_PursuitPainter._paintWell` with the pulse frozen.
+void _legendWell(Canvas canvas, Offset c, double radius, double mass,
+    Color color, String label) {
+  final influence = radius + mass * 22;
+  canvas.drawCircle(
+    c,
+    influence,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [color.withValues(alpha: 0.14), color.withValues(alpha: 0.0)],
+      ).createShader(Rect.fromCircle(center: c, radius: influence)),
+  );
+  final ringCount = (3 + mass).round().clamp(3, 6);
+  final ringSpacing = (influence - radius) / (ringCount + 1);
+  for (int r = ringCount; r >= 1; r--) {
+    canvas.drawCircle(
+      c,
+      radius + r * ringSpacing,
+      Paint()
+        ..color = color.withValues(alpha: 0.06 + 0.03 * (1 - r / ringCount))
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.9,
+    );
+  }
+  GameFx.orb(canvas, c, radius, color, glow: 1.4, specular: true);
+  if (label.isNotEmpty) {
+    GameFx.text(canvas, label, c.translate(0, radius + 14), 9,
+        color.withValues(alpha: 0.8));
+  }
+}
+
+/// The moving catcher — intake rings + gold orb + crosshair, exactly the
+/// grammar `_PursuitPainter._paintTarget` draws for the live target.
+void _legendTarget(Canvas canvas, Offset c, double radius) {
+  for (int i = 0; i < 2; i++) {
+    canvas.drawCircle(
+      c,
+      radius + 10 + i * 9,
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.16 - i * 0.06)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+  GameFx.orb(canvas, c, radius, Potatuhs.gold,
+      glow: 1.6, rim: Potatuhs.sienna, specular: true);
+  final ch = Paint()
+    ..color = Potatuhs.gold.withValues(alpha: 0.6)
+    ..strokeWidth = 1.3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(c.translate(-11, 0), c.translate(11, 0), ch);
+  canvas.drawLine(c.translate(0, -11), c.translate(0, 11), ch);
+}
+
+/// One "where it WILL be" ghost marker — a hollow gold ring + tiny core.
+void _legendGhost(Canvas canvas, Offset g, double radius, double alpha) {
+  canvas.drawCircle(
+    g,
+    radius * 0.6,
+    Paint()
+      ..color = Potatuhs.gold.withValues(alpha: alpha)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4,
+  );
+  canvas.drawCircle(
+      g, 2.0, Paint()..color = Potatuhs.gold.withValues(alpha: alpha * 0.9));
+}
+
+/// A small tangent arrowhead (unit [u]); used for orbit direction cues.
+void _legendArrow(Canvas canvas, Offset at, Offset u, double len, Color color) {
+  final tip = at + u * len;
+  final perp = Offset(-u.dy, u.dx);
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(at, tip, p);
+  canvas.drawLine(tip, tip - u * 7 + perp * 5, p);
+  canvas.drawLine(tip, tip - u * 7 - perp * 5, p);
+}
+
+/// The cannon — ink orb + air-force barrel pointing along [aim] (unit).
+void _legendCannon(Canvas canvas, Offset c, Offset aim) {
+  final end = c + aim * 26;
+  GameFx.glowLine(canvas, c, end, Potatuhs.airForce, width: 5, progress: 1.0);
+  GameFx.orb(canvas, c, 14, Potatuhs.inkPanel,
+      glow: 0.7, rim: Potatuhs.airForce, specular: false);
+}
+
+/// Frame 1 — the core loop: launch a planetlet that CURVES through a well.
+void _legendLaunch(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+
+  final well = Offset(w * 0.52, h * 0.60);
+  _legendWell(canvas, well, (h * 0.075).clamp(12.0, 26.0), 2.2,
+      Potatuhs.airForce, 'MID');
+
+  final cannon = Offset(w * 0.15, h * 0.84);
+  final target = Offset(w * 0.80, h * 0.24);
+  final ctrl = Offset(w * 0.22, h * 0.28); // bows the preview around the well
+
+  // Curved trajectory preview: cool at the cannon → warm at the target.
+  const steps = 30;
+  for (int i = 0; i <= steps; i++) {
+    final u = i / steps;
+    final p = _legendQuad(cannon, ctrl, target, u);
+    final r = (3.0 - u * 1.6).clamp(0.8, 3.0);
+    final col = Color.lerp(Potatuhs.airForce, Potatuhs.gold, u)!;
+    canvas.drawCircle(
+        p, r, Paint()..color = col.withValues(alpha: (1 - u) * 0.5 + 0.28));
+  }
+
+  // Live planetlet leaving the barrel.
+  final second = _legendQuad(cannon, ctrl, target, 0.10);
+  GameFx.orb(canvas, second, _kProjectileRadius, Potatuhs.glaucous,
+      glow: 1.6, rim: Colors.white, specular: true);
+
+  final aimDir = (ctrl - cannon);
+  final adl = aimDir.distance;
+  _legendCannon(
+      canvas, cannon, adl > 0 ? aimDir / adl : const Offset(0.7, -0.7));
+  _legendTarget(canvas, target, (h * 0.045).clamp(11.0, 18.0));
+}
+
+/// Frame 2 — how to score: lead the moon; aim at a ghost, not the moon.
+void _legendLead(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+
+  final center = Offset(w * 0.56, h * 0.44);
+  final rx = w * 0.30, ry = h * 0.20;
+  const tilt = 0.35;
+  final tr = (h * 0.045).clamp(11.0, 18.0);
+
+  // Faint full orbit path.
+  final path = Path();
+  const samples = 56;
+  for (int i = 0; i <= samples; i++) {
+    final p = _legendEllipse(center, rx, ry, tilt, i / samples * 2 * pi);
+    i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = Potatuhs.airForce.withValues(alpha: 0.22)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2,
+  );
+
+  const a0 = -2.3;
+  final now = _legendEllipse(center, rx, ry, tilt, a0);
+
+  // Future ghost dots ahead along the orbit — the lead teacher.
+  const ghostCount = 3;
+  for (int k = 1; k <= ghostCount; k++) {
+    final g = _legendEllipse(center, rx, ry, tilt, a0 + k * 0.5);
+    _legendGhost(canvas, g, tr, 0.5 * (1 - (k - 1) / (ghostCount + 0.5)));
+  }
+
+  // Direction arrow on the target (tangent).
+  final ahead = _legendEllipse(center, rx, ry, tilt, a0 + 0.12);
+  final dir = ahead - now;
+  final dl = dir.distance;
+  if (dl > 0.001) {
+    _legendArrow(canvas, now + dir / dl * (tr + 4), dir / dl, 14,
+        Potatuhs.gold.withValues(alpha: 0.55));
+  }
+
+  // A curved shot preview ending on the furthest ghost (the lead point).
+  final cannon = Offset(w * 0.13, h * 0.86);
+  final lead = _legendEllipse(center, rx, ry, tilt, a0 + ghostCount * 0.5);
+  final ctrl = Offset(w * 0.30, h * 0.34);
+  const steps = 26;
+  for (int i = 0; i <= steps; i++) {
+    final u = i / steps;
+    final p = _legendQuad(cannon, ctrl, lead, u);
+    final col = Color.lerp(Potatuhs.airForce, Potatuhs.gold, u)!;
+    canvas.drawCircle(p, (2.6 - u * 1.4).clamp(0.8, 2.6),
+        Paint()..color = col.withValues(alpha: (1 - u) * 0.45 + 0.25));
+  }
+  final aim = (ctrl - cannon);
+  final al = aim.distance;
+  _legendCannon(canvas, cannon, al > 0 ? aim / al : const Offset(0.7, -0.7));
+
+  _legendTarget(canvas, now, tr);
+}
+
+/// Frame 3 — the danger: crash into a well and the shot is lost.
+void _legendCrash(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+
+  final well = Offset(w * 0.60, h * 0.50);
+  final wr = (h * 0.10).clamp(16.0, 38.0);
+  _legendWell(canvas, well, wr, 3.4, Potatuhs.sienna, 'GIANT');
+
+  // A shot curving straight into the well.
+  final start = Offset(w * 0.12, h * 0.84);
+  final ctrl = Offset(w * 0.30, h * 0.40);
+  final pts = <Offset>[];
+  for (int i = 0; i <= 26; i++) {
+    final p = _legendQuad(start, ctrl, well, i / 26);
+    pts.add(p);
+    if ((p - well).distance < wr + 6) break;
+  }
+  final tp = Path()..moveTo(pts.first.dx, pts.first.dy);
+  for (final p in pts.skip(1)) {
+    tp.lineTo(p.dx, p.dy);
+  }
+  canvas.drawPath(
+    tp,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..color = Potatuhs.airForce.withValues(alpha: 0.38)
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+  );
+  canvas.drawPath(
+    tp,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..color = Colors.white.withValues(alpha: 0.7)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round,
+  );
+
+  // Impact burst — the miss.
+  final impact = pts.last;
+  for (int i = 0; i < 10; i++) {
+    final a = i / 10 * 2 * pi;
+    final rr = 8.0 + (i % 3) * 4.0;
+    canvas.drawCircle(impact + Offset(cos(a), sin(a)) * rr, 2.5,
+        Paint()..color = Potatuhs.orange.withValues(alpha: 0.8));
+  }
+}
+
+/// Frame 4 — the escalation: faster comets, more moons, tinier catchers.
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+
+  final center = Offset(w * 0.52, h * 0.50);
+  _legendWell(
+      canvas, center, (h * 0.075).clamp(14.0, 30.0), 3.6, Potatuhs.airForce, 'GIANT');
+
+  final tr = (h * 0.032).clamp(9.0, 13.0); // shrunken late-game catcher
+
+  // Two eccentric, tilted comet arcs — one prograde, one retrograde.
+  final orbits = [
+    [w * 0.32, h * 0.16, 0.5, -1.6, 1.0], // rx, ry, tilt, angle, dir
+    [w * 0.24, h * 0.28, -0.6, 1.1, -1.0],
+  ];
+  for (final o in orbits) {
+    final rx = o[0], ry = o[1], tilt = o[2], a0 = o[3], dir = o[4];
+    final path = Path();
+    const samples = 56;
+    for (int i = 0; i <= samples; i++) {
+      final p = _legendEllipse(center, rx, ry, tilt, i / samples * 2 * pi);
+      i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Potatuhs.airForce.withValues(alpha: 0.20)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2,
+    );
+    final now = _legendEllipse(center, rx, ry, tilt, a0);
+    final ahead = _legendEllipse(center, rx, ry, tilt, a0 + dir * 0.14);
+    final d = ahead - now;
+    final dl = d.distance;
+    if (dl > 0.001) {
+      _legendArrow(canvas, now + d / dl * (tr + 4), d / dl, 13,
+          Potatuhs.gold.withValues(alpha: 0.7));
+    }
+    _legendTarget(canvas, now, tr);
+  }
+}
+
+/// The visual manual for Orbit Pursuit — wired into the registry spec.
+final List<LegendFrame> orbitPursuitLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag to launch — your shot CURVES through gravity',
+      paint: _legendLaunch),
+  const LegendFrame(
+      caption: 'Aim where it WILL be: hit a gold ghost, not the moon',
+      paint: _legendLead),
+  const LegendFrame(
+      caption: 'Crash into a gravity well and you lose the shot',
+      paint: _legendCrash),
+  const LegendFrame(
+      caption: 'It escalates: faster comets, more moons, fewer ghosts',
+      paint: _legendEscalate),
+];
+
 class OrbitPursuitGame extends StatefulWidget {
   final MiniGameSession session;
   const OrbitPursuitGame({super.key, required this.session});
@@ -478,7 +801,8 @@ class OrbitPursuitGame extends StatefulWidget {
 
 class _OrbitPursuitGameState extends State<OrbitPursuitGame>
     with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
 
   // ── progress (host owns score/timer/results) ───────────────────────────────
   int _level = 0; // index into the ladder
@@ -508,15 +832,78 @@ class _OrbitPursuitGameState extends State<OrbitPursuitGame>
     super.initState();
     _layout = _generateLayout();
     _shotsLeft = _shotsForLayout(_layout);
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick);
-    _ctrl.forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to lead + launch by itself. The
+    // host only invokes this in hands-free mode; harmless during normal play.
+    // See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) {
+      widget.session.autoPilot = null;
+    }
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent hands-free launch per host tick (~250ms). Fires ONLY when
+  /// no shot is airborne and an uncaught target exists, so it never wastes a
+  /// shot mid-flight. It LEADS the moving catcher: aiming straight at where the
+  /// target IS would always miss (the shot takes time to arrive), so it solves
+  /// for the intercept point by iterating the target's own [_MovingTarget.posAt]
+  /// path — estimate flight time from distance ÷ launch speed, look up where the
+  /// target will be then, refine, repeat. It then launches at FULL power toward
+  /// that predicted point via the same [_Projectile] the real launch builds; a
+  /// fast, strong shot also curves less through the wells, keeping the lead
+  /// honest. Deterministic — no randomness, no synthetic gestures.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_canvasSize == Size.zero) return;
+    // In-flight guard: never launch while a live shot is traveling.
+    if (_projectile != null && _projectile!.alive) return;
+    // Don't fight a human drag if one is somehow in progress.
+    if (_isDragging) return;
+
+    final origin = _cannonPx(_canvasSize);
+
+    // Pick the nearest uncaught catcher (shortest flight → easiest lead).
+    _MovingTarget? target;
+    double bestDist = double.infinity;
+    for (final t in _layout.targets) {
+      if (t.caught) continue;
+      final d = (t.posAt(_canvasSize, _t) - origin).distance;
+      if (d < bestDist) {
+        bestDist = d;
+        target = t;
+      }
+    }
+    if (target == null) return;
+
+    // Full-power launch — strong shots bend less and shorten the lead window.
+    const speed = _kMaxLaunchSpeed;
+
+    // Solve the lead: converge flight time on where the target WILL be, using
+    // the game's own orbital path function (the same one the ghost dots use).
+    double flight = bestDist / speed;
+    Offset predicted = target.posAt(_canvasSize, _t + flight);
+    for (int i = 0; i < 4; i++) {
+      flight = (predicted - origin).distance / speed;
+      predicted = target.posAt(_canvasSize, _t + flight);
+    }
+
+    final aim = predicted - origin;
+    final len = aim.distance;
+    final v = len < 0.001
+        ? const Offset(speed, -speed)
+        : aim / len * speed;
+
+    setState(() {
+      _projectile =
+          _Projectile(x: origin.dx, y: origin.dy, vx: v.dx, vy: v.dy);
+    });
   }
 
   // ── layout generation ──────────────────────────────────────────────────────
@@ -564,8 +951,13 @@ class _OrbitPursuitGameState extends State<OrbitPursuitGame>
       Offset(_kCannonFrac.dx * s.width, _kCannonFrac.dy * s.height);
 
   // ── main tick ──────────────────────────────────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the game must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     if (!widget.session.isRunning) {
       // Still animate atmosphere + orbits so the canvas isn't frozen behind the
       // host's intro/countdown UI.
@@ -776,7 +1168,9 @@ class _OrbitPursuitGameState extends State<OrbitPursuitGame>
       if (px < -120 ||
           px > size.width + 120 ||
           py < -120 ||
-          py > size.height + 120) break;
+          py > size.height + 120) {
+        break;
+      }
     }
     return pts;
   }
@@ -845,7 +1239,7 @@ class _OrbitPursuitGameState extends State<OrbitPursuitGame>
                       _loop > 0
                           ? 'Lv ${_level + 1} · Loop ${_loop + 1}'
                           : 'Lv ${_level + 1}',
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontFamily: Potatuhs.bodyFont,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
@@ -871,7 +1265,7 @@ class _OrbitPursuitGameState extends State<OrbitPursuitGame>
                   ),
                   child: Text(
                     _layout.hint,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontFamily: Potatuhs.displayFont,
                       fontSize: 12,
                       color: Potatuhs.gold,
@@ -1208,25 +1602,42 @@ class _PursuitPainter extends CustomPainter {
   void _paintProjectile(Canvas canvas) {
     if (projectile == null) return;
     final trail = projectile!.trail;
-    for (int i = 1; i < trail.length; i++) {
-      final frac = i / trail.length;
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Potatuhs.airForce.withValues(alpha: frac * 0.38)
-          ..strokeWidth = 6
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
-      );
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Colors.white.withValues(alpha: frac * 0.75)
-          ..strokeWidth = 2.0
-          ..strokeCap = StrokeCap.round,
-      );
+    // Trail in a few alpha bands (old → new), each band ONE polyline path with
+    // one blurred stroke — not a blurred draw per segment. Per-segment blur was
+    // a Gaussian pass per trail segment per frame, the biggest cost here.
+    const bands = 3;
+    final n = trail.length;
+    if (n >= 2) {
+      for (var b = 0; b < bands; b++) {
+        // Overlap each band by one point so the polyline stays connected.
+        final start = max(0, n * b ~/ bands - 1);
+        final end = n * (b + 1) ~/ bands;
+        if (end - start < 2) continue;
+        final path = Path()..moveTo(trail[start].dx, trail[start].dy);
+        for (var i = start + 1; i < end; i++) {
+          path.lineTo(trail[i].dx, trail[i].dy);
+        }
+        final frac = (b + 1) / bands;
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Potatuhs.airForce.withValues(alpha: 0.38 * frac)
+            ..strokeWidth = 6
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Colors.white.withValues(alpha: 0.75 * frac)
+            ..strokeWidth = 2.0
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round,
+        );
+      }
     }
     if (projectile!.alive) {
       final mPos = Offset(projectile!.x, projectile!.y);

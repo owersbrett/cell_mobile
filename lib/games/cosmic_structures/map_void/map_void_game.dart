@@ -197,12 +197,37 @@ class _MapVoidGameState extends State<MapVoidGame>
     _sweepFrom = _scope;
     _sweepTo = _scope;
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer tags to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // ATTRACT autopilot
+  // ==========================================================================
+
+  /// One hands-free move per host tick (buffered to ~1.1s). Plays Map the Void
+  /// *correctly*, not randomly: while a patch awaits a tag it classifies it with
+  /// the region's true form ([_Region.form]) through the game's own [_onTag] —
+  /// always right, no guessing, so the speed bonus and streak land. During the
+  /// result flash and the scope sweep it does nothing; those phases advance on
+  /// their own timers ([_simulate]). The host owns the clock and score HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase == _Phase.active) {
+      _onTag(_region.form);
+    }
+    // feedback / sweeping resolve themselves — no move needed.
   }
 
   // -- Difficulty ------------------------------------------------------------
@@ -783,3 +808,316 @@ class _SkyPainter extends CustomPainter {
   @override
   bool shouldRepaint(_SkyPainter old) => true;
 }
+
+// ============================================================================
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components the player meets (the same scope reticle, galaxy patches and tag
+// buttons the live game renders). Static, cheap, self-contained: they paint
+// once in the pre-game intro carousel, never per frame.
+// ============================================================================
+
+/// Deep-space backdrop shared by every legend card: the game's black plus a
+/// faint, deterministic scatter of cosmic-web node dots.
+void _legendBg(Canvas canvas, Size size) {
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  final webPaint = Paint()..color = Colors.white.withValues(alpha: 0.05);
+  for (var i = 0; i < 50; i++) {
+    final fx = (i * 73 % 101) / 101.0;
+    final fy = (i * 49 % 89) / 89.0;
+    canvas.drawCircle(
+      Offset(fx * size.width, fy * size.height),
+      0.6 + (i % 3) * 0.3,
+      webPaint,
+    );
+  }
+}
+
+/// A fixed demo patch of one form — mirrors the live [_generateRegion] shape so
+/// the manual shows exactly what a real survey patch looks like.
+_Region _demoRegion(_Form form, int seed) {
+  final rng = math.Random(seed);
+  double g() => rng.nextDouble() + rng.nextDouble() - 1.0; // ~[-1,1] hump
+  final galaxies = <_Galaxy>[];
+  switch (form) {
+    case _Form.cluster:
+      for (var i = 0; i < 14; i++) {
+        galaxies.add(_Galaxy(
+          Offset(g() * 0.30, g() * 0.30),
+          2.0 + rng.nextDouble() * 2.0,
+          0.8 + 0.2 * rng.nextDouble(),
+        ));
+      }
+      break;
+    case _Form.filament:
+      const angle = 0.7;
+      final dir = Offset(math.cos(angle), math.sin(angle));
+      final perp = Offset(-dir.dy, dir.dx);
+      for (var i = 0; i < 11; i++) {
+        final t = (rng.nextDouble() * 2 - 1) * 1.0;
+        final off = g() * 0.10;
+        galaxies.add(_Galaxy(
+          dir * t + perp * off,
+          1.5 + rng.nextDouble() * 1.4,
+          0.7 + 0.25 * rng.nextDouble(),
+        ));
+      }
+      break;
+    case _Form.void_:
+      for (var i = 0; i < 2; i++) {
+        galaxies.add(_Galaxy(
+          Offset(g() * 0.8, g() * 0.8),
+          0.9 + rng.nextDouble(),
+          0.32 + 0.2 * rng.nextDouble(),
+        ));
+      }
+      break;
+  }
+  return _Region(form, galaxies);
+}
+
+/// Draws a region's galaxies inside a scope of radius [scopeR] (same soft-halo +
+/// bright-core render as [_SkyPainter._paintPatch]).
+void _legendPatch(Canvas canvas, Offset center, double scopeR, _Region r) {
+  final color = r.form.color;
+  for (final gg in r.galaxies) {
+    final p = center + gg.rel * scopeR;
+    final a = gg.bright.clamp(0.0, 1.0);
+    canvas.drawCircle(
+      p,
+      gg.size * 2.4,
+      Paint()
+        ..color = color.withValues(alpha: 0.10 * a)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+    canvas.drawCircle(
+      p,
+      gg.size,
+      Paint()
+        ..color = Color.lerp(color, Colors.white, 0.4)!.withValues(alpha: a),
+    );
+  }
+}
+
+/// The survey scope reticle (ring, faint disc, crosshair ticks) — optionally
+/// with a depleting urgency arc ([arc] = fraction remaining, <0 to omit).
+void _legendScope(Canvas canvas, Offset center, double scopeR, Color ring,
+    {double arc = -1}) {
+  canvas.drawCircle(
+    center,
+    scopeR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..color = ring.withValues(alpha: 0.85),
+  );
+  canvas.drawCircle(center, scopeR, Paint()..color = ring.withValues(alpha: 0.05));
+  final tick = Paint()
+    ..color = ring.withValues(alpha: 0.6)
+    ..strokeWidth = 1.6;
+  for (final a in [0.0, math.pi / 2, math.pi, 3 * math.pi / 2]) {
+    final dir = Offset(math.cos(a), math.sin(a));
+    canvas.drawLine(
+        center + dir * (scopeR - 7), center + dir * (scopeR + 7), tick);
+  }
+  if (arc >= 0) {
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: scopeR + 4),
+      -math.pi / 2,
+      -2 * math.pi * arc,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.2
+        ..strokeCap = StrokeCap.round
+        ..color = _kAccent.withValues(alpha: 0.55 + 0.35 * arc),
+    );
+  }
+}
+
+/// Centred canvas text in the game's UI font.
+void _legendText(Canvas canvas, String s, Offset center, double size,
+    Color color,
+    {FontWeight weight = FontWeight.w800, double letterSpacing = 0.5}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: size,
+        fontWeight: weight,
+        color: color,
+        letterSpacing: letterSpacing,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// A tag button icon (the literal Material glyph the live buttons draw).
+void _legendIcon(
+    Canvas canvas, IconData icon, Offset center, double size, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        fontSize: size,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// One of the three classify buttons, drawn like the in-game [_tagButton].
+void _legendButton(Canvas canvas, Rect r, _Form form, {bool highlight = false}) {
+  final color = form.color;
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(
+      rrect, Paint()..color = color.withValues(alpha: highlight ? 0.22 : 0.10));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..color = color.withValues(alpha: highlight ? 1.0 : 0.55),
+  );
+  final fg = color.withValues(alpha: highlight ? 1.0 : 0.7);
+  _legendIcon(canvas, form.icon, Offset(r.center.dx, r.top + r.height * 0.36),
+      (r.height * 0.30).clamp(14.0, 24.0), fg);
+  _legendText(
+    canvas,
+    form.label,
+    Offset(r.center.dx, r.bottom - r.height * 0.24),
+    (r.height * 0.18).clamp(9.0, 13.0),
+    fg,
+    weight: FontWeight.w900,
+    letterSpacing: 1.0,
+  );
+}
+
+// -- Frame 1: the three forms you must tell apart ----------------------------
+void _legendForms(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  _legendBg(canvas, size);
+  final r = math.min(size.width, size.height) * 0.15;
+  final cy = size.height * 0.40;
+  final xs = [size.width * 0.22, size.width * 0.5, size.width * 0.78];
+  const forms = [_Form.cluster, _Form.filament, _Form.void_];
+  const seeds = [3, 7, 5];
+  for (var i = 0; i < 3; i++) {
+    final c = Offset(xs[i], cy);
+    _legendPatch(canvas, c, r, _demoRegion(forms[i], seeds[i]));
+    _legendScope(canvas, c, r, forms[i].color);
+    _legendText(canvas, forms[i].label, Offset(xs[i], cy + r + size.height * 0.12),
+        (r * 0.40).clamp(9.0, 15.0), forms[i].color,
+        weight: FontWeight.w900, letterSpacing: 1.0);
+  }
+}
+
+// -- Frame 2: read the scope, then tag the region ----------------------------
+void _legendTag(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  _legendBg(canvas, size);
+  final r = math.min(size.width, size.height) * 0.19;
+  final c = Offset(size.width * 0.5, size.height * 0.28);
+  _legendPatch(canvas, c, r, _demoRegion(_Form.cluster, 3));
+  _legendScope(canvas, c, r, _kAccent);
+
+  // Downward chevron cue from the scope to the buttons.
+  final cx = size.width * 0.5, cy = size.height * 0.53;
+  final chev = Paint()
+    ..color = _kAccent
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(Offset(cx - 9, cy - 6), Offset(cx, cy + 4), chev);
+  canvas.drawLine(Offset(cx + 9, cy - 6), Offset(cx, cy + 4), chev);
+
+  // The three classify buttons; the matching one (CLUSTER) lit up.
+  const forms = [_Form.void_, _Form.filament, _Form.cluster];
+  final gap = size.width * 0.03;
+  final left = size.width * 0.07;
+  final bw = (size.width * 0.86 - 2 * gap) / 3;
+  final bh = (size.height * 0.24).clamp(44.0, size.height * 0.30);
+  final top = size.height * 0.66;
+  for (var i = 0; i < 3; i++) {
+    final r0 = Rect.fromLTWH(left + i * (bw + gap), top, bw, bh);
+    _legendButton(canvas, r0, forms[i], highlight: forms[i] == _Form.cluster);
+  }
+}
+
+// -- Frame 3: tag fast + chain streaks to multiply score ---------------------
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  _legendBg(canvas, size);
+  final r = math.min(size.width, size.height) * 0.22;
+  final c = Offset(size.width * 0.5, size.height * 0.46);
+  _legendPatch(canvas, c, r, _demoRegion(_Form.cluster, 11));
+  // Depleting urgency arc — tag before it empties for a bigger speed bonus.
+  _legendScope(canvas, c, r, _kAccent, arc: 0.68);
+
+  // Streak badge (mirrors the in-game gold streak chip).
+  final badge = Rect.fromLTWH(size.width * 0.08, size.height * 0.10,
+      size.width * 0.40, size.height * 0.13);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(badge, const Radius.circular(8)),
+    Paint()..color = _kGold.withValues(alpha: 0.16),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(badge, const Radius.circular(8)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kGold.withValues(alpha: 0.7),
+  );
+  _legendText(canvas, '×3  •  9 streak', badge.center,
+      (badge.height * 0.34).clamp(9.0, 14.0), _kGold,
+      weight: FontWeight.w800);
+
+  // A score pop rising off the scope.
+  _legendText(
+      canvas,
+      '+240',
+      Offset(size.width * 0.5, c.dy - r - size.height * 0.05),
+      (r * 0.42).clamp(12.0, 20.0),
+      _kGood,
+      weight: FontWeight.w900);
+}
+
+// -- Frame 4: most regions are VOID — resist over-tagging --------------------
+void _legendVoidTrap(Canvas canvas, Size size) {
+  if (size.width <= 1 || size.height <= 1) return;
+  _legendBg(canvas, size);
+  final r = math.min(size.width, size.height) * 0.13;
+  final cy = size.height * 0.42;
+  // A survey row that is mostly empty — the truth of the cosmos.
+  const forms = [_Form.void_, _Form.void_, _Form.cluster, _Form.void_];
+  const seeds = [5, 8, 3, 2];
+  for (var i = 0; i < 4; i++) {
+    final x = size.width * (0.16 + i * 0.226);
+    final c = Offset(x, cy);
+    _legendPatch(canvas, c, r, _demoRegion(forms[i], seeds[i]));
+    _legendScope(canvas, c, r, forms[i].color);
+    _legendText(canvas, forms[i].label, Offset(x, cy + r + size.height * 0.10),
+        (r * 0.42).clamp(8.0, 12.0), forms[i].color,
+        weight: FontWeight.w800, letterSpacing: 0.8);
+  }
+}
+
+/// The visual manual for Map the Void — wired into the registry spec.
+final List<LegendFrame> mapVoidLegendFrames = [
+  const LegendFrame(
+      caption: 'Tell the three cosmic forms apart', paint: _legendForms),
+  const LegendFrame(
+      caption: "Read the scope, then tag the region's form", paint: _legendTag),
+  const LegendFrame(
+      caption: 'Tag fast and chain streaks to multiply score',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Most regions are VOID — resist over-tagging',
+      paint: _legendVoidTrap),
+];

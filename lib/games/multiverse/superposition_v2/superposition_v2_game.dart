@@ -104,6 +104,7 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
   late final Ticker _ticker;
   Duration _lastElapsed = Duration.zero;
   final math.Random _rng = math.Random();
+  Size _lastSize = Size.zero; // latest layout size, for the autopilot handler
 
   // ── Wavefunction state (index 0 & 1 are the two possible qubits) ───────────
   final List<double> _phase = [0.0, math.pi];
@@ -138,6 +139,8 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
   // collapse. Blinks periodically drift the target so the aim must be re-found.
   bool _mobile = false;
   StreamSubscription<AccelerometerEvent>? _accelSub;
+  bool _sensorLive = false; // true once a real accelerometer sample arrives
+  double _manualHold = 0.0; // s remaining of drag-aim override over the sensor
   double _rawGx = 0.0, _rawGy = 9.8; // latest raw gravity (portrait upright)
   double _gx = 0.0, _gy = 9.8; // low-passed gravity vector
   double _aimAngle = -math.pi / 2; // smoothed vector angle (rad, screen space)
@@ -171,18 +174,72 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
       // low-passed in the ticker so the frame rate — not the sensor rate —
       // governs smoothing.
       _accelSub = accelerometerEventStream().listen((e) {
+        _sensorLive = true; // simulators/emulators may never emit — see _dragAim
         _rawGx = e.x;
         _rawGy = e.y;
       }, onError: (_) {});
     }
     _ticker = createTicker(_onTick)..start();
+
+    // ATTRACT autopilot: this game knows how to time its own collapse. The host
+    // calls it on the autopilot cadence (~250ms) while running; it is a no-op
+    // during hands-on play. See [_autoStep]. Registered always (harmless).
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _accelSub?.cancel();
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One competent hands-free move per host tick (~250ms). This is a TIMING
+  /// game: the wavefunction sweeps continuously between ticks, so "measure if
+  /// currently in lock" would fire on the rising lip and miss the crest. Instead
+  /// we read every active qubit's phase and (level/climax-scaled) angular speed,
+  /// then look one tick ahead:
+  ///
+  ///   • Only ever fire when firing NOW already scores — i.e. every active qubit
+  ///     is inside its guaranteed LOCK zone (P(target) ≥ _kGuarantee). Measuring
+  ///     in a trough is an honest coin-flip we never take.
+  ///   • Among the in-lock ticks, fire on the one at the CREST — only when the
+  ///     joint amplitude NOW is at least as high as it will be one tick from now
+  ///     (`jointNow >= jointNext`). If a higher tick is still ahead we wait for
+  ///     it, so the collapse lands as close to peak amplitude as possible.
+  ///
+  /// The mobile tilt path can't be driven deterministically (aim rides the live
+  /// gravity sensor), so there we only measure when already matched.
+  void _autoStep() {
+    if (!widget.session.isRunning || _collapseT > 0) return;
+
+    if (_mobile) {
+      if (_isMatched()) _measureMobile(_lastSize);
+      return;
+    }
+
+    // The host drives this on ~250ms cadence; look exactly one window ahead.
+    const window = 0.25;
+    final w = _omega;
+
+    double jointNow = 1.0;
+    double jointNext = 1.0;
+    for (var i = 0; i < _n; i++) {
+      final pNow = _pTarget(i);
+      if (pNow < _kGuarantee) return; // a qubit out of lock → don't measure yet.
+      jointNow *= pNow;
+
+      // Predict this qubit's P(target) one tick from now (same integration as
+      // the ticker: qubit 1 drifts at 0.83× the base rate).
+      final phNext = _phase[i] + w * (i == 1 ? 0.83 : 1.0) * window;
+      final pUpNext = 0.5 + 0.5 * math.sin(phNext);
+      jointNext *= _target[i] ? pUpNext : (1 - pUpNext);
+    }
+
+    // All qubits guaranteed AND the joint amplitude is at/just past its crest.
+    if (jointNow >= jointNext) _measure(_lastSize);
   }
 
   void _onTick(Duration elapsed) {
@@ -352,10 +409,17 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
     final k = (1 - math.exp(-dt / 0.08)).clamp(0.0, 1.0);
     _gx += (_rawGx - _gx) * k;
     _gy += (_rawGy - _gy) * k;
-    final mag2 = _gx * _gx + _gy * _gy;
-    if (mag2 > 0.04) {
-      final a = math.atan2(_gx, _gy);
-      if (a.isFinite) _aimAngle = a;
+    if (_manualHold > 0) {
+      // Drag-aim override: the finger owns the vector; tilt re-takes control
+      // after the hold lapses. (On sensorless simulators the hold is moot —
+      // the gravity branch below is gated on a live sensor.)
+      _manualHold = math.max(0.0, _manualHold - dt);
+    } else if (_sensorLive) {
+      final mag2 = _gx * _gx + _gy * _gy;
+      if (mag2 > 0.04) {
+        final a = math.atan2(_gx, _gy);
+        if (a.isFinite) _aimAngle = a;
+      }
     }
 
     // Collapse hold → fresh target.
@@ -415,6 +479,18 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
     _matchGlow = 0.0;
   }
 
+  /// Drag fallback for the tilt aim — the ONLY control on sensorless
+  /// platforms (iOS simulator, emulators without virtual sensors), and a
+  /// temporary override on real devices.
+  void _dragAim(Offset p, Size size) {
+    final c = _tiltCenter(size);
+    final v = p - c;
+    if (v.distance < 12) return; // dead zone at the hub — angle is unstable
+    final a = math.atan2(v.dy, v.dx);
+    if (a.isFinite) _aimAngle = a;
+    _manualHold = 3.0;
+  }
+
   void _measureMobile(Size size) {
     if (!widget.session.isRunning || _collapseT > 0) return;
     final err = _aimError();
@@ -455,9 +531,17 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
+      _lastSize = size;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => _mobile ? _measureMobile(size) : _measure(size),
+        // Web mechanic: measure on raw tap-down (timing game — unchanged).
+        // Tilt mechanic: measure on a CLEAN tap (onTap), so the pan recognizer
+        // can own drags for the drag-aim fallback without a drag also firing
+        // a measurement.
+        onTapDown: _mobile ? null : (_) => _measure(size),
+        onTap: _mobile ? () => _measureMobile(_lastSize) : null,
+        onPanStart: _mobile ? (d) => _dragAim(d.localPosition, size) : null,
+        onPanUpdate: _mobile ? (d) => _dragAim(d.localPosition, size) : null,
         child: ClipRect(
           child: CustomPaint(
             size: size,
@@ -465,6 +549,7 @@ class _SuperpositionV2GameState extends State<SuperpositionV2Game>
                 ? _SuperpositionTiltPainter(
                     aimAngle: _aimAngle,
                     targetAngle: _targetAngle,
+                    dragAim: !_sensorLive,
                     tolerance: _tolerance,
                     matched: _collapseT == 0 && _isMatched(),
                     matchGlow: _matchGlow,
@@ -920,6 +1005,7 @@ class _SuperpositionV2Painter extends CustomPainter {
 class _SuperpositionTiltPainter extends CustomPainter {
   final double aimAngle;
   final double targetAngle;
+  final bool dragAim; // no live sensor → the hint teaches DRAG, not TILT
   final double tolerance;
   final bool matched;
   final double matchGlow;
@@ -939,6 +1025,7 @@ class _SuperpositionTiltPainter extends CustomPainter {
   _SuperpositionTiltPainter({
     required this.aimAngle,
     required this.targetAngle,
+    required this.dragAim,
     required this.tolerance,
     required this.matched,
     required this.matchGlow,
@@ -1169,7 +1256,7 @@ class _SuperpositionTiltPainter extends CustomPainter {
       msg = 'LOCKED — MEASURE!';
       col = _kLock;
     } else {
-      msg = 'TILT TO AIM';
+      msg = dragAim ? 'DRAG TO AIM' : 'TILT TO AIM';
       col = _kAccent;
     }
     final pulse = collapsed
@@ -1192,3 +1279,378 @@ class _SuperpositionTiltPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _SuperpositionTiltPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each frame draws the LITERAL
+// in-game components (same geometry/colors as _SuperpositionV2Painter and
+// _SuperpositionTiltPainter) statically: the Bloch-style sphere + state
+// vector, the lock-zone cap, the guaranteed collapse, and the phone tilt aim.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Static Bloch-style sphere shell — mirrors `_paintQubit`'s scaffolding:
+/// shell + inner glow, 50/50 equator ellipse, vertical axis, the two pole
+/// markers (↑ is the target here) and, optionally, the glowing LOCK cap that
+/// hugs the target pole from P = [_kGuarantee] to the pole.
+void _legendShell(Canvas canvas, Offset c, double r,
+    {bool inLock = false, bool lockZone = true}) {
+  double tipYFor(double p) => c.dy - r * 0.92 * (2 * p - 1); // target = |↑⟩
+
+  // Sphere shell + inner glow.
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color =
+          (inLock ? _kLock : _kAccent).withValues(alpha: inLock ? 0.7 : 0.5),
+  );
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        (inLock ? _kLock : _kAccent).withValues(alpha: inLock ? 0.20 : 0.10),
+        _kAccent.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: c, radius: r)),
+  );
+  // Equator ellipse (the 50/50 line).
+  canvas.drawOval(
+    Rect.fromCenter(center: c, width: r * 2, height: r * 0.5),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0
+      ..color = Colors.white.withValues(alpha: 0.12),
+  );
+  // Vertical axis.
+  canvas.drawLine(
+    Offset(c.dx, c.dy - r),
+    Offset(c.dx, c.dy + r),
+    Paint()
+      ..strokeWidth = 1.0
+      ..color = Colors.white.withValues(alpha: 0.10),
+  );
+
+  // LOCK ZONE cap on the target pole.
+  if (lockZone) {
+    final zoneStart = tipYFor(_kGuarantee);
+    final pole = tipYFor(1.0);
+    final glow = inLock ? 1.0 : 0.28;
+    canvas.drawLine(
+      Offset(c.dx, zoneStart),
+      Offset(c.dx, pole),
+      Paint()
+        ..strokeWidth = inLock ? 13 : 9
+        ..strokeCap = StrokeCap.round
+        ..color = _kLock.withValues(alpha: 0.16 * glow)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, inLock ? 9 : 6),
+    );
+    canvas.drawLine(
+      Offset(c.dx, zoneStart),
+      Offset(c.dx, pole),
+      Paint()
+        ..strokeWidth = 3.0
+        ..strokeCap = StrokeCap.round
+        ..color = _kLock.withValues(alpha: 0.35 + 0.45 * glow),
+    );
+  }
+
+  // Poles — up is the target (glowing ring, lit when in lock).
+  _legendPole(canvas, Offset(c.dx, c.dy - r), '↑', _kUp, true, inLock);
+  _legendPole(canvas, Offset(c.dx, c.dy + r), '↓', _kDown, false, false);
+}
+
+/// One pole marker — mirrors `_paintPole`.
+void _legendPole(Canvas canvas, Offset p, String glyph, Color color,
+    bool isTarget, bool lit) {
+  if (isTarget) {
+    canvas.drawCircle(
+      p,
+      lit ? 20 : 16,
+      Paint()
+        ..color = (lit ? _kLock : color).withValues(alpha: lit ? 0.7 : 0.55)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, lit ? 11 : 9),
+    );
+    canvas.drawCircle(
+      p,
+      10,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = lit ? _kLock : color,
+    );
+  }
+  canvas.drawCircle(p, 5, Paint()..color = color.withValues(alpha: 0.9));
+  GameFx.text(canvas, glyph, p, 13, Colors.white, weight: FontWeight.w900);
+}
+
+/// Frame 1 — the live superposition: state vector mid-sweep with its ghost
+/// trail and the variance-sized uncertainty cloud; tip height IS P(target).
+void _legendWave(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width / 2, size.height * 0.50);
+  final r = math.min(size.width * 0.27, size.height * 0.33);
+  if (!r.isFinite || r <= 0) return;
+
+  _legendShell(canvas, c, r, lockZone: false);
+
+  const phase = 0.35; // mid-climb toward the pole (P ≈ 67%)
+  double pUpOf(double ph) => 0.5 + 0.5 * math.sin(ph);
+  double tipYFor(double p) => c.dy - r * 0.92 * (2 * p - 1);
+
+  // Ghost trail conveys the sweep (same fade law as the live painter).
+  for (var g = 5; g >= 1; g--) {
+    final ph = phase - g * 0.16;
+    final wobG = math.sin(ph * 1.7) * r * 0.16;
+    canvas.drawLine(
+      c,
+      Offset(c.dx + wobG, tipYFor(pUpOf(ph))),
+      Paint()
+        ..strokeWidth = 3.0
+        ..strokeCap = StrokeCap.round
+        ..color = _kUp.withValues(alpha: 0.09 * (6 - g)),
+    );
+  }
+
+  // Live vector + uncertainty cloud sized by the real variance P(1−P).
+  final pT = pUpOf(phase);
+  final tip =
+      Offset(c.dx + math.sin(phase * 1.7) * r * 0.16, tipYFor(pT));
+  canvas.drawLine(
+    c,
+    tip,
+    Paint()
+      ..strokeWidth = 3.4
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.2)
+      ..color = _kUp.withValues(alpha: 0.95),
+  );
+  final unc = ((pT * (1 - pT)).clamp(0.0, 0.25)) / 0.25;
+  canvas.drawCircle(
+    tip,
+    4 + 12 * unc,
+    Paint()
+      ..color = _kUp.withValues(alpha: 0.18 + 0.32 * unc)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 7 * unc),
+  );
+
+  GameFx.text(canvas, 'P(target) ${(pT * 100).round()}%',
+      Offset(c.dx, c.dy + r + 20), 12, Potatuhs.textSecondary,
+      weight: FontWeight.w800);
+}
+
+/// Frame 2 — the vector parked inside the glowing LOCK cap at the target pole:
+/// sphere flared, vector lock-green, cloud collapsed to a near-point.
+void _legendLock(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width / 2, size.height * 0.50);
+  final r = math.min(size.width * 0.27, size.height * 0.33);
+  if (!r.isFinite || r <= 0) return;
+
+  _legendShell(canvas, c, r, inLock: true);
+
+  const pT = 0.93; // inside the lock zone (≥ 86%)
+  final tip = Offset(c.dx, c.dy - r * 0.92 * (2 * pT - 1));
+  canvas.drawLine(
+    c,
+    tip,
+    Paint()
+      ..strokeWidth = 4.0
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.2)
+      ..color = _kLock.withValues(alpha: 0.95),
+  );
+  final unc = ((pT * (1 - pT)).clamp(0.0, 0.25)) / 0.25;
+  canvas.drawCircle(
+    tip,
+    4 + 12 * unc,
+    Paint()
+      ..color = _kLock.withValues(alpha: 0.18 + 0.32 * unc)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + 7 * unc),
+  );
+
+  GameFx.text(canvas, 'LOCK · ${(pT * 100).round()}%',
+      Offset(c.dx, c.dy + r + 20), 13, _kLock,
+      weight: FontWeight.w800, glow: 0.7);
+}
+
+/// Frame 3 — the guaranteed collapse: vector snapped crisply to the target
+/// pole, collapse ring mid-expansion, the score pop.
+void _legendMeasure(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width / 2, size.height * 0.54);
+  final r = math.min(size.width * 0.27, size.height * 0.30);
+  if (!r.isFinite || r <= 0) return;
+
+  _legendShell(canvas, c, r, inLock: true, lockZone: false);
+
+  // Definite, collapsed state — crisp vector snapped to the measured pole.
+  final tip = Offset(c.dx, c.dy - r);
+  canvas.drawLine(
+    c,
+    tip,
+    Paint()
+      ..strokeWidth = 4.5
+      ..strokeCap = StrokeCap.round
+      ..color = _kLock,
+  );
+  GameFx.orb(canvas, tip, 9, _kLock, glow: 1.2);
+  // Collapse ring frozen mid-expansion.
+  const ringT = 0.45;
+  canvas.drawCircle(
+    c,
+    r * (0.3 + ringT * 0.9),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5 * (1 - ringT)
+      ..color = _kLock.withValues(alpha: 0.6 * (1 - ringT)),
+  );
+
+  GameFx.text(canvas, '+117', Offset(size.width / 2, size.height * 0.14), 16,
+      _kLock,
+      display: true, weight: FontWeight.w900, glow: 0.8);
+  GameFx.text(canvas, 'COLLAPSED — GUARANTEED',
+      Offset(size.width / 2, size.height * 0.94), 11, _kGood,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// Frame 4 — the phone variant: the vector pinned at the hub, the glowing
+/// target dot on the circumference with its tolerance arc, and a sweep cue
+/// showing the tilt/drag correction that lands the tip on the pole.
+void _legendTilt(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width / 2, size.height * 0.52);
+  final r = math.min(size.width * 0.28, size.height * 0.30);
+  if (!r.isFinite || r <= 0) return;
+
+  // The Bloch great-circle the vector sweeps.
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kAccent.withValues(alpha: 0.5),
+  );
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        _kAccent.withValues(alpha: 0.10),
+        _kAccent.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: c, radius: r)),
+  );
+  // Pivot hub.
+  canvas.drawCircle(
+      c, 4.5, Paint()..color = Colors.white.withValues(alpha: 0.5));
+
+  const tgt = -math.pi / 3; // target pole up-right
+  const tolerance = 0.20;
+  const aim = tgt + 0.85; // vector still off-target — a correction to make
+
+  // Tolerance arc around the target — the window to land the tip in.
+  canvas.drawArc(
+    Rect.fromCircle(center: c, radius: r),
+    tgt - tolerance,
+    tolerance * 2,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round
+      ..color = _kLock.withValues(alpha: 0.35)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+  );
+
+  // Target dot on the circumference.
+  final dot = Offset(c.dx + r * math.cos(tgt), c.dy + r * math.sin(tgt));
+  canvas.drawCircle(
+    dot,
+    14,
+    Paint()
+      ..color = _kGood.withValues(alpha: 0.35)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+  );
+  canvas.drawCircle(
+    dot,
+    9,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..color = _kGood,
+  );
+  canvas.drawCircle(dot, 4.5, Paint()..color = _kGood.withValues(alpha: 0.95));
+
+  // The pivoting state vector, tip riding the circumference.
+  final tip = Offset(c.dx + r * math.cos(aim), c.dy + r * math.sin(aim));
+  canvas.drawLine(
+    c,
+    tip,
+    Paint()
+      ..strokeWidth = 3.4
+      ..strokeCap = StrokeCap.round
+      ..color = _kUp.withValues(alpha: 0.35)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+  );
+  canvas.drawLine(
+    c,
+    tip,
+    Paint()
+      ..strokeWidth = 3.2
+      ..strokeCap = StrokeCap.round
+      ..color = _kUp.withValues(alpha: 0.95),
+  );
+  GameFx.orb(canvas, tip, 6, _kUp, glow: 0.6);
+
+  // Sweep cue: an arc from the tip toward the target dot, with an arrowhead.
+  const cueGap = 0.16;
+  canvas.drawArc(
+    Rect.fromCircle(center: c, radius: r + 16),
+    tgt + tolerance + cueGap,
+    (aim - tgt) - tolerance - cueGap * 2,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round
+      ..color = _kLock.withValues(alpha: 0.7),
+  );
+  const headA = tgt + tolerance + cueGap;
+  final head = Offset(
+      c.dx + (r + 16) * math.cos(headA), c.dy + (r + 16) * math.sin(headA));
+  const headDir = headA - math.pi / 2; // pointing along the arc toward tgt
+  final hp = Paint()
+    ..strokeWidth = 2.2
+    ..strokeCap = StrokeCap.round
+    ..color = _kLock.withValues(alpha: 0.85);
+  canvas.drawLine(
+      head,
+      head +
+          Offset(math.cos(headDir + 2.6), math.sin(headDir + 2.6)) * 8,
+      hp);
+  canvas.drawLine(
+      head,
+      head +
+          Offset(math.cos(headDir - 2.6), math.sin(headDir - 2.6)) * 8,
+      hp);
+
+  GameFx.text(canvas, 'TILT · DRAG', Offset(c.dx, c.dy + r + 22), 12, _kAccent,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Superposition — wired into the registry spec.
+final List<LegendFrame> superpositionLegendFrames = [
+  const LegendFrame(
+      caption: 'Watch the vector ride the wave — height = P(target)',
+      paint: _legendWave),
+  const LegendFrame(
+      caption: 'Ride the crest into the glowing LOCK zone',
+      paint: _legendLock),
+  const LegendFrame(
+      caption: 'MEASURE in lock — the good collapse is guaranteed',
+      paint: _legendMeasure),
+  const LegendFrame(
+      caption: 'On phones: tilt or drag the vector onto the pole',
+      paint: _legendTilt),
+];

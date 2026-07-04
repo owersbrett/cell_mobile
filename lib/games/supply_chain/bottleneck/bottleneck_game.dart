@@ -130,13 +130,45 @@ class _BottleneckGameState extends State<BottleneckGame>
     // Seed a little product so the calm pre-round preview reads as a live line.
     _queue[0] = 3;
     _queue[1] = 1.5;
+    // ATTRACT autopilot: this game knows how to read its own line and boost the
+    // real bottleneck. Registered always (harmless in normal play — the host
+    // only calls it in autoplay). See [_autoStep]. Bottleneck is an action game,
+    // so the interval stays at the default (act every ~250ms tick).
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────────
+  /// One competent hands-free move per host tick (~250ms). Reads the game's own
+  /// bin levels and boosts the TRUE bottleneck: the most-backed-up stage that is
+  /// actually boostable (not mid-boost, not on cooldown). Bins share one cap
+  /// [_kBinCap], so the largest queue is the highest fill ratio — the same stage
+  /// the UI flags red. Boosting a fast/cooling stage is wasted, so those are
+  /// skipped; if nothing is boostable (or the line is empty) it does nothing and
+  /// waits. Deterministic: ties resolve to the most-backed-up, then the first.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    var best = -1;
+    var bestQueue = 0.0;
+    for (var i = 0; i < _kStages; i++) {
+      // Not boostable: currently boosting or still cooling down (see [_tapAt]).
+      if (_boostT[i] > 0 || _coolT[i] > 0) continue;
+      // Strict > keeps it deterministic and only fires on a real backlog
+      // (queue 0 never wins), so we never waste a boost on an idle stage.
+      if (_queue[i] > bestQueue) {
+        bestQueue = _queue[i];
+        best = i;
+      }
+    }
+    if (best < 0) return; // nothing worth boosting right now
+    _boostStage(best);
   }
 
   // ── Simulation ──────────────────────────────────────────────────────────────
@@ -268,12 +300,21 @@ class _BottleneckGameState extends State<BottleneckGame>
     if (!widget.session.isRunning) return;
     final colW = _w / _kStages;
     final i = (local.dx / colW).floor().clamp(0, _kStages - 1);
+    _boostStage(i);
+  }
+
+  /// Boost stage [i] — the shared BOOST handler behind both a real tap ([_tapAt])
+  /// and the attract autopilot ([_autoStep]). Refuses a stage that's already
+  /// boosting or cooling down (that's the wasted tap the deny-shake warns about).
+  void _boostStage(int i) {
+    if (!widget.session.isRunning) return;
     if (_coolT[i] > 0 || _boostT[i] > 0) {
       _denyShake = 1.0;
       return;
     }
     _boostT[i] = _kBoostDuration;
     _coolT[i] = _kBoostDuration + _kCooldown;
+    final colW = _w / _kStages;
     _popups.add(_Popup(
       Offset(colW * (i + 0.5), _h * 0.16),
       'BOOST',
@@ -657,3 +698,197 @@ class _BottleneckPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BottleneckPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components (same belt, bins and potatoes the live game uses). Static and
+// cheap: rendered once on the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One tuber in the game's own two-oval style (mirrors `_BottleneckPainter._potato`).
+void _legPotato(Canvas canvas, Offset c, double rx, double ry,
+    {Color body = _kPotato, bool rot = false}) {
+  canvas.save();
+  canvas.translate(c.dx, c.dy);
+  canvas.rotate(0.35);
+  canvas.drawOval(
+    Rect.fromCenter(center: Offset.zero, width: rx * 2, height: ry * 2),
+    Paint()..color = _kPotatoDark,
+  );
+  canvas.drawOval(
+    Rect.fromCenter(
+        center: const Offset(-0.4, -0.6), width: rx * 1.7, height: ry * 1.6),
+    Paint()..color = body,
+  );
+  if (rot) {
+    // A dark choke-coloured blemish so an overflowed spud reads as spoiled.
+    canvas.drawCircle(
+        const Offset(1.5, 0.5), rx * 0.5, Paint()..color = _kChoke.withValues(alpha: 0.85));
+  }
+  canvas.restore();
+}
+
+void _legIcon(Canvas canvas, IconData icon, Offset center, double sz, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontSize: sz,
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+void _legText(Canvas canvas, String text, Offset at,
+    {required double size, required Color color, bool bold = true}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: size,
+        fontWeight: bold ? FontWeight.w800 : FontWeight.w500,
+        letterSpacing: 0.4,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, at + Offset(-tp.width / 2, -tp.height / 2));
+}
+
+/// One stage bin: buffer body, coloured fill with surface potatoes, and a
+/// border whose colour tells the story (green ok → orange filling → red choke).
+void _legBin(Canvas canvas, Rect rect,
+    {required double fill, required Color border, bool choke = false}) {
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(8));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.28));
+  final fillH = rect.height * fill.clamp(0.0, 1.0);
+  if (fillH > 2) {
+    canvas.save();
+    canvas.clipRRect(rr);
+    canvas.drawRect(
+      Rect.fromLTWH(rect.left, rect.bottom - fillH, rect.width, fillH),
+      Paint()..color = border.withValues(alpha: 0.22),
+    );
+    final n = (fill * 5).ceil().clamp(0, 5);
+    for (var k = 0; k < n; k++) {
+      final px = rect.left + rect.width * (0.24 + 0.52 * ((k * 0.37) % 1));
+      final py = rect.bottom - fillH + 7 + (k % 2) * 7;
+      _legPotato(canvas, Offset(px, py), 6, 4.2);
+    }
+    canvas.restore();
+  }
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = choke ? 2.4 : 1.4
+      ..color = border.withValues(alpha: choke ? 1.0 : 0.55),
+  );
+}
+
+/// Frame 1 — the line: potatoes ride the belt out the SHIP end, which scores.
+void _legendChain(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 1 || h <= 1) return;
+  final beltY = h * 0.44;
+  final belt = RRect.fromRectAndRadius(
+    Rect.fromLTWH(w * 0.05, beltY - 9, w * 0.72, 18),
+    const Radius.circular(9),
+  );
+  canvas.drawRRect(belt, Paint()..color = _kBelt);
+  canvas.drawRRect(
+    belt,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = _kBeltEdge,
+  );
+  for (var k = 0; k < 6; k++) {
+    _legPotato(canvas, Offset(w * 0.10 + k * (w * 0.63 / 6), beltY), 6.5, 4.5);
+  }
+  final ex = Offset(w * 0.88, beltY);
+  canvas.drawCircle(
+    ex,
+    18,
+    Paint()
+      ..color = _kShip.withValues(alpha: 0.16)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+  );
+  _legIcon(canvas, Icons.local_shipping, ex, 22, _kShip);
+  _legText(canvas, 'SHIP', Offset(ex.dx, beltY + 26), size: 10, color: _kShip);
+  _legText(canvas, '+3', Offset(ex.dx, beltY - 30), size: 16, color: _kShip);
+}
+
+/// Frame 2 — the verb: tap the red BOTTLENECK bin to boost that stage.
+void _legendBoost(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 1 || h <= 1) return;
+  final cx = w * 0.5;
+  _legIcon(canvas, Icons.settings, Offset(cx, h * 0.15), 20, _kChoke);
+  _legText(canvas, 'PROCESS', Offset(cx, h * 0.27), size: 11, color: _kChoke);
+  _legText(canvas, 'BOTTLENECK', Offset(cx, h * 0.36), size: 9, color: _kChoke);
+  _legBin(canvas, Rect.fromCenter(center: Offset(cx, h * 0.58), width: w * 0.30, height: h * 0.34),
+      fill: 0.85, border: _kChoke, choke: true);
+  final pill = Rect.fromCenter(center: Offset(cx, h * 0.86), width: w * 0.38, height: 20);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(pill, const Radius.circular(10)),
+    Paint()..color = _kShip.withValues(alpha: 0.25),
+  );
+  _legText(canvas, 'TAP TO BOOST', Offset(cx, h * 0.86), size: 10, color: _kShip);
+}
+
+/// Frame 3 — the danger: a full bin overflows and the spilled spuds rot.
+void _legendOverflow(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 1 || h <= 1) return;
+  final cx = w * 0.5;
+  _legText(canvas, 'OVERFLOW', Offset(cx, h * 0.14), size: 12, color: _kChoke);
+  final rect = Rect.fromCenter(center: Offset(cx, h * 0.56), width: w * 0.30, height: h * 0.34);
+  _legBin(canvas, rect, fill: 1.0, border: _kChoke, choke: true);
+  // Spilled potatoes rotting above the rim.
+  for (var k = 0; k < 3; k++) {
+    _legPotato(canvas, Offset(rect.left + rect.width * (0.28 + 0.22 * k), rect.top - 4), 6, 4.2,
+        rot: true);
+  }
+  _legText(canvas, 'ROT · WASTED', Offset(cx, h * 0.88), size: 10, color: _kWarn);
+}
+
+/// Frame 4 — the escalation: late round, two stages choke at once.
+void _legendDoubleChoke(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 1 || h <= 1) return;
+  const names = ['WASH', 'STORE'];
+  const icons = [Icons.water_drop, Icons.warehouse];
+  final xs = [w * 0.30, w * 0.70];
+  for (var i = 0; i < 2; i++) {
+    final cx = xs[i];
+    _legIcon(canvas, icons[i], Offset(cx, h * 0.18), 18, _kChoke);
+    _legText(canvas, names[i], Offset(cx, h * 0.30), size: 10, color: _kChoke);
+    _legBin(canvas, Rect.fromCenter(center: Offset(cx, h * 0.60), width: w * 0.26, height: h * 0.34),
+        fill: 0.82, border: _kChoke, choke: true);
+  }
+  _legText(canvas, 'TWO CHOKES', Offset(w * 0.5, h * 0.90), size: 11, color: _kChoke);
+}
+
+/// The visual manual for Bottleneck — wired into the registry spec.
+final List<LegendFrame> bottleneckLegendFrames = [
+  const LegendFrame(
+      caption: 'Potatoes ride the line — shipping them out the end scores',
+      paint: _legendChain),
+  const LegendFrame(
+      caption: 'Tap the red BOTTLENECK bin to BOOST that stage',
+      paint: _legendBoost),
+  const LegendFrame(
+      caption: 'Let a bin fill and it OVERFLOWS — spuds rot, wasted',
+      paint: _legendOverflow),
+  const LegendFrame(
+      caption: 'Late on, TWO stages choke at once — triage your boosts',
+      paint: _legendDoubleChoke),
+];

@@ -112,12 +112,45 @@ class _QuantumFoamGameState extends State<QuantumFoamGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free harvest per host tick (~250ms). Plays Quantum Foam the way
+  /// a skilled hand would: it scans the live virtual pairs and observes the one
+  /// closest to annihilating — the pair most in danger of vanishing untouched.
+  /// Harvest energy is fixed per pair regardless of timing, so grabbing the
+  /// most urgent one banks it before it's lost (and shorter-lived pairs happen
+  /// to carry more energy, so urgent-first is doubly efficient). It NEVER taps
+  /// a gold REAL particle — that path is a measurement-error penalty. Runs the
+  /// exact code path a real tap would via [_harvest]. The host owns the clock.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    _Pair? best;
+    var leastRemaining = double.infinity;
+    for (final pr in _pairs) {
+      if (!pr.alive) continue; // skip harvested / annihilated / dead pairs
+      // Time left before this pair snaps back to the void.
+      final remaining = pr.lifetime - pr.age;
+      if (remaining < leastRemaining) {
+        leastRemaining = remaining;
+        best = pr;
+      }
+    }
+    if (best == null) return; // nothing harvestable — never tap a REAL particle
+
+    _harvest(best); // fire the exact path a real tap on this pair would
   }
 
   double get _progress {
@@ -453,3 +486,147 @@ class _FoamPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _FoamPainter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME primitives the
+// live game uses (violet/cyan pair orbs + filament, gold ringed REAL orb).
+// Static, cheap: rendered once in the host intro, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One virtual pair, exactly as [_FoamPainter._paintPair] renders it:
+/// filament + violet `+` orb + cyan `–` orb. [hot] 0..1 = energy (short-lived
+/// pairs read brighter & tighter, same mapping as the game).
+void _legendPairArt(Canvas canvas, Offset center,
+    {required double sep, required double axis, required double hot}) {
+  final r = 8.5 + hot * 3.0;
+  final dir = Offset(math.cos(axis), math.sin(axis));
+  final pp = center + dir * sep;
+  final ap = center - dir * sep;
+
+  canvas.drawLine(
+    pp,
+    ap,
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.10 + 0.25 * hot)
+      ..strokeWidth = 1.4
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+  );
+  GameFx.orb(canvas, pp, r, _kParticle, glow: 0.8, specular: false);
+  GameFx.orb(canvas, ap, r, _kAnti, glow: 0.8, specular: false);
+  GameFx.text(canvas, '+', pp, r * 1.3, Colors.white.withValues(alpha: 0.9));
+  GameFx.text(canvas, '–', ap, r * 1.3, Colors.white.withValues(alpha: 0.9));
+}
+
+/// One stable REAL particle, exactly as [_FoamPainter._paintReal] renders it:
+/// steady gold orb + calm stability ring.
+void _legendRealArt(Canvas canvas, Offset pos) {
+  const rad = 13.0;
+  GameFx.orb(canvas, pos, rad, _kReal, glow: 0.5);
+  canvas.drawCircle(
+    pos,
+    rad + 7,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kReal.withValues(alpha: 0.45),
+  );
+}
+
+/// Vacuum backdrop shared by every card (static clock).
+void _legendVacuum(Canvas canvas, Size size) {
+  GameFx.atmosphere(canvas, size, _kParticle, 0.0, motes: 18);
+}
+
+bool _legendDegenerate(Size size) =>
+    size.width <= 0 ||
+    size.height <= 0 ||
+    !size.width.isFinite ||
+    !size.height.isFinite;
+
+// Card 1 — the core object + verb: a live pair, tap it to harvest.
+void _legendTapPair(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  _legendVacuum(canvas, size);
+  final c = Offset(size.width * 0.5, size.height * 0.42);
+  _legendPairArt(canvas, c, sep: size.width * 0.13, axis: -0.35, hot: 0.55);
+
+  // Tap cue: concentric rings on the pair's centre.
+  final ring = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2
+    ..color = Colors.white.withValues(alpha: 0.55);
+  canvas.drawCircle(c, 15, ring);
+  canvas.drawCircle(
+      c, 24, ring..color = Colors.white.withValues(alpha: 0.25));
+  GameFx.text(canvas, '+35', Offset(c.dx, size.height * 0.78), 15, _kParticle,
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+// Card 2 — the energy–time tradeoff: hot short-lived vs mild long-lived pair.
+void _legendTradeoff(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  _legendVacuum(canvas, size);
+  final left = Offset(size.width * 0.28, size.height * 0.42);
+  final right = Offset(size.width * 0.72, size.height * 0.42);
+  _legendPairArt(canvas, left, sep: size.width * 0.055, axis: 0.5, hot: 1.0);
+  _legendPairArt(canvas, right, sep: size.width * 0.12, axis: -0.4, hot: 0.15);
+  GameFx.text(canvas, '+80', Offset(left.dx, size.height * 0.74), 15,
+      _kParticle,
+      weight: FontWeight.w800, glow: 0.6);
+  GameFx.text(canvas, '+15', Offset(right.dx, size.height * 0.74), 13,
+      _kAnti,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'brief', Offset(left.dx, size.height * 0.86), 10,
+      Colors.white.withValues(alpha: 0.7));
+  GameFx.text(canvas, 'lazy', Offset(right.dx, size.height * 0.86), 10,
+      Colors.white.withValues(alpha: 0.7));
+}
+
+// Card 3 — the danger: the steady gold REAL particle is a −20 penalty.
+void _legendRealPenalty(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  _legendVacuum(canvas, size);
+  final c = Offset(size.width * 0.5, size.height * 0.42);
+  _legendRealArt(canvas, c);
+
+  // A no-tap X over it, in the penalty red the game flashes.
+  final x = Paint()
+    ..color = _kPenalty
+    ..strokeWidth = 4
+    ..strokeCap = StrokeCap.round;
+  const s = 26.0;
+  canvas.drawLine(c.translate(-s, -s), c.translate(s, s), x);
+  canvas.drawLine(c.translate(s, -s), c.translate(-s, s), x);
+  GameFx.text(canvas, '-20', Offset(c.dx, size.height * 0.76), 15, _kPenalty,
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+// Card 4 — escalation: the foam seethes, more pairs + more gold decoys.
+void _legendSeethe(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  _legendVacuum(canvas, size);
+  _legendPairArt(canvas, Offset(size.width * 0.24, size.height * 0.30),
+      sep: size.width * 0.05, axis: 0.9, hot: 0.9);
+  _legendPairArt(canvas, Offset(size.width * 0.70, size.height * 0.24),
+      sep: size.width * 0.07, axis: -0.5, hot: 0.7);
+  _legendPairArt(canvas, Offset(size.width * 0.40, size.height * 0.62),
+      sep: size.width * 0.06, axis: 2.2, hot: 1.0);
+  _legendRealArt(canvas, Offset(size.width * 0.82, size.height * 0.58));
+  _legendRealArt(canvas, Offset(size.width * 0.16, size.height * 0.74));
+}
+
+/// The visual manual for Quantum Foam — wired into the registry spec.
+final List<LegendFrame> quantumFoamLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap a live pair to harvest its borrowed energy',
+      paint: _legendTapPair),
+  const LegendFrame(
+      caption: 'Shorter-lived pairs burn hotter — worth more',
+      paint: _legendTradeoff),
+  const LegendFrame(
+      caption: 'Never tap the steady gold REAL particle: −20',
+      paint: _legendRealPenalty),
+  const LegendFrame(
+      caption: 'Late game the foam seethes — faster, more decoys',
+      paint: _legendSeethe),
+];

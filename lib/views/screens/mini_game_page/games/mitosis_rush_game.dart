@@ -324,14 +324,115 @@ class _MRState extends State<MitosisRushGame>
       ..addListener(_onTick);
     _ticker.forward();
     _lastTime = _now();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This carries the cell through
+  /// mitosis the way a competent player would, never randomly: it switches on
+  /// the game's own [_phase] and performs the CORRECT terminal action for that
+  /// phase, choosing correct targets from live game state (never coordinates or
+  /// synthetic taps). It calls the game's own methods — [_registerG1Hit],
+  /// [_handleSTap] (with the complement base picked from [_baseQueue]),
+  /// [_triggerAnaphase] and [_completePhaseSoon] — so scoring, phase completion
+  /// and animations run exactly as they do under a real touch. The game's own
+  /// [_onTick] repaints every frame, so no setState is needed here; the host
+  /// owns the clock, so the run still ends on time.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_size == Size.zero) return;
+    if (_phaseDone) return; // mid-transition — the tick loop is advancing us
+
+    final cx = _size.width / 2;
+    final cy = _size.height / 2;
+
+    switch (_phase) {
+      case _Phase.g1:
+      case _Phase.g2:
+        // One correct axis "spread" — banks points and grows the cell; the
+        // handler auto-completes the phase once enough hits land.
+        _registerG1Hit();
+        break;
+
+      case _Phase.s:
+        // Tap the correct complement of the current base (A↔T, G↔C), read
+        // straight from the game's own queue — never a guess.
+        if (_baseQueueIdx >= _baseQueue.length) break;
+        if (_baseBtnRects.isEmpty) break; // rects computed in build; wait a tick
+        final current = _baseQueue[_baseQueueIdx];
+        final correct = _kBaseComplement[current]!;
+        final rect = _baseBtnRects[correct];
+        if (rect != null) _handleSTap(rect.center);
+        break;
+
+      case _Phase.prophase:
+        // One clean "pinch" of condensation; completes when fully condensed.
+        _cell.condensation =
+            (_cell.condensation + _kPinchCondensePerHit).clamp(0.0, 1.0);
+        _burst(cx, cy, _kCyan, n: 8);
+        _label(cx, cy, '+$_kProphasePoints', _kCyan);
+        _totalScore += _kProphasePoints;
+        widget.session.addScore(_kProphasePoints);
+        if (_cell.condensation >= 1.0) {
+          _label(cx, cy - 30, 'CONDENSED!', _kCyan);
+          _completePhaseSoon();
+        }
+        break;
+
+      case _Phase.metaphase:
+        // Slide the two halves fully together — the aligned/locked state.
+        _lockX = 0;
+        _keyX = 0;
+        _metaphaseLocked = true;
+        _burst(cx, cy, _kGold, n: 22);
+        _label(cx, cy - 20, 'ALIGNED!', _kGold);
+        _completePhaseSoon(extraPoints: _kMetaphasePoints);
+        break;
+
+      case _Phase.anaphase:
+        // Pull the chromatids apart (own method handles separation + scoring).
+        if (!_anaphaseRegistered) _triggerAnaphase();
+        break;
+
+      case _Phase.telophase:
+        // One competent scrub reversal per tick; dissolves the spindle.
+        _scrubReverseCount++;
+        _burst(cx, cy, _kPurple, n: 4);
+        if (_scrubReverseCount >= _kScrubReversals) {
+          _label(cx, cy - 30, 'SPINDLE GONE!', _kPurple);
+          _completePhaseSoon(
+              extraPoints: _kTelophasePoints * (1 + _interphaseBonus ~/ 3));
+        }
+        break;
+
+      case _Phase.cytokinesis:
+        // One clean slice — cleaves the cell (split animation runs on tick).
+        if (!_sliceRegistered) {
+          _sliceRegistered = true;
+          _burst(cx, cy, _kOrange, n: 24);
+          _label(cx, cy - 30, 'CLEAVED!', _kOrange);
+          _completePhaseSoon(
+              extraPoints:
+                  _kCytokinesisPoints * (1 + _interphaseBonus ~/ 3));
+        }
+        break;
+
+      case _Phase.intro:
+      case _Phase.results:
+        break; // host owns these screens — nothing to do
+    }
   }
 
   // ── Phase management ─────────────────────────────────────────────────────────
@@ -2049,3 +2150,220 @@ class _MRPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _MRPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn in Mitosis Rush's own
+// vocabulary (the same wobble-free cell membrane + nucleus, axis arrows and
+// A/T/G/C tap buttons the live game uses). Static and cheap: each renders
+// once on the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One cell — outer glow, membrane and (optionally) a nucleus — in [col].
+/// Mirrors the live `_drawCellBody` look but static, so a manual card shows
+/// the LITERAL cell the player grows and divides.
+void _mitosisLegendCell(
+  Canvas canvas,
+  Offset c,
+  double r,
+  Color col, {
+  bool nucleus = true,
+  double alpha = 0.26,
+  double condensation = 0,
+}) {
+  if (r <= 0) return;
+  // Outer glow.
+  canvas.drawOval(
+    Rect.fromCenter(center: c, width: r * 2.3, height: r * 2.3),
+    Paint()
+      ..color = col.withValues(alpha: alpha * 0.20)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, _kGlowBlur),
+  );
+  // Membrane.
+  canvas.drawOval(
+    Rect.fromCenter(center: c, width: r * 2, height: r * 2),
+    Paint()..color = col.withValues(alpha: alpha * 0.14),
+  );
+  canvas.drawOval(
+    Rect.fromCenter(center: c, width: r * 2, height: r * 2),
+    Paint()
+      ..color = col.withValues(alpha: (alpha + 0.20).clamp(0.0, 1.0))
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8,
+  );
+  if (!nucleus) return;
+  final nRad = r * (0.34 + 0.10 * (1 - condensation));
+  canvas.drawCircle(c, nRad, Paint()..color = col.withValues(alpha: 0.08));
+  canvas.drawCircle(
+    c,
+    nRad,
+    Paint()
+      ..color = col.withValues(alpha: 0.28)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6,
+  );
+}
+
+void _mitosisLegendLabel(
+  Canvas canvas,
+  String text,
+  Offset center,
+  double sz,
+  Color color, {
+  FontWeight weight = FontWeight.w700,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: sz, fontWeight: weight, color: color)),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
+}
+
+/// Frame 1 — Interphase (G1/G2): spread along the axis arrow to grow the cell.
+void _mitosisLegendGrow(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cx = size.width / 2;
+  final cy = size.height * 0.46;
+  final r = min(size.width, size.height) * 0.26;
+  _mitosisLegendCell(canvas, Offset(cx, cy), r, _kGreen, alpha: 0.30);
+
+  // Vertical axis double-arrow — spread OUTWARD to grow (heads point away).
+  final ar = r * 0.72;
+  final p = Paint()
+    ..color = _kGreen.withValues(alpha: 0.78)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  for (final sign in [-1.0, 1.0]) {
+    final ey = cy + sign * ar;
+    canvas.drawLine(Offset(cx, cy), Offset(cx, ey), p);
+    canvas.drawLine(Offset(cx, ey), Offset(cx - 9, ey - sign * 11), p);
+    canvas.drawLine(Offset(cx, ey), Offset(cx + 9, ey - sign * 11), p);
+  }
+  _mitosisLegendLabel(canvas, 'GROW', Offset(cx, size.height * 0.87), 15,
+      _kGreen,
+      weight: FontWeight.w800);
+}
+
+/// Frame 2 — S phase: tap the complement base on the A/T/G/C buttons.
+void _mitosisLegendCopy(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cx = size.width / 2;
+  final cy = size.height * 0.34;
+  final r = min(size.width, size.height) * 0.19;
+  _mitosisLegendCell(canvas, Offset(cx, cy), r, _kCyan, alpha: 0.26);
+
+  // Replicated DNA dots in the nucleus.
+  final nRad = r * 0.44;
+  for (int i = 0; i < 6; i++) {
+    final a = i / 6 * 2 * pi;
+    canvas.drawCircle(
+      Offset(cx + cos(a) * nRad, cy + sin(a) * nRad),
+      3.5,
+      Paint()..color = _kCyan.withValues(alpha: 0.7),
+    );
+  }
+
+  // The four literal base-tap buttons.
+  const gap = 10.0;
+  final btnW = min(52.0, (size.width * 0.86 - 3 * gap) / 4);
+  final btnH = btnW * 0.9;
+  final totalW = 4 * btnW + 3 * gap;
+  final startX = cx - totalW / 2;
+  final by = size.height * 0.64;
+  for (int i = 0; i < 4; i++) {
+    final rect = Rect.fromLTWH(startX + i * (btnW + gap), by, btnW, btnH);
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+    canvas.drawRRect(rrect, Paint()..color = _kCyan.withValues(alpha: 0.08));
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..color = _kCyan.withValues(alpha: 0.30)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6,
+    );
+    _mitosisLegendLabel(canvas, _kAllBases[i], rect.center, 22, _kCyan);
+  }
+  _mitosisLegendLabel(canvas, 'A ↔ T     G ↔ C', Offset(cx, size.height * 0.90),
+      13, _kCyan.withValues(alpha: 0.75),
+      weight: FontWeight.w600);
+}
+
+/// Frame 3 — Mitosis burst: after interphase, 5 fast gestures pull the copies
+/// apart (anaphase shown — the danger/escalation beat).
+void _mitosisLegendDivide(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cx = size.width / 2;
+  final cy = size.height * 0.44;
+  final r = min(size.width, size.height) * 0.17;
+  final spread = r * 1.15;
+
+  for (final sign in [-1.0, 1.0]) {
+    _mitosisLegendCell(canvas, Offset(cx + sign * spread, cy), r, _kDanger,
+        alpha: 0.24, condensation: 0.8);
+  }
+
+  // Horizontal pull-apart arrows.
+  final p = Paint()
+    ..color = _kDanger.withValues(alpha: 0.82)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  for (final sign in [-1.0, 1.0]) {
+    final ex = cx + sign * (spread + r + 14);
+    canvas.drawLine(Offset(cx + sign * spread * 0.2, cy), Offset(ex, cy), p);
+    canvas.drawLine(Offset(ex, cy), Offset(ex - sign * 11, cy - 8), p);
+    canvas.drawLine(Offset(ex, cy), Offset(ex - sign * 11, cy + 8), p);
+  }
+  _mitosisLegendLabel(canvas, 'CONDENSE · ALIGN · PULL APART',
+      Offset(cx, size.height * 0.85), 12, _kGold.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+}
+
+/// Frame 4 — Cytokinesis: slice fast to cleave the cell into two daughters.
+void _mitosisLegendSplit(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cx = size.width / 2;
+  final cy = size.height * 0.44;
+  final r = min(size.width, size.height) * 0.19;
+  final spread = r * 0.95;
+
+  for (final sign in [-1.0, 1.0]) {
+    _mitosisLegendCell(canvas, Offset(cx + sign * spread, cy), r, _kOrange,
+        alpha: 0.28);
+  }
+
+  // Vertical slice arrow down the cleavage furrow.
+  final topY = cy - r * 1.3;
+  final botY = cy + r * 1.3;
+  final p = Paint()
+    ..color = _kOrange.withValues(alpha: 0.85)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(Offset(cx, topY), Offset(cx, botY), p);
+  canvas.drawLine(Offset(cx, botY), Offset(cx - 8, botY - 12), p);
+  canvas.drawLine(Offset(cx, botY), Offset(cx + 8, botY - 12), p);
+
+  _mitosisLegendLabel(canvas, 'TWO DAUGHTER CELLS',
+      Offset(cx, size.height * 0.85), 13, _kOrange);
+}
+
+/// The visual manual for Mitosis Rush — wired into the registry spec.
+final List<LegendFrame> mitosisRushLegendFrames = [
+  const LegendFrame(
+    caption: 'Spread fingers along the arrow to grow the cell',
+    paint: _mitosisLegendGrow,
+  ),
+  const LegendFrame(
+    caption: 'Tap the complement base: A pairs T, G pairs C',
+    paint: _mitosisLegendCopy,
+  ),
+  const LegendFrame(
+    caption: 'Race 5 fast steps: condense, align, pull apart',
+    paint: _mitosisLegendDivide,
+  ),
+  const LegendFrame(
+    caption: 'Slice up or down to cleave into two daughter cells',
+    paint: _mitosisLegendSplit,
+  ),
+];

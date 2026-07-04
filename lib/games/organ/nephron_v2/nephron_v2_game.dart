@@ -45,13 +45,17 @@ const Color _kGood = Color(0xFF6BD089); // scaffold: nutrient aura
 const Color _kHazard = Color(0xFFFF5C5C); // scaffold: waste badge
 
 const double _kSpawnEarly = 1.15; // s between spawns at t=0
-const double _kSpawnPeak = 0.50; // s between spawns at t=duration
-const double _kSpawnClimax = 0.34; // s between spawns during FINAL FLUSH
+const double _kSpawnPeak = 0.40; // s between spawns at t=duration
+const double _kSpawnClimax = 0.26; // s between spawns during FINAL FLUSH
+const double _kSpawnCurve = 1.35; // >1 = gentle start, steep late-game ramp
+const double _kBurstOn = 0.40; // progress where cluster spawns begin
+const double _kBurst3On = 0.75; // progress where triple clusters can appear
+const double _kBurstChance = 0.45; // chance a spawn is a cluster once unlocked
 const double _kFallEarly = 70.0; // px/s descent at t=0
 const double _kFallPeak = 158.0; // px/s descent at t=duration
 const double _kGrabRadius = 64.0; // grab pickup radius
 const double _kMolR = 22.0; // molecule body radius
-const int _kMaxDrops = 11;
+const int _kMaxDrops = 13;
 
 const double _kFlickV = 320.0; // px/s pan velocity that counts as a flick
 const double _kCommitZone = 0.10; // fraction of width past centre to commit
@@ -131,6 +135,205 @@ class _RepaintNotifier extends ChangeNotifier {
   void tick() => notifyListeners();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components (the same orbs, tubule and gutters the live game uses).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kLegendAccent = Color(0xFFC65A6E); // matches _NephronV2Painter
+
+/// Draws one molecule orb in the live game's style: glowing orb + symbol +
+/// name label, with the optional early-level scaffold tell (green ring for a
+/// nutrient, red ✕ badge for waste).
+void _legendMol(
+  Canvas canvas,
+  Offset c, {
+  required _Mol mol,
+  double scale = 1.0,
+  bool scaffold = false,
+}) {
+  final r = _kMolR * scale;
+  if (scaffold) {
+    if (!mol.waste) {
+      canvas.drawCircle(
+        c,
+        r + 7,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = _kGood.withValues(alpha: 0.7),
+      );
+    } else {
+      final bx = c.translate(r * 0.78, -r * 0.78);
+      canvas.drawCircle(bx, 7, Paint()..color = _kHazard);
+      final x = Paint()
+        ..color = Colors.white
+        ..strokeWidth = 1.8
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(bx.translate(-2.6, -2.6), bx.translate(2.6, 2.6), x);
+      canvas.drawLine(bx.translate(2.6, -2.6), bx.translate(-2.6, 2.6), x);
+    }
+  }
+  GameFx.orb(canvas, c, r, mol.color, glow: 1.0);
+  GameFx.text(canvas, mol.symbol, c, 12 * scale, Colors.white,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, mol.name, c.translate(0, r + 9), 9,
+      Potatuhs.textSecondary.withValues(alpha: 0.85),
+      weight: FontWeight.w600);
+}
+
+/// Draws a vertical destination gutter (BLOOD on the left, URINE on the right).
+void _legendGutter(Canvas canvas, Rect rect, Color c, String label,
+    String arrow) {
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rect, const Radius.circular(10)),
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [c.withValues(alpha: 0.08), c.withValues(alpha: 0.30)],
+      ).createShader(rect),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rect, const Radius.circular(10)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = c.withValues(alpha: 0.6),
+  );
+  GameFx.text(canvas, arrow, Offset(rect.center.dx, rect.center.dy - 12), 22,
+      c, weight: FontWeight.w900);
+  GameFx.text(canvas, label, Offset(rect.center.dx, rect.center.dy + 10), 11, c,
+      weight: FontWeight.w800);
+}
+
+/// The central falling tubule.
+void _legendTubuleRect(Canvas canvas, Rect rect) {
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(16));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          _kLegendAccent.withValues(alpha: 0.16),
+          _kLegendAccent.withValues(alpha: 0.05),
+        ],
+      ).createShader(rect),
+  );
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _kLegendAccent.withValues(alpha: 0.45),
+  );
+}
+
+/// Draws a small directional arrow from [a] to [b] (a routed molecule's path).
+void _legendArrow(Canvas canvas, Offset a, Offset b, Color c) {
+  final p = Paint()
+    ..color = c
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(a, b, p);
+  final dir = (b - a);
+  final len = dir.distance;
+  if (len < 1) return;
+  final u = dir / len;
+  final n = Offset(-u.dy, u.dx);
+  const head = 8.0;
+  canvas.drawLine(b, b - u * head + n * head * 0.6, p);
+  canvas.drawLine(b, b - u * head - n * head * 0.6, p);
+}
+
+// (a) The whole apparatus: tubule in the middle, BLOOD left, URINE right.
+void _legendTubule(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  _legendGutter(canvas, Rect.fromLTWH(w * 0.04, h * 0.14, w * 0.20, h * 0.72),
+      _kBlood, 'BLOOD', '◄');
+  _legendGutter(canvas, Rect.fromLTWH(w * 0.76, h * 0.14, w * 0.20, h * 0.72),
+      _kUrine, 'URINE', '►');
+  _legendTubuleRect(
+      canvas, Rect.fromLTWH(w * 0.32, h * 0.10, w * 0.36, h * 0.80));
+  _legendMol(canvas, Offset(w * 0.5, h * 0.42), mol: _goodBase[0]);
+}
+
+// (b) A nutrient flicked LEFT → reabsorbed into the blood.
+void _legendReabsorb(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  _legendGutter(canvas, Rect.fromLTWH(w * 0.04, h * 0.14, w * 0.22, h * 0.72),
+      _kBlood, 'BLOOD', '◄');
+  final from = Offset(w * 0.60, h * 0.50);
+  final to = Offset(w * 0.30, h * 0.50);
+  _legendArrow(canvas, from, to, _kGood);
+  _legendMol(canvas, from, mol: _goodBase[0], scaffold: true);
+}
+
+// (c) Waste sent RIGHT → excreted to urine; a wrong call costs blood purity.
+void _legendExcrete(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  _legendGutter(canvas, Rect.fromLTWH(w * 0.74, h * 0.10, w * 0.22, h * 0.60),
+      _kUrine, 'URINE', '►');
+  final from = Offset(w * 0.40, h * 0.38);
+  final to = Offset(w * 0.70, h * 0.38);
+  _legendArrow(canvas, from, to, _kHazard);
+  _legendMol(canvas, from, mol: _wasteBase[0], scaffold: true);
+
+  // Blood-purity gauge cost of a wrong call.
+  const barW = 150.0, barH = 9.0;
+  final bx = (w - barW) / 2, by = h * 0.82;
+  if (barW <= 0) return;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(bx, by, barW, barH), const Radius.circular(5)),
+    Paint()..color = Colors.black.withValues(alpha: 0.45),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(bx, by, barW * 0.45, barH), const Radius.circular(5)),
+    Paint()..color = _kBlood,
+  );
+  GameFx.text(canvas, 'WRONG CALL DROPS BLOOD PURITY',
+      Offset(w / 2, by - 10), 9, Potatuhs.textSecondary,
+      weight: FontWeight.w700);
+}
+
+// (d) The SURGE — clusters of 2–3 arrive together as the round accelerates.
+void _legendSurge(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  _legendTubuleRect(
+      canvas, Rect.fromLTWH(w * 0.20, h * 0.08, w * 0.60, h * 0.84));
+  // A staggered wave of three molecules, no scaffold (late-game tell stripped).
+  _legendMol(canvas, Offset(w * 0.36, h * 0.30), mol: _goodBase[1], scale: 0.85);
+  _legendMol(canvas, Offset(w * 0.60, h * 0.44), mol: _wasteBase[0], scale: 0.85);
+  _legendMol(canvas, Offset(w * 0.44, h * 0.62), mol: _subtleL3[0], scale: 0.85);
+  GameFx.text(canvas, 'SURGE!', Offset(w / 2, h * 0.86), 14, _kBlood,
+      weight: FontWeight.w900);
+}
+
+/// The visual manual for Nephron — wired into the registry spec.
+final List<LegendFrame> nephronLegendFrames = [
+  const LegendFrame(
+      caption: 'Molecules fall the tubule: BLOOD left, URINE right',
+      paint: _legendTubule),
+  const LegendFrame(
+      caption: 'Flick a nutrient LEFT to reabsorb it into the blood',
+      paint: _legendReabsorb),
+  const LegendFrame(
+      caption: 'Send waste RIGHT to urine — wrong calls drop purity',
+      paint: _legendExcrete),
+  const LegendFrame(
+      caption: 'SURGE: clusters arrive fast — read labels, no color tell',
+      paint: _legendSurge),
+];
+
 // ═══════════════════════════════════════════════════════════════ Widget ═══════
 
 class NephronV2Game extends StatefulWidget {
@@ -168,19 +371,39 @@ class _NephronV2GameState extends State<NephronV2Game>
   _Drop? _held; // molecule currently under the finger
   bool _climaxHit = false; // one-shot FINAL FLUSH announce
   bool _finalBeat = false; // one-shot big final molecule
+  bool _surgeHit = false; // one-shot cluster-spawn announce
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ─── Attract autopilot ────────────────────────────────────────────────────────
+  // One competent move per call: route the most urgent (lowest, closest to the
+  // exit) actionable molecule the correct way — nutrient back to BLOOD, waste to
+  // URINE — via the game's own [_route]. No randomness, no synthetic gestures.
+  void _autoStep() {
+    if (!widget.session.isRunning || !_ready) return;
+    _Drop? target;
+    for (final d in _drops) {
+      if (d.committed || d.held) continue;
+      // Most urgent = furthest down; ties keep the first encountered.
+      if (target == null || d.pos.dy > target.pos.dy) target = d;
+    }
+    if (target == null) return;
+    // Nutrient (good) → blood (dir -1); waste → urine (dir +1).
+    _route(target, target.mol.waste ? 1 : -1);
   }
 
   // ─── Geometry ─────────────────────────────────────────────────────────────
@@ -241,6 +464,7 @@ class _NephronV2GameState extends State<NephronV2Game>
     _held = null;
     _climaxHit = false;
     _finalBeat = false;
+    _surgeHit = false;
   }
 
   // Calm ready/finished state: a few molecules drift gently, nothing scores.
@@ -286,23 +510,51 @@ class _NephronV2GameState extends State<NephronV2Game>
     final calm = (1.0 - _purity).clamp(0.0, 1.0);
     final fall = (_kFallEarly + (_kFallPeak - _kFallEarly) * progress) *
         (1.0 - 0.20 * calm);
+    // Eased ramp: gentle early, steep late (the escalating-to-impossible law).
     final baseInterval = _isClimax
         ? _kSpawnClimax
-        : _kSpawnEarly + (_kSpawnPeak - _kSpawnEarly) * progress;
+        : _kSpawnEarly +
+            (_kSpawnPeak - _kSpawnEarly) *
+                math.pow(progress, _kSpawnCurve).toDouble();
     final interval = baseInterval * (1.0 + 0.30 * calm);
 
-    // Spawn.
+    // One-shot cue the moment cluster spawns unlock, so the shift is taught,
+    // not sprung.
+    if (!_surgeHit && progress >= _kBurstOn) {
+      _surgeHit = true;
+      _pops.add(FxPop(
+          Offset(_size.width / 2, _size.height * 0.34), 'SURGE!', _kBlood));
+      HapticFeedback.lightImpact();
+    }
+
+    // Spawn — singles early; once the shift heats up, clusters of 2 (then 3)
+    // arrive together as a wave.
     _spawnTimer -= dt;
     if (_spawnTimer <= 0 && _drops.length < _kMaxDrops) {
-      _spawnTimer = interval * (0.8 + _rng.nextDouble() * 0.4);
+      var burst = 1;
+      if (progress >= _kBurstOn && _rng.nextDouble() < _kBurstChance) {
+        burst = (progress >= _kBurst3On && _rng.nextBool()) ? 3 : 2;
+      }
+      burst = math.min(burst, _kMaxDrops - _drops.length);
+      // A cluster buys a slightly longer beat before the next wave.
+      _spawnTimer = interval *
+          (0.8 + _rng.nextDouble() * 0.4) *
+          (burst > 1 ? 1.35 : 1.0);
       final pool = _poolFor(_level);
-      _drops.add(_Drop(
-        Offset(
-            _tubuleLeft + 16 + _rng.nextDouble() * (_tubuleRight - _tubuleLeft - 32),
-            _spawnY - 24),
-        pool[_rng.nextInt(pool.length)],
-        _rng.nextDouble() * math.pi * 2,
-      ));
+      final span = _tubuleRight - _tubuleLeft - 32;
+      for (var i = 0; i < burst; i++) {
+        // Spread cluster members across the tubule and stagger their entry
+        // heights so they read as a wave, not one overlapping blob.
+        final fx = burst == 1
+            ? _rng.nextDouble()
+            : (i + 0.15 + _rng.nextDouble() * 0.7) / burst;
+        _drops.add(_Drop(
+          Offset(_tubuleLeft + 16 + fx * span,
+              _spawnY - 24 - i * (_kMolR * 2.2)),
+          pool[_rng.nextInt(pool.length)],
+          _rng.nextDouble() * math.pi * 2,
+        ));
+      }
     }
 
     // Advance drops.

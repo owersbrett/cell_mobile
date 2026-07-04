@@ -78,6 +78,149 @@ const double _kRecHitRadius = 42.0; // px tap forgiveness around a receptor
 
 enum _Phase { idle, ready, go, hold, reacting, resolved }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME primitives
+// (GameFx + this game's palette) the live reflex arc uses. Cheap + static;
+// they render once in the intro, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws one lit receptor orb with its cue-coloured halo — the exact node the
+/// player hunts and answers each trial.
+void _legendReceptor(Canvas canvas, Offset p, Color cue, {double radius = 20}) {
+  canvas.drawCircle(
+    p,
+    radius + 12,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = cue.withValues(alpha: 0.6),
+  );
+  GameFx.orb(canvas, p, radius, cue, glow: 1.2);
+}
+
+/// Frame 1 — the reflex arc: lit receptor → spinal cord → muscle, brain faded
+/// and bypassed above (the game's core anatomy + the impulse route).
+void _legendArc(Canvas canvas, Size size) {
+  if (size.shortestSide <= 0) return;
+  final w = size.width, h = size.height;
+  final receptor = Offset(w * 0.22, h * 0.70);
+  final cord = Offset(w * 0.50, h * 0.44);
+  final muscle = Offset(w * 0.80, h * 0.70);
+  final brain = Offset(w * 0.50, h * 0.16);
+
+  GameFx.orb(canvas, brain, 13, _kCalm.withValues(alpha: 0.5),
+      glow: 0.3, specular: false);
+  GameFx.text(canvas, 'BRAIN', brain + const Offset(0, -22), 8,
+      _kCalm.withValues(alpha: 0.6));
+
+  GameFx.glowLine(
+      canvas, receptor, cord, _kSensory.withValues(alpha: 0.9), width: 3.5);
+  GameFx.glowLine(
+      canvas, cord, muscle, _kMotor.withValues(alpha: 0.9), width: 3.5);
+
+  _legendReceptor(canvas, receptor, _kGo, radius: 16);
+  GameFx.orb(canvas, cord, 18, _kSignal.withValues(alpha: 0.85), glow: 0.8);
+  GameFx.orb(canvas, muscle, 17, _kMotor, glow: 0.7);
+
+  GameFx.text(canvas, 'RECEPTOR', receptor + const Offset(0, 30), 8,
+      _kGo.withValues(alpha: 0.9));
+  GameFx.text(canvas, 'CORD', cord + const Offset(0, -28), 8,
+      _kSignal.withValues(alpha: 0.9));
+  GameFx.text(canvas, 'MUSCLE', muscle + const Offset(0, 30), 8,
+      _kMotor.withValues(alpha: 0.9));
+}
+
+/// Frame 2 — SYMPATHETIC: the orange receptor with its red damage arc ~2/3
+/// full. TAP fast to beat it (speed × charge = score).
+void _legendGo(Canvas canvas, Size size) {
+  if (size.shortestSide <= 0) return;
+  final p = Offset(size.width * 0.5, size.height * 0.44);
+  const frac = 0.68;
+  _legendReceptor(canvas, p, _kGo, radius: 26);
+  canvas.drawArc(
+    Rect.fromCircle(center: p, radius: 40),
+    -math.pi / 2,
+    math.pi * 2 * frac,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round
+      ..color = Color.lerp(_kSignal, _kDanger, frac)!,
+  );
+  GameFx.text(canvas, 'TAP!', Offset(size.width * 0.5, size.height * 0.80), 22,
+      _kGo,
+      display: true, weight: FontWeight.w800, glow: 0.6);
+  GameFx.text(canvas, 'SYMPATHETIC', Offset(size.width * 0.5, size.height * 0.90),
+      9, _kGo.withValues(alpha: 0.85));
+}
+
+/// Frame 3 — PARASYMPATHETIC: the teal receptor with its sustain ring filling.
+/// PRESS & HOLD through the window, then release, to bank a calm reward.
+void _legendHold(Canvas canvas, Size size) {
+  if (size.shortestSide <= 0) return;
+  final p = Offset(size.width * 0.5, size.height * 0.44);
+  const fill = 0.60;
+  _legendReceptor(canvas, p, _kHold, radius: 26);
+  canvas.drawArc(
+    Rect.fromCircle(center: p, radius: 40),
+    -math.pi / 2,
+    math.pi * 2 * fill,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round
+      ..color = _kHold,
+  );
+  GameFx.text(canvas, 'PRESS & HOLD',
+      Offset(size.width * 0.5, size.height * 0.80), 16, _kHold,
+      display: true, weight: FontWeight.w800, glow: 0.6);
+  GameFx.text(canvas, 'PARASYMPATHETIC',
+      Offset(size.width * 0.5, size.height * 0.90), 9,
+      _kHold.withValues(alpha: 0.85));
+}
+
+/// Frame 4 — escalation: receptors multiply and drift; only ONE lights. Dim
+/// endings carry drift streaks; hitting a dark one is a wrong-receptor penalty.
+void _legendSwarm(Canvas canvas, Size size) {
+  if (size.shortestSide <= 0) return;
+  final w = size.width, h = size.height;
+  final dims = [
+    Offset(w * 0.24, h * 0.32),
+    Offset(w * 0.74, h * 0.40),
+    Offset(w * 0.66, h * 0.72),
+  ];
+  final streak = Paint()
+    ..color = _kCalm.withValues(alpha: 0.28)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  for (final d in dims) {
+    canvas.drawLine(d, d + const Offset(-16, 6), streak);
+    GameFx.orb(canvas, d, 9, _kCalm.withValues(alpha: 0.4),
+        glow: 0.2, specular: false);
+  }
+  _legendReceptor(canvas, Offset(w * 0.36, h * 0.60), _kGo, radius: 20);
+  GameFx.text(canvas, 'HIT ONLY THE LIT ONE',
+      Offset(w * 0.5, h * 0.90), 11, _kSignal, weight: FontWeight.w800);
+}
+
+/// The visual manual for Reflex Gate — wired into the registry spec.
+final List<LegendFrame> reflexV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Find the lit RECEPTOR: it fires cord then muscle',
+      paint: _legendArc),
+  const LegendFrame(
+      caption: 'ORANGE cue: TAP the receptor before the arc fills',
+      paint: _legendGo),
+  const LegendFrame(
+      caption: 'TEAL cue: PRESS & HOLD until the ring fills, then release',
+      paint: _legendHold),
+  const LegendFrame(
+      caption: 'Receptors multiply and drift — hit only the LIT one',
+      paint: _legendSwarm),
+];
+
 /// "Reflex Gate" (reflex_v2) — the reflex arc as the two branches of the
 /// autonomic nervous system, made playable as two distinct inputs:
 ///
@@ -159,12 +302,41 @@ class _ReflexV2GameState extends State<ReflexV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── Attract autopilot ─────────────────────────────────────────────────────
+  // Host calls this ~4x/s in attract mode. Read our OWN cue phase and give the
+  // CORRECT response through our OWN input handlers — one action per call, fully
+  // deterministic:
+  //   • _Phase.go   (ORANGE / sympathetic)  → TAP the lit receptor via _onDown.
+  //   • _Phase.hold (TEAL / parasympathetic)→ PRESS & HOLD the lit receptor;
+  //       the sustain banks itself once _holdElapsed reaches _holdDuration, so we
+  //       grab once and NEVER release early (no _onUp).
+  // Everything else (wait window, signal animation, result display) is a no-op —
+  // acting during ready would be a false start.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    switch (_phase) {
+      case _Phase.go:
+        _onDown(_activePx); // react on orange
+        break;
+      case _Phase.hold:
+        if (!_holding) _onDown(_activePx); // grab teal, then keep holding
+        break;
+      case _Phase.ready:
+      case _Phase.reacting:
+      case _Phase.resolved:
+      case _Phase.idle:
+        break; // hold / no-op — never act on a wait or mid-transition
+    }
   }
 
   static double _lerp(double a, double b, double t) => a + (b - a) * t;

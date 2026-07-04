@@ -271,13 +271,39 @@ class _PatternLockV2GameState extends State<PatternLockV2Game>
     super.initState();
     puzzle = _generate(0); // calm first puzzle for the ready state
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself correctly. Harmless
+    // in normal play — the host only calls it hands-free. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
+    // Buffer picks to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     repaint.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────────
+  /// One hands-free move per host tick. Plays Pattern Lock v2 *correctly*, never
+  /// randomly: while a puzzle awaits an answer it locks the RIGHT choice through
+  /// the game's own [_resolve] handler — in continue mode the correct next
+  /// element ([_Puzzle.correctOption], matched to [_Puzzle.answer] by tag), in
+  /// odd-one-out mode the rule-breaking cell ([_Puzzle.badIndex]). During the
+  /// ~0.3s kinetic lock the ticker auto-advances to the next puzzle, so there is
+  /// nothing to do until we're asking again. The host owns the clock / score HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (phase != _Phase.asking) return; // lock in progress → ticker advances
+    if (puzzle.oddMode) {
+      tappedCell = puzzle.badIndex; // the rule-breaking cell
+      _resolve(true);
+    } else {
+      tappedOpt = puzzle.correctOption; // matches puzzle.answer by tag
+      _resolve(true);
+    }
   }
 
   // ── Difficulty ─────────────────────────────────────────────────────────────
@@ -1316,3 +1342,197 @@ class _StagePainter extends CustomPainter {
   @override
   bool shouldRepaint(_StagePainter old) => true;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME cell chrome,
+// palette and number/glyph style the live game uses (a sequence row, the glowing
+// "?" target, the 4-option deck, the odd-one-out red cell, the lightning climax).
+// Cheap + static: rendered once in the intro, never per frame. Guards degenerate
+// sizes to stay clear of the black-screen (zero/NaN draw) bug class.
+// ════════════════════════════════════════════════════════════════════════════
+
+void _legCell(Canvas canvas, Rect r,
+    {required Color fill,
+    required Color border,
+    Color? glow,
+    double radius = 12}) {
+  final rr = RRect.fromRectAndRadius(r, Radius.circular(radius));
+  if (glow != null) {
+    canvas.drawRRect(
+        rr.inflate(2),
+        Paint()
+          ..color = glow.withValues(alpha: 0.35)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10));
+  }
+  canvas.drawRRect(rr, Paint()..color = fill);
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = border);
+}
+
+void _legGlyph(Canvas canvas, Rect r, String s, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: math.max(8.0, r.height * 0.44),
+        fontWeight: FontWeight.w900,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, r.center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// A centred sequence row of [values]; a glowing "?" cell is appended when
+/// [showQuery] is true, and cell [highlight] (index) is tinted [hiColor].
+void _legRow(Canvas canvas, Size size, List<String> values, double cy,
+    {bool showQuery = false, Color accent = _kGold, int highlight = -1, Color hiColor = _kBad}) {
+  const gap = 8.0;
+  final total = values.length + (showQuery ? 1 : 0);
+  var cell = (size.width - 32 - gap * (total - 1)) / total;
+  cell = cell.clamp(26.0, 58.0);
+  final rowW = cell * total + gap * (total - 1);
+  var x = size.width / 2 - rowW / 2;
+  for (var i = 0; i < values.length; i++) {
+    final r = Rect.fromLTWH(x, cy - cell / 2, cell, cell);
+    final hi = i == highlight;
+    _legCell(canvas, r,
+        fill: hi ? hiColor.withValues(alpha: 0.14) : _kCardBg,
+        border: hi ? hiColor : _kCardEdge,
+        glow: hi ? hiColor : null);
+    _legGlyph(canvas, r, values[i], hi ? hiColor : _kText);
+    x += cell + gap;
+  }
+  if (showQuery) {
+    final qr = Rect.fromLTWH(x, cy - cell / 2, cell, cell);
+    _legCell(canvas, qr,
+        fill: accent.withValues(alpha: 0.10),
+        border: accent.withValues(alpha: 0.7),
+        glow: accent);
+    _legGlyph(canvas, qr, '?', accent);
+  }
+}
+
+// Frame 1 — the core verb: read a sequence, lock in what comes NEXT.
+void _legendContinue(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  GameFx.text(canvas, 'What comes next?',
+      Offset(size.width / 2, size.height * 0.18), 15, _kText,
+      weight: FontWeight.w900);
+  _legRow(canvas, size, const ['2', '4', '8'], size.height * 0.50,
+      showQuery: true, accent: _kGold);
+  GameFx.text(canvas, 'RULE:  x2 each step',
+      Offset(size.width / 2, size.height * 0.80), 12, _kGold,
+      weight: FontWeight.w800);
+}
+
+// Frame 2 — how to score: tap the option that continues it; fast locks pay most.
+void _legendPick(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  GameFx.text(canvas, 'Tap the next value',
+      Offset(size.width / 2, size.height * 0.13), 14, _kText,
+      weight: FontWeight.w900);
+  const opts = ['12', '16', '10', '24'];
+  const correct = 1;
+  const pad = 20.0, gap = 12.0;
+  final top = size.height * 0.26;
+  final gridH = size.height * 0.58;
+  final cw = (size.width - pad * 2 - gap) / 2;
+  final ch = (gridH - gap) / 2;
+  if (cw < 4 || ch < 4) return;
+  for (var i = 0; i < 4; i++) {
+    final r = Rect.fromLTWH(
+        pad + (i % 2) * (cw + gap), top + (i ~/ 2) * (ch + gap), cw, ch);
+    final isC = i == correct;
+    _legCell(canvas, r,
+        fill: isC ? _kGood.withValues(alpha: 0.14) : _kCardBg,
+        border: isC ? _kGood : _kCardEdge,
+        glow: isC ? _kGood : null,
+        radius: 14);
+    _legGlyph(canvas, r, opts[i], isC ? _kGood : _kText);
+  }
+}
+
+// Frame 3 — the danger / harder read: tap the one value that BREAKS the rule.
+void _legendBreak(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  GameFx.text(canvas, 'Which one breaks the rule?',
+      Offset(size.width / 2, size.height * 0.20), 14, _kBad,
+      weight: FontWeight.w900);
+  _legRow(canvas, size, const ['3', '6', '9', '13', '15'], size.height * 0.50,
+      highlight: 3, hiColor: _kBad);
+  GameFx.text(canvas, '+3 each step — but one skips ahead',
+      Offset(size.width / 2, size.height * 0.80), 11.5, _kTextSub,
+      weight: FontWeight.w600);
+}
+
+// Frame 4 — the climax: the last 10s LIGHTNING ROUND, points x2, streak capped x3.
+void _legendLightning(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final rect = Offset.zero & size;
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          _kBad.withValues(alpha: 0.0),
+          _kBad.withValues(alpha: 0.18),
+        ],
+        stops: const [0.52, 1.0],
+      ).createShader(rect),
+  );
+  GameFx.text(canvas, 'LIGHTNING ROUND',
+      Offset(size.width / 2, size.height * 0.34), 18, _kBad,
+      weight: FontWeight.w900, glow: 0.6);
+  GameFx.text(canvas, 'points x2',
+      Offset(size.width / 2, size.height * 0.52), 15, _kGold,
+      weight: FontWeight.w900);
+  // Streak multiplier chip (mirrors the in-game top-right x3 badge).
+  const label = 'x3';
+  final tp = TextPainter(
+    text: const TextSpan(
+        text: label,
+        style: TextStyle(
+            fontFamily: _kFont,
+            fontSize: 15,
+            fontWeight: FontWeight.w900,
+            color: _kGold)),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final chip = Rect.fromCenter(
+      center: Offset(size.width / 2, size.height * 0.70),
+      width: tp.width + 28,
+      height: 28);
+  final rr = RRect.fromRectAndRadius(chip, const Radius.circular(8));
+  canvas.drawRRect(rr, Paint()..color = _kGold.withValues(alpha: 0.16));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.3
+        ..color = _kGold.withValues(alpha: 0.7));
+  tp.paint(canvas,
+      chip.center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// The visual manual for Pattern Lock v2 — wired into the registry spec.
+final List<LegendFrame> patternLockV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Read the rule, then lock in what comes NEXT',
+      paint: _legendContinue),
+  const LegendFrame(
+      caption: 'Tap the choice that continues it — fast locks score most',
+      paint: _legendPick),
+  const LegendFrame(
+      caption: 'Late game: tap the one value that BREAKS the rule',
+      paint: _legendBreak),
+  const LegendFrame(
+      caption: 'Final 10s LIGHTNING ROUND: tightest window, points x2',
+      paint: _legendLightning),
+];

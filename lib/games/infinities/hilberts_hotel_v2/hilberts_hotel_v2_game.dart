@@ -220,13 +220,33 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
   void initState() {
     super.initState();
     _fillHotel();
+    // ATTRACT autopilot: the host may drive us hands-free (~every tick). One
+    // move banks a scored check-in, so pace it out so the slide can breathe.
+    widget.session.autoPilot = _autoStep;
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ──────────────────────────────────────────────────────
+  /// One hands-free move per host call. Plays the hotel *correctly*: it enacts
+  /// the exact bijection the current arrival demands by swiping in the arrival's
+  /// canonical direction (guest → right/shift, bus → up/double, buses →
+  /// down/primes) through the game's own move handler. Never the illegal
+  /// left-eviction. It waits out the brief settle between arrivals and lets the
+  /// host own the clock, banking real check-ins until the round ends.
+  void _autoStep() {
+    if (!widget.session.isRunning || !_started) return;
+    if (_locked) return; // a move is resolving; the next arrival is imminent
+    // The canonical swipe for this arrival; shiftBy 1 (only the guest/right
+    // case reads it, where a single shift opens exactly the one room needed).
+    _resolveMove(_demand.canonical, 1);
   }
 
   // ── Corridor helpers ───────────────────────────────────────────────────────
@@ -1073,3 +1093,203 @@ class _HotelPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HotelPainter old) => true;
 }
+
+// ============================================================================
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components the player meets (numbered doors, sienna residents / cool-blue
+// arrivals, the pulsing swipe chevron) in the game's own palette. Cheap and
+// self-contained: they render once, statically, on the intro screen.
+// ============================================================================
+
+/// One numbered door, exactly as the corridor draws it: gold glow when [open],
+/// red flash when [danger], otherwise the dim closed door + edge.
+void _legendDoor(Canvas canvas, Rect r, {bool open = false, bool danger = false}) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(6));
+  canvas.drawRRect(rr, Paint()..color = _kDoor);
+  if (open) {
+    canvas.drawRRect(rr, Paint()..color = _kGold.withValues(alpha: 0.16));
+  }
+  if (danger) {
+    canvas.drawRRect(rr, Paint()..color = _kBad.withValues(alpha: 0.26));
+  }
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = open
+          ? _kGold.withValues(alpha: 0.9)
+          : (danger ? _kBad.withValues(alpha: 0.9) : _kDoorEdge),
+  );
+}
+
+/// A guest token — the same lumpy potato + eyes the painter draws in-game.
+void _legendPotato(Canvas canvas, Offset c, double r, Color tint) {
+  canvas.drawCircle(
+    c,
+    r * 1.5,
+    Paint()
+      ..color = tint.withValues(alpha: 0.22)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  canvas.save();
+  canvas.translate(c.dx, c.dy);
+  canvas.scale(1.0, 0.86);
+  canvas.drawCircle(Offset.zero, r, Paint()..color = tint);
+  canvas.drawCircle(Offset(0, -r * 0.18), r,
+      Paint()..color = Colors.white.withValues(alpha: 0.10));
+  canvas.restore();
+  final eye = Paint()..color = Potatuhs.ink.withValues(alpha: 0.85);
+  canvas.drawCircle(Offset(c.dx - r * 0.32, c.dy - r * 0.1), r * 0.13, eye);
+  canvas.drawCircle(Offset(c.dx + r * 0.32, c.dy - r * 0.1), r * 0.13, eye);
+}
+
+void _legendText(Canvas canvas, String t, Offset c, Color color,
+    {double size = 11, FontWeight weight = FontWeight.w800}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: t,
+      style: TextStyle(
+          fontFamily: _kFont, fontSize: size, fontWeight: weight, color: color),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout(maxWidth: 400);
+  tp.paint(canvas, c - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// Three stacked chevrons marching along [dir] — the exact "swipe this way" cue.
+void _legendChevron(
+    Canvas canvas, Offset center, Offset dir, double reach, Color color) {
+  final perp = Offset(-dir.dy, dir.dx);
+  final paint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 4
+    ..strokeCap = StrokeCap.round
+    ..strokeJoin = StrokeJoin.round;
+  for (int i = 0; i < 3; i++) {
+    final base = center + dir * (reach * 0.35 + i * reach * 0.32);
+    final wing = reach * 0.32;
+    final tip = base + dir * (wing * 0.7);
+    final p1 = base - perp * wing - dir * (wing * 0.2);
+    final p2 = base + perp * wing - dir * (wing * 0.2);
+    final path = Path()
+      ..moveTo(p1.dx, p1.dy)
+      ..lineTo(tip.dx, tip.dy)
+      ..lineTo(p2.dx, p2.dy);
+    canvas.drawPath(
+        path, paint..color = color.withValues(alpha: 0.9 - i * 0.22));
+  }
+}
+
+/// A short numbered corridor for the legend cards, built from the real door +
+/// potato primitives. [open] rooms glow gold, [danger] rooms flash red,
+/// [arrivals] hold cool-blue newcomers; every other room keeps a sienna
+/// resident. Rooms are numbered 1..count with the "→ ∞" continuation.
+void _legendCorridor(
+  Canvas canvas,
+  Size size, {
+  required int count,
+  Set<int> open = const {},
+  Set<int> arrivals = const {},
+  Set<int> danger = const {},
+  double cyFrac = 0.5,
+}) {
+  final pad = size.width * 0.06;
+  final plotL = pad, plotR = size.width - pad;
+  final roomW = (plotR - plotL) / count;
+  if (roomW < 6) return;
+  final cy = size.height * cyFrac;
+  final h = roomW * 1.15;
+
+  final slab =
+      Rect.fromLTRB(plotL - 4, cy - h / 2 - 12, plotR + 4, cy + h / 2 + 12);
+  canvas.drawRRect(RRect.fromRectAndRadius(slab, const Radius.circular(12)),
+      Paint()..color = _kFacade.withValues(alpha: 0.55));
+
+  for (int r = 1; r <= count; r++) {
+    final cx = plotL + (r - 0.5) * roomW;
+    final rect =
+        Rect.fromCenter(center: Offset(cx, cy), width: roomW * 0.78, height: h);
+    final isOpen = open.contains(r), isDanger = danger.contains(r);
+    _legendDoor(canvas, rect, open: isOpen, danger: isDanger);
+    _legendText(canvas, '$r', Offset(cx, cy - h / 2 - 12),
+        isOpen ? _kGold : _kTextSub,
+        size: 10);
+    Color? tint;
+    if (arrivals.contains(r)) {
+      tint = _kArrival;
+    } else if (!isOpen && !isDanger) {
+      tint = _kResident;
+    }
+    if (tint != null) {
+      _legendPotato(canvas, Offset(cx, cy), roomW * 0.26, tint);
+    }
+  }
+
+  _legendText(canvas, '→ ∞', Offset(plotR - 2, cy + h / 2 + 12), _kGold,
+      size: 12);
+}
+
+// Frame 1 — the setup: a corridor with a resident in every room. Full, yet…
+void _legendFull(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  _legendCorridor(canvas, size, count: 6, cyFrac: 0.46);
+  _legendText(canvas, 'HOTEL FULL — every counting number 1,2,3…',
+      Offset(size.width / 2, size.height * 0.82), _kTextSub,
+      size: 12);
+}
+
+// Frame 2 — score: 1 GUEST → swipe right, room 1 opens, the guest checks in.
+void _legendGuest(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  _legendCorridor(canvas, size,
+      count: 6, open: {1}, arrivals: {1}, cyFrac: 0.44);
+  _legendChevron(canvas, Offset(size.width * 0.5, size.height * 0.44),
+      const Offset(1, 0), size.width * 0.13, _kGold);
+  _legendText(canvas, '1 GUEST  ·  +points',
+      Offset(size.width / 2, size.height * 0.80), _kArrival,
+      size: 13);
+}
+
+// Frame 3 — escalation: a bus of ∞ → swipe up, every ODD room opens at once.
+void _legendBus(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  _legendCorridor(canvas, size,
+      count: 6, open: {1, 3, 5}, arrivals: {1, 3, 5}, cyFrac: 0.44);
+  _legendChevron(canvas, Offset(size.width * 0.5, size.height * 0.66),
+      const Offset(0, -1), size.height * 0.15, _kGold);
+  _legendText(canvas, 'A BUS · ℵ₀  ·  the odd rooms fill',
+      Offset(size.width / 2, size.height * 0.84), _kArrival,
+      size: 12);
+}
+
+// Frame 4 — danger: swipe LEFT evicts guest 1 to room 0, which cannot exist.
+void _legendEvict(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  _legendCorridor(canvas, size, count: 6, danger: {1}, cyFrac: 0.44);
+  _legendChevron(canvas, Offset(size.width * 0.5, size.height * 0.44),
+      const Offset(-1, 0), size.width * 0.13, _kBad);
+  _legendText(canvas, 'ROOM 0 DOES NOT EXIST',
+      Offset(size.width / 2, size.height * 0.80), _kBad,
+      size: 12);
+}
+
+/// The visual manual for Hilbert's Hotel v2 — wired into the registry spec.
+final List<LegendFrame> hilbertsHotelV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Every room is full — yet guests keep arriving',
+      paint: _legendFull),
+  const LegendFrame(
+      caption: '1 guest? Swipe → to shift up: room 1 opens',
+      paint: _legendGuest),
+  const LegendFrame(
+      caption: 'A bus? Swipe ↑ to double: every odd room opens',
+      paint: _legendBus),
+  const LegendFrame(
+      caption: 'Never swipe ← — it evicts guest 1, streak lost',
+      paint: _legendEvict),
+];

@@ -252,6 +252,15 @@ const int kPotatoPrice = 20;
 /// How many power-up items a player can carry at once.
 const int kMaxItems = 3;
 
+/// Match-length options offered in local setup AND the online lobby, with their
+/// labels — kept here so the two screens can't drift apart. Themed to the
+/// season cadence: 7 = a WEEK · 28 = a MOON (~lunar cycle) · 90 = a SEASON (the
+/// 90-day arc). Index 0 is the default. A match ends on its final round (the
+/// BOSS showdown when the map fields a boss); longer matches are droppable and
+/// resume cleanly, so a SEASON board is meant to span many sittings.
+const List<int> kPartyRoundCounts = [7, 28, 90];
+const List<String> kPartyRoundLabels = ['WEEK', 'MOON', 'SEASON'];
+
 /// ATP — the cell's energy currency, a third currency spent to boost a roll.
 const int kAtpPerTurn = 5; // energy trickle at the start of your turn
 const int kAtpPlus1Cost = 10; // +1 chosen AFTER the roll (reactive)

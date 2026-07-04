@@ -174,12 +174,45 @@ class _BuildChainGameState extends State<BuildChainGame>
       ..addListener(_onTick)
       ..forward();
     _newChain(first: true);
+    // ATTRACT autopilot: this game knows how to assemble the chain itself.
+    // Registered always (harmless in normal play — the host only calls it in
+    // autoplay). Dormant unless the host is driving hands-free. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────────
+  /// One hands-free, competent move per host tick (~250ms). This plays Build the
+  /// Chain *correctly*, never randomly: during the assemble phase it drops the
+  /// next still-empty slot's REQUIRED stage tile into that slot via the game's
+  /// own [_placeTile] handler — always the correct tile in the correct slot, so
+  /// the chain never snaps (no red break, no reset streak). Once the chain is
+  /// locked and running, a STALLED stage is cleared via the shared [_clearStall]
+  /// handler to keep potatoes flowing. Exactly one move per tick; other states
+  /// self-advance on the ticker, so it simply returns.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase == _Phase.assemble) {
+      // Fill slots left→right (upstream→downstream); each gets its correct tile.
+      for (var i = 0; i < _nSlots; i++) {
+        if (i >= _slotRects.length) return; // layout not ready this frame
+        if (_tileInSlot(i) != null) continue; // already correctly filled
+        final need = _correct[i];
+        final idx = _tiles.indexWhere((t) => t.slot == null && t.stage == need);
+        if (idx < 0) continue; // its tile isn't in the tray this instant
+        setState(() => _placeTile(_tiles[idx], i));
+        return; // exactly one placement per tick
+      }
+      return;
+    }
+    // Flow phase: keep goods moving by clearing a stalled stage.
+    if (_stalledSlot != null) setState(_clearStall);
   }
 
   // ── Chain composition ────────────────────────────────────────────────────────
@@ -389,6 +422,18 @@ class _BuildChainGameState extends State<BuildChainGame>
     _newChain();
   }
 
+  /// Clear the currently stalled stage — shared by the player's tap and the
+  /// autopilot, so both keep goods flowing through the same path.
+  void _clearStall() {
+    if (_stalledSlot == null) return;
+    widget.session.addScore(12);
+    final c = _slotRects[_stalledSlot!].center;
+    _fx.addAll(FxBurst.spawn(c, const Color(0xFF80CBC4), count: 10));
+    _pops.add(FxPop(c.translate(0, -24), 'CLEARED +12', const Color(0xFF80CBC4)));
+    _stalledSlot = null;
+    _stallAge = 0;
+  }
+
   // ── Placement / scoring ──────────────────────────────────────────────────────
 
   void _showRole(_StageId s) {
@@ -501,14 +546,9 @@ class _BuildChainGameState extends State<BuildChainGame>
     if (!widget.session.isRunning) return;
     if (_phase == _Phase.flow) {
       // Tap a stalled stage to clear it and keep goods flowing.
-      if (_stalledSlot != null && _slotRects[_stalledSlot!].inflate(6).contains(p)) {
-        widget.session.addScore(12);
-        final c = _slotRects[_stalledSlot!].center;
-        _fx.addAll(FxBurst.spawn(c, const Color(0xFF80CBC4), count: 10));
-        _pops.add(FxPop(c.translate(0, -24), 'CLEARED +12',
-            const Color(0xFF80CBC4)));
-        _stalledSlot = null;
-        _stallAge = 0;
+      if (_stalledSlot != null &&
+          _slotRects[_stalledSlot!].inflate(6).contains(p)) {
+        _clearStall();
       }
       return;
     }
@@ -849,3 +889,177 @@ class _ChainPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ChainPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the REAL components
+// (the same stage tiles, ordered slots, flow arrows and stall tell the live
+// game uses). Static, cheap, self-contained; rendered once in the intro.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kLegGood = Color(0xFF80CBC4); // goods flow (teal)
+const Color _kLegBreak = Color(0xFFFF5252); // chain snaps (red)
+
+/// One stage tile in the game's own style: tinted rounded rect + emoji + label.
+void _legTile(Canvas canvas, Offset c, double w, double h, _StageId id,
+    {Color? border, double borderWidth = 1.5}) {
+  final st = _stage(id);
+  final rect = Rect.fromCenter(center: c, width: w, height: h);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = st.color.withValues(alpha: 0.30));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = borderWidth
+        ..color = border ?? st.color.withValues(alpha: 0.7));
+  final iconSize = (h * 0.34).clamp(13.0, 22.0);
+  final labelSize = (w * 0.18).clamp(7.5, 11.0);
+  GameFx.text(canvas, st.emoji, c.translate(0, -h * 0.16), iconSize, Colors.white);
+  GameFx.text(canvas, st.abbrev, c.translate(0, h * 0.28), labelSize,
+      Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+}
+
+/// A flow arrow between two links, same shape as the game's conveyor arrows.
+void _legArrow(Canvas canvas, Offset a, Offset b, Color color) {
+  final paint = Paint()
+    ..color = color
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  final dir = b - a;
+  final len = dir.distance;
+  if (len <= 0) return;
+  final n = dir / len;
+  canvas.drawLine(a, b, paint);
+  final perp = Offset(-n.dy, n.dx);
+  canvas.drawLine(b, b - n * 7 + perp * 4, paint);
+  canvas.drawLine(b, b - n * 7 - perp * 4, paint);
+}
+
+// Frame 1 — the core verb: order stages upstream ➜ downstream.
+void _legendOrder(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  const ids = [_StageId.farm, _StageId.wash, _StageId.process, _StageId.store];
+  const n = 4;
+  final tw = (size.width / (n + 0.6)).clamp(30.0, 74.0);
+  final th = tw * 1.14;
+  final gap = (size.width - tw * n) / (n + 1);
+  final cy = size.height * 0.46;
+  final centers = [
+    for (var i = 0; i < n; i++) Offset(gap * (i + 1) + tw * (i + 0.5), cy)
+  ];
+  for (var i = 0; i < n - 1; i++) {
+    _legArrow(canvas, centers[i].translate(tw * 0.5 + 2, 0),
+        centers[i + 1].translate(-tw * 0.5 - 2, 0),
+        _kLegGood.withValues(alpha: 0.9));
+  }
+  for (var i = 0; i < n; i++) {
+    _legTile(canvas, centers[i], tw, th, ids[i]);
+    GameFx.text(canvas, '${i + 1}',
+        centers[i].translate(-tw * 0.5 + 9, -th * 0.5 + 8), 9,
+        Colors.white.withValues(alpha: 0.4), weight: FontWeight.w700);
+  }
+  GameFx.text(canvas, 'UPSTREAM  ➜  DOWNSTREAM',
+      Offset(size.width / 2, size.height * 0.80), 10,
+      Colors.white.withValues(alpha: 0.42), weight: FontWeight.w700);
+}
+
+// Frame 2 — how to score: a correct link glows teal, goods flow, points land.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  final cy = size.height * 0.5;
+  final tw = (size.width * 0.26).clamp(40.0, 90.0);
+  final th = tw * 1.1;
+  final ax = size.width * 0.31, bx = size.width * 0.69;
+  _legArrow(canvas, Offset(ax + tw * 0.5 + 2, cy),
+      Offset(bx - tw * 0.5 - 2, cy), _kLegGood.withValues(alpha: 0.9));
+  _legTile(canvas, Offset(ax, cy), tw, th, _StageId.process,
+      border: _kLegGood, borderWidth: 2.2);
+  _legTile(canvas, Offset(bx, cy), tw, th, _StageId.store,
+      border: _kLegGood, borderWidth: 2.2);
+  GameFx.text(canvas, '+15', Offset(size.width / 2, cy - th * 0.5 - 14), 15,
+      _kLegGood, weight: FontWeight.w800);
+  GameFx.text(canvas, 'GOODS FLOW', Offset(size.width / 2, size.height * 0.82),
+      10, _kLegGood.withValues(alpha: 0.85), weight: FontWeight.w700);
+}
+
+// Frame 3 — the danger: a wrong order snaps the chain; the red break shows where.
+void _legendBreak(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  final cy = size.height * 0.5;
+  final tw = (size.width * 0.26).clamp(40.0, 90.0);
+  final th = tw * 1.1;
+  final ax = size.width * 0.31, bx = size.width * 0.69;
+  // Store placed before Process — out of order.
+  _legTile(canvas, Offset(ax, cy), tw, th, _StageId.store,
+      border: const Color(0xFFFF8A65), borderWidth: 2.2);
+  _legTile(canvas, Offset(bx, cy), tw, th, _StageId.process,
+      border: const Color(0xFFFF8A65), borderWidth: 2.2);
+  final lx = ax + tw * 0.5 + 2;
+  final rx = bx - tw * 0.5 - 2;
+  final midx = (lx + rx) / 2;
+  _legArrow(canvas, Offset(lx, cy), Offset(midx - 10, cy), _kLegBreak);
+  // The snap: two facing cracks with a gap between them.
+  final crack = Paint()
+    ..color = _kLegBreak
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(Offset(midx - 6, cy - 9), Offset(midx - 1, cy), crack);
+  canvas.drawLine(Offset(midx - 1, cy), Offset(midx - 6, cy + 9), crack);
+  canvas.drawLine(Offset(midx + 6, cy - 9), Offset(midx + 1, cy), crack);
+  canvas.drawLine(Offset(midx + 1, cy), Offset(midx + 6, cy + 9), crack);
+  GameFx.text(canvas, 'BREAK', Offset(size.width / 2, cy - th * 0.5 - 14), 13,
+      _kLegBreak, weight: FontWeight.w800);
+}
+
+// Frame 4 — the late-game twist: chain locks, potatoes run, a stage STALLS.
+void _legendFlow(Canvas canvas, Size size) {
+  if (size.width <= 4 || size.height <= 4) return;
+  const ids = [_StageId.farm, _StageId.wash, _StageId.process, _StageId.store];
+  const n = 4;
+  final tw = (size.width / (n + 0.6)).clamp(30.0, 72.0);
+  final th = tw * 1.1;
+  final gap = (size.width - tw * n) / (n + 1);
+  final cy = size.height * 0.44;
+  final centers = [
+    for (var i = 0; i < n; i++) Offset(gap * (i + 1) + tw * (i + 0.5), cy)
+  ];
+  final belt = Paint()
+    ..color = Colors.white.withValues(alpha: 0.1)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(centers.first.translate(-tw * 0.7, 0),
+      centers.last.translate(tw * 0.7, 0), belt);
+  for (var i = 0; i < n; i++) {
+    final stalled = i == 2;
+    _legTile(canvas, centers[i], tw, th, ids[i],
+        border: stalled ? _kLegBreak : _kLegGood,
+        borderWidth: stalled ? 2.4 : 1.8);
+    if (stalled) {
+      GameFx.text(canvas, 'TAP!', centers[i].translate(0, th * 0.5 + 12), 10,
+          _kLegBreak, weight: FontWeight.w800);
+    }
+  }
+  // A potato riding the belt between stages.
+  final pc = centers[1].translate(tw * 0.5 + gap * 0.5, 0);
+  GameFx.orb(canvas, pc, 9, const Color(0xFFD7B377), glow: 0.8);
+  GameFx.text(canvas, '🥔', pc, 13, Colors.white);
+  GameFx.text(canvas, 'KEEP IT FLOWING',
+      Offset(size.width / 2, size.height * 0.80), 10,
+      _kLegGood.withValues(alpha: 0.85), weight: FontWeight.w700);
+}
+
+/// The visual manual for Build the Chain — wired into the registry spec.
+final List<LegendFrame> buildChainLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag stages into order: upstream to downstream',
+      paint: _legendOrder),
+  const LegendFrame(
+      caption: 'Right slot links the chain — goods flow, score climbs',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Wrong order snaps the chain — red shows where',
+      paint: _legendBreak),
+  const LegendFrame(
+      caption: 'Chain locks: potatoes run — tap a STALLED stage',
+      paint: _legendFlow),
+];

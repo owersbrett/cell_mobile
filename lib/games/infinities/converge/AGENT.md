@@ -31,6 +31,11 @@ curve running away) and learn to call it before it's visually obvious.
   Dashed asymptote drawn only on reveal of a convergent series.
 
 ## Invariants — do not break
+- **Bands never overlap**: the behavior/fact reveal card lives in its own band
+  in the main Column, directly ABOVE the answer buttons — never a `Positioned`
+  overlay in the buttons' band. Playtest bug (2026-07): the fact card stacked
+  on top of the interaction buttons. The chart painter takes a measured
+  `bottomInset` so the plot also stays out of the button band.
 - Every `term(n)` must be finite for n up to `_kMaxTerms` (40).
 - A NAME-THE-LIMIT round only loads for a series where `canNameLimit` is true,
   and `limitOptions` MUST contain `limitLabel`.

@@ -168,12 +168,36 @@ class _IsotopesGameState extends State<IsotopesGame>
     super.initState();
     _pickTarget(); // calm ready-state prompt visible before the round
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: the game dials itself in. Registered always (harmless
+    // in normal play — the host only calls it hands-free). See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Isotopes the way the
+  /// mechanic intends: nudge the PROTON dial toward its target first (setting
+  /// the element), then the NEUTRON dial toward its target (setting the
+  /// isotope) — one adjustment per tick via the same handlers a tap drives
+  /// ([_bumpProtons] / [_bumpNeutrons]), so the build visibly dials in. Only
+  /// once BOTH axes match ([_model.matched], updated by those handlers) does it
+  /// LOCK IN via the same path a tap would ([_lockIn]) — a real, scoring lock,
+  /// never a premature wrong nuclide. Deterministic; no randomness or taps.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_model.matched) {
+      _lockIn(); // both axes correct → bank it and serve the next prompt
+    } else if (_model.z != _target.z) {
+      _bumpProtons(_model.z < _target.z ? 1 : -1); // dial the element in
+    } else if (_model.n != _target.n) {
+      _bumpNeutrons(_model.n < _target.n ? 1 : -1); // dial the isotope in
+    }
   }
 
   // ── loop ───────────────────────────────────────────────────────────────────
@@ -594,6 +618,280 @@ class _NuclidePainter extends CustomPainter {
   bool shouldRepaint(covariant _NuclidePainter oldDelegate) => false;
 }
 
+// ═══════════════════════════════════ visual manual (legend carousel) ═════════
+// Static cards for the pre-game intro, drawn with the SAME components the live
+// game renders: the golden-spiral nucleus of red protons + grey neutrons, the
+// faint electron shells, the steppers, the status pills, the lock button and
+// the prompt card. Painters guard degenerate sizes and never animate.
+
+/// Nucleus of [z] protons + [n] neutrons at [c] — the live painter's
+/// golden-angle interleave, frozen (no wobble).
+void _legendNucleus(Canvas canvas, Offset c, int z, int n, double nucleonR) {
+  final colors = <Color>[];
+  int p = z, q = n;
+  while (p > 0 || q > 0) {
+    if (p > 0) {
+      colors.add(_kProton);
+      p--;
+    }
+    if (q > 0) {
+      colors.add(_kNeutron);
+      q--;
+    }
+  }
+  final golden = math.pi * (3 - math.sqrt(5));
+  for (int i = 0; i < colors.length; i++) {
+    final r = nucleonR * 0.95 * math.sqrt(i + 0.5);
+    final a = i * golden;
+    final pos = c + Offset(math.cos(a), math.sin(a)) * r;
+    GameFx.orb(canvas, pos, nucleonR, colors[i], glow: 0.6, specular: false);
+  }
+}
+
+/// The faint neutral-atom electron shells (element identity), static.
+void _legendShells(Canvas canvas, Offset c, int z, double baseR) {
+  int remaining = z;
+  final ring = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.0
+    ..color = _kElectron.withValues(alpha: 0.18);
+  for (int s = 0; s < _kShellCaps.length && remaining > 0; s++) {
+    final radius = baseR + s * baseR * 0.42;
+    final inShell = math.min(remaining, _kShellCaps[s]);
+    remaining -= inShell;
+    canvas.drawCircle(c, radius, ring);
+    for (int i = 0; i < inShell; i++) {
+      final a = (i / inShell) * math.pi * 2 + s * 0.7;
+      final pos = c + Offset(math.cos(a), math.sin(a)) * radius;
+      canvas.drawCircle(
+        pos,
+        3.5,
+        Paint()
+          ..color = _kElectron.withValues(alpha: 0.35)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+      );
+      canvas.drawCircle(pos, 2.2, Paint()..color = _kElectron);
+    }
+  }
+}
+
+/// One +/- step button, exactly the live circle style.
+void _legendStepBtn(Canvas canvas, Offset c, double r, Color color, bool plus) {
+  canvas.drawCircle(c, r, Paint()..color = color.withValues(alpha: 0.22));
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = color,
+  );
+  final p = Paint()
+    ..color = Colors.white
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(c.translate(-r * 0.45, 0), c.translate(r * 0.45, 0), p);
+  if (plus) {
+    canvas.drawLine(c.translate(0, -r * 0.45), c.translate(0, r * 0.45), p);
+  }
+}
+
+/// One labelled stepper panel (PROTONS / NEUTRONS) with its live value.
+void _legendStepper(
+    Canvas canvas, Rect r, String label, String sub, int value, Color color,
+    {bool matched = false}) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(rrect, Paint()..color = Colors.black.withValues(alpha: 0.4));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = matched
+          ? _kGood.withValues(alpha: 0.8)
+          : color.withValues(alpha: 0.5),
+  );
+  GameFx.text(canvas, label, Offset(r.center.dx, r.top + r.height * 0.18), 10,
+      color,
+      weight: FontWeight.bold);
+  GameFx.text(canvas, sub, Offset(r.center.dx, r.top + r.height * 0.36), 8,
+      Colors.white.withValues(alpha: 0.45));
+  final rowY = r.top + r.height * 0.68;
+  final btnR = math.min(11.0, r.height * 0.18);
+  _legendStepBtn(
+      canvas, Offset(r.left + r.width * 0.18, rowY), btnR, color, false);
+  GameFx.text(canvas, '$value', Offset(r.center.dx, rowY), 21,
+      matched ? _kGood : Colors.white,
+      weight: FontWeight.w800, glow: matched ? 0.7 : 0);
+  _legendStepBtn(
+      canvas, Offset(r.right - r.width * 0.18, rowY), btnR, color, true);
+}
+
+/// One ELEMENT / ISOTOPE status pill.
+void _legendPill(Canvas canvas, Offset c, String label, bool ok, Color color) {
+  final col = ok ? _kGood : color;
+  final w = 30.0 + label.length * 6.5;
+  final rr = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: c, width: w, height: 20),
+      const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = col.withValues(alpha: ok ? 0.22 : 0.10));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = col.withValues(alpha: ok ? 1.0 : 0.4),
+  );
+  GameFx.text(canvas, ok ? '✓ $label' : '○ $label', c, 9,
+      ok ? Colors.white : col.withValues(alpha: 0.85),
+      weight: FontWeight.bold);
+}
+
+/// A prompt card, the live _TargetCard styling in miniature.
+void _legendCard(Canvas canvas, Rect r, String headline, double fontSize) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.45));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = _kAccent.withValues(alpha: 0.45),
+  );
+  GameFx.text(canvas, headline, r.center, fontSize, Colors.white,
+      weight: FontWeight.w800);
+}
+
+// Frame 1 — the objects + the verb: dial protons/neutrons to build the atom.
+void _legendBuild(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final s = math.min(size.width, size.height);
+  final c = Offset(size.width * 0.5, size.height * 0.36);
+  _legendShells(canvas, c, 6, s * 0.19);
+  _legendNucleus(canvas, c, 6, 8, s * 0.030);
+  final w = size.width * 0.42;
+  final h = size.height * 0.24;
+  final top = size.height * 0.72;
+  _legendStepper(
+      canvas,
+      Rect.fromLTWH(size.width * 0.05, top, w, h),
+      'PROTONS',
+      'sets the element',
+      6,
+      _kProton);
+  _legendStepper(
+      canvas,
+      Rect.fromLTWH(size.width * 0.53, top, w, h),
+      'NEUTRONS',
+      'sets the isotope',
+      8,
+      _kNeutron);
+}
+
+// Frame 2 — how to score: both pills green → atom blooms → LOCK IT IN.
+void _legendLock(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final s = math.min(size.width, size.height);
+  _legendPill(canvas, Offset(size.width * 0.32, size.height * 0.10), 'ELEMENT',
+      true, _kProton);
+  _legendPill(canvas, Offset(size.width * 0.68, size.height * 0.10), 'ISOTOPE',
+      true, _kNeutron);
+  final c = Offset(size.width * 0.5, size.height * 0.44);
+  canvas.drawCircle(
+    c,
+    s * 0.26,
+    Paint()
+      ..color = _kGood.withValues(alpha: 0.16)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 22),
+  );
+  _legendShells(canvas, c, 6, s * 0.16);
+  _legendNucleus(canvas, c, 6, 8, s * 0.027);
+  final bar = Rect.fromLTWH(size.width * 0.14, size.height * 0.78,
+      size.width * 0.72, size.height * 0.15);
+  final rr = RRect.fromRectAndRadius(bar, const Radius.circular(13));
+  canvas.drawRRect(rr, Paint()..color = _kGood.withValues(alpha: 0.9));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = _kGood,
+  );
+  GameFx.text(canvas, 'LOCK IT IN  ✓', bar.center, 13, Colors.black,
+      weight: FontWeight.bold);
+}
+
+// Frame 3 — the danger: locking a wrong build breaks the streak (red flash).
+void _legendMiss(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final s = math.min(size.width, size.height);
+  canvas.drawRect(
+    Offset.zero & size,
+    Paint()..color = _kBad.withValues(alpha: 0.12),
+  );
+  _legendPill(canvas, Offset(size.width * 0.32, size.height * 0.10), 'ELEMENT',
+      true, _kProton);
+  _legendPill(canvas, Offset(size.width * 0.68, size.height * 0.10), 'ISOTOPE',
+      false, _kNeutron);
+  final c = Offset(size.width * 0.5, size.height * 0.46);
+  _legendShells(canvas, c, 6, s * 0.16);
+  _legendNucleus(canvas, c, 6, 6, s * 0.027);
+  final banner = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.84),
+      width: size.width * 0.62,
+      height: size.height * 0.14);
+  final rr = RRect.fromRectAndRadius(banner, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = _kBad.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kBad.withValues(alpha: 0.9),
+  );
+  GameFx.text(canvas, 'NOT A MATCH', banner.center, 13, Colors.white,
+      weight: FontWeight.bold, glow: 0.8);
+}
+
+// Frame 4 — escalation: prompt phrasings get terser as you solve.
+void _legendPrompts(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const heads = ['6 PROTONS · 8 NEUTRONS', 'CARBON-14', '¹⁴C'];
+  final tops = [0.06, 0.40, 0.74];
+  final chevron = Paint()
+    ..color = _kAccent
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  for (int i = 0; i < 3; i++) {
+    final r = Rect.fromLTWH(size.width * 0.10, size.height * tops[i],
+        size.width * 0.80, size.height * 0.20);
+    _legendCard(canvas, r, heads[i], i == 0 ? 12 : 16);
+    if (i < 2) {
+      final cx = size.width * 0.5;
+      final cy = size.height * (tops[i] + 0.28);
+      canvas.drawLine(Offset(cx - 7, cy - 4), Offset(cx, cy + 4), chevron);
+      canvas.drawLine(Offset(cx + 7, cy - 4), Offset(cx, cy + 4), chevron);
+    }
+  }
+}
+
+/// The visual manual for Isotopes — wired into the registry spec.
+final List<LegendFrame> isotopesLegendFrames = [
+  const LegendFrame(
+      caption: 'Dial PROTONS (element) and NEUTRONS (isotope)',
+      paint: _legendBuild),
+  const LegendFrame(
+      caption: 'Both pills green? LOCK IT IN — fast locks earn more',
+      paint: _legendLock),
+  const LegendFrame(
+      caption: 'Wrong lock: streak breaks — but no points lost',
+      paint: _legendMiss),
+  const LegendFrame(
+      caption: 'Prompts get terser: counts → CARBON-14 → ¹⁴C',
+      paint: _legendPrompts),
+];
+
 // ═══════════════════════════════════════════════════════════════════ widgets ══
 
 /// The prompt card. Shows the asked-for nuclide (phrased by [_PromptKind]) plus
@@ -625,7 +923,7 @@ class _TargetCard extends StatelessWidget {
         sub = 'element + mass number A=${target.a}';
         break;
       case _PromptKind.neutrons:
-        headline = '$name';
+        headline = name;
         sub = 'the isotope with ${target.n} neutrons';
         break;
       case _PromptKind.symbol:

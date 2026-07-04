@@ -4,10 +4,17 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('GameCatalog', () {
-    test('particles has exactly 2 games (Collider + Accelerator)', () {
+    test(
+        'particles has exactly 4 games (Collider, Accelerator, Standard Model, Decay Chain)',
+        () {
       final games = GameCatalog.forScale(BioScale.particles);
-      expect(games.length, 2);
-      expect(games.map((g) => g.id).toSet(), {'collider', 'accelerator'});
+      expect(games.length, 4);
+      expect(games.map((g) => g.id).toSet(), {
+        'collider',
+        'accelerator',
+        'standard_model',
+        'decay_chain',
+      });
     });
 
     test('every scale has at least one game (a Play button always lands)', () {

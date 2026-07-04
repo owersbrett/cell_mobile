@@ -288,13 +288,47 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
   void initState() {
     super.initState();
     _fillHotel();
+    // ATTRACT autopilot: the game knows the correct reassignment rule for every
+    // arrival, so it plays itself correctly (see [_autoStep]). Each move banks a
+    // real scored answer, so pace it just slower than the feedback reveal.
+    widget.session.autoPilot = _autoStep;
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free move per host tick. During [_Phase.choosing] it taps the
+  /// ONE rule that actually accommodates the current arrival — the correct
+  /// reassignment ([_kCorrect] / `rule.solves.contains(_arrival)`), never a
+  /// distractor — so it banks genuine points. During [_Phase.feedback] it lets
+  /// the resolution card breathe, then skips ahead to the next arrival (the
+  /// round self-advances on its own timer anyway). Deterministic, no randomness.
+  void _autoStep() {
+    if (!widget.session.isRunning || !_started) return;
+    switch (_phase) {
+      case _Phase.choosing:
+        _Rule? correct;
+        for (final r in _options) {
+          if (r.solves.contains(_arrival)) {
+            correct = r;
+            break;
+          }
+        }
+        if (correct != null) _onRule(correct);
+        break;
+      case _Phase.feedback:
+        // Nudge past the reveal so attract keeps moving; harmless if the
+        // feedback timer has already elapsed.
+        _onTapField();
+        break;
+    }
   }
 
   // ── Corridor helpers ─────────────────────────────────────────────────────────
@@ -694,12 +728,16 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
   }
 
   Widget _buildOptions() {
+    // The panel is a fixed [_kBottomPanel] high (the canvas reserves it).
+    // Three cards fit at full size; when the round warms up to four, compact
+    // metrics keep the stack inside the panel instead of overflowing it.
+    final compact = _options.length >= 4;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
+          const Text(
             'TAP THE RULE THAT MAKES ROOM',
             style: TextStyle(
               fontFamily: _kFont,
@@ -709,23 +747,24 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
               color: _kTextSub,
             ),
           ),
-          const SizedBox(height: 8),
+          SizedBox(height: compact ? 6 : 8),
           for (final r in _options)
             Padding(
-              padding: const EdgeInsets.only(bottom: 7),
-              child: _optionCard(r),
+              padding: EdgeInsets.only(bottom: compact ? 5 : 7),
+              child: _optionCard(r, compact: compact),
             ),
         ],
       ),
     );
   }
 
-  Widget _optionCard(_Rule r) {
+  Widget _optionCard(_Rule r, {required bool compact}) {
     return GestureDetector(
       onTap: () => _onRule(r),
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        padding:
+            EdgeInsets.symmetric(horizontal: 14, vertical: compact ? 6 : 9),
         decoration: BoxDecoration(
           color: _kCardBg,
           borderRadius: BorderRadius.circular(12),
@@ -738,13 +777,21 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    r.label,
-                    style: const TextStyle(
-                      fontFamily: _kFont,
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w900,
-                      color: _kTextPrimary,
+                  // Scale down rather than wrap/ellipsize — a wrapped label
+                  // adds a line and blows the fixed panel; the player must
+                  // still read the whole rule.
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      r.label,
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: compact ? 14 : 15.5,
+                        fontWeight: FontWeight.w900,
+                        color: _kTextPrimary,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 1),
@@ -752,8 +799,10 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
                     r.sub,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontFamily: _kFont, fontSize: 11.5, color: _kTextSub),
+                    style: TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: compact ? 10.5 : 11.5,
+                        color: _kTextSub),
                   ),
                 ],
               ),
@@ -1091,3 +1140,333 @@ class _HotelPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HotelPainter old) => true;
 }
+
+// ============================================================================
+// Visual manual — legend carousel cards. _LegendArt mirrors the LIVE painter's
+// component draws (doors, potato guests, rule cards) with the same palette
+// constants, so the manual shows the EXACT corridor the player will meet.
+// Static rendering only: painted once on the intro screen, never per-frame.
+// ============================================================================
+
+class _LegendArt {
+  _LegendArt._();
+
+  static void text(
+    Canvas canvas,
+    String s,
+    Offset center,
+    double size,
+    Color color, {
+    FontWeight weight = FontWeight.w700,
+    double spacing = 0,
+  }) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: s,
+        style: TextStyle(
+          fontFamily: _kFont,
+          fontSize: size,
+          fontWeight: weight,
+          letterSpacing: spacing,
+          color: color,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+  }
+
+  /// A guest token — same ovoid body + sheen + eyes as the live painter.
+  static void potato(Canvas canvas, Offset c, double r, Color tint,
+      {double a = 1}) {
+    canvas.drawCircle(
+      c,
+      r * 1.5,
+      Paint()
+        ..color = tint.withValues(alpha: 0.22 * a)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+    canvas.save();
+    canvas.translate(c.dx, c.dy);
+    canvas.scale(1.0, 0.86);
+    canvas.drawCircle(
+        Offset.zero, r, Paint()..color = tint.withValues(alpha: a));
+    canvas.drawCircle(
+      Offset(0, -r * 0.18),
+      r,
+      Paint()..color = Colors.white.withValues(alpha: 0.10 * a),
+    );
+    canvas.restore();
+    final eye = Paint()..color = Potatuhs.ink.withValues(alpha: 0.85 * a);
+    canvas.drawCircle(Offset(c.dx - r * 0.32, c.dy - r * 0.1), r * 0.13, eye);
+    canvas.drawCircle(Offset(c.dx + r * 0.32, c.dy - r * 0.1), r * 0.13, eye);
+  }
+
+  /// The corridor band: facade slab, numbered doors, gold OPEN rooms, red
+  /// flash room and the `→ ∞` continuation. Returns each door's rect so
+  /// callers can place guests inside.
+  static List<Rect> corridor(
+    Canvas canvas,
+    Size size,
+    double cy, {
+    int rooms = 5,
+    Set<int> open = const {},
+    int? flash,
+  }) {
+    final pad = size.width * 0.07;
+    final plotL = pad;
+    final plotR = size.width - pad;
+    final roomW = (plotR - plotL) / rooms;
+    final doorH = (roomW * 1.15).clamp(28.0, size.height * 0.40);
+    final rects = <Rect>[];
+
+    // Facade slab spanning the rooms.
+    final slab = Rect.fromLTRB(
+        plotL - 4, cy - doorH / 2 - 10, plotR + 4, cy + doorH / 2 + 10);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(slab, const Radius.circular(14)),
+      Paint()..color = _kFacade.withValues(alpha: 0.55),
+    );
+
+    for (int r = 1; r <= rooms; r++) {
+      final cx = plotL + (r - 0.5) * roomW;
+      final doorRect = Rect.fromCenter(
+          center: Offset(cx, cy), width: roomW * 0.78, height: doorH);
+      rects.add(doorRect);
+      final rr = RRect.fromRectAndRadius(doorRect, const Radius.circular(9));
+      final isOpen = open.contains(r);
+      final isFlash = flash == r;
+
+      canvas.drawRRect(rr, Paint()..color = _kDoor);
+      if (isOpen) {
+        canvas.drawRRect(rr, Paint()..color = _kGold.withValues(alpha: 0.16));
+        canvas.drawRRect(
+          rr,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..color = _kGold.withValues(alpha: 0.85)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+        );
+      }
+      if (isFlash) {
+        canvas.drawRRect(rr, Paint()..color = _kBad.withValues(alpha: 0.25));
+      }
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = isOpen
+              ? _kGold.withValues(alpha: 0.9)
+              : (isFlash ? _kBad.withValues(alpha: 0.9) : _kDoorEdge),
+      );
+
+      text(canvas, '$r', Offset(cx, doorRect.top - 12), 10,
+          isOpen ? _kGold : _kTextSub,
+          weight: FontWeight.w800);
+      if (isOpen) {
+        text(canvas, 'OPEN', Offset(cx, doorRect.bottom + 9), 8, _kGold,
+            weight: FontWeight.w900, spacing: 1.0);
+      }
+      if (isFlash) {
+        text(canvas, 'FULL!', Offset(cx, doorRect.bottom + 9), 8, _kBad,
+            weight: FontWeight.w900, spacing: 1.0);
+      }
+    }
+
+    text(canvas, '→ ∞', Offset(plotR - 10, slab.top - 12), 11, _kGold,
+        weight: FontWeight.w800);
+    return rects;
+  }
+
+  /// One rule option card — same shape/palette as the live [_optionCard].
+  static void ruleCard(
+    Canvas canvas,
+    Rect r,
+    String label,
+    String sub, {
+    Color? accent,
+  }) {
+    final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+    canvas.drawRRect(rr, Paint()..color = _kCardBg);
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = accent ?? _kCardBorder,
+    );
+    if (accent != null) {
+      canvas.drawRRect(rr, Paint()..color = accent.withValues(alpha: 0.10));
+    }
+    final hasSub = sub.isNotEmpty && r.height >= 34;
+    final labelY = hasSub ? r.top + r.height * 0.36 : r.center.dy;
+    text(canvas, label, Offset(r.center.dx, labelY), 12.5,
+        accent ?? _kTextPrimary,
+        weight: FontWeight.w900);
+    if (hasSub) {
+      text(canvas, sub, Offset(r.center.dx, r.top + r.height * 0.72), 9,
+          _kTextSub);
+    }
+  }
+
+  /// The tap cue: a gold fingertip ring, as in other games' manuals.
+  static void tapCue(Canvas canvas, Offset c) {
+    canvas.drawCircle(
+      c,
+      13,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = _kGold,
+    );
+    canvas.drawCircle(c, 5, Paint()..color = _kGold.withValues(alpha: 0.85));
+  }
+
+  static bool degenerate(Size size) =>
+      size.width <= 0 ||
+      size.height <= 0 ||
+      !size.width.isFinite ||
+      !size.height.isFinite;
+}
+
+// ── Frame 1: the setup — an infinite FULL hotel, and an arrival ─────────────
+
+void _legendHotel(Canvas canvas, Size size) {
+  if (_LegendArt.degenerate(size)) return;
+  final doors = _LegendArt.corridor(canvas, size, size.height * 0.36);
+  final r = doors.first.width * 0.34;
+  // Every room occupied by a resident — the hotel is full.
+  for (final d in doors) {
+    _LegendArt.potato(canvas, d.center, r, _kResident);
+  }
+  // A newly-arrived guest waits below, with the announcement chip.
+  final ac = Offset(size.width * 0.5, size.height * 0.78);
+  _LegendArt.potato(canvas, ac, r * 1.1, _kArrival);
+  _LegendArt.text(canvas, '1 NEW GUEST · HOTEL FULL',
+      Offset(size.width * 0.5, size.height * 0.94), 10, _kArrival,
+      weight: FontWeight.w900, spacing: 0.6);
+  // An up-arrow from the arrival toward the corridor.
+  final p = Paint()
+    ..color = _kArrival
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final ax = size.width * 0.5;
+  final ay0 = size.height * 0.68, ay1 = size.height * 0.56;
+  canvas.drawLine(Offset(ax, ay0), Offset(ax, ay1), p);
+  canvas.drawLine(Offset(ax - 6, ay1 + 7), Offset(ax, ay1), p);
+  canvas.drawLine(Offset(ax + 6, ay1 + 7), Offset(ax, ay1), p);
+}
+
+// ── Frame 2: the action — tap the rule; n → n+1 opens room 1 ────────────────
+
+void _legendRule(Canvas canvas, Size size) {
+  if (_LegendArt.degenerate(size)) return;
+  final doors = _LegendArt.corridor(canvas, size, size.height * 0.30,
+      open: const {1});
+  final r = doors.first.width * 0.34;
+  // Residents shifted up one room; the arrival drops into the freed room 1.
+  for (int i = 1; i < doors.length; i++) {
+    _LegendArt.potato(canvas, doors[i].center, r, _kResident);
+  }
+  _LegendArt.potato(canvas, doors.first.center, r, _kArrival);
+  // The correct rule card, with the tap cue on it.
+  final card = Rect.fromCenter(
+    center: Offset(size.width * 0.5, size.height * 0.78),
+    width: size.width * 0.72,
+    height: size.height * 0.20,
+  );
+  _LegendArt.ruleCard(canvas, card, 'n → n+1', 'Every guest moves up one room',
+      accent: _kGood);
+  _LegendArt.tapCue(
+      canvas, Offset(card.right - card.width * 0.14, card.center.dy));
+}
+
+// ── Frame 3: the danger — a wrong rule genuinely fails ──────────────────────
+
+void _legendWrong(Canvas canvas, Size size) {
+  if (_LegendArt.degenerate(size)) return;
+  final doors = _LegendArt.corridor(canvas, size, size.height * 0.30,
+      flash: 1);
+  final r = doors.first.width * 0.30;
+  // "All → room 1" piles everyone into one room — an illegal double-booking.
+  final c1 = doors.first.center;
+  _LegendArt.potato(canvas, c1.translate(-r * 0.7, r * 0.4), r, _kResident);
+  _LegendArt.potato(canvas, c1.translate(r * 0.7, r * 0.3), r, _kResident);
+  _LegendArt.potato(canvas, c1.translate(0, -r * 0.6), r, _kResident);
+  // The failing rule card, struck through in red.
+  final card = Rect.fromCenter(
+    center: Offset(size.width * 0.5, size.height * 0.78),
+    width: size.width * 0.72,
+    height: size.height * 0.20,
+  );
+  _LegendArt.ruleCard(canvas, card, 'All → room 1', 'Send everyone to room 1',
+      accent: _kBad);
+  final x = Paint()
+    ..color = _kBad
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  final xc = Offset(card.left + card.width * 0.12, card.center.dy);
+  canvas.drawLine(xc.translate(-6, -6), xc.translate(6, 6), x);
+  canvas.drawLine(xc.translate(6, -6), xc.translate(-6, 6), x);
+  _LegendArt.text(canvas, '0 PTS · STREAK RESETS',
+      Offset(size.width * 0.5, size.height * 0.94), 9.5, _kBad,
+      weight: FontWeight.w900, spacing: 0.8);
+}
+
+// ── Frame 4: the escalation — ℵ₀ buses and four rules to choose from ────────
+
+void _legendBuses(Canvas canvas, Size size) {
+  if (_LegendArt.degenerate(size)) return;
+  // The late-game arrival banner chip.
+  final chip = Rect.fromCenter(
+    center: Offset(size.width * 0.5, size.height * 0.12),
+    width: size.width * 0.72,
+    height: size.height * 0.14,
+  );
+  final chipRR = RRect.fromRectAndRadius(chip, const Radius.circular(12));
+  canvas.drawRRect(
+      chipRR, Paint()..color = _kArrival.withValues(alpha: 0.16));
+  canvas.drawRRect(
+    chipRR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = _kArrival.withValues(alpha: 0.6),
+  );
+  _LegendArt.text(canvas, 'ℵ₀ BUSES — EACH ℵ₀', chip.center, 12, _kArrival,
+      weight: FontWeight.w900, spacing: 0.4);
+  // Four compact rule cards — only ONE fits this arrival.
+  const labels = ['Prime powers', 'n → 2n', 'n → n+1', 'All → room 1'];
+  for (int i = 0; i < 4; i++) {
+    final card = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * (0.32 + i * 0.185)),
+      width: size.width * 0.72,
+      height: size.height * 0.135,
+    );
+    _LegendArt.ruleCard(canvas, card, labels[i], '',
+        accent: i == 0 ? _kGold : null);
+    if (i == 0) {
+      _LegendArt.tapCue(
+          canvas, Offset(card.right - card.width * 0.12, card.center.dy));
+    }
+  }
+}
+
+/// The visual manual for Hilbert's Hotel — wired into the registry spec.
+final List<LegendFrame> hilbertsHotelLegendFrames = [
+  const LegendFrame(
+      caption: 'The ∞ hotel is FULL — yet a new guest arrives',
+      paint: _legendHotel),
+  const LegendFrame(
+      caption: 'Tap the rule that makes room — n → n+1 opens room 1',
+      paint: _legendRule),
+  const LegendFrame(
+      caption: 'Wrong rules truly fail: 0 points, streak resets',
+      paint: _legendWrong),
+  const LegendFrame(
+      caption: 'Later: ℵ₀ buses arrive and 4 rules to pick from',
+      paint: _legendBuses),
+];

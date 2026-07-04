@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../../fx.dart';
 import '../../mini_game.dart';
@@ -74,7 +75,8 @@ class BondsGame extends StatefulWidget {
 
 class _BondsGameState extends State<BondsGame>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
   final Random _rng = Random();
 
   // --- Wallet / score ---
@@ -159,21 +161,89 @@ class _BondsGameState extends State<BondsGame>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick)
-      ..forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this desk knows the fixed-income playbook. Registered
+    // always (harmless in normal play — the host only calls it in autoplay).
+    // See [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
   }
 
-  // ─── Main loop (host owns the clock) ───────────────────────────────────────
-  void _tick() {
+  // ─── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One competent, deterministic move per host tick (~250ms), played off the
+  /// game's OWN fields (rate, rate history, holdings, cash) and its OWN handlers
+  /// — never randomness or synthetic taps. Trades the one lesson of the game:
+  /// bond prices move INVERSE to rates.
+  ///   • Holding a bond now worth more than its cost basis (i.e. rates fell
+  ///     since we bought) by a worthwhile margin → SELL ALL of it, realizing
+  ///     the gain into the score (only SOLD bonds count).
+  ///   • Otherwise, when the live rate sits in the UPPER part of its recent
+  ///     range (rates HIGH ⇒ prices CHEAP) and cash allows → BUY the longest
+  ///     unlocked maturity (biggest duration swing), sized to a slice of cash.
+  ///   • Nothing attractive → hold.
+  void _autoStep() {
     if (!widget.session.isRunning) return;
-    const dt = 1 / 60.0;
+
+    // 1) Realize gains. Bonds move slowly, so ~0.5% over basis is worth banking.
+    for (int i = 0; i < _kBonds.length; i++) {
+      final h = _hold[i];
+      if (h.qty <= 1e-6) continue;
+      final price = _price(_kBonds[i], _rate);
+      if (price > h.avgCost * 1.005) {
+        _sel = i; // act on this bond via the game's own select + sell handlers
+        _sellAll();
+        return;
+      }
+    }
+
+    // 2) Accumulate when rates are relatively HIGH (prices cheap). "High" is
+    //    derived from the rate's own recent range, not a magic threshold.
+    if (_rateHist.length >= 4) {
+      final lo = _rateHist.reduce(min);
+      final hi = _rateHist.reduce(max);
+      if (hi - lo > 0.3) {
+        final pos = (_rate - lo) / (hi - lo); // 0 = cheapest rate, 1 = highest
+        if (pos >= 0.6) {
+          // Prefer the longest UNLOCKED maturity — it swings hardest as rates
+          // fall, so the eventual sell realizes more.
+          int target = -1;
+          for (int i = _kBonds.length - 1; i >= 0; i--) {
+            if (_unlocked[i]) {
+              target = i;
+              break;
+            }
+          }
+          if (target >= 0) {
+            _sel = target;
+            // Deploy about half of free cash per entry (≥1 bond) so there's dry
+            // powder left for a cheaper rung later.
+            final price = _price(_kBonds[target], _rate);
+            final affordable = (_cash / max(price, 0.01)).floor();
+            final lot = max(1, (affordable / 2).floor());
+            if (_lot != lot) _setLot(lot);
+            if (_canBuy) _buy();
+          }
+        }
+      }
+    }
+    // else hold — no worthwhile move this tick.
+  }
+
+  // ─── Main loop (host owns the clock) ───────────────────────────────────────
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow motion — the sim must advance by
+    // wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
+    if (!widget.session.isRunning) return;
     setState(() {
       _elapsed += dt;
       final t = (_elapsed / _kGameSeconds).clamp(0.0, 1.0);
@@ -917,7 +987,7 @@ class _BdChartPainter extends CustomPainter {
     stroke(ratePath, Potatuhs.gold, 2.0);
 
     // Legend.
-    GameFx.text(canvas, 'RATE', Offset(28, 12), 9, Potatuhs.gold,
+    GameFx.text(canvas, 'RATE', const Offset(28, 12), 9, Potatuhs.gold,
         weight: FontWeight.w800);
     GameFx.text(canvas, 'PRICE', Offset(size.width - 28, 12), 9, priceColor,
         weight: FontWeight.w800);
@@ -926,6 +996,249 @@ class _BdChartPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BdChartPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME components the
+// live game uses (the gold rate gauge, the maturity-badge bond card, the
+// BUY/SELL pills, the inverse RATES⇒PRICES arrow). Static + cheap: rendered
+// once on the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Bond price = PV of fixed coupons + face, discounted at [ratePct] — the same
+/// formula the game trades on. Top-level copy so the legend needs no state.
+double _bdLegendPrice(_BondDef b, double ratePct) {
+  final y = ratePct / 100.0;
+  final c = b.couponRate * _kFace;
+  double pv = 0;
+  double df = 1.0;
+  for (int t = 1; t <= b.maturity; t++) {
+    df /= (1 + y);
+    pv += c * df;
+  }
+  pv += _kFace * df;
+  return pv;
+}
+
+/// The gold interest-rate gauge + the inverse cause→effect arrow, mirroring
+/// `_buildRatePanel`. [ratesUp] flips both the rate colour and the (opposite)
+/// price colour so one helper draws both the winning and the losing case.
+void _bdRateGauge(Canvas canvas, Rect r, {required bool ratesUp}) {
+  if (r.width < 8 || r.height < 8) return;
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(
+      rrect, Paint()..color = Potatuhs.inkPanel.withValues(alpha: 0.7));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = Potatuhs.gold.withValues(alpha: 0.30),
+  );
+
+  final rateCol = ratesUp ? _kDown : _kUp; // rising rates read as bad (red)
+  final priceCol = ratesUp ? _kDown : _kUp; // prices move the OTHER way
+
+  // Left: the live rate readout.
+  GameFx.text(canvas, 'INTEREST RATE', Offset(r.left + r.width * 0.30, r.top + 15),
+      9, Potatuhs.gold,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '5.00%', Offset(r.left + r.width * 0.24, r.center.dy + 8),
+      25, Potatuhs.gold,
+      display: true, glow: 0.5);
+
+  // Right: RATES ▲/▼  ⇒  PRICES ▼/▲ — the whole lesson, colour-coded.
+  GameFx.text(canvas, 'RATES ${ratesUp ? "▲" : "▼"}',
+      Offset(r.right - r.width * 0.20, r.center.dy - 12), 11, rateCol,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '⇒ PRICES ${ratesUp ? "▼" : "▲"}',
+      Offset(r.right - r.width * 0.20, r.center.dy + 10), 13, priceCol,
+      weight: FontWeight.w800);
+}
+
+/// One tradeable bond card — the maturity badge + coupon + live price + an
+/// optional coloured delta, mirroring `_buildBondRow`.
+void _bdBondCard(Canvas canvas, Rect r, _BondDef b, double price,
+    {bool selected = true, String? delta, Color? deltaColor}) {
+  if (r.width < 8 || r.height < 8) return;
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..color = selected
+          ? b.color.withValues(alpha: 0.16)
+          : Potatuhs.inkPanel.withValues(alpha: 0.6),
+  );
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = selected ? 1.8 : 1.2
+      ..color = selected
+          ? b.color.withValues(alpha: 0.8)
+          : Colors.white.withValues(alpha: 0.10),
+  );
+
+  // Maturity badge (label + coupon).
+  final badge = Rect.fromLTWH(r.left + 10, r.center.dy - 18, 42, 36);
+  final brr = RRect.fromRectAndRadius(badge, const Radius.circular(8));
+  canvas.drawRRect(brr, Paint()..color = b.color.withValues(alpha: 0.22));
+  canvas.drawRRect(
+    brr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3
+      ..color = b.color.withValues(alpha: 0.5),
+  );
+  GameFx.text(canvas, b.label, badge.center.translate(0, -6), 13, b.color,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '${(b.couponRate * 100).toStringAsFixed(1)}%',
+      badge.center.translate(0, 9), 7, Potatuhs.textSecondary);
+
+  // Live price (+ optional delta beneath).
+  final px = badge.right + 46;
+  GameFx.text(canvas, '\$${price.toStringAsFixed(2)}',
+      Offset(px, r.center.dy + (delta != null ? -7 : 0)), 16,
+      Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+  if (delta != null) {
+    GameFx.text(canvas, delta, Offset(px, r.center.dy + 11), 11,
+        deltaColor ?? _kUp,
+        weight: FontWeight.w700);
+  }
+}
+
+/// A gradient trade pill, mirroring `_buildTradeButtons`' BUY/SELL buttons.
+void _bdTradePill(Canvas canvas, Rect r, String label, Color colorA,
+    Color colorB, Color accent) {
+  if (r.width < 8 || r.height < 8) return;
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(16));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [colorA, colorB],
+      ).createShader(r),
+  );
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = accent.withValues(alpha: 0.8),
+  );
+  GameFx.text(canvas, label, r.center, 18, accent,
+      display: true, weight: FontWeight.w800);
+}
+
+// ── Frame 1: the core object + verb — a bond, and BUY / SELL. ────────────────
+void _legendTrade(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final b = _kBonds[1]; // 5Y — tradeable from the opening bell
+  final card = Rect.fromLTWH(
+      size.width * 0.12, size.height * 0.20, size.width * 0.76, 56);
+  _bdBondCard(canvas, card, b, _bdLegendPrice(b, _kRateStart));
+
+  final pillW = size.width * 0.36;
+  final pillY = size.height * 0.58;
+  _bdTradePill(canvas, Rect.fromLTWH(size.width * 0.12, pillY, pillW, 56),
+      'BUY', const Color(0xFF1B4D5E), const Color(0xFF2E7D99), _kAccent);
+  _bdTradePill(
+      canvas,
+      Rect.fromLTWH(size.width * 0.52, pillY, pillW, 56),
+      'SELL',
+      const Color(0xFF7F0000),
+      const Color(0xFFC62828),
+      _kDown);
+}
+
+// ── Frame 2: how to score — rates fall ⇒ prices rise, buy low & sell high. ───
+void _legendProfit(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final gauge = Rect.fromLTWH(
+      size.width * 0.08, size.height * 0.16, size.width * 0.84, 66);
+  _bdRateGauge(canvas, gauge, ratesUp: false);
+
+  final b = _kBonds[1];
+  final buyP = _bdLegendPrice(b, _kRateStart + 2); // bought when rates high
+  final sellP = _bdLegendPrice(b, _kRateStart - 1); // sold after rates fell
+  final card = Rect.fromLTWH(
+      size.width * 0.12, size.height * 0.60, size.width * 0.76, 56);
+  _bdBondCard(canvas, card, b, sellP,
+      delta: '+\$${(sellP - buyP).toStringAsFixed(2)}', deltaColor: _kUp);
+}
+
+// ── Frame 3: the danger — rates climb ⇒ prices fall, sell before the drop. ───
+void _legendDanger(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final gauge = Rect.fromLTWH(
+      size.width * 0.08, size.height * 0.16, size.width * 0.84, 66);
+  _bdRateGauge(canvas, gauge, ratesUp: true);
+
+  final b = _kBonds[3]; // 30Y — the hardest hit when rates rise
+  final highP = _bdLegendPrice(b, _kRateStart);
+  final lowP = _bdLegendPrice(b, _kRateStart + 2); // rates rose ⇒ price sank
+  final card = Rect.fromLTWH(
+      size.width * 0.12, size.height * 0.60, size.width * 0.76, 56);
+  _bdBondCard(canvas, card, b, lowP,
+      delta: '-\$${(highP - lowP).toStringAsFixed(2)}', deltaColor: _kDown);
+}
+
+// ── Frame 4: escalation — longer maturities swing hardest; late unlocks. ─────
+void _legendDuration(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final n = _kBonds.length;
+  final slot = size.width / n;
+  // Sensitivity = % the price falls if rates rise 1% (the in-game duration tell).
+  double sens(_BondDef b) {
+    final p0 = _bdLegendPrice(b, _kRateStart);
+    final p1 = _bdLegendPrice(b, _kRateStart + 1);
+    return p0 <= 0 ? 0 : (p0 - p1) / p0 * 100.0;
+  }
+
+  final maxSens = _kBonds.map(sens).reduce(max);
+  final baseY = size.height * 0.82;
+  final barMaxH = size.height * 0.52;
+  for (int i = 0; i < n; i++) {
+    final b = _kBonds[i];
+    final cx = slot * (i + 0.5);
+    final s = sens(b);
+    final h = maxSens <= 0 ? 4.0 : (s / maxSens) * barMaxH + 6;
+    // Bar — taller = more interest-rate risk.
+    final bar =
+        Rect.fromLTWH(cx - slot * 0.22, baseY - h, slot * 0.44, h);
+    final brr = RRect.fromRectAndRadius(bar, const Radius.circular(6));
+    canvas.drawRRect(brr, Paint()..color = b.color.withValues(alpha: 0.30));
+    canvas.drawRRect(
+      brr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.3
+        ..color = b.color.withValues(alpha: 0.8),
+    );
+    GameFx.text(canvas, b.label, Offset(cx, baseY - h - 12), 12, b.color,
+        weight: FontWeight.w800);
+    GameFx.text(canvas, '−${s.toStringAsFixed(1)}%',
+        Offset(cx, baseY + 14), 9, Potatuhs.textFaint);
+  }
+}
+
+/// The visual manual for Bonds — wired into the registry spec.
+final List<LegendFrame> bondsLegendFrames = [
+  const LegendFrame(
+      caption: 'Buy a bond, then sell it for more than you paid',
+      paint: _legendTrade),
+  const LegendFrame(
+      caption: 'Rates fall ⇒ prices rise: buy cheap, sell dear',
+      paint: _legendProfit),
+  const LegendFrame(
+      caption: 'Rates climb ⇒ prices fall: sell before the drop',
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'Longer bonds swing hardest; 10Y & 30Y unlock late',
+      paint: _legendDuration),
+];
 
 // ─── FX overlay painter ────────────────────────────────────────────────────────
 class _BdFxPainter extends CustomPainter {
@@ -936,7 +1249,9 @@ class _BdFxPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     FxBurst.paint(canvas, particles);
-    for (final p in pops) p.paint(canvas);
+    for (final p in pops) {
+      p.paint(canvas);
+    }
   }
 
   @override

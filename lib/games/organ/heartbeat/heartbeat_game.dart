@@ -85,6 +85,10 @@ class _HeartbeatGameState extends State<HeartbeatGame>
   Duration _lastElapsed = Duration.zero;
   bool _wasRunning = false;
 
+  // Last known viewport, so the attract autopilot can resolve node geometry
+  // (for pump FX) off-frame. Refreshed every build.
+  Size _size = const Size(400, 800);
+
   // ── Core state ─────────────────────────────────────────────────────────────
   int _pos = 0; // index of the stage currently holding the blood
   int _streak = 0; // consecutive clean pumps
@@ -112,12 +116,53 @@ class _HeartbeatGameState extends State<HeartbeatGame>
     super.initState();
     _recalc();
     _ticker = createTicker(_onTick)..start();
+
+    // ATTRACT autopilot: this game knows how to route blood on the beat. The
+    // host calls it on the autopilot cadence (~250ms) while running; it is a
+    // no-op during hands-on play. See [_autoStep]. Registered always (harmless).
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent hands-free move per host tick (~250ms). Heartbeat is a
+  /// SEQUENCE + TIMING game: the blood must be pumped to the next chamber in
+  /// circulation order ([_active]) and only on the downbeat (timing error [te]
+  /// inside [_window]). The metronome sweeps continuously between ticks, so
+  /// "pump if on-beat right now" would sail clean past most downbeats. Instead
+  /// we look exactly one tick ahead, like the collider:
+  ///
+  ///   • Only fire when firing NOW already lands inside the window
+  ///     (teNow <= _window). An off-beat tap stalls the flow and drops the
+  ///     streak (see [_stall]), so we never do it.
+  ///   • Among the in-window ticks, fire on the LOCAL MINIMUM of timing error:
+  ///     only when NOW is at least as close to the downbeat as the NEXT tick
+  ///     will be (teNow <= teNext). If a tighter downbeat is still ahead we wait
+  ///     for it — this steers toward PERFECT and always scores.
+  ///
+  /// The chamber is never in doubt: it is always [_active], the next stage in
+  /// the fixed loop, so the sequence half is deterministic by construction.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    final teNow = math.min(_beatPhase, 1 - _beatPhase);
+    if (teNow > _window) return; // off-beat → would stall; wait.
+
+    // Advance the metronome one host tick (~250ms) and re-measure the error.
+    const tick = 0.25;
+    final period = 60.0 / _bpm;
+    final phaseNext = (_beatPhase + tick / period) % 1.0;
+    final teNext = math.min(phaseNext, 1 - phaseNext);
+    if (teNow > teNext) return; // a tighter downbeat is still ahead — wait.
+
+    // On-beat and at the closest approach: pump the correct next chamber.
+    _pump(teNow, _HeartGeo.of(_size));
   }
 
   void _recalc() {
@@ -253,6 +298,7 @@ class _HeartbeatGameState extends State<HeartbeatGame>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
+      _size = size;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTapDown: (d) => _handleTap(d.localPosition, size),
@@ -393,27 +439,8 @@ class _HeartPainter extends CustomPainter {
           ..strokeCap = StrokeCap.round,
       );
       // Direction chevron at the midpoint.
-      _paintArrow(canvas, a, b, color.withValues(alpha: isActiveSeg ? 0.9 : 0.4));
+      _flowArrow(canvas, a, b, color.withValues(alpha: isActiveSeg ? 0.9 : 0.4));
     }
-  }
-
-  void _paintArrow(Canvas canvas, Offset a, Offset b, Color color) {
-    final mid = Offset.lerp(a, b, 0.5)!;
-    final dir = (b - a);
-    final len = dir.distance;
-    if (len < 1) return;
-    final u = dir / len;
-    final perp = Offset(-u.dy, u.dx);
-    const s = 7.0;
-    final tip = mid + u * s;
-    final p1 = mid - u * s + perp * s;
-    final p2 = mid - u * s - perp * s;
-    final path = Path()
-      ..moveTo(tip.dx, tip.dy)
-      ..lineTo(p1.dx, p1.dy)
-      ..lineTo(p2.dx, p2.dy)
-      ..close();
-    canvas.drawPath(path, Paint()..color = color);
   }
 
   // ── Central heart that thumps on every beat ───────────────────────────────
@@ -462,16 +489,6 @@ class _HeartPainter extends CustomPainter {
         weight: FontWeight.w700,
       );
     }
-  }
-
-  Path _heartPath(Offset c, double s) {
-    return Path()
-      ..moveTo(c.dx, c.dy + s * 0.36)
-      ..cubicTo(c.dx + s * 1.05, c.dy - s * 0.45, c.dx + s * 0.5, c.dy - s,
-          c.dx, c.dy - s * 0.42)
-      ..cubicTo(c.dx - s * 0.5, c.dy - s, c.dx - s * 1.05, c.dy - s * 0.45,
-          c.dx, c.dy + s * 0.36)
-      ..close();
   }
 
   // ── A circulation stage node ──────────────────────────────────────────────
@@ -626,3 +643,262 @@ class _HeartPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HeartPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shared component draws — used by BOTH the live painter and the visual manual
+// so the legend shows the LITERAL heart / arrow / node the player will meet.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The thumping center-heart silhouette (same path the live painter fills).
+Path _heartPath(Offset c, double s) {
+  return Path()
+    ..moveTo(c.dx, c.dy + s * 0.36)
+    ..cubicTo(c.dx + s * 1.05, c.dy - s * 0.45, c.dx + s * 0.5, c.dy - s,
+        c.dx, c.dy - s * 0.42)
+    ..cubicTo(c.dx - s * 0.5, c.dy - s, c.dx - s * 1.05, c.dy - s * 0.45,
+        c.dx, c.dy + s * 0.36)
+    ..close();
+}
+
+/// Direction chevron at the midpoint of a pipe segment.
+void _flowArrow(Canvas canvas, Offset a, Offset b, Color color) {
+  final mid = Offset.lerp(a, b, 0.5)!;
+  final dir = (b - a);
+  final len = dir.distance;
+  if (len < 1) return;
+  final u = dir / len;
+  final perp = Offset(-u.dy, u.dx);
+  const s = 7.0;
+  final tip = mid + u * s;
+  final p1 = mid - u * s + perp * s;
+  final p2 = mid - u * s - perp * s;
+  final path = Path()
+    ..moveTo(tip.dx, tip.dy)
+    ..lineTo(p1.dx, p1.dy)
+    ..lineTo(p2.dx, p2.dy)
+    ..close();
+  canvas.drawPath(path, Paint()..color = color);
+}
+
+/// One circulation node, drawn exactly like [_HeartPainter._paintNode]:
+/// layered orb tinted by blood state, white rim when it is the NEXT stage,
+/// bright blood token when the blood is currently HERE, short label on top.
+void _legendStageNode(Canvas canvas, Offset pos, double r, _Stage stage,
+    {bool here = false, bool next = false}) {
+  final dim = !here && !next;
+  GameFx.orb(
+    canvas,
+    pos,
+    r,
+    dim ? stage.deep : stage.color,
+    glow: here ? 1.1 : (next ? 0.7 : 0.25),
+    rim: next ? _kWhite : null,
+  );
+  if (here) {
+    canvas.drawCircle(
+      pos,
+      r * 0.42,
+      Paint()
+        ..color = _kWhite.withValues(alpha: 0.85)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+  }
+  GameFx.text(canvas, stage.label, pos, r * 0.42,
+      _kWhite.withValues(alpha: dim ? 0.65 : 0.95),
+      weight: FontWeight.w800);
+}
+
+/// The filled + rimmed center heart with an optional BPM readout beneath.
+void _legendHeart(Canvas canvas, Offset c, double s, {String? bpmLabel}) {
+  final path = _heartPath(c, s);
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = _kAccent.withValues(alpha: 0.45)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [_kRed, _kAccent, _kRedDeep],
+      ).createShader(Rect.fromCircle(center: c, radius: s)),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kWhite.withValues(alpha: 0.5),
+  );
+  if (bpmLabel != null) {
+    GameFx.text(canvas, bpmLabel, c.translate(0, s * 1.35), 11,
+        _kWhite.withValues(alpha: 0.85),
+        weight: FontWeight.w800);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the REAL components.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Frame 1 — the loop: six stages on the ring, pipes tinted by blood color,
+// flow chevrons, the thumping heart at the center. Blood is BLUE on the right
+// (pulmonary) half and RED on the left (systemic) half.
+void _legendLoop(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final center = Offset(size.width / 2, size.height * 0.52);
+  final rx = size.width * 0.36;
+  final ry = size.height * 0.34;
+  if (rx <= 0 || ry <= 0) return;
+  final nodeR = (size.shortestSide * 0.085).clamp(8.0, 24.0);
+  final nodes = <Offset>[
+    for (var i = 0; i < _kLoop.length; i++)
+      center +
+          Offset(
+            math.cos(math.pi / 2 + i * math.pi / 3) * rx,
+            math.sin(math.pi / 2 + i * math.pi / 3) * ry,
+          ),
+  ];
+  // Pipes + flow chevrons, tinted by the blood leaving each stage.
+  for (var i = 0; i < nodes.length; i++) {
+    final a = nodes[i];
+    final b = nodes[(i + 1) % nodes.length];
+    final color = _kLoop[i].color;
+    canvas.drawLine(
+      a,
+      b,
+      Paint()
+        ..color = color.withValues(alpha: 0.35)
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round,
+    );
+    _flowArrow(canvas, a, b, color.withValues(alpha: 0.75));
+  }
+  _legendHeart(canvas, center, nodeR * 0.95);
+  for (var i = 0; i < nodes.length; i++) {
+    _legendStageNode(canvas, nodes[i], nodeR, _kLoop[i],
+        here: i == 0, next: i == 1);
+  }
+  // Blood-state key: blue half vs red half.
+  GameFx.text(canvas, 'deoxygenated', Offset(size.width * 0.80, size.height * 0.10),
+      9, _kBlue.withValues(alpha: 0.9), weight: FontWeight.w800);
+  GameFx.text(canvas, 'oxygenated', Offset(size.width * 0.20, size.height * 0.10),
+      9, _kRed.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+// Frame 2 — the verb: the NEXT chamber (white rim) with the static target ring
+// and the shrinking green approach ring snapping shut on the downbeat.
+void _legendTap(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final pos = Offset(size.width / 2, size.height * 0.46);
+  final r = (size.shortestSide * 0.16).clamp(14.0, 44.0);
+  // Static target ring — in-window, so it reads green like live play.
+  canvas.drawCircle(
+    pos,
+    r * 1.18,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _kGreen.withValues(alpha: 0.45),
+  );
+  // Approach ring, one beat from snapping shut.
+  canvas.drawCircle(
+    pos,
+    r * 1.55,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..color = _kGreen.withValues(alpha: 0.95),
+  );
+  _legendStageNode(canvas, pos, r, _kLoop[2], next: true); // RV, blue
+  GameFx.text(canvas, '+13', pos.translate(r * 1.9, -r * 1.2), 13, _kWhite,
+      weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, 'dead-on = PERFECT +8',
+      Offset(size.width / 2, size.height * 0.88), 11, Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+// Frame 3 — the stall: tapping the wrong chamber, or the right one off-beat,
+// stops the flow and resets the streak (red wash, WRONG WAY / TOO SOON pops).
+void _legendStall(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  canvas.drawRect(
+    Offset.zero & size,
+    Paint()..color = _kRedDeep.withValues(alpha: 0.16),
+  );
+  final r = (size.shortestSide * 0.13).clamp(12.0, 36.0);
+  final left = Offset(size.width * 0.28, size.height * 0.42);
+  final right = Offset(size.width * 0.72, size.height * 0.42);
+  // Wrong chamber: LUNGS tapped while it is not the next stage.
+  _legendStageNode(canvas, left, r, _kLoop[3]);
+  GameFx.text(canvas, 'WRONG WAY', left.translate(0, r * 1.9), 11, _kRedDeep,
+      weight: FontWeight.w800, glow: 0.5);
+  // Right chamber, off-beat: approach ring still far from the target.
+  canvas.drawCircle(
+    right,
+    r * 2.2,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = _kLoop[2].color.withValues(alpha: 0.6),
+  );
+  _legendStageNode(canvas, right, r, _kLoop[2], next: true);
+  GameFx.text(canvas, 'TOO SOON', right.translate(0, r * 1.9), 11, _kRedDeep,
+      weight: FontWeight.w800, glow: 0.5);
+  GameFx.text(canvas, 'streak resets to 0',
+      Offset(size.width / 2, size.height * 0.86), 11,
+      _kWhite.withValues(alpha: 0.8), weight: FontWeight.w800);
+}
+
+// Frame 4 — the escalation: a clean streak raises BPM, which tightens the
+// timing window (wide ring at rest → tight ring at max rate).
+void _legendBpm(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final s = (size.shortestSide * 0.13).clamp(12.0, 34.0);
+  final left = Offset(size.width * 0.26, size.height * 0.42);
+  final right = Offset(size.width * 0.74, size.height * 0.42);
+  // Resting heart, forgiving window.
+  _legendHeart(canvas, left, s * 0.85, bpmLabel: '64 BPM');
+  canvas.drawCircle(
+    left,
+    s * 2.1,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..color = _kGreen.withValues(alpha: 0.55),
+  );
+  // Streaking heart, tight window.
+  _legendHeart(canvas, right, s * 1.15, bpmLabel: '176 BPM');
+  canvas.drawCircle(
+    right,
+    s * 2.1,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _kGreen.withValues(alpha: 0.95),
+  );
+  GameFx.text(canvas, '🔥 12', right.translate(0, s * 2.0), 11, Potatuhs.gold,
+      weight: FontWeight.w700);
+  GameFx.text(canvas, 'full loop = CYCLE +40',
+      Offset(size.width / 2, size.height * 0.88), 11, Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+/// The visual manual for Heartbeat — wired into the registry spec.
+final List<LegendFrame> heartbeatLegendFrames = [
+  const LegendFrame(
+      caption: 'Pump blood around the loop: BODY→RA→RV→LUNGS→LA→LV',
+      paint: _legendLoop),
+  const LegendFrame(
+      caption: 'Tap the ringed chamber as the ring snaps shut',
+      paint: _legendTap),
+  const LegendFrame(
+      caption: 'Wrong chamber or off-beat stalls the flow',
+      paint: _legendStall),
+  const LegendFrame(
+      caption: 'Streaks raise BPM — faster beat, tighter window',
+      paint: _legendBpm),
+];

@@ -1,8 +1,9 @@
-# EDUCATION.md — Standard Model
+# EDUCATION.md — Standard Model v2
 
-> The educational component (the **E** in GAMES). The teaching is IN the mechanic: you cannot score
-> without correctly classifying real particles, and the difficulty ramp works by **removing the
-> hints**, so mastery = actually knowing the Standard Model.
+> The educational component (the **E** in GAMES). Preserved from v1 and reinforced: the teaching is IN
+> the mechanic — you cannot score without correctly classifying real particles, and the difficulty ramp
+> works by **removing the hints**, so mastery = actually knowing the Standard Model. v2 adds a fading
+> legend and a wrong-drop teach pulse so the *onboarding* is gentler without lowering the ceiling.
 
 ## Learning objective
 By the end of a run the player can place any of the 17 elementary particles into its family and
@@ -53,17 +54,20 @@ The **Standard Model** sorts every known elementary particle into three families
 Quarks and charged leptons come in three generations of increasing mass: (u,d,e,νe) → (c,s,μ,νμ) →
 (t,b,τ,ντ). The game shows generation in the classify flash and lets orb size hint at mass.
 
-## How the teaching escalates
-1. **Tier 0–1:** every tell is on — family colour, charge badge, colour rim, mass size. Pure
-   pattern-match; learn the families.
-2. **Tier 2–3:** orb colour neutralises; more neutral/ambiguous particles appear. You start reading
-   charge and symbol instead of colour.
-3. **Tier 4+:** charge badge and colour rim drop. Only the **symbol** remains — you must know that
-   `g` is a boson, `νμ` is a lepton, `s` is a quark. Mastery is genuine recall.
+## How the teaching escalates (and how v2 eases the start)
+0. **Mini-legend (early only):** each bin prints its members (`u d c s t b` …). A novice can sort by
+   reading the legend before they've memorised anything. It fades by ~tier 2.5 — training wheels off.
+1. **Tier 0–1:** every tell is on — family colour, charge badge, colour rim, mass size. Pattern-match;
+   learn the families.
+2. **Tier 2–3:** orb colour neutralises; more neutral/ambiguous particles appear. You read charge and
+   symbol instead of colour.
+3. **Tier 4+:** charge badge and colour rim drop. Only the **symbol** remains — you must know that `g`
+   is a boson, `νμ` is a lepton, `s` is a quark. Mastery is genuine recall.
+- **Wrong-drop teach:** miss a family and the correct bin pulses — the correction lands at the moment
+  of the error, while the colour tell is still available to anchor the lesson.
 
 ## Check for understanding (implicit, via play)
 - Can you separate **force-carriers (bosons)** from **matter (quarks/leptons)**?
-- Can you tell a **quark** from a **lepton** without the colour rim (charge magnitude: fractional vs
-  integer)?
+- Can you tell a **quark** from a **lepton** without the colour rim (fractional vs integer charge)?
 - Can you place a **neutrino** (neutral lepton) and the **gluon** (neutral, colour-carrying boson)
   when their charge tells are identical (both 0)?

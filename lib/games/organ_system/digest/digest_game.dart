@@ -146,13 +146,40 @@ class _DigestGameState extends State<DigestGame>
     super.initState();
     // Seed one morsel so the calm pre-round preview reads as a live tract.
     _boluses.add(_Bolus(0, 0, _rng.nextDouble() * 6));
+    // ATTRACT autopilot: this game knows how to route the tract itself. The
+    // host calls [_autoStep] ~4×/s only in autoplay; harmless in normal play.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One correct hands-free move per host tick (~250ms). Plays Digest the way
+  /// the game intends: it advances the most DOWNSTREAM ready bolus whose exit
+  /// is clear — clearing the front of the pipeline first — via the game's own
+  /// [_press] handler. It only ever presses a stage that holds a ripe bolus
+  /// that can actually move (last stage always exits; any other stage only if
+  /// the next stage is free), so it never triggers a mis-action or a FULL
+  /// block. If no bolus is ready to move, it does nothing this tick.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    _Bolus? best;
+    for (final b in _boluses) {
+      if (!b.ready) continue;
+      // Last stage always exits; otherwise the next stage must be clear.
+      final canMove = b.stage >= _kStages - 1 ||
+          !_stageOccupied(b.stage + 1, except: b);
+      if (!canMove) continue;
+      if (best == null || b.stage > best.stage) best = b;
+    }
+    if (best == null) return; // nothing ripe & unblocked; wait for the tract
+    _press(best.stage);
   }
 
   // ── Loop ────────────────────────────────────────────────────────────────────
@@ -646,3 +673,258 @@ class _DigestPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _DigestPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME components the
+// live game uses (the tinted tract tube, a glowing bolus orb, the action
+// buttons). Static + cheap: rendered once on the intro screen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _lgText(Canvas canvas, String text, Offset at, double size, Color color,
+    {int align = 0, bool bold = true}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: size,
+        fontWeight: bold ? FontWeight.w800 : FontWeight.w500,
+        letterSpacing: 0.4,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final dx = align == 0 ? -tp.width / 2 : (align < 0 ? 0.0 : -tp.width);
+  tp.paint(canvas, at + Offset(dx, -tp.height / 2));
+}
+
+void _lgIcon(
+    Canvas canvas, IconData icon, Offset center, double sz, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontSize: sz,
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// One food morsel — the real bolus orb, optionally ripe (gold halo) or with a
+/// sweeping ripen ring.
+void _lgBolus(Canvas canvas, Offset center, double radius, Color color,
+    {bool ready = false, double ripe = 1.0}) {
+  if (ready) {
+    canvas.drawCircle(
+      center,
+      radius + 8,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = _kReady.withValues(alpha: 0.8)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+  }
+  GameFx.orb(canvas, center, radius, color, glow: ready ? 1.0 : 0.5);
+  if (!ready && ripe < 1.0) {
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius + 4),
+      -math.pi / 2,
+      2 * math.pi * ripe,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..strokeCap = StrokeCap.round
+        ..color = Colors.white.withValues(alpha: 0.7),
+    );
+  }
+}
+
+/// The tract tube with the five tinted stage zones — same look as the game.
+void _lgTube(Canvas canvas, Rect r) {
+  final rr = RRect.fromRectAndRadius(r, Radius.circular(r.height * 0.42));
+  canvas.drawRRect(rr, Paint()..color = _kTube);
+  final colW = r.width / _kStages;
+  canvas.save();
+  canvas.clipRRect(rr);
+  for (var i = 0; i < _kStages; i++) {
+    canvas.drawRect(
+      Rect.fromLTWH(r.left + colW * i, r.top, colW, r.height),
+      Paint()..color = _kStageDefs[i].tint.withValues(alpha: 0.16),
+    );
+    if (i > 0) {
+      canvas.drawLine(
+        Offset(r.left + colW * i, r.top + 4),
+        Offset(r.left + colW * i, r.bottom - 4),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.06)
+          ..strokeWidth = 1,
+      );
+    }
+  }
+  canvas.restore();
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kTubeEdge,
+  );
+}
+
+/// One footer action button — the real lit/idle look from the game.
+void _lgButton(Canvas canvas, Rect rect, _StageDef def, {bool active = false}) {
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+  final base = active ? _kReady : def.tint;
+  canvas.drawRRect(
+    rr,
+    Paint()..color = base.withValues(alpha: active ? 0.22 : 0.12),
+  );
+  if (active) {
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..color = _kReady
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+  }
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = base.withValues(alpha: active ? 0.9 : 0.4),
+  );
+  final txt = active ? _kReady : Colors.white.withValues(alpha: 0.75);
+  _lgIcon(canvas, def.icon, Offset(rect.center.dx, rect.top + 15), 16, txt);
+  _lgText(canvas, def.action, Offset(rect.center.dx, rect.bottom - 9), 8.5, txt);
+}
+
+// Frame 1 — the tract: five tinted organ stages, a bolus riding left→right.
+void _legendTract(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final colW = size.width / _kStages;
+  final labelTop = size.height * 0.20;
+  // Stage icons + names above the tube.
+  for (var i = 0; i < _kStages; i++) {
+    final cx = colW * (i + 0.5);
+    final def = _kStageDefs[i];
+    _lgIcon(canvas, def.icon, Offset(cx, labelTop), 15, def.tint);
+    _lgText(canvas, def.name, Offset(cx, labelTop + 16), 8, def.tint);
+  }
+  final tubeH = math.max(24.0, size.height * 0.24);
+  final tubeTop = size.height * 0.46;
+  _lgTube(canvas, Rect.fromLTWH(6, tubeTop, size.width - 12, tubeH));
+  final midY = tubeTop + tubeH / 2;
+  final r = math.min(colW * 0.24, 18.0);
+  // A morsel riding the tract, with a motion trail toward the exit.
+  for (var i = 0; i < 3; i++) {
+    final cx = colW * (1.2 + i * 0.5);
+    _lgBolus(canvas, Offset(cx, midY), r,
+        _kFoodColors[i % _kFoodColors.length],
+        ready: i == 2);
+  }
+  _lgText(canvas, 'left  →  right', Offset(size.width / 2, size.height * 0.88),
+      9.5, Colors.white.withValues(alpha: 0.5));
+}
+
+// Frame 2 — the core loop: food ripens, glows gold, tap its action.
+void _legendRipen(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final cx = size.width / 2;
+  final r = math.min(size.width * 0.14, 26.0);
+  // Left: still ripening (ring sweep). Right: ripe + gold halo.
+  _lgBolus(canvas, Offset(size.width * 0.30, size.height * 0.34), r,
+      _kFoodColors[0],
+      ready: false, ripe: 0.6);
+  _lgText(canvas, 'RIPENING', Offset(size.width * 0.30, size.height * 0.60),
+      8.5, Colors.white.withValues(alpha: 0.55));
+  _lgBolus(canvas, Offset(size.width * 0.70, size.height * 0.34), r,
+      _kFoodColors[0],
+      ready: true);
+  _lgText(canvas, 'READY', Offset(size.width * 0.70, size.height * 0.60), 8.5,
+      _kReady);
+  // The lit action button below — the STOMACH's CHURN, ready to press.
+  final bw = math.min(size.width * 0.4, 120.0);
+  _lgButton(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(cx, size.height * 0.82), width: bw, height: 44),
+    _kStageDefs[2],
+    active: true,
+  );
+}
+
+// Frame 3 — scoring: absorption pays most (NUTRIENTS +16, WATER +10).
+void _legendAbsorb(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = math.min(size.width * 0.13, 24.0);
+  final cy = size.height * 0.40;
+  // Small intestine — nutrients.
+  final sx = size.width * 0.30;
+  _lgBolus(canvas, Offset(sx, cy), r, _kStageDefs[3].tint, ready: true);
+  _lgIcon(canvas, _kStageDefs[3].icon, Offset(sx, size.height * 0.14), 15,
+      _kStageDefs[3].tint);
+  _lgText(canvas, 'NUTRIENTS', Offset(sx, size.height * 0.66), 9,
+      _kStageDefs[3].tint);
+  _lgText(canvas, '+16', Offset(sx, size.height * 0.80), 15, _kReady);
+  // Large intestine — water.
+  final wx = size.width * 0.70;
+  _lgBolus(canvas, Offset(wx, cy), r, _kStageDefs[4].tint, ready: true);
+  _lgIcon(canvas, _kStageDefs[4].icon, Offset(wx, size.height * 0.14), 15,
+      _kStageDefs[4].tint);
+  _lgText(canvas, 'WATER', Offset(wx, size.height * 0.66), 9,
+      _kStageDefs[4].tint);
+  _lgText(canvas, '+10', Offset(wx, size.height * 0.80), 15, _kReady);
+}
+
+// Frame 4 — the pipeline danger: one food per stage, a full stage jams (FULL).
+void _legendJam(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final colW = size.width / _kStages;
+  final tubeH = math.max(24.0, size.height * 0.30);
+  final tubeTop = size.height * 0.32;
+  _lgTube(canvas, Rect.fromLTWH(6, tubeTop, size.width - 12, tubeH));
+  final midY = tubeTop + tubeH / 2;
+  final r = math.min(colW * 0.24, 17.0);
+  // Every stage occupied — the tract is backed up.
+  for (var i = 0; i < _kStages; i++) {
+    _lgBolus(canvas, Offset(colW * (i + 0.5), midY), r,
+        _kFoodColors[i % _kFoodColors.length],
+        ready: i == 0);
+  }
+  // A FULL block warning over the stage the front bolus is trying to enter.
+  final blockX = colW * 1.5;
+  _lgText(canvas, 'FULL', Offset(blockX, tubeTop - 12), 12, _kBlock);
+  _lgText(
+      canvas,
+      'clear the FRONT first',
+      Offset(size.width / 2, size.height * 0.82),
+      10,
+      Colors.white.withValues(alpha: 0.55));
+}
+
+/// The visual manual for Digest — wired into the registry spec.
+final List<LegendFrame> digestLegendFrames = [
+  const LegendFrame(
+      caption: 'Route food left → right through 5 organ stages',
+      paint: _legendTract),
+  const LegendFrame(
+      caption: 'Wait for food to glow gold, then tap its stage action',
+      paint: _legendRipen),
+  const LegendFrame(
+      caption: 'Absorb NUTRIENTS (+16) then WATER (+10) — the big points',
+      paint: _legendAbsorb),
+  const LegendFrame(
+      caption: 'One food per stage — clear the FRONT or it jams (FULL)',
+      paint: _legendJam),
+];

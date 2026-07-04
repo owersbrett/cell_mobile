@@ -139,6 +139,149 @@ class _Real {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards drawn with the SAME primitives the live
+// game uses (the reticle ring, the +/– orbs, the borrowed-energy filament, the
+// climbing eV number, the steady gold decoy). Static, cheap, self-contained.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws one LITERAL virtual pair centred at [c]: a violet particle (+) and cyan
+/// antiparticle (–) split to separation fraction [q] along the horizontal, the
+/// borrowed-energy filament between them, the contracting reticle ring, and the
+/// live "+N" eV number above. Mirrors `_paintPair` in the live game.
+void _legendDrawPair(Canvas canvas, Offset c,
+    {required double q, required int energy, double maxSep = 34}) {
+  final peak = q >= _kPeakQ;
+  final sep = maxSep * q;
+  final pp = c.translate(sep, 0); // particle (+)
+  final ap = c.translate(-sep, 0); // antiparticle (–)
+  const r = 11.0;
+
+  // Borrowed-energy filament — brighter as the pair manifests toward apex.
+  canvas.drawLine(
+    pp,
+    ap,
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.08 + 0.30 * q)
+      ..strokeWidth = 1.6
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+  );
+
+  // The reticle: contracts toward the pair and snaps bright at the apex.
+  final reticleR = (maxSep + 30) * (1.0 - 0.62 * q);
+  final reticleCol = Color.lerp(_kParticle, _kPeak, q)!;
+  canvas.drawCircle(
+    c,
+    reticleR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = peak ? 3.2 : 1.6
+      ..color = reticleCol.withValues(alpha: 0.18 + 0.62 * q)
+      ..maskFilter =
+          peak ? const MaskFilter.blur(BlurStyle.normal, 3) : null,
+  );
+
+  GameFx.orb(canvas, pp, r, _kParticle, glow: 0.8, specular: false);
+  GameFx.orb(canvas, ap, r, _kAnti, glow: 0.8, specular: false);
+  GameFx.text(canvas, '+', pp, r * 1.3, Colors.white.withValues(alpha: 0.9));
+  GameFx.text(canvas, '–', ap, r * 1.3, Colors.white.withValues(alpha: 0.9));
+
+  // The climbing eV number — the whole legibility fix.
+  final v = (energy * q).round();
+  final labelCol = Color.lerp(_kParticle, _kPeak, q)!;
+  GameFx.text(
+    canvas,
+    peak ? '$v★' : '$v',
+    c.translate(0, -(maxSep + 22)),
+    peak ? 18 : 15,
+    labelCol,
+    weight: FontWeight.w800,
+    glow: peak ? 0.8 : 0.3 * q,
+  );
+}
+
+/// (a) The core object + verb: a pair splits out of nothing; tap it to harvest.
+void _legendPair(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  _legendDrawPair(canvas, Offset(size.width * 0.5, size.height * 0.44),
+      q: 0.55, energy: 30);
+  GameFx.text(canvas, 'a virtual pair, mid-flight',
+      Offset(size.width * 0.5, size.height * 0.80), 12, Potatuhs.textSecondary,
+      weight: FontWeight.w700);
+}
+
+/// (b) How to score: harvest AT the apex — reticle snaps bright, number peaks.
+void _legendPeak(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  _legendDrawPair(canvas, Offset(size.width * 0.5, size.height * 0.44),
+      q: 1.0, energy: 30);
+  GameFx.text(canvas, 'PEAK', Offset(size.width * 0.5, size.height * 0.79), 15,
+      _kPeak,
+      weight: FontWeight.w800, glow: 0.6);
+  GameFx.text(canvas, 'ring tight, number highest',
+      Offset(size.width * 0.5, size.height * 0.86), 11, Potatuhs.textSecondary);
+}
+
+/// (c) The danger: the steady gold REAL particle — tapping it is a penalty.
+void _legendReal(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final c = Offset(size.width * 0.5, size.height * 0.42);
+  const rad = 15.0;
+  GameFx.orb(canvas, c, rad, _kReal, glow: 0.5);
+  canvas.drawCircle(
+    c,
+    rad + 8,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = _kReal.withValues(alpha: 0.5),
+  );
+  // A red slash — measurement error.
+  const s = rad + 10;
+  final slash = Paint()
+    ..color = _kPenalty
+    ..strokeWidth = 3.2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(c.translate(-s, -s), c.translate(s, s), slash);
+  GameFx.text(canvas, '-20', Offset(size.width * 0.5, size.height * 0.72), 15,
+      _kPenalty,
+      weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, "don't tap steady gold reals",
+      Offset(size.width * 0.5, size.height * 0.80), 11, Potatuhs.textSecondary);
+}
+
+/// (d) The escalation: the final-seconds VACUUM SURGE — a ring of hot pairs.
+void _legendSurge(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final c = Offset(size.width * 0.5, size.height * 0.44);
+  final ringR = math.min(size.width, size.height) * 0.30;
+  const n = 6;
+  for (var i = 0; i < n; i++) {
+    final a = i / n * 2 * math.pi - math.pi / 2;
+    final pc = c + Offset(math.cos(a), math.sin(a)) * ringR;
+    _legendDrawPair(canvas, pc, q: 0.9, energy: 45, maxSep: 16);
+  }
+  GameFx.text(canvas, 'VACUUM SURGE',
+      Offset(size.width * 0.5, size.height * 0.86), 16, _kPeak,
+      display: true, glow: 0.7);
+}
+
+/// The visual manual for Quantum Foam v2 — wired into the registry spec.
+final List<LegendFrame> quantumFoamV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Pairs flicker out of nothing — tap one to harvest its energy',
+      paint: _legendPair),
+  const LegendFrame(
+      caption: 'Tap at the apex: tight ring, highest number = PEAK + streak',
+      paint: _legendPeak),
+  const LegendFrame(
+      caption: 'Never tap the steady gold real particles: -20',
+      paint: _legendReal),
+  const LegendFrame(
+      caption: 'Final seconds: a VACUUM SURGE erupts a ring of hot pairs',
+      paint: _legendSurge),
+];
+
 class _QuantumFoamV2GameState extends State<QuantumFoamV2Game>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
@@ -168,12 +311,53 @@ class _QuantumFoamV2GameState extends State<QuantumFoamV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+
+    // ATTRACT autopilot: this game knows how to time its own PEAK harvests. The
+    // host calls it on the autopilot cadence (~250ms) while running; it is a
+    // no-op during hands-on play. See [_autoStep]. Registered always (harmless).
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ──────────────────────────────────────────────────────
+  // Deterministic peak-harvester. Each virtual pair's live value climbs to an
+  // apex (quality = sin(t·π), max at mid-life) then falls; the whole skill is
+  // grabbing it AT that apex. Because the host samples us discretely (~250ms),
+  // we predict ONE tick ahead: a pair is "ripe" only once its value would no
+  // longer be higher next call (it has just crested — the nearest observable
+  // peak) or it is about to annihilate (salvage it before it vanishes for 0).
+  // Still-climbing pairs are left to ripen. Among ripe pairs we prefer ones
+  // already inside the true PEAK window, then the highest value harvested now,
+  // and fire exactly ONE harvest through the game's own [_harvest]. The gold
+  // REAL particles are decoys (a measurement error) and are never touched.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    const lookahead = 0.25; // ≈ host autopilot interval
+
+    _Pair? best;
+    var bestKey = -1.0;
+    for (final pr in _pairs) {
+      if (!pr.alive) continue;
+      final qNow = pr.quality;
+      final tNext = (pr.age + lookahead) / pr.lifetime;
+      final qNext = _quality(tNext);
+      final vanishing = tNext >= 1.0;
+      // Still climbing toward its apex and not about to vanish → let it ripen.
+      if (qNext > qNow && !vanishing) continue;
+      // Rank ripe pairs: true PEAK-window pairs first, then value harvested now.
+      final key = (qNow >= _kPeakQ ? 1e6 : 0.0) + pr.energy * qNow;
+      if (key > bestKey) {
+        bestKey = key;
+        best = pr;
+      }
+    }
+    if (best != null) _harvest(best);
   }
 
   double get _progress {

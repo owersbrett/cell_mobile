@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
 import 'package:cell_mobile/games/organism/organism_facts.dart';
 
@@ -540,6 +541,71 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
       duration: const Duration(days: 1),
     )..addListener(_update);
     _ticker.forward();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Harvest *competently*,
+  /// not randomly: it reads the grid, picks the best ready-to-harvest potato
+  /// (golden first, then ripest) and fires the game's OWN tap→harvest path on
+  /// it — keeping the combo chain alive. It never pulls an unripe potato (that
+  /// wastes it, per the game's own ripe rule). With nothing ripe, it spends
+  /// banked coins on a beneficial upgrade through the game's own shop handlers.
+  void _autoStep() {
+    if (!widget.session.isRunning || _gameOver) return;
+
+    // 1. Best ready-to-harvest potato. "Ready" = the game's ripe rule
+    //    (progress >= 0.9); harvesting earlier earns little and wastes the
+    //    tuber, so we skip un-ripe patches entirely. Golden pays double so it
+    //    wins; otherwise the ripest (highest progress). Ties keep the first
+    //    found (row-major) → deterministic.
+    int? br, bc;
+    bool bestGolden = false;
+    double bestProg = -1;
+    for (int r = 0; r < _rows; r++) {
+      for (int c = 0; c < _cols; c++) {
+        final p = _grid[r][c];
+        if (p.harvested || p.rotten) continue;
+        if (p.progress < 0.9) continue; // not ripe → not ready to harvest
+        final bool better = br == null ||
+            (p.isGolden && !bestGolden) ||
+            (p.isGolden == bestGolden && p.progress > bestProg);
+        if (better) {
+          br = r;
+          bc = c;
+          bestGolden = p.isGolden;
+          bestProg = p.progress;
+        }
+      }
+    }
+
+    if (br != null) {
+      final int r = br, c = bc!;
+      // Fire the game's own tap→harvest handler on the chosen cell, using the
+      // same cell-center mapping _onTapDown feeds it. This keeps the combo
+      // chain and score/FX identical to a real tap.
+      _harvest(
+        r,
+        c,
+        _gridLeft + c * _stepCache + _patchSizeCache / 2,
+        _gridTop + r * _stepCache + _patchSizeCache / 2,
+      );
+      return;
+    }
+
+    // 2. Nothing ripe: bank a beneficial upgrade via the game's own shop
+    //    handlers. Water (3 coins) rushes growth so patches ripen sooner; the
+    //    Helper (10) auto-saves ripe patches. Each handler re-checks its own
+    //    affordability/duplication, so these are safe no-ops when not worth it.
+    if (_coins >= 3 && !_waterActive) {
+      _activateWater();
+    } else if (_coins >= 10 && !_helperHired) {
+      _hireHelper();
+    }
+    // else: nothing worth doing this tick — return.
   }
 
   void _initGrid() {
@@ -566,6 +632,7 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
   }
@@ -1277,3 +1344,253 @@ class _OrganismHarvestGameState extends State<OrganismHarvestGame>
     );
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards shown by MiniGameHost on the intro
+// screen. Each frame draws the LITERAL components with the SAME code the live
+// game uses (_HarvestGridPainter for the patch cells, the _HarvestFxPainter
+// coin draw for the bonus coins). Everything here is STATIC: painted once by
+// the intro carousel, no ticker, no per-frame cost — it never touches the
+// game loop.
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool _legendDegenerate(Size size) =>
+    !size.width.isFinite ||
+    !size.height.isFinite ||
+    size.width <= 0 ||
+    size.height <= 0;
+
+/// A patch cell frozen in a given state, for the legend cards.
+_PotatoPatch _legendPatch({
+  double progress = 0,
+  bool golden = false,
+  double rot = 0,
+  bool rotten = false,
+}) =>
+    _PotatoPatch(progress: progress, isGolden: golden)
+      ..rotTimer = rot
+      ..rotten = rotten;
+
+/// Paints [grid] with the SAME _HarvestGridPainter the live game uses, so the
+/// manual shows the exact cell fills/borders/tubers/bars the player will meet.
+/// `anim` is a frozen phase — nothing animates.
+void _legendGrid(
+  Canvas canvas,
+  List<List<_PotatoPatch>> grid, {
+  required Offset topLeft,
+  required double patchSize,
+  double spacing = 10,
+}) {
+  if (!patchSize.isFinite || patchSize <= 0) return;
+  final rows = grid.length;
+  final cols = grid.first.length;
+  final painter = _HarvestGridPainter(
+    grid: grid,
+    rows: rows,
+    cols: cols,
+    patchSize: patchSize,
+    spacing: spacing,
+    rotWindow: _OrganismHarvestGameState._rotWindow,
+    rotWarn: _OrganismHarvestGameState._rotWarnThreshold,
+    waterActive: false,
+    anim: 0.4,
+  );
+  canvas.save();
+  canvas.translate(topLeft.dx, topLeft.dy);
+  painter.paint(
+    canvas,
+    Size(cols * patchSize + (cols - 1) * spacing,
+        rows * patchSize + (rows - 1) * spacing),
+  );
+  canvas.restore();
+}
+
+/// One bonus coin — gold disc + rim + shine + "+N", mirroring the
+/// _HarvestFxPainter coin draw. [alpha] < 1 shows the fade-out.
+void _legendCoin(Canvas canvas, Offset c, int value, {double alpha = 1.0}) {
+  canvas.drawCircle(c, _kCoinRadius,
+      Paint()..color = const Color(0xFFFFC107).withValues(alpha: alpha));
+  canvas.drawCircle(
+      c,
+      _kCoinRadius,
+      Paint()
+        ..color = const Color(0xFFFFA000).withValues(alpha: alpha)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0);
+  canvas.drawCircle(
+      c.translate(-_kCoinRadius * 0.3, -_kCoinRadius * 0.3),
+      _kCoinRadius * 0.28,
+      Paint()..color = Colors.white.withValues(alpha: 0.5 * alpha));
+  GameFx.text(canvas, '+$value', c, 11,
+      const Color(0xFF5D4037).withValues(alpha: alpha),
+      weight: FontWeight.bold);
+}
+
+// ── Frame 1: growing vs ripe vs golden — WHAT to tap ────────────────────────
+void _legendRipeCells(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  const spacing = 10.0;
+  final patch =
+      min((size.width - 2 * spacing) / 3.4, size.height * 0.52);
+  if (patch <= 0) return;
+  final rowW = patch * 3 + spacing * 2;
+  final left = (size.width - rowW) / 2;
+  final top = size.height * 0.5 - patch * 0.62;
+  _legendGrid(
+    canvas,
+    [
+      [
+        _legendPatch(progress: 0.55),
+        _legendPatch(progress: 1.0),
+        _legendPatch(progress: 1.0, golden: true),
+      ]
+    ],
+    topLeft: Offset(left, top),
+    patchSize: patch,
+    spacing: spacing,
+  );
+  const labels = ['GROWING', 'RIPE — TAP!', 'GOLDEN ×2'];
+  const colors = [Color(0xFFA1887F), Color(0xFF66BB6A), Color(0xFFFFD700)];
+  for (int i = 0; i < 3; i++) {
+    GameFx.text(
+        canvas,
+        labels[i],
+        Offset(left + patch / 2 + i * (patch + spacing), top + patch + 16),
+        10.5,
+        colors[i],
+        weight: FontWeight.w800);
+  }
+}
+
+// ── Frame 2: the rot penalty — the red-ringed cell becomes a wasted X ───────
+void _legendRot(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  const spacing = 10.0;
+  final patch = min(size.width / 3.2, size.height * 0.52);
+  if (patch <= 0) return;
+  final gapMid = patch * 0.6; // room for the arrow between the two cells
+  final rowW = patch * 2 + gapMid;
+  final left = (size.width - rowW) / 2;
+  final top = size.height * 0.5 - patch * 0.62;
+  _legendGrid(canvas, [
+    [_legendPatch(progress: 1.0, rot: 3.6)]
+  ], topLeft: Offset(left, top), patchSize: patch, spacing: spacing);
+  _legendGrid(canvas, [
+    [_legendPatch(rotten: true)]
+  ], topLeft: Offset(left + patch + gapMid, top), patchSize: patch,
+      spacing: spacing);
+  // Arrow: about-to-rot → rotten.
+  final ay = top + patch / 2;
+  final ax0 = left + patch + gapMid * 0.18;
+  final ax1 = left + patch + gapMid * 0.82;
+  final arrow = Paint()
+    ..color = Colors.white38
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(Offset(ax0, ay), Offset(ax1, ay), arrow);
+  canvas.drawLine(Offset(ax1 - 7, ay - 6), Offset(ax1, ay), arrow);
+  canvas.drawLine(Offset(ax1 - 7, ay + 6), Offset(ax1, ay), arrow);
+  GameFx.text(canvas, 'ABOUT TO ROT',
+      Offset(left + patch / 2, top + patch + 16), 10.5,
+      const Color(0xFFEF5350),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'ROTTEN — 0 PTS',
+      Offset(left + patch + gapMid + patch / 2, top + patch + 16), 10.5,
+      Colors.white54,
+      weight: FontWeight.w800);
+}
+
+// ── Frame 3: combo escalation — chain ripe harvests, points multiply ────────
+void _legendCombo(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  const spacing = 12.0;
+  final patch = min((size.width - spacing) / 2.9, size.height * 0.40);
+  if (patch <= 0) return;
+  final rowW = patch * 2 + spacing;
+  final left = (size.width - rowW) / 2;
+  final top = size.height * 0.58 - patch * 0.5;
+  _legendGrid(
+    canvas,
+    [
+      [_legendPatch(progress: 1.0), _legendPatch(progress: 1.0)]
+    ],
+    topLeft: Offset(left, top),
+    patchSize: patch,
+    spacing: spacing,
+  );
+  // Score pops, exactly the live labels: plain first, ×combo (orange) after.
+  GameFx.text(canvas, '+15', Offset(left + patch / 2, top - 14), 13,
+      Colors.white,
+      weight: FontWeight.bold);
+  GameFx.text(canvas, '+25 ×3',
+      Offset(left + patch + spacing + patch / 2, top - 14), 13,
+      const Color(0xFFFF9800),
+      weight: FontWeight.bold);
+  // The HUD combo badge, drawn like the live one.
+  final badge = Rect.fromCenter(
+      center: Offset(size.width / 2, top - 44), width: 104, height: 24);
+  final rr = RRect.fromRectAndRadius(badge, const Radius.circular(6));
+  canvas.drawRRect(
+      rr, Paint()..color = const Color(0xFFFF9800).withValues(alpha: 0.2));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..color = const Color(0xFFFF9800)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1);
+  GameFx.text(canvas, '×3 COMBO', badge.center, 11, const Color(0xFFFF9800),
+      weight: FontWeight.bold);
+}
+
+// ── Frame 4: bonus coins flash up in the margin around the field ────────────
+void _legendCoins(Canvas canvas, Size size) {
+  if (_legendDegenerate(size)) return;
+  const spacing = 6.0;
+  final patch = min(size.width, size.height) * 0.20;
+  if (patch <= 0) return;
+  final gridW = patch * 2 + spacing;
+  final left = (size.width - gridW) / 2;
+  final top = (size.height - gridW) / 2;
+  // A mini field: growing patches (the coins live OUTSIDE the grid).
+  _legendGrid(
+    canvas,
+    [
+      [_legendPatch(progress: 0.4), _legendPatch(progress: 0.85)],
+      [_legendPatch(progress: 1.0), _legendPatch(progress: 0.6)],
+    ],
+    topLeft: Offset(left, top),
+    patchSize: patch,
+    spacing: spacing,
+  );
+  // Coins in the margin band — one rich, one fading out (they vanish fast).
+  _legendCoin(canvas,
+      Offset(left - _kCoinRadius * 2.2, top + gridW * 0.30), _coinValueLegend);
+  _legendCoin(
+      canvas,
+      Offset(left + gridW + _kCoinRadius * 2.2, top + gridW * 0.14),
+      _coinRichValueLegend);
+  _legendCoin(canvas,
+      Offset(left + gridW * 0.78, top + gridW + _kCoinRadius * 1.7),
+      _coinValueLegend,
+      alpha: 0.35);
+}
+
+// The coin payouts shown on the cards — mirror the live spawner's values.
+const int _coinValueLegend = _OrganismHarvestGameState._coinValue;
+const int _coinRichValueLegend = _OrganismHarvestGameState._coinRichValue;
+
+/// The visual manual for Harvest — wired into the registry spec.
+final List<LegendFrame> harvestLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap patches when GREEN-ripe — gold ones pay double',
+      paint: _legendRipeCells),
+  const LegendFrame(
+      caption: 'Too slow and they rot — rotten patches score zero',
+      paint: _legendRot),
+  const LegendFrame(
+      caption: 'Chain fast harvests — combos multiply your points',
+      paint: _legendCombo),
+  const LegendFrame(
+      caption: 'Snatch margin coins fast — they buy Water & Helper',
+      paint: _legendCoins),
+];

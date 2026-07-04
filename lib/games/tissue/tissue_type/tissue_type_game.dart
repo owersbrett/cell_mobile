@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../mini_game.dart';
+import '../../fx.dart';
 import '../../../theme/potatuhs.dart';
 
 // ============================================================================
@@ -157,6 +158,198 @@ class _Particle {
 enum _Answer { waiting, correct, wrong }
 
 // ============================================================================
+// Visual manual — the legend carousel cards, each drawn with the REAL sample
+// painter ([_SamplePainter]) the live game uses, so the manual shows the EXACT
+// stained slides the player must read.
+// ============================================================================
+
+/// Renders one literal histology slide into [rect] using the game's own
+/// [_SamplePainter], framed like the in-play slide. Guards degenerate sizes.
+void _legendSlideInto(
+  Canvas canvas,
+  Rect rect, {
+  required _Tissue tissue,
+  required int subtype,
+  required int seed,
+  double subtlety = 0.0,
+  Color? frame,
+}) {
+  if (rect.width <= 2 || rect.height <= 2) return;
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(14));
+  canvas.save();
+  canvas.clipRRect(rr);
+  canvas.drawRect(rect, Paint()..color = _kSlide);
+  canvas.translate(rect.left, rect.top);
+  _SamplePainter(
+    tissue: tissue,
+    subtype: subtype,
+    seed: seed,
+    subtlety: subtlety,
+    sampleId: 0,
+  ).paint(canvas, Size(rect.width, rect.height));
+  canvas.restore();
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = frame ?? _kCardBorder,
+  );
+}
+
+/// A small legible caption chip drawn over the bottom of a slide cell.
+void _legendCellLabel(Canvas canvas, Rect cell, String label, Color accent) {
+  final center = Offset(cell.center.dx, cell.bottom - 12);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromCenter(
+          center: center, width: label.length * 7.4 + 14, height: 17),
+      const Radius.circular(8),
+    ),
+    Paint()..color = Colors.black.withValues(alpha: 0.5),
+  );
+  GameFx.text(canvas, label, center, 10, accent, weight: FontWeight.w800);
+}
+
+// FRAME 1 — the four tissue types, drawn as real slides. The core read.
+void _legendTypes(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const pad = 10.0, gap = 8.0;
+  final cw = (size.width - pad * 2 - gap) / 2;
+  final ch = (size.height - pad * 2 - gap) / 2;
+  const specs = [
+    (_Tissue.epithelial, 1, 3),
+    (_Tissue.connective, 0, 7),
+    (_Tissue.muscle, 0, 5),
+    (_Tissue.nervous, 0, 11),
+  ];
+  for (var i = 0; i < specs.length; i++) {
+    final col = i % 2, row = i ~/ 2;
+    final rect = Rect.fromLTWH(
+        pad + col * (cw + gap), pad + row * (ch + gap), cw, ch);
+    final (tissue, subtype, seed) = specs[i];
+    final meta = _kMeta[tissue]!;
+    _legendSlideInto(canvas, rect,
+        tissue: tissue,
+        subtype: subtype,
+        seed: seed,
+        frame: meta.accent.withValues(alpha: 0.7));
+    _legendCellLabel(canvas, rect, meta.label, meta.accent);
+  }
+}
+
+// FRAME 2 — speed scoring: a fresh slide, a full deadline bar, a fat payout.
+void _legendSpeed(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final rect = Rect.fromLTWH(
+      size.width * 0.12, size.height * 0.14, size.width * 0.76, size.height * 0.60);
+  _legendSlideInto(canvas, rect,
+      tissue: _Tissue.epithelial,
+      subtype: 2,
+      seed: 21,
+      frame: _kGoodGreen.withValues(alpha: 0.8));
+  // Deadline bar, still mostly full — answer while it's high.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromLTWH(rect.left + 3, rect.top + 3, rect.width * 0.66, 4),
+      const Radius.circular(2),
+    ),
+    Paint()..color = _kMembrane,
+  );
+  GameFx.text(canvas, '+130', rect.center, 34, _kGoodGreen,
+      display: true, weight: FontWeight.w900, glow: 0.6);
+  GameFx.text(canvas, 'ANSWER FAST', Offset(size.width * 0.5, size.height * 0.86),
+      12, _kGoodGreen,
+      weight: FontWeight.w800);
+}
+
+// FRAME 3 — the danger: wrong or timed-out marks the slide wrong, streak → 0.
+void _legendMiss(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final rect = Rect.fromLTWH(
+      size.width * 0.12, size.height * 0.14, size.width * 0.76, size.height * 0.60);
+  _legendSlideInto(canvas, rect,
+      tissue: _Tissue.muscle,
+      subtype: 0,
+      seed: 33,
+      frame: _kBadRed.withValues(alpha: 0.85));
+  // Nearly-empty deadline bar — the timeout danger.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromLTWH(rect.left + 3, rect.top + 3, rect.width * 0.07, 4),
+      const Radius.circular(2),
+    ),
+    Paint()..color = _kBadRed,
+  );
+  final c = rect.center;
+  final r = rect.shortestSide * 0.18;
+  canvas.drawCircle(c, r, Paint()..color = _kBadRed.withValues(alpha: 0.16));
+  canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = _kBadRed);
+  final s = r * 0.48;
+  final x = Paint()
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..color = _kBadRed;
+  canvas.drawLine(c.translate(-s, -s), c.translate(s, s), x);
+  canvas.drawLine(c.translate(s, -s), c.translate(-s, s), x);
+  GameFx.text(canvas, 'STREAK ×1', Offset(size.width * 0.5, size.height * 0.86),
+      12, _kBadRed,
+      weight: FontWeight.w800);
+}
+
+// FRAME 4 — the escalation: same tissue, obvious → faint, deadline shrinks.
+void _legendRamp(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const pad = 12.0, gap = 26.0;
+  final cw = (size.width - pad * 2 - gap) / 2;
+  final ch = size.height * 0.62;
+  final top = size.height * 0.16;
+  final leftR = Rect.fromLTWH(pad, top, cw, ch);
+  final rightR = Rect.fromLTWH(pad + cw + gap, top, cw, ch);
+  _legendSlideInto(canvas, leftR,
+      tissue: _Tissue.nervous, subtype: 0, seed: 4, subtlety: 0.0);
+  _legendSlideInto(canvas, rightR,
+      tissue: _Tissue.nervous, subtype: 0, seed: 4, subtlety: 0.8);
+  _legendCellLabel(canvas, leftR, 'CLEAR', _kNerAccent);
+  _legendCellLabel(canvas, rightR, 'FAINT', _kTextSub);
+  // Arrow from clear → faint.
+  final ay = top + ch * 0.5;
+  final ax0 = leftR.right + 4, ax1 = rightR.left - 4;
+  final arrow = Paint()
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..color = _kGold;
+  canvas.drawLine(Offset(ax0, ay), Offset(ax1, ay), arrow);
+  canvas.drawLine(Offset(ax1, ay), Offset(ax1 - 7, ay - 6), arrow);
+  canvas.drawLine(Offset(ax1, ay), Offset(ax1 - 7, ay + 6), arrow);
+  GameFx.text(canvas, '7s → 3s', Offset(size.width * 0.5, size.height * 0.88),
+      12, _kGold,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Tissue Type — wired into the registry spec.
+final List<LegendFrame> tissueTypeLegendFrames = [
+  const LegendFrame(
+      caption: 'Read the slide — tap which of the 4 tissues it is',
+      paint: _legendTypes),
+  const LegendFrame(
+      caption: 'Answer fast: a correct call is worth 130, down to 25',
+      paint: _legendSpeed),
+  const LegendFrame(
+      caption: 'Wrong or too slow marks it wrong — streak resets to 0',
+      paint: _legendMiss),
+  const LegendFrame(
+      caption: 'It ramps: tells fade fainter and the clock shrinks',
+      paint: _legendRamp),
+];
+
+// ============================================================================
 // Widget
 // ============================================================================
 
@@ -207,12 +400,40 @@ class _TissueTypeGameState extends State<TissueTypeGame>
     _deck = List<_Variant>.from(_kVariants)..shuffle(_rng);
     _loadNext();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer answers to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ----------------------------------------------------------------------------
+  // ATTRACT autopilot
+  // ----------------------------------------------------------------------------
+
+  /// One hands-free move per host tick (~250ms). Plays Tissue Type *correctly*,
+  /// not randomly: while a slide awaits an answer it taps the correct tissue
+  /// ([_Variant.tissue] of the current [_sample]) through the game's own
+  /// [_onTap] — promptly, so the speed bonus lands; while a fact flare is up it
+  /// advances via [_skipFlare]. Mid-transition it does nothing. The host owns the
+  /// clock and score HUD; the bot just banks real points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_answer == _Answer.waiting) {
+      // Answer with the correct tissue — always right, no guessing.
+      _onTap(_sample.tissue);
+    } else {
+      // Fact flare is showing — advance to the next slide.
+      _skipFlare();
+    }
   }
 
   // -- Sample management -------------------------------------------------------

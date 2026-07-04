@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../mini_game.dart';
 import '../../fx.dart';
+import '../../../theme/potatuhs.dart';
 
 // ============================================================================
 // COMPANION PLANTING — adjacency-puzzle garden (BioScale.farmSystem)
@@ -172,6 +173,211 @@ class _Dot {
 
 enum _Phase { placing, growth }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL garden
+// components (the same soil beds, crop orbs and help/hurt links the live game
+// renders). Static and cheap: painted once on the intro screen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The game's own link/thrive/wilt palette (matches the inline colours the
+// _GardenPainter uses in play — named here, not invented).
+const Color _kHelpGreen = Color(0xFF8BE58B); // "+helps" link + thrive glow
+const Color _kHurtRed = Color(0xFFFF6B6B); // "−hurts" link + wilt cue
+const Color _kThriveTint = Color(0xFFB9F6CA); // healthy leaf tint (growth)
+const Color _kWiltTint = Color(0xFF6D4C41); // browned wilt tint (growth)
+
+/// One rounded soil bed, mirroring `_GardenPainter._drawGrid`. [tint] draws the
+/// green/red/neutral hover ring; otherwise a faint white edge.
+void _legendCell(Canvas canvas, Rect rect,
+    {Color? tint, bool occupied = false}) {
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(7));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..color = _GardenPainter._soil.withValues(alpha: occupied ? 0.85 : 0.5),
+  );
+  if (tint != null) {
+    canvas.drawRRect(rr, Paint()..color = tint.withValues(alpha: 0.18));
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..color = tint.withValues(alpha: 0.8)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  } else {
+    canvas.drawRRect(
+      rr,
+      Paint()
+        ..color = Colors.white.withValues(alpha: occupied ? 0.05 : 0.09)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+  }
+}
+
+/// One planted crop orb + badge, mirroring `_GardenPainter._drawPlants`.
+/// [thrive] > 0 swells + green-glows it; < 0 shrinks + browns it.
+void _legendPlant(Canvas canvas, Offset center, _Crop crop, double radius,
+    {double thrive = 0}) {
+  final info = _kCrops[crop]!;
+  var r = radius;
+  Color body = info.color;
+  if (thrive > 0) {
+    r *= 1.18;
+    body = Color.lerp(info.color, _kThriveTint, 0.25)!;
+    canvas.drawCircle(
+      center,
+      r + 5,
+      Paint()
+        ..color = _kHelpGreen.withValues(alpha: 0.25)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+  } else if (thrive < 0) {
+    r *= 0.78;
+    body = Color.lerp(info.color, _kWiltTint, 0.55)!;
+  }
+  GameFx.orb(canvas, center, r, body, glow: 0.5);
+  GameFx.text(canvas, info.glyph, center, r * 0.7,
+      Colors.white.withValues(alpha: 0.95),
+      weight: FontWeight.w800);
+}
+
+/// A help/hurt relationship beam, mirroring `_GardenPainter._drawLinks`.
+void _legendLink(Canvas canvas, Offset a, Offset b, Color color) {
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = color.withValues(alpha: 0.75)
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+  );
+}
+
+/// A small downward chevron drop cue (as in the placing preview).
+void _legendDrop(Canvas canvas, Offset tip, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(tip.translate(-8, -9), tip, p);
+  canvas.drawLine(tip.translate(8, -9), tip, p);
+}
+
+// Frame 1 — the verb: drag a crop tile from the tray onto an empty soil cell.
+void _legendPlace(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cs = (min(size.width, size.height) * 0.28).clamp(24.0, 92.0);
+  final gx = size.width / 2 - cs;
+  final gy = size.height * 0.34;
+  final cells = <Rect>[];
+  for (int r = 0; r < 2; r++) {
+    for (int c = 0; c < 2; c++) {
+      cells.add(Rect.fromLTWH(gx + c * cs + 3, gy + r * cs + 3, cs - 6, cs - 6));
+    }
+  }
+  // i0 already planted (corn); i1 is the green-tinted drop target.
+  for (int i = 0; i < 4; i++) {
+    _legendCell(canvas, cells[i],
+        tint: i == 1 ? _kHelpGreen : null, occupied: i == 0);
+  }
+  _legendPlant(canvas, cells[0].center, _Crop.corn, cs * 0.30);
+  // Beans tile hovering above the target, dropping in.
+  final tileC = Offset(cells[1].center.dx, gy - cs * 0.62);
+  _legendPlant(canvas, tileC, _Crop.bean, cs * 0.30);
+  _legendDrop(canvas, Offset(cells[1].center.dx, gy - cs * 0.14),
+      _kHelpGreen);
+}
+
+// Frame 2 — how to score: friendly neighbours flash a green "+helps" link.
+void _legendHelps(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cs = (min(size.width, size.height) * 0.28).clamp(24.0, 92.0);
+  final gy = size.height * 0.40;
+  final left = Rect.fromCenter(
+      center: Offset(size.width * 0.5 - cs * 0.55, gy),
+      width: cs,
+      height: cs);
+  final right = Rect.fromCenter(
+      center: Offset(size.width * 0.5 + cs * 0.55, gy),
+      width: cs,
+      height: cs);
+  _legendCell(canvas, left, occupied: true);
+  _legendCell(canvas, right, occupied: true);
+  _legendLink(canvas, left.center, right.center, _kHelpGreen);
+  _legendPlant(canvas, left.center, _Crop.corn, cs * 0.30);
+  _legendPlant(canvas, right.center, _Crop.bean, cs * 0.30);
+  GameFx.text(canvas, '+helps  +12', Offset(size.width * 0.5, gy - cs * 0.85),
+      13, _kHelpGreen,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame 3 — the danger: bad neighbours flash a red "−hurts" link + break combo.
+void _legendHurts(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cs = (min(size.width, size.height) * 0.28).clamp(24.0, 92.0);
+  final gy = size.height * 0.40;
+  final left = Rect.fromCenter(
+      center: Offset(size.width * 0.5 - cs * 0.55, gy),
+      width: cs,
+      height: cs);
+  final right = Rect.fromCenter(
+      center: Offset(size.width * 0.5 + cs * 0.55, gy),
+      width: cs,
+      height: cs);
+  _legendCell(canvas, left, occupied: true);
+  _legendCell(canvas, right, occupied: true);
+  _legendLink(canvas, left.center, right.center, _kHurtRed);
+  // Potato beside tomato — both nightshades, a classic foe pairing.
+  _legendPlant(canvas, left.center, _Crop.potato, cs * 0.30, thrive: -1);
+  _legendPlant(canvas, right.center, _Crop.tomato, cs * 0.30, thrive: -1);
+  GameFx.text(canvas, '−hurts', Offset(size.width * 0.5, gy - cs * 0.85), 13,
+      _kHurtRed,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame 4 — the payoff/twist: fill the bed foe-free for a FLAWLESS harvest.
+void _legendFlawless(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cs = (min(size.width, size.height) * 0.20).clamp(18.0, 60.0);
+  final gx = size.width / 2 - cs * 1.5;
+  final gy = size.height * 0.24;
+  // 3×3, all friend/neutral crops → every plant thrives, zero foes.
+  const layout = [
+    _Crop.corn, _Crop.bean, _Crop.squash, //
+    _Crop.bean, _Crop.squash, _Crop.corn, //
+    _Crop.marigold, _Crop.corn, _Crop.bean,
+  ];
+  for (int i = 0; i < 9; i++) {
+    final c = i % 3, r = i ~/ 3;
+    final rect = Rect.fromLTWH(gx + c * cs + 3, gy + r * cs + 3, cs - 6, cs - 6);
+    _legendCell(canvas, rect, occupied: true);
+    _legendPlant(canvas, rect.center, layout[i], cs * 0.30, thrive: 1);
+  }
+  GameFx.text(canvas, 'FLAWLESS PLOT', Offset(size.width * 0.5, gy + cs * 3.3),
+      14, Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+/// The visual manual for Companion Planting — wired into the registry spec.
+final List<LegendFrame> companionPlantingLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag crop tiles from the tray onto empty soil',
+      paint: _legendPlace),
+  const LegendFrame(
+      caption: 'Friends touching flash green: +12 each',
+      paint: _legendHelps),
+  const LegendFrame(
+      caption: 'Foes flash red — they wilt and break your combo',
+      paint: _legendHurts),
+  const LegendFrame(
+      caption: 'Fill the bed foe-free for a FLAWLESS harvest bonus',
+      paint: _legendFlawless),
+];
+
 // ---------------------------------------------------------------------------
 // Widget
 // ---------------------------------------------------------------------------
@@ -234,12 +440,77 @@ class _CompanionPlantingGameState extends State<CompanionPlantingGame>
     _ticker.forward();
     _lastT = DateTime.now().microsecondsSinceEpoch / 1e6;
     _startPlot();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free placement per host tick (~250ms). This plays Companion
+  /// Planting *well*, not randomly: it scores every (hand-tile × empty-cell)
+  /// combo with the game's OWN friend/foe rules — summing [_relation] over the
+  /// occupied orthogonal neighbours ([_neighbors]) — and drops the tile into the
+  /// spot with the best net benefit, always preferring a placement that creates
+  /// NO foe adjacency (a foe-free spot nets ≥ 0, so whenever one exists we take
+  /// it and never wilt a neighbour). Ties resolve to the first candidate in
+  /// hand/grid order → fully deterministic. It calls the game's own
+  /// [_placeTile]; the host owns the clock, so the round still ends on time
+  /// while the bot banks real points and fills flawless plots.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.placing) return; // growth phase self-advances
+    if (_hand.isEmpty) return;
+
+    // Gather the empty cells once.
+    final empties = <int>[];
+    for (int i = 0; i < _grid.length; i++) {
+      if (_grid[i] == null) empties.add(i);
+    }
+    if (empties.isEmpty) return;
+
+    _Tile? bestTile;
+    int bestCell = -1;
+    int bestNet = 0;
+    bool bestFoeFree = false;
+    bool found = false;
+
+    for (final tile in _hand) {
+      for (final cell in empties) {
+        int net = 0;
+        bool foe = false;
+        for (final n in _neighbors(cell)) {
+          final occ = _grid[n];
+          if (occ == null) continue;
+          final rel = _relation(tile.crop, occ.crop);
+          net += rel;
+          if (rel < 0) foe = true;
+        }
+        final foeFree = !foe;
+        // Ranking: any foe-free spot beats any spot that wilts a neighbour;
+        // within the same class prefer higher net; ties keep the first seen.
+        final better = !found ||
+            (foeFree && !bestFoeFree) ||
+            (foeFree == bestFoeFree && net > bestNet);
+        if (better) {
+          found = true;
+          bestTile = tile;
+          bestCell = cell;
+          bestNet = net;
+          bestFoeFree = foeFree;
+        }
+      }
+    }
+
+    if (bestTile == null || bestCell < 0) return;
+    setState(() => _placeTile(bestTile!, bestCell));
   }
 
   // ---- plot setup ----------------------------------------------------------

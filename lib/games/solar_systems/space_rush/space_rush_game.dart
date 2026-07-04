@@ -73,6 +73,12 @@ abstract class _MicroGame {
   void onDown(Offset pos) {}
   void onMove(Offset pos, Offset delta) {}
   void onUp(Offset pos) {}
+
+  /// ATTRACT autopilot: perform ONE competent, deterministic move toward
+  /// clearing THIS microgame, reading this game's OWN state and driving its
+  /// OWN handlers (never random, never a synthetic coordinate). Default no-op;
+  /// each microgame overrides with the correct action for its mechanic.
+  void autoStep() {}
 }
 
 List<FxParticle> _burst(Offset at, Color color, {int count = 14}) =>
@@ -195,6 +201,34 @@ class _DodgeGame extends _MicroGame {
   @override
   bool get isComplete =>
       _passed >= _total && _spawned >= _total && _hits <= _allowed;
+
+  @override
+  void autoStep() {
+    // Slide the probe into the widest gap among approaching rocks so none can
+    // strike as they cross the dodge lane. Sample lanes, keep the clearest.
+    if (_sz == Size.zero) return;
+    final threats = _rocks.where((a) => !a.passed && a.y <= _probeY);
+    if (threats.isEmpty) return; // nothing incoming — hold position
+    double bestX = _probeX;
+    double bestScore = -double.infinity;
+    const samples = 20;
+    for (int i = 0; i <= samples; i++) {
+      final cx =
+          _probeHalfW + (_sz.width - 2 * _probeHalfW) * (i / samples);
+      double clearance = double.infinity;
+      for (final a in threats) {
+        final gap = (a.x - cx).abs() - a.rad;
+        if (gap < clearance) clearance = gap;
+      }
+      // Maximise clearance; tie-break toward the probe's current lane.
+      final score = clearance - (cx - _probeX).abs() * 0.01;
+      if (score > bestScore) {
+        bestScore = score;
+        bestX = cx;
+      }
+    }
+    onDown(Offset(bestX, _probeY));
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -380,6 +414,27 @@ class _CatchGame extends _MicroGame {
   bool get isComplete => _caught >= _needed;
 
   @override
+  void autoStep() {
+    // Park the scoop under the grain nearest the mouth, predicting its drift
+    // so update() catches it as it falls through the catch band.
+    if (_sz == Size.zero) return;
+    final mouthY = _scoopY - 8;
+    _Grain? target;
+    double bestY = -double.infinity;
+    for (final g in _grains) {
+      if (g.caught || g.missed) continue;
+      if (g.y > mouthY + 20) continue; // already below the mouth
+      if (g.y > bestY) {
+        bestY = g.y;
+        target = g;
+      }
+    }
+    if (target == null) return;
+    final tt = ((mouthY - target.y) / target.speed).clamp(0.0, 1.0);
+    onDown(Offset(target.x + target.drift * tt, _scoopY));
+  }
+
+  @override
   void paint(Canvas canvas, Size size) {
     final idle = 0.5 + 0.5 * sin(_hintT * 3);
 
@@ -518,6 +573,17 @@ class _LandGame extends _MicroGame {
   bool get isComplete => _landed;
 
   @override
+  void autoStep() {
+    // Fire the thruster on an altitude-scaled descent setpoint: fall fast up
+    // high, brake to well under the soft-landing speed near touchdown.
+    if (_landed || _sz == Size.zero) return;
+    final span = _surfaceY - _sz.height * 0.12;
+    final d = (_surfaceY - _y).clamp(0.0, span);
+    final vSet = _soft * 0.7 + (span <= 0 ? 0.0 : d / span) * 260.0;
+    if (_vy > vSet) onDown(Offset(_sz.width / 2, _y));
+  }
+
+  @override
   void paint(Canvas canvas, Size size) {
     final cx = size.width / 2;
 
@@ -643,6 +709,15 @@ class _SpinGame extends _MicroGame {
 
   @override
   bool get isComplete => _spin >= _needed;
+
+  @override
+  void autoStep() {
+    // Whip the giant with a strong circular swipe each tick — the handler
+    // banks the swipe distance toward the spin-up total.
+    if (_spin >= _needed) return;
+    final swipe = (_needed - _spin) * 0.5 + 40;
+    onMove(_center, Offset(swipe, 0));
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -805,6 +880,25 @@ class _SortGame extends _MicroGame {
   bool get isComplete => _sorted >= _needed && _wrong <= _allowed;
 
   @override
+  void autoStep() {
+    // Tap ONLY the most urgent on-screen dwarf (lowest = about to drift off),
+    // never a planet, so _wrong never rises.
+    if (_sz == Size.zero) return;
+    _Body? target;
+    double bestY = -double.infinity;
+    for (final b in _bodies) {
+      if (b.gone || !b.dwarf) continue;
+      if (b.y < 0 || b.y > _sz.height) continue;
+      if (b.y > bestY) {
+        bestY = b.y;
+        target = b;
+      }
+    }
+    if (target == null) return;
+    onDown(Offset(target.x, target.y));
+  }
+
+  @override
   void paint(Canvas canvas, Size size) {
     final idle = 0.5 + 0.5 * sin(_hintT * 3.4);
     for (final b in _bodies) {
@@ -906,6 +1000,16 @@ class _TiltGame extends _MicroGame {
 
   @override
   bool get isComplete => _hold >= 0.55;
+
+  @override
+  void autoStep() {
+    // Point the axis exactly at the target lean and hold it; the hold meter
+    // fills over the next few ticks. _apply() maps this pos straight to _tilt.
+    if (_sz == Size.zero) return;
+    const r = 60.0;
+    final pos = _center + Offset(sin(_target) * r, -cos(_target) * r);
+    onMove(pos, Offset.zero);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1043,6 +1147,25 @@ class _FlareGame extends _MicroGame {
 
   @override
   bool get isComplete => _popped >= _needed;
+
+  @override
+  void autoStep() {
+    // Pop the flare nearest the end of its life (most urgent) at its live
+    // limb position, read from the game's own flare list.
+    if (_popped >= _needed) return;
+    _Flare? target;
+    double bestFrac = -1;
+    for (final f in _flares) {
+      if (f.popped) continue;
+      final frac = f.age / f.life;
+      if (frac > bestFrac) {
+        bestFrac = frac;
+        target = f;
+      }
+    }
+    if (target == null) return;
+    onDown(_flarePos(target));
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1198,14 +1321,33 @@ class _SpaceRushGameState extends State<SpaceRushGame>
           ..addListener(_onTick);
     _ticker.forward();
     _lastTime = _now();
+    // ATTRACT autopilot: this game knows how to play itself. The host calls
+    // this on its ~250ms cadence only while driving hands-free (default
+    // interval is right — Space Rush is an action game). See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick. Only the live [_Phase.playing] beat is
+  /// drivable: it delegates to the active microgame's own [_MicroGame.autoStep],
+  /// which reads that microgame's state and calls its correct handler (dodge to
+  /// the safe lane, scoop under the falling dust, brake the lander, spin/tilt to
+  /// target, tap the right dwarf/flare). The instruction / result / speed-up
+  /// beats self-advance on the game's own timers, and the host owns the clock,
+  /// so the run still progresses and ends normally.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_size == Size.zero) return;
+    if (_phase == _Phase.playing) _currentGame?.autoStep();
   }
 
   void _startGame() {
@@ -1546,3 +1688,243 @@ class _SpaceRushPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _SpaceRushPainter old) => true;
 }
+
+// ===========================================================================
+// Visual manual — the legend carousel cards, each drawn with the LITERAL Space
+// Rush components (the prompt card + verb, the probe & rock, the timer & lives,
+// the WARP-UP pulse) in the game's own palette. Static + cheap; rendered once
+// in the intro. Wired into the registry spec as [spaceRushLegendFrames].
+// ===========================================================================
+
+// A little glowing probe shuttle — same silhouette the live DODGE lane flies.
+void _legendProbe(Canvas canvas, Offset c, double halfW) {
+  final ship = Path()
+    ..moveTo(c.dx, c.dy - halfW * 0.6)
+    ..lineTo(c.dx + halfW * 0.7, c.dy + halfW * 0.4)
+    ..lineTo(c.dx - halfW * 0.7, c.dy + halfW * 0.4)
+    ..close();
+  canvas.drawPath(
+      ship,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(c.dx, c.dy - halfW * 0.6),
+          Offset(c.dx, c.dy + halfW * 0.4),
+          [Color.lerp(_kAccent, Colors.white, 0.4)!, _kAccent],
+        ));
+  canvas.drawCircle(Offset(c.dx, c.dy - halfW * 0.08), halfW * 0.16,
+      Paint()..color = _kComet.withValues(alpha: 0.9));
+  canvas.drawCircle(
+      Offset(c.dx, c.dy + halfW * 0.46),
+      halfW * 0.24,
+      Paint()
+        ..color = _kSunHot.withValues(alpha: 0.6)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
+}
+
+// A lumpy rotating rock — same lobed generator as the live asteroids.
+void _legendRock(Canvas canvas, Offset c, double rad) {
+  canvas.save();
+  canvas.translate(c.dx, c.dy);
+  final path = Path();
+  const lobes = 7;
+  for (int i = 0; i <= lobes; i++) {
+    final ang = i / lobes * 2 * pi;
+    final rr = rad * (0.78 + 0.22 * sin(ang * 3 + rad));
+    final pt = Offset(cos(ang) * rr, sin(ang) * rr);
+    i == 0 ? path.moveTo(pt.dx, pt.dy) : path.lineTo(pt.dx, pt.dy);
+  }
+  path.close();
+  canvas.drawPath(
+      path,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-0.4, -0.4),
+          colors: [
+            Color.lerp(_kAsteroid, Colors.white, 0.3)!,
+            _kAsteroid,
+            Color.lerp(_kAsteroid, Colors.black, 0.45)!,
+          ],
+          stops: const [0.0, 0.55, 1.0],
+        ).createShader(Rect.fromCircle(center: Offset.zero, radius: rad)));
+  canvas.drawCircle(Offset(-rad * 0.2, -rad * 0.1), rad * 0.18,
+      Paint()..color = Colors.black.withValues(alpha: 0.22));
+  canvas.restore();
+}
+
+// The round timer bar — same colour ramp as the live countdown (accent when
+// full, reddening as it empties).
+void _legendTimerBar(Canvas canvas, Size size, double progress, double yFrac) {
+  final w = size.width * 0.8;
+  final x = (size.width - w) / 2;
+  final y = size.height * yFrac;
+  const h = 8.0;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(Rect.fromLTWH(x, y, w, h), const Radius.circular(4)),
+    Paint()..color = Colors.white.withValues(alpha: 0.10),
+  );
+  final p = progress.clamp(0.0, 1.0);
+  final barColor = p > 0.35
+      ? _kAccent
+      : Color.lerp(const Color(0xFFFF5252), _kAccent, p / 0.35)!;
+  if (p > 0) {
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, y, w * p, h), const Radius.circular(4)),
+      Paint()..color = barColor.withValues(alpha: 0.8),
+    );
+  }
+}
+
+// The three life pips — filled accent orbs, hollow ring when spent.
+void _legendLives(Canvas canvas, Offset start, double gap, int lives) {
+  for (int i = 0; i < 3; i++) {
+    final cx = start.dx + i * gap;
+    if (i < lives) {
+      GameFx.orb(canvas, Offset(cx, start.dy), 8, _kAccent,
+          glow: 0.6, specular: false);
+    } else {
+      canvas.drawCircle(
+        Offset(cx, start.dy),
+        8,
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.18)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4,
+      );
+    }
+  }
+}
+
+// Frame 1 — the command card + verb. The literal instruction card (tinted
+// panel + one-word prompt) with the probe already dodging a rock beneath it.
+void _legendPromptFrame(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  const tint = _kAsteroid;
+  final card = Rect.fromLTWH(size.width * 0.06, size.height * 0.08,
+      size.width * 0.88, size.height * 0.84);
+  final rr = RRect.fromRectAndRadius(card, const Radius.circular(16));
+  canvas.drawRRect(rr, Paint()..color = tint.withValues(alpha: 0.20));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.12)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5);
+  GameFx.text(canvas, 'DODGE!', Offset(size.width / 2, size.height * 0.28),
+      size.height * 0.24, Colors.white.withValues(alpha: 0.95),
+      display: true, glow: 0.5);
+  GameFx.text(canvas, 'slide to weave through',
+      Offset(size.width / 2, size.height * 0.47), size.height * 0.095,
+      tint.withValues(alpha: 0.95));
+  _legendRock(canvas, Offset(size.width * 0.40, size.height * 0.66),
+      size.height * 0.11);
+  _legendProbe(canvas, Offset(size.width * 0.60, size.height * 0.78),
+      size.height * 0.16);
+}
+
+// Frame 2 — clear it to score. A green check + "+1" beside the next verb's
+// literal kit (the comet head shedding dust into the collector scoop).
+void _legendScoreFrame(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  const green = Color(0xFF4CAF50);
+  // Win tick + point, left side.
+  final tc = Offset(size.width * 0.26, size.height * 0.42);
+  GameFx.text(canvas, '✓', tc, size.height * 0.36, green, glow: 0.7);
+  GameFx.text(canvas, '+1', Offset(size.width * 0.26, size.height * 0.78),
+      size.height * 0.20, green, display: true, glow: 0.3);
+  // The next microgame flies in — comet head + tail shedding grains.
+  final cometC = Offset(size.width * 0.70, size.height * 0.30);
+  for (int i = 1; i < 10; i++) {
+    final tx = cometC.dx + i * (size.width * 0.02);
+    canvas.drawCircle(
+        Offset(tx, cometC.dy - i * 1.2),
+        (size.height * 0.045) * (1 - i / 12),
+        Paint()
+          ..color = _kComet.withValues(alpha: (1 - i / 10) * 0.5)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3));
+  }
+  GameFx.orb(canvas, cometC, size.height * 0.06, _kComet, glow: 0.8);
+  for (int i = 0; i < 3; i++) {
+    canvas.drawCircle(
+        Offset(size.width * (0.64 + i * 0.05), size.height * (0.5 + i * 0.08)),
+        size.height * 0.025,
+        Paint()..color = _kComet.withValues(alpha: 0.9));
+  }
+  // The collector scoop catching them.
+  final sx = size.width * 0.70, sy = size.height * 0.82;
+  final halfW = size.width * 0.12;
+  final cup = Path()
+    ..moveTo(sx - halfW, sy - 6)
+    ..lineTo(sx + halfW, sy - 6)
+    ..lineTo(sx + halfW * 0.7, sy + 12)
+    ..lineTo(sx - halfW * 0.7, sy + 12)
+    ..close();
+  canvas.drawPath(
+      cup,
+      Paint()
+        ..shader = ui.Gradient.linear(Offset(sx - halfW, sy),
+            Offset(sx + halfW, sy), [
+          Color.lerp(_kAccent, Colors.white, 0.2)!,
+          Color.lerp(_kAccent, Colors.black, 0.25)!,
+        ]));
+}
+
+// Frame 3 — the danger. The draining round timer (reddened) with a lost life
+// and a red miss cross: run the clock out and you drop one of three lives.
+void _legendDangerFrame(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  const red = Color(0xFFE53935);
+  GameFx.text(canvas, '✗', Offset(size.width / 2, size.height * 0.34),
+      size.height * 0.34, red, glow: 0.7);
+  // Almost-empty timer, red end of the ramp.
+  _legendTimerBar(canvas, size, 0.14, 0.60);
+  // Three lives, one already spent.
+  _legendLives(canvas, Offset(size.width * 0.5 - 22, size.height * 0.84),
+      22, 2);
+}
+
+// Frame 4 — the escalation. Every few rounds the gauntlet WARPS UP: the accent
+// pulse + a stub-short timer bar that leaves you almost no time to react.
+void _legendWarpFrame(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  canvas.drawCircle(
+    Offset(size.width / 2, size.height * 0.40),
+    size.shortestSide * 0.42,
+    Paint()
+      ..color = _kAccent.withValues(alpha: 0.12)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+  );
+  GameFx.text(canvas, 'WARP UP!', Offset(size.width / 2, size.height * 0.40),
+      size.height * 0.22, _kAccent, display: true, glow: 0.6);
+  // A brutally short timer bar to show the shrinking window.
+  final y = size.height * 0.74;
+  const h = 8.0;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(size.width * 0.1, y, size.width * 0.8, h),
+        const Radius.circular(4)),
+    Paint()..color = Colors.white.withValues(alpha: 0.10),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(size.width * 0.1, y, size.width * 0.8 * 0.28, h),
+        const Radius.circular(4)),
+    Paint()..color = _kAccent.withValues(alpha: 0.85),
+  );
+}
+
+/// The visual manual for Space Rush — wired into the registry spec.
+const List<LegendFrame> spaceRushLegendFrames = [
+  LegendFrame(
+      caption: 'Read the one-word order — then obey it FAST',
+      paint: _legendPromptFrame),
+  LegendFrame(
+      caption: 'Clear the microgame: +1, then the next flies in',
+      paint: _legendScoreFrame),
+  LegendFrame(
+      caption: 'Beat the timer — a miss costs one of your 3 lives',
+      paint: _legendDangerFrame),
+  LegendFrame(
+      caption: 'Every few rounds it WARPS UP — react even faster',
+      paint: _legendWarpFrame),
+];

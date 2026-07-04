@@ -45,11 +45,21 @@ const double _kDriftEnd = 0.120;
 const double _kUnlock3 = 0.30;
 const double _kUnlock4 = 0.62;
 
+/// ATTRACT autopilot: the host tick cadence (seconds) used to look one drift
+/// step ahead, and how deep inside its band a dial must sit before the bot
+/// leaves it alone — a fraction of the band half-width. A projected value
+/// closer to centre than [_kAutoComfort]×half is "comfortable" and untouched.
+const double _kAutoTick = 0.25;
+const double _kAutoComfort = 0.55;
+
 // ── Palette ────────────────────────────────────────────────────────────────
 const Color _kAccent = Color(0xFF8B7CF6); // cosmic violet
 const Color _kGreen = Color(0xFF4ED6A8);
 const Color _kRed = Color(0xFFFF5A5A);
 const Color _kInk = Color(0xFF07060F);
+const Color _kDialG = Color(0xFF7C9CFF); // gravity dial
+const Color _kDialS = Color(0xFFFF8A5B); // strong-force dial
+const Color _kTrack = Color(0xFF15131F);
 
 /// One fundamental constant the player tunes.
 class _Dial {
@@ -147,14 +157,14 @@ class _ConstantsGameState extends State<ConstantsGame>
         idx: 0,
         symbol: 'G',
         name: 'GRAVITY',
-        color: const Color(0xFF7C9CFF),
+        color: _kDialG,
         bandCenter: 0.50,
         active: true),
     _Dial(
         idx: 1,
         symbol: 'S',
         name: 'STRONG FORCE',
-        color: const Color(0xFFFF8A5B),
+        color: _kDialS,
         bandCenter: 0.46,
         active: true),
     _Dial(
@@ -189,13 +199,59 @@ class _ConstantsGameState extends State<ConstantsGame>
   @override
   void initState() {
     super.initState();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Constants *correctly*,
+  /// not randomly: it looks one drift step ahead for every active dial, finds
+  /// the constant whose projected value sits furthest from its band centre, and
+  /// — if that worst dial is drifting toward (or already past) its band edge —
+  /// pulls it straight back to the centre of its habitable band, exactly as a
+  /// competent player would drag that slider. This also re-centres any shocked
+  /// dial (a challenge pushes one far out), so the tick loop banks the
+  /// stabilise bonus. When every dial is comfortably in band it does nothing,
+  /// so it never fidgets a constant that is already fine. Deterministic: the
+  /// most-out-of-band dial wins, ties resolve to the first in dial order. The
+  /// host owns the clock, so the round still ends on time; the bot just keeps
+  /// the universe life-permitting and banks real points until it does.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    final active = _dials.where((d) => d.active).toList();
+    if (active.isEmpty) return;
+
+    final half = _halfWidth;
+    final drift = _driftSpeed;
+
+    _Dial? worst;
+    var worstDist = -1.0;
+    for (final d in active) {
+      // Where this dial will sit one host tick from now if drift continues.
+      final projected =
+          (d.value + d.driftDir * drift * _kAutoTick).clamp(0.0, 1.0);
+      final dist = (projected - d.bandCenter).abs();
+      if (dist > worstDist) {
+        worstDist = dist;
+        worst = d; // '>' keeps the FIRST dial on ties (dial order)
+      }
+    }
+
+    // Every dial is comfortably inside its band → leave them all alone.
+    if (worst == null || worstDist <= half * _kAutoComfort) return;
+
+    // One competent adjustment: snap the worst constant to its band centre.
+    worst.value = worst.bandCenter;
   }
 
   void _initRun() {
@@ -585,7 +641,8 @@ class _ConstantsPainter extends CustomPainter {
           _kGreen, weight: FontWeight.w800, glow: 0.5);
     }
     if (solved > 0) {
-      GameFx.text(canvas, 'STABILISED $solved', Offset(70, 18), 11, _kAccent,
+      GameFx.text(canvas, 'STABILISED $solved', const Offset(70, 18), 11,
+          _kAccent,
           weight: FontWeight.w800, glow: 0.4);
     }
   }
@@ -628,7 +685,7 @@ class _ConstantsPainter extends CustomPainter {
 
     // Track.
     final rr = RRect.fromRectAndRadius(track, Radius.circular(track.height / 2));
-    canvas.drawRRect(rr, Paint()..color = const Color(0xFF15131F));
+    canvas.drawRRect(rr, Paint()..color = _kTrack);
     canvas.drawRRect(
       rr,
       Paint()
@@ -694,3 +751,244 @@ class _ConstantsPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ConstantsPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME dial-row and
+// universe-preview style the live painter uses (track, habitable band, centre
+// tick, orb knob, star ring, diagnostic chip), so the player meets the literal
+// components before play.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One dial row exactly as the game draws it: label, track, green habitable
+/// band, centre tick and orb knob. [challenged] adds the red shock glow.
+void _legendDialRow(
+  Canvas canvas,
+  Rect track, {
+  required Color color,
+  required String label,
+  required double value,
+  double bandCenter = 0.5,
+  double half = 0.135,
+  bool challenged = false,
+}) {
+  if (track.width <= 0 || track.height <= 0) return;
+  final inBand = (value - bandCenter).abs() <= half;
+  final tint = challenged ? _kRed : (inBand ? _kGreen : color);
+
+  GameFx.text(canvas, label, Offset(track.left + 58, track.top - 16), 11, tint,
+      weight: FontWeight.w800);
+
+  final rr = RRect.fromRectAndRadius(track, Radius.circular(track.height / 2));
+  canvas.drawRRect(rr, Paint()..color = _kTrack);
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.1
+      ..color = color.withValues(alpha: 0.30),
+  );
+
+  // Habitable band + centre tick.
+  final bandRect = Rect.fromLTRB(
+    (track.left + track.width * (bandCenter - half))
+        .clamp(track.left, track.right),
+    track.top,
+    (track.left + track.width * (bandCenter + half))
+        .clamp(track.left, track.right),
+    track.bottom,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(bandRect, Radius.circular(track.height / 2)),
+    Paint()..color = _kGreen.withValues(alpha: 0.22),
+  );
+  final ctrX = track.left + track.width * bandCenter;
+  canvas.drawLine(
+    Offset(ctrX, track.top - 2),
+    Offset(ctrX, track.bottom + 2),
+    Paint()
+      ..color = _kGreen.withValues(alpha: 0.55)
+      ..strokeWidth = 1.4,
+  );
+
+  // Knob (with the red shock halo when challenged).
+  final knob = Offset(track.left + track.width * value, track.center.dy);
+  if (challenged) {
+    canvas.drawCircle(
+      knob,
+      20,
+      Paint()
+        ..color = _kRed.withValues(alpha: 0.40)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+    );
+  }
+  GameFx.orb(canvas, knob, 10, tint, glow: inBand ? 1.0 : 0.6);
+}
+
+/// The universe preview in miniature: life-glow, orbiting star ring and the
+/// green life-core, at habitability [hViz] (1 = thriving, 0 = dead).
+void _legendUniverse(Canvas canvas, Offset center, double pr, double hViz) {
+  if (pr <= 0) return;
+  canvas.drawCircle(
+    center,
+    pr * 1.5,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        (hViz > 0.5 ? _kGreen : _kAccent)
+            .withValues(alpha: 0.10 + 0.18 * hViz),
+        _kAccent.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: center, radius: pr * 1.5)),
+  );
+  final rng = math.Random(7);
+  final starColor =
+      Color.lerp(const Color(0xFFFFF3D0), const Color(0xFF9FB4FF), 0.4)!;
+  final brightness = 0.35 + 0.65 * hViz;
+  for (var i = 0; i < 18; i++) {
+    final ang = rng.nextDouble() * 2 * math.pi;
+    final r = (0.25 + rng.nextDouble() * 0.75) * pr;
+    final pos = center + Offset(math.cos(ang), math.sin(ang)) * r;
+    final rad = 1.4 + 2.0 * brightness;
+    canvas.drawCircle(
+      pos,
+      rad + 2,
+      Paint()
+        ..color = starColor.withValues(alpha: 0.30 * brightness)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+    canvas.drawCircle(
+        pos, rad, Paint()..color = starColor.withValues(alpha: brightness));
+  }
+  if (hViz > 0.65) GameFx.orb(canvas, center, 9, _kGreen, glow: hViz);
+}
+
+/// A small chevron pointing from [from] toward [to] — the drag cue.
+void _legendArrow(Canvas canvas, Offset from, Offset to, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(from, to, p);
+  final dir = (to - from).direction;
+  const a = 0.55, len = 9.0;
+  canvas.drawLine(
+      to, to - Offset(math.cos(dir - a), math.sin(dir - a)) * len, p);
+  canvas.drawLine(
+      to, to - Offset(math.cos(dir + a), math.sin(dir + a)) * len, p);
+}
+
+// Frame 1 — the core objects + verb: two dials, one drifting out; drag the
+// knob back into its green habitable band.
+void _legendTune(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final track1 = Rect.fromLTRB(
+      size.width * 0.10, size.height * 0.28, size.width * 0.90,
+      size.height * 0.28 + 14);
+  final track2 = Rect.fromLTRB(
+      size.width * 0.10, size.height * 0.70, size.width * 0.90,
+      size.height * 0.70 + 14);
+  _legendDialRow(canvas, track1,
+      color: _kDialG, label: 'G  GRAVITY', value: 0.50);
+  _legendDialRow(canvas, track2,
+      color: _kDialS, label: 'S  STRONG FORCE', value: 0.78, bandCenter: 0.46);
+  // Drag cue: pull the strayed strong-force knob back toward its band.
+  final knobX = track2.left + track2.width * 0.78;
+  final bandX = track2.left + track2.width * 0.50;
+  _legendArrow(canvas, Offset(knobX - 14, track2.center.dy - 22),
+      Offset(bandX, track2.center.dy - 22), _kGreen);
+}
+
+// Frame 2 — how to score: every dial in band, universe life-permitting.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final center = Offset(size.width * 0.5, size.height * 0.34);
+  final pr = math.min(size.width, size.height) * 0.24;
+  _legendUniverse(canvas, center, pr, 1.0);
+  // Diagnostic chip, exactly like the in-game banner.
+  final by = size.height * 0.66;
+  final chip = RRect.fromRectAndRadius(
+    Rect.fromCenter(
+        center: Offset(size.width * 0.5, by),
+        width: math.min(size.width * 0.72, 170),
+        height: 24),
+    const Radius.circular(12),
+  );
+  canvas.drawRRect(chip, Paint()..color = Colors.black.withValues(alpha: 0.5));
+  canvas.drawRRect(
+    chip,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3
+      ..color = _kGreen.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, 'LIFE-PERMITTING', Offset(size.width * 0.5, by), 11,
+      _kGreen,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '+${_kPointsPerSec.toStringAsFixed(0)} / s',
+      Offset(size.width * 0.5, size.height * 0.84), 13, _kGreen,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame 3 — the danger: a shock flings one dial far out (red flash); drag it
+// back into band for the stabilise bonus.
+void _legendShock(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final track = Rect.fromLTRB(size.width * 0.10, size.height * 0.42,
+      size.width * 0.90, size.height * 0.42 + 14);
+  _legendDialRow(canvas, track,
+      color: _kDialG,
+      label: 'G  GRAVITY',
+      value: 0.92,
+      challenged: true);
+  // Failure readout + the recovery: drag back to band, bank the bonus.
+  GameFx.text(canvas, 'STARS COLLAPSE', Offset(size.width * 0.5, size.height * 0.16),
+      12, _kRed,
+      weight: FontWeight.w800, glow: 0.4);
+  final knobX = track.left + track.width * 0.92;
+  final bandX = track.left + track.width * 0.5;
+  _legendArrow(canvas, Offset(knobX - 10, track.center.dy + 26),
+      Offset(bandX, track.center.dy + 26), _kGreen);
+  GameFx.text(canvas, 'STABILISED +$_kStabilizeBonus',
+      Offset(size.width * 0.5, size.height * 0.84), 12, _kGreen,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame 4 — the escalation: Λ and μ come online and the bands narrow.
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final track1 = Rect.fromLTRB(
+      size.width * 0.10, size.height * 0.26, size.width * 0.90,
+      size.height * 0.26 + 14);
+  final track2 = Rect.fromLTRB(
+      size.width * 0.10, size.height * 0.62, size.width * 0.90,
+      size.height * 0.62 + 14);
+  _legendDialRow(canvas, track1,
+      color: _kAccent,
+      label: 'Λ  COSMOLOGICAL Λ',
+      value: 0.55,
+      bandCenter: 0.55,
+      half: _kHalfWidthEnd);
+  _legendDialRow(canvas, track2,
+      color: _kGreen,
+      label: 'μ  MASS RATIO',
+      value: 0.50,
+      half: _kHalfWidthEnd);
+  GameFx.text(canvas, 'BANDS NARROW · DRIFT SPEEDS UP',
+      Offset(size.width * 0.5, size.height * 0.88), 11, _kAccent,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+/// The visual manual for Constants — wired into the registry spec.
+final List<LegendFrame> constantsLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag each knob into its green habitable band',
+      paint: _legendTune),
+  const LegendFrame(
+      caption: 'All dials in band = life-permitting: +14/s',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Shocks fling a dial out — drag it back: +60',
+      paint: _legendShock),
+  const LegendFrame(
+      caption: 'Λ and μ come online; bands narrow, drift speeds up',
+      paint: _legendEscalate),
+];

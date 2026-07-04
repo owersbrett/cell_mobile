@@ -1,5 +1,6 @@
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
+import 'package:cell_mobile/party/party_models.dart';
 import 'package:cell_mobile/party/screens/party_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,9 +23,14 @@ void main() {
     // design (the living-cell interior), so settle would never complete.
     await tester.pump(const Duration(milliseconds: 400));
 
-    // Board screen: round header and the first player's roll panel.
-    expect(find.text('ROUND 1 / 5'), findsOneWidget);
-    expect(find.text("SPUD'S TURN"), findsOneWidget);
+    // Board screen: round header and the first player's roll panel. The default
+    // match length is the first option (WEEK · 7) — track the shared const so
+    // this can't go stale when the options change.
+    expect(find.text('ROUND 1 / ${kPartyRoundCounts.first}'), findsOneWidget);
+    // First player defaults to the first roster character; the turn banner is
+    // "<NAME>'S TURN". Track the roster so a rename can't leave this stale.
+    expect(find.text("${kCharacters.first.name.toUpperCase()}'S TURN"),
+        findsOneWidget);
     expect(find.text('ROLL'), findsOneWidget);
     expect(exited, isFalse);
   });

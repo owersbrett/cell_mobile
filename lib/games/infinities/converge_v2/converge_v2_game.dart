@@ -305,12 +305,47 @@ class _ConvergeV2GameState extends State<ConvergeV2Game>
     _pool = List<_Series>.from(_kSeries)..shuffle(_rng);
     _loadRound();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer calls to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // ATTRACT autopilot
+  // ==========================================================================
+
+  /// One hands-free move per host tick (~250ms). Plays Converge v2 *correctly*,
+  /// not randomly: while a series awaits a call it reads the series' own
+  /// scored-against truth — [_Series.converges] in judge mode, [_correctLabel]
+  /// (the series' true limit label) in name-the-limit mode — and taps that
+  /// answer through the same [_judge] / [_name] handlers a finger would hit, so
+  /// the speed bonus lands. This is the v2 "read it EARLY" call: the answer is
+  /// known from the roster, so it commits before the chart shows its hand.
+  /// While the post-answer reveal flare is up it advances via [_skipReveal].
+  /// Mid-transition it does nothing. Host owns clock/HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (!_answered) {
+      // Answer with the series' own scored-against truth — never a guess.
+      if (_mode == _Mode.judge) {
+        _judge(_series.converges);
+      } else {
+        _name(_correctLabel);
+      }
+    } else {
+      // Reveal flare is showing — advance to the next series.
+      _skipReveal();
+    }
   }
 
   // ==========================================================================
@@ -969,3 +1004,343 @@ class _V2ChartPainter extends CustomPainter {
   @override
   bool shouldRepaint(_V2ChartPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the REAL components
+// the player meets: the streaming partial-sum chart, the CONVERGES / DIVERGES
+// call buttons, the honest trend readout + coach cue, and the FINAL BURST chip.
+// Static (clock-free) and cheap: rendered once in the intro, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Plots a partial-sum polyline into [rect] exactly as the live chart does:
+/// backdrop card, auto-ranged curve, term dots, a glowing newest orb, and an
+/// optional dashed limit asymptote. Guards degenerate sizes.
+void _legendPlot(
+  Canvas canvas,
+  Rect rect,
+  List<double> sums, {
+  required Color line,
+  double? limit,
+  Color? limitColor,
+  String? newestLabel,
+  bool orb = true,
+}) {
+  if (rect.width < 2 || rect.height < 2 || sums.isEmpty) return;
+
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = _kCardBg.withValues(alpha: 0.85));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kCardLine,
+  );
+
+  final inner = rect.deflate(10);
+  if (inner.width < 2 || inner.height < 2) return;
+
+  var lo = 0.0, hi = 0.0;
+  for (final s in sums) {
+    lo = math.min(lo, s);
+    hi = math.max(hi, s);
+  }
+  if (limit != null) hi = math.max(hi, limit);
+  if (hi - lo < 1e-6) hi = lo + 1;
+  final pad = (hi - lo) * 0.14;
+  lo -= pad;
+  hi += pad;
+
+  double xOf(int i) {
+    final n = sums.length;
+    final f = n <= 1 ? 0.0 : i / (n - 1);
+    return inner.left + f * inner.width;
+  }
+
+  double yOf(double v) => inner.bottom - ((v - lo) / (hi - lo)) * inner.height;
+
+  // Dashed limit asymptote (reveal look).
+  if (limit != null) {
+    final y = yOf(limit);
+    const seg = 8.0;
+    final p = Paint()
+      ..color = (limitColor ?? _kConverge).withValues(alpha: 0.7)
+      ..strokeWidth = 1.4;
+    for (var x = inner.left; x < inner.right; x += seg * 2) {
+      canvas.drawLine(
+          Offset(x, y), Offset(math.min(x + seg, inner.right), y), p);
+    }
+    GameFx.text(canvas, 'limit', Offset(inner.right - 20, y - 9), 10,
+        (limitColor ?? _kConverge).withValues(alpha: 0.85));
+  }
+
+  // Partial-sum polyline: soft glow pass, then the crisp line.
+  final path = Path();
+  for (var i = 0; i < sums.length; i++) {
+    final o = Offset(xOf(i), yOf(sums[i]));
+    if (i == 0) {
+      path.moveTo(o.dx, o.dy);
+    } else {
+      path.lineTo(o.dx, o.dy);
+    }
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeJoin = StrokeJoin.round
+      ..color = line.withValues(alpha: 0.22)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..color = line.withValues(alpha: 0.95),
+  );
+
+  // Term dots + the emphasised newest partial sum.
+  for (var i = 0; i < sums.length; i++) {
+    final o = Offset(xOf(i), yOf(sums[i]));
+    if (orb && i == sums.length - 1) {
+      GameFx.orb(canvas, o, 7, line, glow: 1.0);
+      if (newestLabel != null) {
+        GameFx.text(canvas, newestLabel, o.translate(0, -16), 12, line,
+            weight: FontWeight.w800, glow: 0.4);
+      }
+    } else {
+      canvas.drawCircle(o, 2.4, Paint()..color = line.withValues(alpha: 0.85));
+    }
+  }
+}
+
+/// One of the real call buttons (CONVERGES / DIVERGES) in its resting style.
+void _legendPill(Canvas canvas, Rect r, String label, Color color) {
+  if (r.width < 8 || r.height < 8) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = color.withValues(alpha: 0.12));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.7
+      ..color = color.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, label, r.center,
+      (r.height * 0.34).clamp(11.0, 16.0).toDouble(), color,
+      weight: FontWeight.w800);
+}
+
+// -- Sample series (computed, never animated) --------------------------------
+
+List<double> _legendConvergeSums() {
+  final out = <double>[];
+  var s = 0.0;
+  for (var n = 1; n <= 10; n++) {
+    s += math.pow(0.5, n).toDouble(); // Zeno ½+¼+⅛… → 1
+    out.add(s);
+  }
+  return out;
+}
+
+List<double> _legendDivergeSums() {
+  final out = <double>[];
+  var s = 0.0;
+  for (var n = 1; n <= 9; n++) {
+    s += n; // 1+2+3… runs away
+    out.add(s);
+  }
+  return out;
+}
+
+List<double> _legendHarmonicSums() {
+  final out = <double>[];
+  var s = 0.0;
+  for (var n = 1; n <= 12; n++) {
+    s += 1 / n; // the crawling harmonic trap
+    out.add(s);
+  }
+  return out;
+}
+
+// -- The four cards ----------------------------------------------------------
+
+/// (a) The core object: terms stream in and the partial sum Sₙ plots a line.
+void _legendStream(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final rect = Rect.fromLTWH(
+      size.width * 0.10, size.height * 0.18, size.width * 0.80, size.height * 0.60);
+  _legendPlot(canvas, rect, _legendConvergeSums(),
+      line: _kConverge, newestLabel: 'Sₙ');
+}
+
+/// (b) How to score: judge the fate — CONVERGES levels off, DIVERGES runs away.
+void _legendCall(Canvas canvas, Size size) {
+  if (size.width < 60 || size.height < 40) return;
+  final gap = size.width * 0.045;
+  final cw = (size.width - gap * 3) / 2;
+  final top = size.height * 0.08;
+  final chartH = size.height * 0.52;
+  final leftRect = Rect.fromLTWH(gap, top, cw, chartH);
+  final rightRect = Rect.fromLTWH(gap * 2 + cw, top, cw, chartH);
+
+  _legendPlot(canvas, leftRect, _legendConvergeSums(),
+      line: _kConverge, limit: 1.0);
+  _legendPlot(canvas, rightRect, _legendDivergeSums(), line: _kDiverge);
+
+  final pillTop = top + chartH + size.height * 0.08;
+  final pillH = size.height * 0.20;
+  _legendPill(canvas, Rect.fromLTWH(gap + cw * 0.08, pillTop, cw * 0.84, pillH),
+      'CONVERGES', _kConverge);
+  _legendPill(
+      canvas,
+      Rect.fromLTWH(gap * 2 + cw + cw * 0.08, pillTop, cw * 0.84, pillH),
+      'DIVERGES',
+      _kDiverge);
+}
+
+/// (c) The danger: a slow crawl still rises. The honest trend readout — a
+/// dashed "few terms ago" line + a ↑ rising tag — plus the fading coach cue
+/// keep the harmonic trap from LOOKING flat, so a wrong call costs the streak.
+void _legendTrend(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final rect = Rect.fromLTWH(
+      size.width * 0.10, size.height * 0.20, size.width * 0.80, size.height * 0.58);
+
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = _kCardBg.withValues(alpha: 0.85));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kCardLine,
+  );
+
+  final inner = rect.deflate(10);
+  if (inner.width < 2 || inner.height < 2) return;
+
+  final sums = _legendHarmonicSums();
+  var lo = 0.0, hi = 0.0;
+  for (final s in sums) {
+    lo = math.min(lo, s);
+    hi = math.max(hi, s);
+  }
+  if (hi - lo < 1e-6) hi = lo + 1;
+  final pad = (hi - lo) * 0.14;
+  lo -= pad;
+  hi += pad;
+
+  double xOf(int i) => inner.left + (i / (sums.length - 1)) * inner.width;
+  double yOf(double v) => inner.bottom - ((v - lo) / (hi - lo)) * inner.height;
+
+  // Dashed "few terms ago" reference line — the honest anchor.
+  const back = 5;
+  final refY = yOf(sums[sums.length - 1 - back]);
+  const seg = 8.0;
+  final refPaint = Paint()
+    ..color = Colors.white.withValues(alpha: 0.16)
+    ..strokeWidth = 1;
+  for (var x = inner.left; x < inner.right; x += seg * 2) {
+    canvas.drawLine(
+        Offset(x, refY), Offset(math.min(x + seg, inner.right), refY), refPaint);
+  }
+  GameFx.text(canvas, 'few terms ago', Offset(inner.left + 48, refY - 8), 9.5,
+      Colors.white.withValues(alpha: 0.34));
+
+  // The crawling polyline (neutral cyan — the call isn't made yet).
+  final path = Path();
+  for (var i = 0; i < sums.length; i++) {
+    final o = Offset(xOf(i), yOf(sums[i]));
+    if (i == 0) {
+      path.moveTo(o.dx, o.dy);
+    } else {
+      path.lineTo(o.dx, o.dy);
+    }
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..color = _kConverge.withValues(alpha: 0.95),
+  );
+
+  final newest = Offset(xOf(sums.length - 1), yOf(sums.last));
+  GameFx.orb(canvas, newest, 7, _kConverge, glow: 1.0);
+  GameFx.text(canvas, '↑ rising', newest.translate(0, -16), 11,
+      _kDiverge.withValues(alpha: 0.9),
+      weight: FontWeight.w800, glow: 0.5);
+
+  // The fading coach cue — the on-ramp heuristic for this series.
+  GameFx.text(
+    canvas,
+    'cue: terms shrink TOO SLOWLY',
+    Offset(rect.center.dx, rect.top - 10),
+    12,
+    Potatuhs.gold.withValues(alpha: 0.85),
+    weight: FontWeight.w700,
+    glow: 0.4,
+  );
+}
+
+/// (d) The escalation: the FINAL BURST — short, decisive series streamed fast.
+void _legendBurst(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+
+  // A steep, explosive divergent run.
+  final sums = <double>[];
+  var s = 0.0;
+  for (var i = 0; i < 7; i++) {
+    s += math.pow(2, i).toDouble();
+    sums.add(s);
+  }
+  final rect = Rect.fromLTWH(
+      size.width * 0.10, size.height * 0.36, size.width * 0.80, size.height * 0.48);
+  _legendPlot(canvas, rect, sums, line: _kDiverge);
+
+  // The real FINAL BURST chip (as drawn in the live header).
+  final chipW = size.width * 0.52;
+  final chipH = (size.height * 0.13).clamp(24.0, 40.0).toDouble();
+  final chip = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.16),
+      width: chipW,
+      height: chipH);
+  final rr = RRect.fromRectAndRadius(chip, Radius.circular(chipH / 2));
+  canvas.drawRRect(rr, Paint()..color = _kDiverge.withValues(alpha: 0.14));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kDiverge.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, '⚡ FINAL BURST', chip.center, 12.5, _kDiverge,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+/// The visual manual for Converge v2 — wired into the registry spec.
+final List<LegendFrame> convergeV2LegendFrames = [
+  const LegendFrame(
+    caption: 'Terms stream in; the partial sum Sₙ plots a rising line',
+    paint: _legendStream,
+  ),
+  const LegendFrame(
+    caption: 'Call it early: CONVERGES levels off, DIVERGES runs away',
+    paint: _legendCall,
+  ),
+  const LegendFrame(
+    caption: 'A slow crawl still rises — read the trend, don\'t misjudge',
+    paint: _legendTrend,
+  ),
+  const LegendFrame(
+    caption: 'Beat the FINAL BURST: quick series, faster calls',
+    paint: _legendBurst,
+  ),
+];

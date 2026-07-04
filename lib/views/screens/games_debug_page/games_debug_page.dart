@@ -3,7 +3,9 @@ import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/games/game_catalog.dart';
+import 'package:cell_mobile/games/mini_game_registry.dart';
 import 'package:cell_mobile/games/play_config.dart';
+import 'package:cell_mobile/games/quick_match/quick_match_page.dart';
 import 'package:cell_mobile/games/rank_store.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/mini_game_page.dart';
@@ -155,6 +157,14 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
                     ),
                   ),
                   const Spacer(),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) => const QuickMatchPage.join()),
+                    ),
+                    icon: const Icon(Icons.group_add, color: Colors.white70),
+                    tooltip: 'Join a friends room',
+                  ),
                   TextButton.icon(
                     onPressed: RankStore.notedCount == 0 ? null : _copyAll,
                     icon: const Icon(Icons.copy_all, size: 16),
@@ -369,6 +379,19 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
             onPressed: () => _rate(game),
             child: const Text('RATE'),
           ),
+          if (game.specId != null)
+            IconButton(
+              onPressed: () {
+                final spec = MiniGameRegistry.byId(game.specId!);
+                if (spec == null) return;
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                      builder: (_) => QuickMatchPage.host(spec: spec)),
+                );
+              },
+              icon: Icon(Icons.group, color: accent.withValues(alpha: 0.8)),
+              tooltip: 'Play with friends',
+            ),
           IconButton(
             onPressed: () => _play(game),
             icon: Icon(Icons.play_circle_fill, color: accent),

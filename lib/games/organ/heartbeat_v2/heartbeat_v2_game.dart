@@ -127,6 +127,10 @@ class _HeartbeatV2GameState extends State<HeartbeatV2Game>
   Duration _lastElapsed = Duration.zero;
   bool _wasRunning = false;
 
+  // Last known viewport, so the attract autopilot can resolve node geometry
+  // (for pump FX) off-frame. Refreshed every build.
+  Size _size = const Size(400, 800);
+
   // ── Core state ─────────────────────────────────────────────────────────────
   int _pos = 0; // index of the stage currently holding the blood
   int _streak = 0; // consecutive clean pumps
@@ -159,13 +163,57 @@ class _HeartbeatV2GameState extends State<HeartbeatV2Game>
     super.initState();
     _recalc();
     _ticker = createTicker(_onTick)..start();
+
+    // ATTRACT autopilot: this game knows how to route blood on the lub-dub. The
+    // host calls it on the autopilot cadence (~250ms) while running; it is a
+    // no-op during hands-on play. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent hands-free move per host tick (~250ms). Heartbeat v2 is a
+  /// SEQUENCE + TWO-PHASE-TIMING game: pump the NEXT chamber in circulation
+  /// order ([_active]) and only on THAT chamber's required half of the beat —
+  /// the atria fill on the DUB (phase 0.5), everything else pumps on the LUB
+  /// (phase 0). The metronome sweeps continuously between ticks, so — like the
+  /// collider — we look exactly one tick ahead and fire only at the closest
+  /// approach that already lands inside the success window:
+  ///
+  ///   • Never fire off-beat or on the wrong half — [_teAt] measures error to
+  ///     THIS chamber's required phase; if it isn't already inside the window a
+  ///     tap would stall the flow (see [_stall]) or teach the wrong-half rule,
+  ///     so we wait.
+  ///   • Among in-window ticks, fire on the LOCAL MINIMUM of timing error: only
+  ///     when NOW is at least as close to the target phase as the NEXT tick will
+  ///     be. This steers toward PERFECT and always scores.
+  ///
+  /// The chamber is never in doubt: it is always [_active], the next stage in
+  /// the fixed loop, so the sequence half is deterministic by construction.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    final dub = _kLoop[_active].dub; // this chamber's required half-beat
+    final win = _winFor();
+    final teNow = _teAt(_beatPhase, dub);
+    if (teNow > win) return; // off-beat / wrong half → would stall; wait.
+
+    // Advance the metronome one host tick (~250ms) and re-measure the error.
+    const tick = 0.25;
+    final period = 60.0 / _bpm;
+    final phaseNext = (_beatPhase + tick / period) % 1.0;
+    final teNext = _teAt(phaseNext, dub);
+    if (teNow > teNext) return; // a tighter target is still ahead — wait.
+
+    // On-target and at the closest approach: pump the correct next chamber.
+    _pump(teNow, dub, win, _HeartGeo.of(_size));
   }
 
   void _recalc() {
@@ -196,9 +244,13 @@ class _HeartbeatV2GameState extends State<HeartbeatV2Game>
   /// Effective window for [stage], widened during the graded first cycle.
   double _winFor() => _window + (_scaffold ? _kScaffoldBonus : 0.0);
 
+  /// Timing error at an arbitrary phase to the REQUIRED half-beat (0 = dead on
+  /// target). DUB targets phase 0.5 (diastole); LUB targets phase 0 (systole).
+  double _teAt(double phase, bool dub) =>
+      dub ? (phase - 0.5).abs() : math.min(phase, 1 - phase);
+
   /// Timing error to a stage's REQUIRED half-beat (0 = dead on target).
-  double _teTo(bool dub) =>
-      dub ? (_beatPhase - 0.5).abs() : math.min(_beatPhase, 1 - _beatPhase);
+  double _teTo(bool dub) => _teAt(_beatPhase, dub);
 
   void _onTick(Duration elapsed) {
     final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.05);
@@ -342,6 +394,7 @@ class _HeartbeatV2GameState extends State<HeartbeatV2Game>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
+      _size = size;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTapDown: (d) => _handleTap(d.localPosition, size),
@@ -743,3 +796,258 @@ class _HeartV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _HeartV2Painter old) => false;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the REAL components
+// (the same six-stage ring, orbs, heart, LUB/DUB tags and approach rings the
+// live game renders). Cheap + static: they paint once in the intro carousel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A small heart silhouette for the legend (mirrors the painter's [_heartPath]).
+Path _legendHeartPath(Offset c, double s) {
+  return Path()
+    ..moveTo(c.dx, c.dy + s * 0.36)
+    ..cubicTo(c.dx + s * 1.05, c.dy - s * 0.45, c.dx + s * 0.5, c.dy - s, c.dx,
+        c.dy - s * 0.42)
+    ..cubicTo(c.dx - s * 0.5, c.dy - s, c.dx - s * 1.05, c.dy - s * 0.45, c.dx,
+        c.dy + s * 0.36)
+    ..close();
+}
+
+/// A filled heart at [c], radius [s], the same cardinal-red gradient as play.
+void _legendHeart(Canvas canvas, Offset c, double s) {
+  final path = _legendHeartPath(c, s);
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = _kAccent.withValues(alpha: 0.4)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [_kRed, _kAccent, _kRedDeep],
+      ).createShader(Rect.fromCircle(center: c, radius: s)),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kWhite.withValues(alpha: 0.5),
+  );
+}
+
+/// The flow arrow between two nodes (mirrors the painter's `_paintArrow`).
+void _legendArrow(Canvas canvas, Offset a, Offset b, Color color) {
+  final mid = Offset.lerp(a, b, 0.5)!;
+  final dir = b - a;
+  final len = dir.distance;
+  if (len < 1) return;
+  final u = dir / len;
+  final perp = Offset(-u.dy, u.dx);
+  const sz = 7.0;
+  final tip = mid + u * sz;
+  final path = Path()
+    ..moveTo(tip.dx, tip.dy)
+    ..lineTo((mid - u * sz + perp * sz).dx, (mid - u * sz + perp * sz).dy)
+    ..lineTo((mid - u * sz - perp * sz).dx, (mid - u * sz - perp * sz).dy)
+    ..close();
+  canvas.drawPath(path, Paint()..color = color);
+}
+
+/// The six-stage ring, positioned exactly like `_HeartGeo` (cos/sin ellipse).
+List<Offset> _legendRing(Size size, {double cyFrac = 0.5, double scale = 1.0}) {
+  final center = Offset(size.width / 2, size.height * cyFrac);
+  final rx = size.width * 0.33 * scale;
+  final ry = size.height * 0.33 * scale;
+  return <Offset>[
+    for (var i = 0; i < _kLoop.length; i++)
+      center +
+          Offset(
+            math.cos(math.pi / 2 + i * math.pi / 3) * rx,
+            math.sin(math.pi / 2 + i * math.pi / 3) * ry,
+          ),
+  ];
+}
+
+// Frame 1 — the loop + order: tap each chamber around the circuit, in sequence.
+void _legendLoop(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  final nodes = _legendRing(size, cyFrac: 0.48);
+  final nodeR = (size.shortestSide * 0.075).clamp(14.0, 30.0);
+  final n = nodes.length;
+  // Directed segments + arrows, colored by the blood leaving each stage.
+  for (var i = 0; i < n; i++) {
+    final a = nodes[i], b = nodes[(i + 1) % n];
+    final color = _kLoop[i].color;
+    canvas.drawLine(
+      a,
+      b,
+      Paint()
+        ..color = color.withValues(alpha: 0.35)
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round,
+    );
+    _legendArrow(canvas, a, b, color.withValues(alpha: 0.7));
+  }
+  _legendHeart(canvas, Offset(size.width / 2, size.height * 0.48), nodeR * 0.9);
+  for (var i = 0; i < n; i++) {
+    final stage = _kLoop[i];
+    GameFx.orb(canvas, nodes[i], nodeR, stage.color, glow: 0.4);
+    GameFx.text(canvas, stage.label, nodes[i], nodeR * 0.42,
+        _kWhite.withValues(alpha: 0.95),
+        weight: FontWeight.w800);
+    // Order badge — the sequence the player must follow.
+    GameFx.text(canvas, '${i + 1}', nodes[i].translate(0, -nodeR - 8),
+        nodeR * 0.44, Potatuhs.gold,
+        weight: FontWeight.w800);
+  }
+}
+
+// Frame 2 — the two-phase beat: ventricles pump on LUB, atria fill on DUB.
+void _legendBeat(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  final nodeR = (size.shortestSide * 0.10).clamp(16.0, 34.0);
+  final cy = size.height * 0.42;
+  final lub = Offset(size.width * 0.30, cy); // a ventricle → LUB
+  final dub = Offset(size.width * 0.70, cy); // an atrium → DUB
+
+  _legendHeart(canvas, Offset(size.width / 2, size.height * 0.78), nodeR * 0.7);
+  GameFx.text(canvas, 'lub', Offset(size.width * 0.40, size.height * 0.90), 12,
+      _kGreen, weight: FontWeight.w800);
+  GameFx.text(canvas, 'dub', Offset(size.width * 0.60, size.height * 0.90), 12,
+      _kDub, weight: FontWeight.w800);
+
+  // LUB node: green target ring + a closed-in approach ring (dead on the beat).
+  GameFx.orb(canvas, lub, nodeR, _kRed, glow: 0.7, rim: _kWhite);
+  canvas.drawCircle(
+      lub,
+      nodeR * 1.18,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = _kGreen.withValues(alpha: 0.9));
+  GameFx.text(canvas, 'LV', lub, nodeR * 0.42, _kWhite,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'LUB', lub.translate(0, nodeR + 12), nodeR * 0.34,
+      _kGreen, weight: FontWeight.w800);
+
+  // DUB node: violet target ring — the atria fill on the mid-beat.
+  GameFx.orb(canvas, dub, nodeR, _kBlue, glow: 0.7, rim: _kWhite);
+  canvas.drawCircle(
+      dub,
+      nodeR * 1.18,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = _kDub.withValues(alpha: 0.9));
+  GameFx.text(canvas, 'RA', dub, nodeR * 0.42, _kWhite,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'DUB', dub.translate(0, nodeR + 12), nodeR * 0.34, _kDub,
+      weight: FontWeight.w800);
+}
+
+// Frame 3 — the danger: wrong node or wrong sound stalls, streak drops.
+void _legendStall(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  final nodeR = (size.shortestSide * 0.10).clamp(16.0, 34.0);
+  final cy = size.height * 0.44;
+  final ok = Offset(size.width * 0.30, cy); // the correct NEXT stage
+  final bad = Offset(size.width * 0.70, cy); // tapped out of order
+
+  // NEXT (correct) node — white rim + green target ring, as in play.
+  GameFx.orb(canvas, ok, nodeR, _kBlue, glow: 0.7, rim: _kWhite);
+  canvas.drawCircle(
+      ok,
+      nodeR * 1.18,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _kGreen.withValues(alpha: 0.6));
+  GameFx.text(canvas, 'RV', ok, nodeR * 0.42, _kWhite,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'NEXT', ok.translate(0, nodeR + 12), nodeR * 0.34,
+      _kGreen, weight: FontWeight.w800);
+
+  // Wrong tap — dim orb with a red X and the stall callout.
+  GameFx.orb(canvas, bad, nodeR, _kLoop[4].deep, glow: 0.2);
+  final xp = Paint()
+    ..color = _kRedDeep
+    ..strokeWidth = 4
+    ..strokeCap = StrokeCap.round;
+  final xs = nodeR * 0.5;
+  canvas.drawLine(bad.translate(-xs, -xs), bad.translate(xs, xs), xp);
+  canvas.drawLine(bad.translate(xs, -xs), bad.translate(-xs, xs), xp);
+  GameFx.text(canvas, 'WRONG WAY', bad.translate(0, nodeR + 12), nodeR * 0.34,
+      _kRedDeep, weight: FontWeight.w800);
+  GameFx.text(canvas, 'streak  −3', Offset(size.width / 2, size.height * 0.80),
+      14, _kRed, weight: FontWeight.w800, glow: 0.4);
+}
+
+// Frame 4 — the escalation: streak speeds the beat, tightens the window,
+// and the last 8 s ignite the FINAL SURGE ×1.5.
+void _legendSurge(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  final c = Offset(size.width / 2, size.height * 0.44);
+  final nodeR = (size.shortestSide * 0.14).clamp(20.0, 44.0);
+
+  // Surge vignette — the same cardinal wash that frames the final seconds.
+  final rect = Offset.zero & size;
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [_kAccent.withValues(alpha: 0.0), _kAccent.withValues(alpha: 0.18)],
+        stops: const [0.55, 1.0],
+      ).createShader(rect),
+  );
+
+  _legendHeart(canvas, c, nodeR);
+  // Wide (resting) target ring vs the tight (max-BPM) window it shrinks to.
+  canvas.drawCircle(
+      c,
+      nodeR * 2.0,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _kWhite.withValues(alpha: 0.35));
+  canvas.drawCircle(
+      c,
+      nodeR * 1.25,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..color = _kGreen.withValues(alpha: 0.9));
+
+  GameFx.text(canvas, '176 BPM', c.translate(0, nodeR * 2.4), 13, _kWhite,
+      weight: FontWeight.w800);
+  GameFx.text(
+      canvas,
+      'FINAL SURGE  ×${_kClimaxMult.toStringAsFixed(1)}',
+      Offset(size.width / 2, size.height * 0.16),
+      16,
+      _kAccent,
+      display: true,
+      weight: FontWeight.w800,
+      glow: 0.6);
+}
+
+/// The visual manual for Heartbeat v2 — wired into the registry spec.
+final List<LegendFrame> heartbeatV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the chambers in circulation order around the loop',
+      paint: _legendLoop),
+  const LegendFrame(
+      caption: 'Ventricles pump on the LUB; atria fill on the DUB',
+      paint: _legendBeat),
+  const LegendFrame(
+      caption: 'Wrong chamber or wrong beat stalls — streak drops 3',
+      paint: _legendStall),
+  const LegendFrame(
+      caption: 'Streak speeds the beat, tightens the window: FINAL SURGE',
+      paint: _legendSurge),
+];

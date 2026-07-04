@@ -75,6 +75,260 @@ class _AtpPop {
         )..layout());
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME components the
+// live game uses (the mitochondrion body/cristae/ring, and the GLU/O₂ tanks).
+// Static + cheap: rendered once on the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Muted "anaerobic" charge tone reused from the live painter (already in-file).
+const Color _kLegendAnaerobic = Color(0xFFB0A06A);
+const Color _kLegendWarn = Color(0xFFFF7043);
+
+/// A GLU/O₂ tank exactly like the in-game `_drawTank`, in a self-contained form
+/// (no instance state) so the manual shows the real substrate gauges.
+void _legendTank(
+  Canvas canvas,
+  Rect r,
+  double frac,
+  Color color,
+  String label, {
+  int? cap,
+  bool low = false,
+}) {
+  if (!r.width.isFinite || !r.height.isFinite || r.width <= 0 || r.height <= 0) {
+    return;
+  }
+  final f = frac.clamp(0.0, 1.0);
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(8));
+  canvas.drawRRect(rrect, Paint()..color = Colors.white.withValues(alpha: 0.06));
+  if (low) {
+    canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = _kLegendWarn.withValues(alpha: 0.7)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+  }
+  final fillTop = r.bottom - r.height * f;
+  canvas.save();
+  canvas.clipRRect(rrect);
+  if (f > 0) {
+    canvas.drawRect(Rect.fromLTRB(r.left, fillTop, r.right, r.bottom),
+        Paint()..color = color.withValues(alpha: 0.85));
+  }
+  if (cap != null && cap > 0) {
+    final seg = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = Colors.black.withValues(alpha: 0.25);
+    for (int i = 1; i < cap; i++) {
+      final y = r.bottom - r.height * (i / cap);
+      canvas.drawLine(Offset(r.left, y), Offset(r.right, y), seg);
+    }
+  }
+  canvas.restore();
+  canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = color.withValues(alpha: 0.7));
+  GameFx.text(canvas, label, Offset(r.center.dx, r.top - 12), 10,
+      color.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+/// The mitochondrion — body, double membrane, cristae folds, charge fill and
+/// the breath-timer ring — mirroring `_PowerhouseV2Painter.paint` so the manual
+/// shows the literal organelle. [chargeColor] tints the fill+ring by the yield
+/// the breath is about to mint; [glow] is the halo (gold aerobic, red misfire,
+/// orange overdrive).
+void _legendMito(
+  Canvas canvas,
+  Offset center,
+  double rx, {
+  required Color glow,
+  required double cycleProgress,
+  required Color chargeColor,
+}) {
+  if (!center.dx.isFinite || !center.dy.isFinite || !rx.isFinite || rx <= 0) {
+    return;
+  }
+  final ry = rx * 0.66;
+  final prog = cycleProgress.clamp(0.0, 1.0);
+  const accent = Potatuhs.orange;
+
+  canvas.drawOval(
+    Rect.fromCenter(center: center, width: rx * 2 + 26, height: ry * 2 + 26),
+    Paint()
+      ..color = glow.withValues(alpha: 0.5)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
+  );
+
+  final bodyRect = Rect.fromCenter(center: center, width: rx * 2, height: ry * 2);
+  canvas.drawOval(
+    bodyRect,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.5),
+        colors: [
+          Color.lerp(accent, Colors.white, 0.30)!,
+          accent,
+          Color.lerp(accent, Colors.black, 0.45)!,
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(bodyRect),
+  );
+  canvas.drawOval(
+    Rect.fromCenter(center: center, width: rx * 1.7, height: ry * 1.7),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Color.lerp(accent, Colors.black, 0.3)!.withValues(alpha: 0.7),
+  );
+
+  canvas.save();
+  canvas.clipPath(Path()
+    ..addOval(
+        Rect.fromCenter(center: center, width: rx * 1.66, height: ry * 1.66)));
+  final foldPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..color = Color.lerp(accent, Colors.black, 0.25)!.withValues(alpha: 0.55);
+  const int folds = 4;
+  for (int i = 0; i < folds; i++) {
+    final fy = center.dy - ry * 0.9 + (i + 1) * (ry * 1.8 / (folds + 1));
+    final path = Path()..moveTo(center.dx - rx, fy);
+    const int seg = 10;
+    for (int s = 1; s <= seg; s++) {
+      final fx0 = center.dx - rx + (2 * rx) * s / seg;
+      final wob = math.sin(s * 1.1 + i * 2) * ry * 0.12;
+      path.lineTo(fx0, fy + wob);
+    }
+    canvas.drawPath(path, foldPaint);
+  }
+  final fillH = (ry * 2) * prog;
+  canvas.drawRect(
+    Rect.fromLTRB(
+        center.dx - rx, center.dy + ry - fillH, center.dx + rx, center.dy + ry),
+    Paint()..color = chargeColor.withValues(alpha: 0.14 + 0.18 * prog),
+  );
+  canvas.restore();
+
+  final ringRect =
+      Rect.fromCenter(center: center, width: rx * 2 + 14, height: ry * 2 + 14);
+  canvas.drawArc(
+      ringRect,
+      0,
+      2 * math.pi,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = Colors.white.withValues(alpha: 0.08));
+  canvas.drawArc(
+      ringRect,
+      -math.pi / 2,
+      2 * math.pi * prog,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.4
+        ..strokeCap = StrokeCap.round
+        ..color = chargeColor.withValues(alpha: 0.95));
+}
+
+// Frame (a) — the two substrates you feed; the organelle breathes itself.
+void _legendFeed(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final cy = h * 0.48;
+  final rx = (w * 0.16).clamp(22.0, 66.0);
+  final tankH = (h * 0.48).clamp(24.0, 190.0);
+  final tankW = (w * 0.085).clamp(12.0, 24.0);
+  _legendTank(canvas, Rect.fromLTWH(w * 0.09, cy - tankH / 2, tankW, tankH), 0.5,
+      _PowerhouseV2Painter._glucoseColor, 'GLU',
+      cap: 4);
+  _legendTank(
+      canvas,
+      Rect.fromLTWH(w * 0.91 - tankW, cy - tankH / 2, tankW, tankH),
+      0.6,
+      _PowerhouseV2Painter._oxygenColor,
+      'O₂');
+  _legendMito(canvas, Offset(w / 2, cy), rx,
+      glow: Potatuhs.orange, cycleProgress: 0.4, chargeColor: _kLegendAnaerobic);
+}
+
+// Frame (b) — full O₂ → the aerobic burn, the big +12 payout.
+void _legendAerobic(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final cy = h * 0.52;
+  final rx = (w * 0.18).clamp(24.0, 72.0);
+  final tankH = (h * 0.46).clamp(24.0, 180.0);
+  final tankW = (w * 0.085).clamp(12.0, 24.0);
+  _legendTank(canvas, Rect.fromLTWH(w * 0.91 - tankW, cy - tankH / 2, tankW, tankH),
+      1.0, _PowerhouseV2Painter._oxygenColor, 'O₂');
+  _legendMito(canvas, Offset(w * 0.46, cy), rx,
+      glow: Potatuhs.gold, cycleProgress: 1.0, chargeColor: Potatuhs.gold);
+  GameFx.text(canvas, '+12 ATP', Offset(w * 0.46, cy - rx * 0.66 - 20), 17,
+      Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame (c) — empty glucose starves the breath: a misfire mints ZERO.
+void _legendStarve(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final cy = h * 0.52;
+  final rx = (w * 0.17).clamp(24.0, 68.0);
+  final tankH = (h * 0.46).clamp(24.0, 180.0);
+  final tankW = (w * 0.085).clamp(12.0, 24.0);
+  _legendTank(canvas, Rect.fromLTWH(w * 0.09, cy - tankH / 2, tankW, tankH), 0.0,
+      _PowerhouseV2Painter._glucoseColor, 'GLU',
+      cap: 4, low: true);
+  _legendMito(canvas, Offset(w * 0.54, cy), rx,
+      glow: Colors.redAccent, cycleProgress: 0.5, chargeColor: _kLegendAnaerobic);
+  GameFx.text(canvas, 'STARVED — 0 ATP', Offset(w * 0.54, cy - rx * 0.66 - 20),
+      15, _kLegendWarn,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// Frame (d) — the final-10s OVERDRIVE: tempo and every payout double.
+void _legendOverdrive(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final cy = h * 0.56;
+  final rx = (w * 0.19).clamp(26.0, 74.0);
+  GameFx.text(canvas, 'OVERDRIVE ×2', Offset(w / 2, h * 0.16), 20,
+      Potatuhs.orange,
+      display: true, weight: FontWeight.w800, glow: 0.7);
+  _legendMito(canvas, Offset(w / 2, cy), rx,
+      glow: Potatuhs.orange, cycleProgress: 0.85, chargeColor: Potatuhs.gold);
+  GameFx.text(canvas, '+24 ATP', Offset(w / 2, cy - rx * 0.66 - 20), 17,
+      Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// The visual manual for Powerhouse v2 — wired into the registry spec.
+final List<LegendFrame> powerhouseV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Feed GLUCOSE and OXYGEN — the mitochondrion breathes itself',
+      paint: _legendFeed),
+  const LegendFrame(
+      caption: 'Full oxygen = aerobic burn: the big +12 ATP payout',
+      paint: _legendAerobic),
+  const LegendFrame(
+      caption: 'Empty glucose starves the breath — a misfire mints ZERO',
+      paint: _legendStarve),
+  const LegendFrame(
+      caption: 'Final 10s OVERDRIVE: tempo and every payout double',
+      paint: _legendOverdrive),
+];
+
 class PowerhouseV2Game extends StatefulWidget {
   final MiniGameSession session;
   const PowerhouseV2Game({super.key, required this.session});
@@ -162,12 +416,45 @@ class _PowerhouseV2GameState extends State<PowerhouseV2Game>
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_update);
     _ticker.forward();
+    // ATTRACT autopilot: host pulses this ~4x/sec; play one honest feed move.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────────
+  // One competent move per call using the game's OWN feed handlers — never a
+  // synthetic tap, no randomness. The mitochondrion fires on its own; our only
+  // job is to keep both substrates present so every breath is a fed, aerobic
+  // cycle instead of a starvation misfire.
+  //   1. Fuel cliff first: if glucose could starve the next auto-fire (≤1),
+  //      top it up — a misfire mints ZERO ATP.
+  //   2. Fuel safe: chase oxygen, which drains passively AND is spent each cycle,
+  //      to hold the aerobic (+12) yield over anaerobic (+4).
+  //   3. Both full: nothing productive — return.
+  void _autoStep() {
+    final session = widget.session;
+    if (!session.isRunning) return;
+
+    final bool glucoseFull = _glucose >= _glucoseCap;
+    final bool oxygenFull = _oxygen >= _oxygenCap - 0.01;
+
+    if (_glucose <= 1 && !glucoseFull) {
+      _feedGlucose();
+      return;
+    }
+    if (!oxygenFull) {
+      _feedOxygen();
+      return;
+    }
+    if (!glucoseFull) {
+      _feedGlucose();
+    }
   }
 
   void _resetRun() {
@@ -580,7 +867,10 @@ class _PowerhouseV2Painter extends CustomPainter {
     const double tankW = 20;
     const double margin = 16;
     final double fieldBottom = h - 116; // keep clear of banner + buttons
-    final double cy = (fieldBottom * 0.46).clamp(90.0, fieldBottom - 80);
+    // Guard: on very short viewports (h < 286) `fieldBottom - 80` drops below the
+    // lower bound and .clamp(lo, hi) throws every frame → black screen. Keep hi >= lo.
+    final double cy =
+        (fieldBottom * 0.46).clamp(90.0, math.max(90.0, fieldBottom - 80));
 
     // ── Tanks ───────────────────────────────────────────────────────────────
     _drawTank(canvas, Rect.fromLTWH(margin, 70, tankW, fieldBottom - 110),

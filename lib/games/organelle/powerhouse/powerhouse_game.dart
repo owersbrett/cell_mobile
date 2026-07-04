@@ -135,12 +135,47 @@ class _PowerhouseGameState extends State<PowerhouseGame>
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_update);
     _ticker.forward();
+    // ATTRACT autopilot: this game knows how to run its own mitochondrion. The
+    // host calls [_autoStep] ~every 250ms only in attract mode; dormant in
+    // normal play. Default interval — this is a real-time game, not turn-paced.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One competent hands-free move per host tick. Plays respiration *well*, not
+  /// randomly, using the game's OWN handlers: keep glucose available, keep the
+  /// oxygen tank topped up so completed cycles run aerobically (~36 ATP, not the
+  /// ~2 ATP anaerobic floor), then drive the pump to mint ATP. Deterministic;
+  /// by construction it never over/under-feeds, so it never triggers a stall.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_stall > 0) return; // production stalled — pump taps are ignored; wait.
+
+    // 1. A cycle can't start without glucose. Only feeds when the tank is empty
+    //    and nothing is committed, so it never overfeeds (which would stall).
+    if (!_loaded && _glucose <= 0) {
+      _feedGlucose();
+      return;
+    }
+
+    // 2. Keep O₂ near a full cycle's worth for maximum (aerobic) ATP yield.
+    //    Feeding below this leaves clear headroom, so the +3 feed never hits the
+    //    FULL stall. This IS the lesson: oxygen makes respiration efficient.
+    if (_oxygen < _o2PerCycle - 0.5) {
+      _feedOxygen();
+      return;
+    }
+
+    // 3. Inputs are ready — advance the respiration cycle one step toward ATP.
+    //    Glucose is guaranteed available here, so this never stalls either.
+    _pumpTap();
   }
 
   void _resetRun() {
@@ -514,7 +549,10 @@ class _PowerhousePainter extends CustomPainter {
     const double tankW = 20;
     const double margin = 16;
     final double fieldBottom = h - 116; // keep clear of banner + buttons
-    final double cy = (fieldBottom * 0.46).clamp(90.0, fieldBottom - 80);
+    // Guard: on very short viewports (h < 286) `fieldBottom - 80` drops below the
+    // lower bound and .clamp(lo, hi) throws every frame → black screen. Keep hi >= lo.
+    final double cy =
+        (fieldBottom * 0.46).clamp(90.0, math.max(90.0, fieldBottom - 80));
 
     // ── Tanks ───────────────────────────────────────────────────────────────
     _drawTank(canvas, Rect.fromLTWH(margin, 70, tankW, fieldBottom - 110),

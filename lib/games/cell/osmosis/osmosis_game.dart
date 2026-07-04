@@ -47,6 +47,19 @@ const double _kDriftEaseGain = 2.6;
 /// Tonicity magnitude beyond which we name the environment hyper/hypotonic.
 const double _kIsoTol = 0.06;
 
+/// ATTRACT autopilot cadence — the host calls the hook roughly this often
+/// (seconds). Used to project the cell's volume one tick ahead through the
+/// current osmotic flux before deciding whether to correct.
+const double _kAutoTick = 0.25;
+
+/// How far volume may sit from the healthy centre before the bot acts. Inside
+/// this dead-band the cell is "comfortably centred" and left alone so the bot
+/// never overcorrects into the opposite extreme.
+const double _kAutoDeadband = 0.06;
+
+/// Proportional steer strength: projected volume error → desired net tonicity.
+const double _kAutoGain = 4.0;
+
 // ── Palette ───────────────────────────────────────────────────────────────────
 const _kAccent = Color(0xFF26C6DA); // aqua — water / osmosis
 const _kAccentDeep = Color(0xFF0097A7);
@@ -113,13 +126,51 @@ class _OsmosisGameState extends State<OsmosisGame>
   @override
   void initState() {
     super.initState();
+    // ATTRACT autopilot: this game knows how to hold its own turgor. Registered
+    // always (harmless in normal play — the host only invokes it hands-free).
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Osmosis *correctly*, not
+  /// randomly: it reads the cell's OWN volume, projects it one tick ahead
+  /// through the current osmotic flux (dV/dt = -_kFlux * tonicity, so this looks
+  /// through the environment's drift), and — if the cell is heading out of the
+  /// safe turgor band — drives the SAME whole-screen injection slider a player
+  /// uses back toward the healthy centre. A projected-too-swollen cell (lysis
+  /// risk) needs a hypertonic push (add solute → water leaves); a shrivelling
+  /// cell needs a hypotonic push (add water). The environment already supplies
+  /// [_drift], so the injection only makes up the difference. A cell sitting
+  /// comfortably in the band is left alone (finger up) so the bot never
+  /// overcorrects into the opposite extreme. Deterministic; no taps, no RNG.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Where the cell volume will sit after one host tick of the current flux.
+    final projected =
+        (_volume - _kFlux * _tonicity * _kAutoTick).clamp(0.0, 1.0);
+    final projErr = projected - _kBandCentre;
+    // Comfortably centred → let go and let it ride; don't overcorrect.
+    if (projErr.abs() < _kAutoDeadband) {
+      _touching = false;
+      return;
+    }
+    // Net tonicity that steers volume back toward centre (proportional). A
+    // positive error (swollen) asks for positive tonicity → water leaves.
+    final desiredTonicity = (projErr * _kAutoGain).clamp(-1.0, 1.0);
+    // inject = desiredTonicity - drift: cancel the environment, keep the rest.
+    final desiredInject = (desiredTonicity - _drift).clamp(-1.0, 1.0);
+    // Same control surface as a player: pointerX maps to inject via
+    // (pointerX - 0.5) * 2, so invert it. Holding "touch" eases _inject there.
+    _pointerX = (desiredInject * 0.5 + 0.5).clamp(0.0, 1.0);
+    _touching = true;
   }
 
   double _progress() {
@@ -738,3 +789,320 @@ class _OsmosisPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _OsmosisPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL components
+// (same palette + membrane/gauge/slider style the live _OsmosisPainter uses).
+// Static & cheap: rendered once in the intro, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Draws one cell (glow + deforming membrane + cytoplasm + nucleus) centred at
+/// [center] with radius [r]. [strain] 0..1 reddens the membrane; when [shrivel]
+/// the membrane crenates (spiky inward), otherwise it swells taut. Mirrors
+/// `_OsmosisPainter._paintCell`, frozen to one pose.
+void _legendCell(
+  Canvas canvas,
+  Offset center,
+  double r, {
+  double strain = 0.0,
+  bool shrivel = false,
+  bool inBand = true,
+}) {
+  if (r <= 0) return;
+  final s = strain.clamp(0.0, 1.0);
+  final bodyColor = Color.lerp(_kAccent, _kRed, s * 0.8)!;
+
+  // Outer glow.
+  canvas.drawCircle(
+    center,
+    r + 10,
+    Paint()
+      ..color = bodyColor.withValues(alpha: 0.18 + 0.25 * (inBand ? 1 : 0.4))
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+
+  // Membrane path — crenated when shriveled, taut quiver when swollen.
+  final path = Path();
+  const seg = 72;
+  final lobes = 7 + (shrivel ? 5 : 0);
+  final crenAmp = shrivel ? 0.10 * s : 0.0;
+  final swellJitter = shrivel ? 0.0 : 0.018 * s;
+  for (var i = 0; i <= seg; i++) {
+    final a = i / seg * 2 * math.pi;
+    var w = math.sin(a * 3) * 0.012;
+    w -= crenAmp * (0.5 + 0.5 * math.cos(a * lobes));
+    w += swellJitter * math.sin(a * 11);
+    final rr = r * (1 + w);
+    final pt = center + Offset(math.cos(a), math.sin(a)) * rr;
+    if (i == 0) {
+      path.moveTo(pt.dx, pt.dy);
+    } else {
+      path.lineTo(pt.dx, pt.dy);
+    }
+  }
+  path.close();
+
+  // Cytoplasm fill.
+  canvas.drawPath(
+    path,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.3, -0.4),
+        colors: [
+          Color.lerp(bodyColor, _kWhite, 0.5)!.withValues(alpha: 0.9),
+          bodyColor.withValues(alpha: 0.8),
+          Color.lerp(bodyColor, Colors.black, 0.45)!.withValues(alpha: 0.9),
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: r)),
+  );
+
+  // Membrane rim.
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4 + 1.6 * (shrivel ? 0.0 : s)
+      ..color = Color.lerp(_kWhite, _kRed, s)!
+          .withValues(alpha: 0.7 + 0.3 * s),
+  );
+
+  // Nucleus.
+  GameFx.orb(canvas, center.translate(r * 0.12, r * 0.1), r * 0.26, _kAccentDeep,
+      glow: 0.6);
+}
+
+/// A compact vertical CELL SIZE gauge with the green safe band and a marker at
+/// [volume]. Mirrors `_OsmosisPainter._paintVolumeGauge`.
+void _legendGauge(Canvas canvas, Rect box, double volume) {
+  if (box.width <= 0 || box.height <= 0) return;
+  final left = box.left, top = box.top, w = box.width, gh = box.height;
+  final trackRR = RRect.fromRectAndRadius(box, const Radius.circular(9));
+  canvas.drawRRect(trackRR, Paint()..color = const Color(0xFF14110F));
+  canvas.drawRRect(
+      trackRR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = _kAccent.withValues(alpha: 0.25));
+
+  // Safe band.
+  final bandTop = top + gh * (1 - _kBandMax);
+  final bandBot = top + gh * (1 - _kBandMin);
+  canvas.drawRect(Rect.fromLTRB(left + 1, bandTop, left + w - 1, bandBot),
+      Paint()..color = _kGreen.withValues(alpha: 0.22));
+  canvas.drawRect(
+      Rect.fromLTRB(left + 1, bandTop, left + w - 1, bandBot),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = _kGreen.withValues(alpha: 0.7));
+
+  // Volume marker.
+  final v = volume.clamp(0.0, 1.0);
+  final my = top + gh * (1 - v);
+  final inBand = v >= _kBandMin && v <= _kBandMax;
+  final mColor = inBand ? _kGreen : _kRed;
+  canvas.drawLine(
+      Offset(left - 3, my),
+      Offset(left + w + 3, my),
+      Paint()
+        ..color = mColor
+        ..strokeWidth = 2.6
+        ..strokeCap = StrokeCap.round);
+  canvas.drawCircle(Offset(left + w / 2, my), 4.5, Paint()..color = mColor);
+  GameFx.text(canvas, 'CELL SIZE', Offset(left + w / 2, top - 10), 8.0,
+      _kAccent.withValues(alpha: 0.75));
+}
+
+/// The top TONICITY read-out meter (blue → green → amber) with the needle at
+/// [tonicity]. Mirrors `_OsmosisPainter._paintTonicityMeter`.
+void _legendMeter(Canvas canvas, double left, double y, double w, double tonicity) {
+  if (w <= 0) return;
+  const h = 12.0;
+  final rect = Rect.fromLTWH(left, y, w, h);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(6));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..shader = const LinearGradient(colors: [_kHypo, _kGreen, _kHyper])
+            .createShader(rect));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = _kWhite.withValues(alpha: 0.25));
+  final cx = left + w / 2;
+  canvas.drawLine(Offset(cx, y - 3), Offset(cx, y + h + 3),
+      Paint()..color = _kWhite.withValues(alpha: 0.5)..strokeWidth = 1.4);
+  final nx = cx + tonicity.clamp(-1.0, 1.0) * (w / 2);
+  canvas.drawCircle(Offset(nx, y + h / 2), 6, Paint()..color = _kWhite);
+  canvas.drawCircle(Offset(nx, y + h / 2), 3.2,
+      Paint()..color = Colors.black.withValues(alpha: 0.6));
+  GameFx.text(canvas, 'HYPOTONIC', Offset(left + 40, y - 11), 8.0,
+      _kHypo.withValues(alpha: 0.85));
+  GameFx.text(canvas, 'ISOTONIC', Offset(cx, y - 11), 8.0,
+      _kGreen.withValues(alpha: 0.9));
+  GameFx.text(canvas, 'HYPERTONIC', Offset(left + w - 42, y - 11), 8.0,
+      _kHyper.withValues(alpha: 0.85));
+}
+
+/// The bottom injection slider (WATER ◀ … ▶ SOLUTE) with the handle at [inject].
+/// Mirrors `_OsmosisPainter._paintSlider`.
+void _legendSlider(Canvas canvas, double left, double y, double w, double inject) {
+  if (w <= 0) return;
+  const h = 10.0;
+  final rect = Rect.fromLTWH(left, y, w, h);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(5));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..shader =
+            const LinearGradient(colors: [_kHypo, Color(0xFF2A2622), _kHyper])
+                .createShader(rect));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = _kWhite.withValues(alpha: 0.2));
+  final cx = left + w / 2;
+  canvas.drawLine(Offset(cx, y - 4), Offset(cx, y + h + 4),
+      Paint()..color = _kWhite.withValues(alpha: 0.45)..strokeWidth = 1.2);
+  final hx = cx + inject.clamp(-1.0, 1.0) * (w / 2);
+  final hColor = inject < 0 ? _kHypo : (inject > 0 ? _kHyper : _kWhite);
+  canvas.drawCircle(
+      Offset(hx, y + h / 2),
+      11,
+      Paint()
+        ..color = hColor.withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6));
+  canvas.drawCircle(Offset(hx, y + h / 2), 8, Paint()..color = hColor);
+  canvas.drawCircle(Offset(hx, y + h / 2), 2.6,
+      Paint()..color = Colors.black.withValues(alpha: 0.55));
+  GameFx.text(canvas, '◀ ADD WATER', Offset(left + 50, y - 14), 9.5,
+      _kHypo.withValues(alpha: 0.9));
+  GameFx.text(canvas, 'ADD SOLUTE ▶', Offset(left + w - 52, y - 14), 9.5,
+      _kHyper.withValues(alpha: 0.9));
+}
+
+// ── Frame 1: the cell + the safe-size gauge (the core object + the goal) ────────
+void _legendGoal(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final center = Offset(size.width * 0.42, size.height * 0.50);
+  final r = math.min(size.width, size.height) * 0.22;
+
+  // Green safe-turgor ghost ring around the healthy cell.
+  canvas.drawCircle(
+      center,
+      r * 1.32,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = _kGreen.withValues(alpha: 0.5));
+
+  _legendCell(canvas, center, r);
+
+  // Vertical CELL SIZE gauge on the right, marker parked in the green band.
+  final gw = math.min(16.0, size.width * 0.06);
+  final gh = size.height * 0.56;
+  _legendGauge(
+      canvas,
+      Rect.fromLTWH(size.width * 0.86 - gw / 2, size.height * 0.22, gw, gh),
+      0.50);
+
+  GameFx.text(canvas, 'HEALTHY TURGOR', Offset(center.dx, size.height * 0.88),
+      12, _kGreen,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+// ── Frame 2: the control — slider + tonicity read-out (the player verb) ─────────
+void _legendControl(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const margin = 24.0;
+  final w = size.width - margin * 2;
+
+  // Tonicity meter up top (needle centred = balanced).
+  _legendMeter(canvas, margin, size.height * 0.20, w, 0.0);
+
+  // A resting cell in the middle to anchor what you're steering.
+  _legendCell(canvas, Offset(size.width * 0.5, size.height * 0.52),
+      math.min(size.width, size.height) * 0.16);
+
+  // Injection slider at the bottom, handle pushed toward SOLUTE as an example.
+  _legendSlider(canvas, margin, size.height * 0.80, w, 0.55);
+}
+
+// ── Frame 3: how you score — dwell + recovery bonus ─────────────────────────────
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final center = Offset(size.width * 0.40, size.height * 0.52);
+  final r = math.min(size.width, size.height) * 0.20;
+
+  _legendCell(canvas, center, r);
+
+  // Vertical gauge with an upward arrow: the cell just climbed into the band.
+  final gw = math.min(16.0, size.width * 0.06);
+  final gh = size.height * 0.56;
+  final gx = size.width * 0.86 - gw / 2;
+  _legendGauge(canvas, Rect.fromLTWH(gx, size.height * 0.22, gw, gh), 0.50);
+  final arrowP = Paint()
+    ..color = _kGreen
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round;
+  final ax = gx + gw / 2;
+  final ay = size.height * 0.50;
+  canvas.drawLine(Offset(ax, ay + 14), Offset(ax, ay - 8), arrowP);
+  canvas.drawLine(Offset(ax, ay - 8), Offset(ax - 5, ay - 2), arrowP);
+  canvas.drawLine(Offset(ax, ay - 8), Offset(ax + 5, ay - 2), arrowP);
+
+  // The live callouts a player earns.
+  GameFx.text(canvas, 'RECOVERED  +35',
+      Offset(center.dx, size.height * 0.18), 16, _kGreen,
+      display: true, glow: 0.7);
+  GameFx.text(canvas, '+6 / sec in the band',
+      Offset(center.dx, size.height * 0.86), 11,
+      _kAccent.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+}
+
+// ── Frame 4: the danger — burst vs shrivel (and the swings speed up) ────────────
+void _legendDanger(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = math.min(size.width, size.height) * 0.17;
+  final cyc = size.height * 0.46;
+  final leftC = Offset(size.width * 0.30, cyc);
+  final rightC = Offset(size.width * 0.70, cyc);
+
+  // Swollen to bursting (hypotonic).
+  _legendCell(canvas, leftC, r * 1.28, strain: 0.95, inBand: false);
+  GameFx.text(canvas, 'LYSES', Offset(leftC.dx, cyc + r * 1.55), 12, _kHypo,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'too hypotonic', Offset(leftC.dx, cyc + r * 1.55 + 15),
+      9, _kWhite.withValues(alpha: 0.6));
+
+  // Shriveled / crenated (hypertonic).
+  _legendCell(canvas, rightC, r * 0.72,
+      strain: 0.95, shrivel: true, inBand: false);
+  GameFx.text(canvas, 'CRENATES', Offset(rightC.dx, cyc + r * 1.55), 12, _kHyper,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'too hypertonic', Offset(rightC.dx, cyc + r * 1.55 + 15),
+      9, _kWhite.withValues(alpha: 0.6));
+}
+
+/// The visual manual for Osmosis — wired into the registry spec.
+final List<LegendFrame> osmosisLegendFrames = [
+  const LegendFrame(
+      caption: 'Hold the cell in the green safe-turgor band',
+      paint: _legendGoal),
+  const LegendFrame(
+      caption: 'Drag anywhere: left ADD WATER, right ADD SOLUTE',
+      paint: _legendControl),
+  const LegendFrame(
+      caption: 'Score +6/sec healthy; +35 each time you recover',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Too swollen LYSES, too shriveled CRENATES — swings speed up',
+      paint: _legendDanger),
+];

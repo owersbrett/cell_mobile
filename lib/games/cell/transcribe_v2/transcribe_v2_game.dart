@@ -121,6 +121,242 @@ final List<String> _allAminos =
 
 String _disp(String amino) => amino == 'Stop' ? 'STOP' : amino;
 
+// ════════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each is drawn with the SAME
+// primitives the live painter uses (`GameFx.orb` + `_baseColor` for a base,
+// the `_drawBaseBtn` gradient for a button), so the manual shows the LITERAL
+// DNA/mRNA orbs, buttons, codon and amino chips the player will meet — not an
+// abstract diagram. Cheap + static: rendered once in the intro, not per frame.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// One base orb — extracted verbatim from `_StrandPainter._drawBase` so the
+/// manual orb is pixel-identical to the in-play orb.
+void _legendOrb(Canvas canvas, Offset at, String letter, double r,
+    {double alpha = 1.0, bool highlight = false, bool broken = false}) {
+  final c = broken ? const Color(0xFF6E6E6E) : (_baseColor[letter] ?? _kAccent);
+  GameFx.orb(canvas, at, r, c.withValues(alpha: alpha),
+      glow: highlight ? 1.2 : 0.7 * alpha, specular: alpha > 0.6);
+  GameFx.text(canvas, letter, at, r * 0.92, Colors.white.withValues(alpha: alpha),
+      weight: FontWeight.w900);
+  if (highlight) {
+    canvas.drawCircle(
+      at,
+      r + 4,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = Colors.white.withValues(alpha: 0.8),
+    );
+  }
+}
+
+/// One mRNA button — mirrors `_StrandPainter._drawBaseBtn` (running look).
+void _legendBaseBtn(Canvas canvas, Rect r, String mrna, {bool glow = false}) {
+  final c = _baseColor[mrna] ?? _kAccent;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(16));
+  if (glow) {
+    canvas.drawRRect(
+        rr.inflate(2),
+        Paint()
+          ..color = c.withValues(alpha: 0.5)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10));
+  }
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Color.lerp(c, Colors.white, 0.18)!,
+          Color.lerp(c, Colors.black, 0.28)!,
+        ],
+      ).createShader(r),
+  );
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = Colors.white.withValues(alpha: glow ? 0.9 : 0.55));
+  GameFx.text(canvas, mrna, r.center, (r.height * 0.42).clamp(12.0, 25.0),
+      Colors.white,
+      weight: FontWeight.w900);
+}
+
+/// A small amino-acid chip — the same rounded look the ribosome bank uses.
+void _legendAminoChip(Canvas canvas, Offset c, String amino, double w) {
+  final r = Rect.fromCenter(center: c, width: w, height: w * 0.52);
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = _kGood.withValues(alpha: 0.2));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = _kGold);
+  GameFx.text(canvas, _disp(amino), c, (r.height * 0.42).clamp(11.0, 17.0),
+      Colors.white,
+      weight: FontWeight.w800);
+}
+
+void _legendArrowDown(Canvas canvas, double x, double y0, double y1) {
+  final p = Paint()
+    ..color = _kAccent
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(Offset(x, y0), Offset(x, y1), p);
+  canvas.drawLine(Offset(x - 6, y1 - 6), Offset(x, y1), p);
+  canvas.drawLine(Offset(x + 6, y1 - 6), Offset(x, y1), p);
+}
+
+/// FRAME 1 — the verb + the pairing rule. Four DNA template bases, each with an
+/// arrow down to its mRNA complement, over the four tappable base buttons.
+void _legendPair(Canvas canvas, Size size) {
+  if (size.width < 60 || size.height < 60) return;
+  final w = size.width, h = size.height;
+  final xs = [w * 0.20, w * 0.40, w * 0.60, w * 0.80];
+  const dna = ['A', 'T', 'C', 'G'];
+  const mrna = ['U', 'A', 'G', 'C'];
+  final r = (w * 0.055).clamp(10.0, 18.0);
+  final dnaY = h * 0.24, mrnaY = h * 0.46;
+  for (var i = 0; i < 4; i++) {
+    _legendOrb(canvas, Offset(xs[i], dnaY), dna[i], r);
+    _legendArrowDown(canvas, xs[i], dnaY + r + 3, mrnaY - r - 3);
+    _legendOrb(canvas, Offset(xs[i], mrnaY), mrna[i], r);
+  }
+  GameFx.text(canvas, 'DNA → mRNA', Offset(w * 0.5, h * 0.08), 11,
+      Colors.white.withValues(alpha: 0.55),
+      weight: FontWeight.w700);
+  // The tappable bank (button order mirrors the legend: U A G C).
+  const n = 4;
+  const gap = 8.0;
+  final bw = (w - 24 - gap * (n - 1)) / n;
+  final by = h * 0.64, bh = h * 0.26;
+  for (var i = 0; i < n; i++) {
+    final rect = Rect.fromLTWH(12 + i * (bw + gap), by, bw, bh);
+    _legendBaseBtn(canvas, rect, mrna[i], glow: i == 0);
+  }
+}
+
+/// FRAME 2 — how to score: three clean mRNA bases close a codon that translates
+/// to an amino acid. Uses a real table entry (AUG → Met).
+void _legendCodon(Canvas canvas, Size size) {
+  if (size.width < 60 || size.height < 60) return;
+  final w = size.width, h = size.height;
+  const codon = ['A', 'U', 'G']; // AUG → Met (a real _codonTable entry)
+  final xs = [w * 0.22, w * 0.40, w * 0.58];
+  final r = (w * 0.06).clamp(11.0, 19.0);
+  final cy = h * 0.38;
+  // Bracket under the three mRNA bases to read them as one codon.
+  final p = Paint()
+    ..color = _kGold.withValues(alpha: 0.7)
+    ..strokeWidth = 2
+    ..style = PaintingStyle.stroke;
+  final by = cy + r + 8;
+  canvas.drawLine(Offset(xs[0] - r, by), Offset(xs[2] + r, by), p);
+  for (var i = 0; i < 3; i++) {
+    _legendOrb(canvas, Offset(xs[i], cy), codon[i], r);
+  }
+  GameFx.text(canvas, 'codon', Offset((xs[0] + xs[2]) / 2, by + 12), 10,
+      _kGold.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+  _legendArrowDown(canvas, w * 0.78, cy - r * 0.4, cy + r * 0.4);
+  _legendAminoChip(
+      canvas, Offset(w * 0.86, cy), 'Met', (w * 0.24).clamp(48.0, 96.0));
+  GameFx.text(canvas, '+24', Offset(w * 0.86, cy + r + 12), 11,
+      _kGood.withValues(alpha: 0.9),
+      weight: FontWeight.w800);
+}
+
+/// FRAME 3 — the danger: a wrong or late tap BREAKS the strand (grey base, red
+/// snapped bond) — the streak resets and you lose points.
+void _legendBreak(Canvas canvas, Size size) {
+  if (size.width < 60 || size.height < 60) return;
+  final w = size.width, h = size.height;
+  final r = (w * 0.075).clamp(13.0, 22.0);
+  final dnaY = h * 0.30, mrnaY = h * 0.58;
+  final cx = w * 0.5;
+  // Broken (greyed) DNA base with a severed, red bond.
+  _legendOrb(canvas, Offset(cx, dnaY), 'C', r, alpha: 0.55, broken: true);
+  final bond = Paint()
+    ..color = _kBad.withValues(alpha: 0.7)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  final midTop = dnaY + r + (mrnaY - r - (dnaY + r)) * 0.42;
+  final midBot = mrnaY - r - (mrnaY - r - (dnaY + r)) * 0.42;
+  canvas.drawLine(Offset(cx - 6, dnaY + r), Offset(cx + 4, midTop), bond);
+  canvas.drawLine(Offset(cx + 6, midBot), Offset(cx - 4, mrnaY - r), bond);
+  _legendOrb(canvas, Offset(cx, mrnaY), '?', r, alpha: 0.55, broken: true);
+  // A red X badge over the join.
+  final xc = Offset(cx, (dnaY + mrnaY) / 2);
+  const s = 9.0;
+  final xp = Paint()
+    ..color = _kBad
+    ..strokeWidth = 3.5
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(xc.translate(-s, -s), xc.translate(s, s), xp);
+  canvas.drawLine(xc.translate(s, -s), xc.translate(-s, s), xp);
+  GameFx.text(canvas, 'BREAK  −3', Offset(cx, h * 0.84), 13,
+      _kBad.withValues(alpha: 0.95),
+      weight: FontWeight.w900);
+}
+
+/// FRAME 4 — the climax: the last 10 s is FINAL TRANSCRIPTION — the timer
+/// quickens and every point doubles, under an alarm vignette.
+void _legendSurge(Canvas canvas, Size size) {
+  if (size.width < 60 || size.height < 60) return;
+  final w = size.width, h = size.height;
+  // Alarm vignette, cheap radial like `_paintSurge`.
+  canvas.drawRect(
+    Offset.zero & size,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [_kBad.withValues(alpha: 0.0), _kBad.withValues(alpha: 0.20)],
+        stops: const [0.55, 1.0],
+      ).createShader(Offset.zero & size),
+  );
+  final r = (w * 0.07).clamp(12.0, 20.0);
+  final cy = h * 0.42;
+  // A speeding active base with a nearly-drained (fast) timing bar.
+  _legendOrb(canvas, Offset(w * 0.5, cy), 'A', r, highlight: true);
+  final barW = r * 3.0;
+  final left = w * 0.5 - barW / 2, by = cy + r + 12;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, by, barW, 5), const Radius.circular(3)),
+    Paint()..color = Colors.white.withValues(alpha: 0.12),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, by, barW * 0.28, 5), const Radius.circular(3)),
+    Paint()..color = _kBad,
+  );
+  GameFx.text(canvas, 'FINAL TRANSCRIPTION', Offset(w * 0.5, h * 0.20), 14,
+      _kBad.withValues(alpha: 0.95),
+      display: true, weight: FontWeight.w900);
+  GameFx.text(canvas, 'points ×2', Offset(w * 0.5, h * 0.78), 13,
+      _kGold.withValues(alpha: 0.95),
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Transcribe v2 — wired into the registry spec.
+final List<LegendFrame> transcribeV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Read the DNA base, tap its mRNA pair — U replaces T',
+      paint: _legendPair),
+  const LegendFrame(
+      caption: '3 clean bases close a codon → tap its amino acid',
+      paint: _legendCodon),
+  const LegendFrame(
+      caption: 'A wrong or late tap SNAPS the strand: streak gone, −3',
+      paint: _legendBreak),
+  const LegendFrame(
+      caption: 'Last 10s is FINAL TRANSCRIPTION — faster, points ×2',
+      paint: _legendSurge),
+];
+
 // ── Runtime entity ───────────────────────────────────────────────────────────
 
 class _Base {
@@ -205,13 +441,41 @@ class _TranscribeV2GameState extends State<TranscribeV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows both stages of the central dogma and
+    // plays them correctly, never randomly. Dormant in normal play — the host
+    // only calls it hands-free. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     repaint.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────────
+  /// One correct move per host tick (~250ms), reading the game's OWN state and
+  /// calling its OWN handlers — deterministic, no synthetic taps, no randomness.
+  ///
+  /// • RIBOSOME stage (`translating`): the strand is paused and the bank shows
+  ///   amino choices. Tap the correct amino for the current codon via the game's
+  ///   own [_resolveTranslate] with [_translateCorrect] (derived from the codon
+  ///   table). The confirm hold + [_endTranslate] resume the strand on the ticker.
+  /// • POLYMERASE stage: tap the correct complementary mRNA base for the active
+  ///   DNA base via the game's own [_onBaseTap] fed by [_mrnaOf] — the same rule
+  ///   a correct human tap uses. Every 3 clean bases the game itself opens the
+  ///   ribosome stage; nothing extra to advance here.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (translating) {
+      if (translatePicked == null) _resolveTranslate(_translateCorrect);
+      return; // awaiting confirm/resume — handled by the ticker
+    }
+    if (_queue.isNotEmpty) {
+      _onBaseTap(_mrnaOf(_queue.first.dna));
+    }
   }
 
   // ── Geometry — the read-zone sits LOW, right above the button bank ─────────

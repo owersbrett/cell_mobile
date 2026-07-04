@@ -9,9 +9,6 @@ import 'package:flutter/scheduler.dart';
 const _kFont = 'Avenir';
 const _kAccent = Color(0xFF00BCD4);
 
-/// Seconds added to the clock each time a molecule is completed.
-const int _kMoleculeTimeBonus = 4;
-
 /// Vertical space reserved at the top of the play field for the target panel.
 const double _kPanelReserve = 112;
 
@@ -284,12 +281,72 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     _slots = _target.slots.map((d) => _Slot(d)).toList();
     _backbone = _backboneSlot(_target);
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Mixer *correctly*, never
+  /// randomly: it reads the target's still-empty slots, honors the backbone gate
+  /// (while a gated backbone is empty, only the backbone element counts as
+  /// placeable), then grabs the most urgent floating atom of a placeable
+  /// element — the one soonest to bounce off an edge — and collects it through
+  /// the exact same path a real tap takes ([_collectAtom]). It NEVER taps an
+  /// element the target doesn't need, so it never eats the −10 penalty; if none
+  /// is on screen it simply waits. Deterministic — ties keep the earlier atom.
+  void _autoStep() {
+    if (!widget.session.isRunning || _celebT >= 0) return;
+
+    // Elements we can legally place right now.
+    final bb = _backbone;
+    final Set<int> placeable;
+    if (bb != null && _slots[bb].state == 0) {
+      // Backbone gate open: only the core element makes progress.
+      placeable = {_slots[bb].def.element};
+    } else {
+      placeable =
+          _slots.where((s) => s.state == 0).map((s) => s.def.element).toSet();
+    }
+    if (placeable.isEmpty) return;
+
+    // Pick the most urgent needed atom: smallest time-to-edge.
+    _FieldAtom? pick;
+    var bestT = double.infinity;
+    for (final a in _atoms) {
+      if (!placeable.contains(a.element)) continue;
+      final t = _timeToEdge(a);
+      if (t < bestT) {
+        bestT = t;
+        pick = a;
+      }
+    }
+    if (pick == null) return; // nothing needed on screen — never tap a decoy
+    _collectAtom(pick);
+  }
+
+  /// Seconds until [a] next reaches a wall of the play field, given its current
+  /// position and velocity (wobble/speed-scaling ignored — deterministic). Lower
+  /// = more urgent. Clamped at 0.
+  double _timeToEdge(_FieldAtom a) {
+    final b = _bounds;
+    if (b.isEmpty) return double.infinity;
+    var t = double.infinity;
+    if (a.vel.dx > 0) t = math.min(t, (b.right - _kAtomR - a.pos.dx) / a.vel.dx);
+    if (a.vel.dx < 0) t = math.min(t, (b.left + _kAtomR - a.pos.dx) / a.vel.dx);
+    if (a.vel.dy > 0) {
+      t = math.min(t, (b.bottom - _kAtomR - a.pos.dy) / a.vel.dy);
+    }
+    if (a.vel.dy < 0) t = math.min(t, (b.top + _kAtomR - a.pos.dy) / a.vel.dy);
+    return t < 0 ? 0 : t;
   }
 
   void _onTick(Duration now) {
@@ -420,13 +477,9 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
     _burst(at, _kAccent, count: 4, speed: 90);
     if (_celebT < 0 && _slots.every((s) => s.state == 2)) {
       widget.session.addScore(30);
-      widget.session.addTime(const Duration(seconds: _kMoleculeTimeBonus));
       _completedCount++;
       _popups.add(_Popup('+30', _buildCenter.translate(0, -_unit * 2.2),
           const Color(0xFFFFD54F)));
-      _popups.add(_Popup('+${_kMoleculeTimeBonus}s',
-          _buildCenter.translate(0, -_unit * 3.4),
-          const Color(0xFF69F0AE)));
       _burst(_buildCenter, _kAccent, count: 16, speed: 140);
       _celebT = 0;
       _checkFact(_target.formula);
@@ -575,9 +628,17 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
       }
     }
     if (best == null) return;
+    _collectAtom(best);
+  }
 
+  /// Applies the exact result of tapping [atom]: claim a still-needed slot
+  /// (honoring the backbone gate) or take the wrong-atom penalty. Shared by real
+  /// taps ([_onTapDown]) and the attract autopilot ([_autoStep]) — the autopilot
+  /// only ever passes needed, currently-placeable atoms, so it never triggers
+  /// the gate guidance or the −10 penalty.
+  void _collectAtom(_FieldAtom atom) {
     final slotIdx = _slots.indexWhere(
-        (s) => s.state == 0 && s.def.element == best!.element);
+        (s) => s.state == 0 && s.def.element == atom.element);
     if (slotIdx >= 0) {
       // Backbone gate: the backbone slot must be filled before any peripheral.
       final bb = _backbone;
@@ -585,7 +646,7 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
         // Sequencing violation — no penalty, just guidance.
         _popups.add(_Popup(
           'BACKBONE FIRST',
-          best.pos.translate(0, -_kAtomR - 6),
+          atom.pos.translate(0, -_kAtomR - 6),
           const Color(0xFFFFB300),
         ));
         // Pulse the backbone slot world position so the painter can highlight it.
@@ -595,17 +656,17 @@ class _MoleculeMixerGameState extends State<MoleculeMixerGame>
       // Needed atom: claim slot, fly it in.
       _slots[slotIdx].state = 1;
       widget.session.addScore(5);
-      _popups.add(_Popup('+5', best.pos.translate(0, -_kAtomR - 6),
+      _popups.add(_Popup('+5', atom.pos.translate(0, -_kAtomR - 6),
           const Color(0xFF69F0AE)));
-      _burst(best.pos, _elements[best.element].color, count: 8, speed: 110);
-      _flying.add(_FlyingAtom(best.element, best.pos, slotIdx));
-      _atoms.remove(best);
+      _burst(atom.pos, _elements[atom.element].color, count: 8, speed: 110);
+      _flying.add(_FlyingAtom(atom.element, atom.pos, slotIdx));
+      _atoms.remove(atom);
     } else {
       // Unneeded atom: penalty + red shake.
       widget.session.addScore(-10);
-      _popups.add(_Popup('-10', best.pos.translate(0, -_kAtomR - 6),
+      _popups.add(_Popup('-10', atom.pos.translate(0, -_kAtomR - 6),
           const Color(0xFFFF5252)));
-      best.shake = 1.0;
+      atom.shake = 1.0;
     }
   }
 
@@ -1221,3 +1282,285 @@ class _MixerPainter extends CustomPainter {
   @override
   bool shouldRepaint(_MixerPainter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the game's own atom /
+// ghost-slot / bond rendering so the intro shows the LITERAL in-game
+// components. Static + cheap: painted once on the intro screen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legendText(Canvas canvas, String text, Offset center, double fontSize,
+    Color color,
+    {List<Shadow>? shadows}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.bold,
+        color: color,
+        shadows: shadows,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// Mirror of [_MixerPainter._drawAtom]: glow halo + shaded body + symbol.
+void _legendAtom(Canvas canvas, Offset at, int element, double r,
+    {double glow = 0.8}) {
+  final def = _elements[element];
+  canvas.drawCircle(
+    at,
+    r + 4,
+    Paint()
+      ..color = def.color.withValues(alpha: 0.35 * glow)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+  );
+  canvas.drawCircle(
+    at,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.35, -0.4),
+        colors: [
+          Color.lerp(def.color, Colors.white, 0.35)!,
+          def.color,
+          Color.lerp(def.color, Colors.black, 0.3)!,
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: at, radius: r)),
+  );
+  if (def.outlined) {
+    canvas.drawCircle(
+      at,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8
+        ..color = Colors.white.withValues(alpha: 0.85),
+    );
+  }
+  _legendText(canvas, def.symbol, at, r * 0.78, def.textColor);
+}
+
+/// Ghost construction slot, exactly as the build zone draws an empty one.
+/// [backbone] adds the amber CORE pulse ring the live game shows.
+void _legendGhostSlot(Canvas canvas, Offset at, int element, double r,
+    {bool backbone = false}) {
+  final def = _elements[element];
+  if (backbone) {
+    canvas.drawCircle(
+      at,
+      r + 6,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..color = const Color(0xFFFFB300).withValues(alpha: 0.9)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+    );
+  }
+  canvas.drawCircle(
+    at,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = backbone ? 2.2 : 1.4
+      ..color = def.color.withValues(alpha: backbone ? 0.6 : 0.35),
+  );
+  canvas.drawCircle(at, r, Paint()..color = def.color.withValues(alpha: 0.07));
+  _legendText(
+      canvas, def.symbol, at, r * 0.66, Colors.white.withValues(alpha: 0.4));
+}
+
+/// Completed-bond glow line: wide soft halo + bright white core.
+void _legendBond(Canvas canvas, Offset a, Offset b) {
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = _kAccent.withValues(alpha: 0.4)
+      ..strokeWidth = 9
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.85)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round,
+  );
+}
+
+/// Slot centres for [mol] around [center] — the construction zone's own
+/// layout math (slot offset × unit × 1.6).
+List<Offset> _legendLayout(_MoleculeDef mol, Offset center, double unit) =>
+    [for (final s in mol.slots) center + s.offset * unit * 1.6];
+
+// ── Frame 1: the target formula + the tap verb ──────────────────────────────
+void _legendTarget(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mol = _molecules[0]; // H₂O — the canonical first build
+  final s = size.shortestSide;
+  _legendText(
+    canvas,
+    '${mol.formula}  ·  ${mol.name.toUpperCase()}',
+    Offset(size.width * 0.5, size.height * 0.12),
+    s * 0.062,
+    Colors.white,
+    shadows: [Shadow(color: _kAccent.withValues(alpha: 0.9), blurRadius: 10)],
+  );
+  // Ghost slots waiting in the construction zone.
+  final pts = _legendLayout(
+      mol, Offset(size.width * 0.5, size.height * 0.42), s * 0.11);
+  for (var i = 0; i < pts.length; i++) {
+    _legendGhostSlot(canvas, pts[i], mol.slots[i].element, s * 0.072);
+  }
+  // A floating H atom below, ringed as the tap target.
+  final atomAt = Offset(size.width * 0.5, size.height * 0.78);
+  _legendAtom(canvas, atomAt, _eH, s * 0.085, glow: 0.6);
+  canvas.drawCircle(
+    atomAt,
+    s * 0.085 + 8,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _kAccent.withValues(alpha: 0.85),
+  );
+}
+
+// ── Frame 2: scoring — fill every slot, bonds glow, +30 ─────────────────────
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mol = _molecules[0]; // H₂O completed
+  final s = size.shortestSide;
+  final pts = _legendLayout(
+      mol, Offset(size.width * 0.5, size.height * 0.56), s * 0.13);
+  for (final bond in mol.bonds) {
+    _legendBond(canvas, pts[bond[0]], pts[bond[1]]);
+  }
+  for (var i = 0; i < pts.length; i++) {
+    _legendAtom(canvas, pts[i], mol.slots[i].element, s * 0.085, glow: 1.0);
+  }
+  _legendText(
+    canvas,
+    '+5',
+    Offset(size.width * 0.2, size.height * 0.34),
+    s * 0.07,
+    const Color(0xFF69F0AE),
+    shadows: [
+      Shadow(
+          color: const Color(0xFF69F0AE).withValues(alpha: 0.8),
+          blurRadius: 8),
+    ],
+  );
+  _legendText(
+    canvas,
+    '+30',
+    Offset(size.width * 0.5, size.height * 0.16),
+    s * 0.09,
+    const Color(0xFFFFD54F),
+    shadows: [
+      Shadow(
+          color: const Color(0xFFFFD54F).withValues(alpha: 0.8),
+          blurRadius: 10),
+    ],
+  );
+}
+
+// ── Frame 3: the danger — tapping an atom the target doesn't need ───────────
+void _legendDanger(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final s = size.shortestSide;
+  _legendText(
+    canvas,
+    'TARGET  H₂O',
+    Offset(size.width * 0.5, size.height * 0.12),
+    s * 0.055,
+    _kAccent.withValues(alpha: 0.95),
+  );
+  // Needed atom: clean tap, +5.
+  final good = Offset(size.width * 0.28, size.height * 0.5);
+  _legendAtom(canvas, good, _eH, s * 0.085, glow: 0.6);
+  _legendText(
+    canvas,
+    '+5',
+    good.translate(0, -s * 0.17),
+    s * 0.07,
+    const Color(0xFF69F0AE),
+    shadows: [
+      Shadow(
+          color: const Color(0xFF69F0AE).withValues(alpha: 0.8),
+          blurRadius: 8),
+    ],
+  );
+  // Decoy atom: red shake ring, −10 — the exact wrong-tap feedback.
+  final bad = Offset(size.width * 0.72, size.height * 0.62);
+  _legendAtom(canvas, bad, _eCl, s * 0.085, glow: 0.6);
+  canvas.drawCircle(
+    bad,
+    s * 0.085 + 5,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = const Color(0xFFFF5252).withValues(alpha: 0.8)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+  );
+  _legendText(
+    canvas,
+    '-10',
+    bad.translate(0, -s * 0.17),
+    s * 0.07,
+    const Color(0xFFFF5252),
+    shadows: [
+      Shadow(
+          color: const Color(0xFFFF5252).withValues(alpha: 0.8),
+          blurRadius: 10),
+    ],
+  );
+}
+
+// ── Frame 4: escalation — big molecules gate on the amber CORE atom ─────────
+void _legendBackbone(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mol = _molecules[3]; // CH₄ — carbon hub, four H peripherals
+  final s = size.shortestSide;
+  _legendText(
+    canvas,
+    'BACKBONE FIRST',
+    Offset(size.width * 0.5, size.height * 0.13),
+    s * 0.06,
+    const Color(0xFFFFB300),
+    shadows: [
+      Shadow(
+          color: const Color(0xFFFFB300).withValues(alpha: 0.8),
+          blurRadius: 10),
+    ],
+  );
+  final pts = _legendLayout(
+      mol, Offset(size.width * 0.5, size.height * 0.58), s * 0.105);
+  for (var i = 0; i < pts.length; i++) {
+    _legendGhostSlot(canvas, pts[i], mol.slots[i].element, s * 0.065,
+        backbone: i == 0);
+  }
+}
+
+/// The visual manual for Molecule Mixer — wired into the registry spec.
+final List<LegendFrame> moleculeMixerLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap floating atoms that match the target formula',
+      paint: _legendTarget),
+  const LegendFrame(
+      caption: 'Each atom +5 — finish the molecule for +30',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Wrong atom costs -10 — tap only what the target needs',
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'Big molecules gate: place the amber CORE atom first',
+      paint: _legendBackbone),
+];

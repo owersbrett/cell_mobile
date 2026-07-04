@@ -86,6 +86,230 @@ class _Fizzle {
   _Fizzle(this.a, this.b);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Drawn with the SAME components the
+// live game uses: trophic-coloured organism orbs (GameFx.orb + emoji) and the
+// game's energy-flow arrow, so the manual shows the LITERAL pieces a player
+// meets (a grass orb, a green energy link, a red fizzle, a purple decomposer
+// arrow) rather than an abstract diagram.
+// ═══════════════════════════════════════════════════════════════════════════
+
+_Species _legSpecies(String id) => _kPool.firstWhere((s) => s.id == id);
+
+Color _legColor(_Species s) {
+  if (s.decomposer) return _FoodWebGameState._cDecomp;
+  switch (s.level) {
+    case 0:
+      return _FoodWebGameState._cProducer;
+    case 1:
+      return _FoodWebGameState._cPrimary;
+    case 2:
+      return _FoodWebGameState._cSecondary;
+    default:
+      return _FoodWebGameState._cApex;
+  }
+}
+
+void _legEmoji(Canvas canvas, String glyph, Offset center, double size) {
+  final tp = TextPainter(
+    text: TextSpan(text: glyph, style: TextStyle(fontSize: size)),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// One organism token, exactly as it reads on the board: a trophic-coloured orb
+/// with its emoji and a name label below.
+void _legNode(Canvas canvas, Offset c, _Species sp,
+    {double r = 18, bool label = true}) {
+  final color = _legColor(sp);
+  GameFx.orb(canvas, c, r, color, glow: 0.7);
+  _legEmoji(canvas, sp.emoji, c, r * 1.1);
+  if (label) {
+    GameFx.text(canvas, sp.name, c.translate(0, r + 9), 9,
+        Colors.white.withValues(alpha: 0.82),
+        weight: FontWeight.w700);
+  }
+}
+
+/// The game's energy-flow arrow (glow + solid, or purple/red dashed for
+/// bonus/wrong links) — mirrors `_FoodWebPainter._arrow`.
+void _legArrow(Canvas canvas, Offset a, Offset b, Color color,
+    {double width = 3.2, bool dashed = false}) {
+  final dir = b - a;
+  final len = dir.distance;
+  if (len < 1) return;
+  final u = dir / len;
+  final start = a + u * 16;
+  final end = b - u * 18;
+  if (dashed) {
+    const dash = 8.0, gap = 6.0;
+    final total = (end - start).distance;
+    if (total <= 0) return;
+    final du = (end - start) / total;
+    final paint = Paint()
+      ..color = color.withValues(alpha: 0.85)
+      ..strokeWidth = width
+      ..strokeCap = StrokeCap.round;
+    var d = 0.0;
+    while (d < total) {
+      final p0 = start + du * d;
+      final p1 = start + du * math.min(d + dash, total);
+      canvas.drawLine(p0, p1, paint);
+      d += dash + gap;
+    }
+  } else {
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = color.withValues(alpha: 0.35)
+        ..strokeWidth = width * 3
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+    );
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..color = color
+        ..strokeWidth = width
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+  final tip = end;
+  final back = tip - u * 11;
+  final perp = Offset(-u.dy, u.dx) * 6.5;
+  final path = Path()
+    ..moveTo(tip.dx, tip.dy)
+    ..lineTo(back.dx + perp.dx, back.dy + perp.dy)
+    ..lineTo(back.dx - perp.dx, back.dy - perp.dy)
+    ..close();
+  canvas.drawPath(path, Paint()..color = color);
+}
+
+// (a) The core objects: organisms stacked across the four trophic levels, with
+// faint energy arrows showing the direction energy always travels — UP.
+void _legendTiers(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final cx = w * 0.56;
+  const ids = ['grass', 'rabbit', 'snake', 'hawk'];
+  const ys = [0.84, 0.61, 0.38, 0.16];
+  const tiers = [
+    ['PRODUCER', _FoodWebGameState._cProducer],
+    ['PRIMARY', _FoodWebGameState._cPrimary],
+    ['SECONDARY', _FoodWebGameState._cSecondary],
+    ['APEX', _FoodWebGameState._cApex],
+  ];
+  // Faint upward energy arrows between successive tiers.
+  for (var i = 0; i < ids.length - 1; i++) {
+    _legArrow(
+      canvas,
+      Offset(cx, ys[i] * h),
+      Offset(cx, ys[i + 1] * h),
+      _FoodWebGameState._accent.withValues(alpha: 0.55),
+      width: 2.6,
+    );
+  }
+  for (var i = 0; i < ids.length; i++) {
+    final y = ys[i] * h;
+    GameFx.text(
+      canvas,
+      tiers[i][0] as String,
+      Offset(w * 0.20, y),
+      8.5,
+      (tiers[i][1] as Color).withValues(alpha: 0.6),
+      weight: FontWeight.w800,
+    );
+    _legNode(canvas, Offset(cx, y), _legSpecies(ids[i]), label: false);
+  }
+}
+
+// (b) How to score: drag prey UP to its real predator — a green energy link
+// lights up, energy travels along it, and points pop.
+void _legendLink(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final prey = Offset(w * 0.5, h * 0.78);
+  final pred = Offset(w * 0.5, h * 0.28);
+  _legArrow(canvas, prey, pred, _FoodWebGameState._accent, width: 3.4);
+  // Travelling energy pulse (the same bright mote the live link carries).
+  final mid = Offset.lerp(prey, pred, 0.56)!;
+  canvas.drawCircle(
+    mid,
+    4.5,
+    Paint()
+      ..color = const Color(0xFFEFFFD6)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+  );
+  _legNode(canvas, prey, _legSpecies('rabbit'));
+  _legNode(canvas, pred, _legSpecies('fox'));
+  GameFx.text(canvas, '+14', mid.translate(w * 0.16, -4), 15,
+      _FoodWebGameState._accent,
+      weight: FontWeight.w800);
+}
+
+// (c) The danger: a backwards or unrelated link fizzles red and wipes the
+// streak — here a predator wrongly pointed DOWN at its prey.
+void _legendFizzle(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final pred = Offset(w * 0.5, h * 0.26);
+  final prey = Offset(w * 0.5, h * 0.76);
+  // Wrong direction: arrow runs DOWN from predator to prey — red dashed fizzle.
+  _legArrow(canvas, pred, prey, _FoodWebGameState._cApex, width: 2.8,
+      dashed: true);
+  _legNode(canvas, pred, _legSpecies('fox'));
+  _legNode(canvas, prey, _legSpecies('rabbit'));
+  // A small red cross marks the rejected link.
+  final m = Offset.lerp(pred, prey, 0.5)!.translate(w * 0.15, 0);
+  const s = 7.0;
+  final p = Paint()
+    ..color = _FoodWebGameState._cApex
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(m.translate(-s, -s), m.translate(s, s), p);
+  canvas.drawLine(m.translate(s, -s), m.translate(-s, s), p);
+}
+
+// (d) The twist: decomposers accept energy from ANY organism — a purple dashed
+// bonus link, appearing in the later, denser webs.
+void _legendDecomposer(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  final org = Offset(w * 0.30, h * 0.30);
+  final decomp = Offset(w * 0.68, h * 0.72);
+  _legArrow(canvas, org, decomp, _FoodWebGameState._cDecomp, width: 2.6,
+      dashed: true);
+  _legNode(canvas, org, _legSpecies('deer'));
+  _legNode(canvas, decomp, _legSpecies('fungi'));
+  GameFx.text(canvas, '+8', Offset.lerp(org, decomp, 0.5)!.translate(w * 0.1, -6),
+      13, _FoodWebGameState._cDecomp,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Food Web — wired into the registry spec.
+final List<LegendFrame> foodWebLegendFrames = [
+  const LegendFrame(
+    caption: 'Energy flows UP the pyramid — producers to apex',
+    paint: _legendTiers,
+  ),
+  const LegendFrame(
+    caption: 'Drag prey up to its predator — a green link scores',
+    paint: _legendLink,
+  ),
+  const LegendFrame(
+    caption: 'Backwards or unrelated links fizzle red — streak resets',
+    paint: _legendFizzle,
+  ),
+  const LegendFrame(
+    caption: 'Bonus: wire any organism into a decomposer to recycle it',
+    paint: _legendDecomposer,
+  ),
+];
+
 class _FoodWebGameState extends State<FoodWebGame>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
@@ -153,13 +377,45 @@ class _FoodWebGameState extends State<FoodWebGame>
       ..forward();
     widget.session.addListener(_onSession);
     _newWeb(0);
+    // ATTRACT autopilot: this game knows how to wire itself. Registered always
+    // (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep]. Default interval (act every tick): Food Web is a connect
+    // game, so one link wired per tick reads as steady, deliberate play.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     widget.session.removeListener(_onSession);
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent move per host tick (~250ms). Wires the web the way scoring
+  /// rewards — only REAL energy links (prey → its predator) — using the game's
+  /// OWN link handler ([_attempt]), never synthetic drags or coordinate math.
+  ///
+  /// Strategy: [_required] is the set of valid predator-prey links (keyed
+  /// "preyIdx>predIdx"), built in [_newWeb] straight from each organism's `eats`
+  /// list; [_found] flags which are already wired. Each tick, take the first
+  /// required link still unwired, parse its prey/predator indices, and hand them
+  /// to [_attempt] — since the pair comes straight from [_required] it is
+  /// guaranteed valid, so [_attempt] scores it (never a fizzle) and, on the last
+  /// link, fires [_checkComplete] to advance to the next, larger web. While that
+  /// hand-off is in flight every required link reads as found, so there is
+  /// nothing to wire and we simply return — the host advances the web.
+  void _autoStep() {
+    if (!widget.session.isRunning || _awaitingNext) return;
+    if (_nodes.isEmpty || _required.isEmpty) return;
+    for (final k in _required) {
+      if (_found.contains(k)) continue;
+      final parts = k.split('>');
+      _attempt(int.parse(parts[0]), int.parse(parts[1])); // real prey→predator
+      return;
+    }
+    // Web complete / advancing — nothing to wire; let the host advance.
   }
 
   void _onSession() {

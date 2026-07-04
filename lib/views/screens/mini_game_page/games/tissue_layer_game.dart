@@ -414,12 +414,41 @@ class _TissueLayerGameState extends State<TissueLayerGame>
     // immediately; the tick gates real progress on widget.session.isRunning.
     _initGame();
     _started = true;
+    // ATTRACT autopilot: this game knows how to rebuild the tissue from memory.
+    // Registered always (harmless in normal play — the host only calls it in
+    // autoplay). Dormant unless the host is driving hands-free. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ---- ATTRACT autopilot ---------------------------------------------------
+  /// One hands-free, competent move per host tick (~250ms). This plays the game
+  /// *correctly*, never randomly: during the place phase it drops the outermost
+  /// still-missing layer's chip into its matching zone via the game's own
+  /// [_placeCorrect] handler — the same order the pathogen eats, so the most
+  /// at-risk layer is saved first. It never touches a decoy or a wrong zone, so
+  /// a life is never lost. Other phases (study / result / complete) self-advance
+  /// on the ticker, so there is nothing to do — it simply returns.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.place) return; // study/result/complete self-advance
+    // Outermost → innermost, matching pathogen consumption + render order.
+    final order = List<_Tissue>.from(_organ.zones)
+      ..sort((a, b) =>
+          _kRealZones[b]!.outerFrac.compareTo(_kRealZones[a]!.outerFrac));
+    for (final zone in order) {
+      if (_filled.contains(zone)) continue;
+      final idx = _chips.indexWhere((c) => !c.isDecoy && c.tissue == zone);
+      if (idx < 0) continue; // its chip isn't in the tray this instant
+      setState(() => _placeCorrect(_chips[idx], zone));
+      return; // exactly one placement per tick
+    }
   }
 
   // ---- initialisation ------------------------------------------------------
@@ -1573,3 +1602,282 @@ class _GamePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _GamePainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the game's OWN
+// components: the concentric organ cross-section, the draggable tissue chips
+// and the creeping pathogen. Uses the hero Potato Tuber specimen and the same
+// zone palette (`_kRealZones`) the live game paints, so the cards show the
+// literal thing the player meets. Static + cheap; rendered once in the intro.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Hero specimen rings (Potato Tuber), outermost → innermost — the exact zones
+// `_kOrgans` uses for the tuber, so the legend mirrors real play.
+final List<_Tissue> _tlTuberZones = <_Tissue>[
+  _Tissue.periderm,
+  _Tissue.tuberCortex,
+  _Tissue.vascularRing,
+  _Tissue.tuberPith,
+];
+
+Offset _tlCenter(Size size) => Offset(size.width * 0.5, size.height * 0.42);
+double _tlRadius(Size size) => min(size.width * 0.34, size.height * 0.30);
+
+void _tlFieldRing(Canvas canvas, Offset c, double radius) {
+  canvas.drawCircle(
+    c,
+    radius + 5,
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.08)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5,
+  );
+}
+
+// One tissue band — filled annulus + stroke, matching `_fillRing`/`_strokeRing`.
+void _tlRing(Canvas canvas, Offset c, double radius, double innerFrac,
+    double outerFrac, Color color,
+    {double fillA = 0.4, double strokeA = 0.6, String? label}) {
+  final outerR = radius * outerFrac;
+  final innerR = radius * innerFrac;
+  if (innerR > 0) {
+    final path = Path()
+      ..addOval(Rect.fromCircle(center: c, radius: outerR))
+      ..addOval(Rect.fromCircle(center: c, radius: innerR))
+      ..fillType = PathFillType.evenOdd;
+    canvas.drawPath(path, Paint()..color = color.withValues(alpha: fillA));
+  } else {
+    canvas.drawCircle(c, outerR, Paint()..color = color.withValues(alpha: fillA));
+  }
+  canvas.drawCircle(
+    c,
+    outerR,
+    Paint()
+      ..color = color.withValues(alpha: strokeA)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4,
+  );
+  if (label != null) {
+    final labelR = radius * (innerFrac + outerFrac) / 2;
+    GameFx.text(canvas, label, Offset(c.dx, c.dy - labelR), 10,
+        color.withValues(alpha: 0.95),
+        weight: FontWeight.w600);
+  }
+}
+
+// Dashed placeholder ring — the "?" slot an unfilled zone shows in play.
+void _tlDashedRing(
+    Canvas canvas, Offset c, double radius, double outerFrac, Color color) {
+  final r = radius * outerFrac;
+  final paint = Paint()
+    ..color = color
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.2;
+  const segs = 32;
+  const gap = 0.38;
+  const sweep = (1 - gap) / segs * 2 * pi;
+  for (int i = 0; i < segs; i++) {
+    final start = i / segs * 2 * pi;
+    canvas.drawArc(
+        Rect.fromCircle(center: c, radius: r), start, sweep, false, paint);
+  }
+}
+
+// A draggable tissue chip, drawn like `_drawOneChip`.
+void _tlChip(Canvas canvas, Offset c, Color color, String label,
+    {double alpha = 0.6, bool wrong = false}) {
+  const w = 76.0, h = 30.0;
+  final rect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: c, width: w, height: h),
+      const Radius.circular(8));
+  canvas.drawRRect(rect, Paint()..color = color.withValues(alpha: alpha));
+  canvas.drawRRect(
+      rect,
+      Paint()
+        ..color = color.withValues(alpha: (alpha + 0.18).clamp(0.0, 1.0))
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4);
+  GameFx.text(canvas, label, c, 11, Colors.white.withValues(alpha: 0.9),
+      weight: FontWeight.w600);
+  if (wrong) {
+    final b = Offset(c.dx + w / 2 - 4, c.dy - h / 2 - 2);
+    final p = Paint()
+      ..color = const Color(0xFFFF5252)
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round;
+    const s = 5.0;
+    canvas.drawLine(b.translate(-s, -s), b.translate(s, s), p);
+    canvas.drawLine(b.translate(s, -s), b.translate(-s, s), p);
+  }
+}
+
+// Upward chevron cue — "drop this here".
+void _tlChevron(Canvas canvas, Offset tip, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(tip.translate(-8, 6), tip, p);
+  canvas.drawLine(tip.translate(8, 6), tip, p);
+}
+
+// The creeping pathogen fog + danger ring, from `_drawPathogen`.
+void _tlPathogen(Canvas canvas, Offset c, double radius, double frac) {
+  final outerEdge = radius * 1.05;
+  final innerFront = radius * (1.0 - frac);
+  final g = ui.Gradient.radial(c, outerEdge, [
+    const Color(0x00000000),
+    const Color(0x00000000),
+    const Color.fromRGBO(30, 80, 10, 0.55),
+    const Color.fromRGBO(10, 40, 5, 0.72),
+  ], [
+    0.0,
+    (innerFront / outerEdge).clamp(0.0, 1.0),
+    ((innerFront + 10) / outerEdge).clamp(0.0, 1.0),
+    1.0,
+  ]);
+  canvas.drawCircle(c, outerEdge, Paint()..shader = g);
+  canvas.drawCircle(
+    c,
+    innerFront,
+    Paint()
+      ..color = const Color.fromRGBO(60, 220, 10, 0.4)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2,
+  );
+}
+
+// Frame 1 — memorize the glowing cross-section (all rings lit + labelled).
+void _tlLegendMemorize(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = _tlCenter(size);
+  final radius = _tlRadius(size);
+  _tlFieldRing(canvas, c, radius);
+  for (final z in _tlTuberZones) {
+    final info = _kRealZones[z]!;
+    _tlRing(canvas, c, radius, info.innerFrac, info.outerFrac, info.color,
+        fillA: 0.5, strokeA: 0.8, label: info.label);
+  }
+  GameFx.text(canvas, 'Potato Tuber', Offset(c.dx, c.dy - radius - 22), 11,
+      Colors.white.withValues(alpha: 0.4),
+      weight: FontWeight.w500);
+}
+
+// Frame 2 — drag a tissue chip into its matching empty ring.
+void _tlLegendPlace(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = _tlCenter(size);
+  final radius = _tlRadius(size);
+  _tlFieldRing(canvas, c, radius);
+  final target = _kRealZones[_Tissue.vascularRing]!;
+  for (final z in _tlTuberZones) {
+    final info = _kRealZones[z]!;
+    if (z == _Tissue.vascularRing) {
+      // The empty slot waiting for its chip.
+      _tlDashedRing(canvas, c, radius, info.outerFrac,
+          info.color.withValues(alpha: 0.5));
+      GameFx.text(
+          canvas,
+          '?',
+          Offset(c.dx, c.dy - radius * (info.innerFrac + info.outerFrac) / 2),
+          14,
+          info.color.withValues(alpha: 0.6),
+          weight: FontWeight.w300);
+    } else {
+      _tlRing(canvas, c, radius, info.innerFrac, info.outerFrac, info.color,
+          fillA: 0.3, strokeA: 0.5);
+    }
+  }
+  _tlChevron(canvas, Offset(c.dx, c.dy + radius + 8), target.color);
+  _tlChip(canvas, Offset(c.dx, size.height * 0.84), target.color, target.label,
+      alpha: 0.7);
+}
+
+// Frame 3 — the pathogen creeps in; decoys & losses cost lives.
+void _tlLegendPathogen(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = _tlCenter(size);
+  final radius = _tlRadius(size);
+  _tlFieldRing(canvas, c, radius);
+  for (final z in _tlTuberZones) {
+    final info = _kRealZones[z]!;
+    if (z == _Tissue.periderm) {
+      // Outermost ring already eaten — sickly green + ✗, like a consumed zone.
+      final consumed = Color.lerp(info.color, const Color(0xFF33691E), 0.7)!;
+      _tlRing(canvas, c, radius, info.innerFrac, info.outerFrac, consumed,
+          fillA: 0.35, strokeA: 0.5);
+      GameFx.text(
+          canvas,
+          '✗',
+          Offset(c.dx, c.dy - radius * (info.innerFrac + info.outerFrac) / 2),
+          14,
+          consumed.withValues(alpha: 0.85),
+          weight: FontWeight.bold);
+    } else {
+      _tlRing(canvas, c, radius, info.innerFrac, info.outerFrac, info.color,
+          fillA: 0.3, strokeA: 0.5);
+    }
+  }
+  _tlPathogen(canvas, c, radius, 0.24);
+  // A decoy chip that must NOT be placed.
+  _tlChip(canvas, Offset(c.dx, size.height * 0.84),
+      _kDecoyColors[_Tissue.xylem]!, _kDecoyLabels[_Tissue.xylem]!,
+      alpha: 0.6, wrong: true);
+}
+
+// Frame 4 — each tier: faster rot, more decoys, less time.
+void _tlLegendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = _tlCenter(size);
+  final radius = _tlRadius(size);
+  _tlFieldRing(canvas, c, radius);
+  for (final z in _tlTuberZones) {
+    final info = _kRealZones[z]!;
+    _tlRing(canvas, c, radius, info.innerFrac, info.outerFrac, info.color,
+        fillA: 0.28, strokeA: 0.45);
+  }
+  // Deeper pathogen — the late-game bite.
+  _tlPathogen(canvas, c, radius, 0.5);
+  // Difficulty tier pips, like the HUD top-right.
+  for (int i = 0; i < 8; i++) {
+    final cx = size.width * 0.5 - 31.5 + i * 9.0;
+    final on = i < 5;
+    canvas.drawCircle(
+      Offset(cx, size.height * 0.08),
+      2.6,
+      Paint()
+        ..color = on
+            ? const Color(0xFFFF7043).withValues(alpha: 0.8)
+            : Colors.white.withValues(alpha: 0.12),
+    );
+  }
+  // A tray crowded with plausible decoy chips.
+  final decoys = <_Tissue>[
+    _Tissue.parenchyma,
+    _Tissue.cambium,
+    _Tissue.phloem,
+  ];
+  for (int i = 0; i < decoys.length; i++) {
+    final dx = size.width * (0.25 + i * 0.25);
+    _tlChip(canvas, Offset(dx, size.height * 0.86), _kDecoyColors[decoys[i]]!,
+        _kDecoyLabels[decoys[i]]!,
+        alpha: 0.55, wrong: true);
+  }
+}
+
+/// The visual manual for Tissue Layer (Defend the Cell) — wired into the spec.
+final List<LegendFrame> tissueLayerLegendFrames = [
+  const LegendFrame(
+      caption: 'Memorize the glowing tissue rings before they fade',
+      paint: _tlLegendMemorize),
+  const LegendFrame(
+      caption: 'Drag each tissue chip onto its matching ring',
+      paint: _tlLegendPlace),
+  const LegendFrame(
+      caption: 'Rebuild before the pathogen rots each layer away',
+      paint: _tlLegendPathogen),
+  const LegendFrame(
+      caption: 'Each tier: faster rot, more decoy chips, less time',
+      paint: _tlLegendEscalate),
+];

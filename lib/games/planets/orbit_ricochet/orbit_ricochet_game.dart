@@ -28,6 +28,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -397,7 +398,8 @@ class OrbitRicochetGame extends StatefulWidget {
 
 class _OrbitRicochetGameState extends State<OrbitRicochetGame>
     with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
 
   // ── progress (host owns score/timer/results) ───────────────────────────────
   int _level = 0; // index into the ladder
@@ -430,15 +432,57 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
   void initState() {
     super.initState();
     _layout = _generateLayout();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick);
-    _ctrl.forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Ricochet *competently*,
+  /// not randomly: it acts ONLY when the arena is idle (no shot in flight),
+  /// then fires a full-power DIRECT-AIM launch from the cannon straight at the
+  /// current catcher — reading its OWN state ([_cannonPx], [_targetPx]) and
+  /// firing through the game's own launch path ([_onDragEnd]/[_launchVector]).
+  /// Gravity wells and banks bend the shot on the way in — competent, not
+  /// perfect. The host owns the clock/HUD; the bot just banks real points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_canvasSize == Size.zero) return;
+    // Never launch while a shot is airborne — one shot at a time (mirrors the
+    // same guard the input handlers enforce).
+    if (_projectile != null && _projectile!.alive) return;
+
+    // Direct aim: the drag vector points FROM the cannon TOWARD the catcher,
+    // at a length that maps to full launch power (see [_launchVector]).
+    final cannon = _cannonPx(_canvasSize);
+    final target = _targetPx(_canvasSize);
+    final dx = target.dx - cannon.dx;
+    final dy = target.dy - cannon.dy;
+    final len = sqrt(dx * dx + dy * dy);
+    if (len < 0.001) return;
+
+    // Stage a drag whose vector points cannon→catcher at full power, then fire
+    // through the game's own aim helper — the identical launch [_onDragEnd]
+    // performs (which ignores its gesture argument), minus the throwaway
+    // DragEndDetails object.
+    _dragStart = cannon;
+    _dragCurrent = cannon + Offset(dx / len, dy / len) * _kMaxDragPx;
+    final launch = _launchVector(_canvasSize);
+    setState(() {
+      _projectile =
+          _Projectile(x: cannon.dx, y: cannon.dy, vx: launch.dx, vy: launch.dy);
+      _dragStart = null;
+      _dragCurrent = null;
+    });
   }
 
   // ── layout generation ──────────────────────────────────────────────────────
@@ -495,8 +539,13 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
   }
 
   // ── main tick ──────────────────────────────────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the game must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     if (!widget.session.isRunning) {
       // Still animate atmosphere so the canvas isn't frozen behind the host UI.
       setState(() => _t += dt);
@@ -869,7 +918,7 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
                       _loop > 0
                           ? 'Lv ${_level + 1} · Loop ${_loop + 1}'
                           : 'Lv ${_level + 1}',
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontFamily: Potatuhs.bodyFont,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
@@ -895,7 +944,7 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
                   ),
                   child: Text(
                     _layout.hint,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontFamily: Potatuhs.displayFont,
                       fontSize: 12,
                       color: Potatuhs.gold,
@@ -1240,25 +1289,42 @@ class _RicochetPainter extends CustomPainter {
   void _paintProjectile(Canvas canvas) {
     if (projectile == null) return;
     final trail = projectile!.trail;
-    for (int i = 1; i < trail.length; i++) {
-      final frac = i / trail.length;
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Potatuhs.airForce.withValues(alpha: frac * 0.38)
-          ..strokeWidth = 6
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
-      );
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Colors.white.withValues(alpha: frac * 0.75)
-          ..strokeWidth = 2.0
-          ..strokeCap = StrokeCap.round,
-      );
+    // Trail in a few alpha bands (old → new), each band ONE polyline path with
+    // one blurred stroke — not a blurred draw per segment. Per-segment blur was
+    // a Gaussian pass per segment per frame, the biggest cost in this painter.
+    const bands = 3;
+    final n = trail.length;
+    if (n >= 2) {
+      for (var b = 0; b < bands; b++) {
+        // Overlap each band by one point so the polyline stays connected.
+        final start = max(0, n * b ~/ bands - 1);
+        final end = n * (b + 1) ~/ bands;
+        if (end - start < 2) continue;
+        final path = Path()..moveTo(trail[start].dx, trail[start].dy);
+        for (var i = start + 1; i < end; i++) {
+          path.lineTo(trail[i].dx, trail[i].dy);
+        }
+        final frac = (b + 1) / bands;
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Potatuhs.airForce.withValues(alpha: 0.38 * frac)
+            ..strokeWidth = 6
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Colors.white.withValues(alpha: 0.75 * frac)
+            ..strokeWidth = 2.0
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round,
+        );
+      }
     }
     if (projectile!.alive) {
       final mPos = Offset(projectile!.x, projectile!.y);
@@ -1283,3 +1349,288 @@ class _RicochetPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _RicochetPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RicochetArt — static component draws for the visual manual. These mirror the
+// live painter's own primitives (GameFx.orb + the game's rings/rims) so the
+// legend shows the EXACT cannon, well, asteroid, catcher and planetlet the
+// player meets — never an abstract diagram. Cheap + self-contained.
+// ═══════════════════════════════════════════════════════════════════════════
+
+class RicochetArt {
+  RicochetArt._();
+
+  /// The cannon: an ink orb with an air-force barrel, aimed along [angle].
+  static void cannon(Canvas canvas, Offset at, double angle) {
+    final end = at + Offset(cos(angle), sin(angle)) * 30;
+    GameFx.glowLine(canvas, at, end, Potatuhs.airForce, width: 5, progress: 1.0);
+    GameFx.orb(canvas, at, 15, Potatuhs.inkPanel,
+        glow: 0.7, rim: Potatuhs.airForce, specular: false);
+  }
+
+  /// A gravity well: influence rings (more rings = more mass) + shaded orb +
+  /// bright reflective rim + a slow accretion ring for giants. Static pulse.
+  static void well(Canvas canvas, Offset c, double radius, Color color,
+      {bool giant = false, String label = ''}) {
+    final influence = radius * 2.4;
+    canvas.drawCircle(
+      c,
+      influence,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            color.withValues(alpha: 0.14),
+            color.withValues(alpha: 0.0),
+          ],
+        ).createShader(Rect.fromCircle(center: c, radius: influence)),
+    );
+    const rings = 4;
+    final spacing = (influence - radius) / (rings + 1);
+    for (int r = rings; r >= 1; r--) {
+      canvas.drawCircle(
+        c,
+        radius + r * spacing,
+        Paint()
+          ..color = color.withValues(alpha: 0.06 + 0.03 * (1 - r / rings))
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.9,
+      );
+    }
+    GameFx.orb(canvas, c, radius, color, glow: 1.3, specular: true);
+    canvas.drawCircle(
+      c,
+      radius + 1.5,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = Color.lerp(color, Colors.white, 0.55)!.withValues(alpha: 0.55),
+    );
+    if (giant) {
+      final ring = Paint()
+        ..color = color.withValues(alpha: 0.32)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.0;
+      canvas.save();
+      canvas.translate(c.dx, c.dy);
+      canvas.rotate(-0.5);
+      canvas.scale(1.0, 0.30);
+      canvas.drawCircle(Offset.zero, radius * 1.55, ring);
+      canvas.restore();
+    }
+    if (label.isNotEmpty) {
+      GameFx.text(canvas, label, c.translate(0, radius + 14), 9,
+          color.withValues(alpha: 0.85));
+    }
+  }
+
+  /// An asteroid: a rocky orb with a hard bright rim + facet ticks. Pure
+  /// reflector — no influence rings, so it reads as "bounce surface".
+  static void asteroid(Canvas canvas, Offset c, double radius, Color color,
+      {String label = ''}) {
+    GameFx.orb(canvas, c, radius, color, glow: 0.7, specular: true);
+    canvas.drawCircle(
+      c,
+      radius + 1.0,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..color = Color.lerp(color, Colors.white, 0.6)!.withValues(alpha: 0.7),
+    );
+    final tick = Paint()
+      ..strokeWidth = 1.2
+      ..color = Colors.white.withValues(alpha: 0.3)
+      ..strokeCap = StrokeCap.round;
+    for (int i = 0; i < 5; i++) {
+      final a = i / 5 * 2 * pi + 0.6;
+      canvas.drawLine(c + Offset(cos(a), sin(a)) * (radius * 0.5),
+          c + Offset(cos(a), sin(a)) * (radius * 0.85), tick);
+    }
+    if (label.isNotEmpty) {
+      GameFx.text(canvas, label, c.translate(0, radius + 13), 9,
+          color.withValues(alpha: 0.85));
+    }
+  }
+
+  /// The catcher: gold orb with intake rings + crosshair.
+  static void catcher(Canvas canvas, Offset c, double radius) {
+    for (int i = 0; i < 2; i++) {
+      canvas.drawCircle(
+        c,
+        radius + 10 + i * 9,
+        Paint()
+          ..color = Potatuhs.gold.withValues(alpha: 0.16 - i * 0.06)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+    }
+    GameFx.orb(canvas, c, radius, Potatuhs.gold,
+        glow: 1.6, rim: Potatuhs.sienna, specular: true);
+    final ch = Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.6)
+      ..strokeWidth = 1.3
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(c.translate(-11, 0), c.translate(11, 0), ch);
+    canvas.drawLine(c.translate(0, -11), c.translate(0, 11), ch);
+  }
+
+  /// The live planetlet with its per-bounce halo rings — the bank count reads
+  /// visually right on the shot.
+  static void planetlet(Canvas canvas, Offset c, {int bounces = 0}) {
+    GameFx.orb(canvas, c, _kProjectileRadius, Potatuhs.glaucous,
+        glow: 1.9, rim: Colors.white, specular: true);
+    for (int b = 0; b < bounces.clamp(0, 6); b++) {
+      canvas.drawCircle(
+        c,
+        _kProjectileRadius + 4 + b * 2.5,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0
+          ..color = Potatuhs.orange.withValues(alpha: 0.5 - b * 0.06),
+      );
+    }
+  }
+
+  /// A dotted trajectory through [pts], air-force → gold like the live preview.
+  static void path(Canvas canvas, List<Offset> pts) {
+    for (int i = 0; i < pts.length; i++) {
+      final frac = i / pts.length;
+      canvas.drawCircle(
+        pts[i],
+        (2.6 - frac * 1.4).clamp(0.8, 2.6),
+        Paint()
+          ..color = Color.lerp(Potatuhs.airForce, Potatuhs.gold, frac)!
+              .withValues(alpha: 0.75 * (1 - frac * 0.5)),
+      );
+    }
+  }
+
+  /// The reflective arena boundary — a glowing inset frame.
+  static void walls(Canvas canvas, Size size) {
+    final rect = Rect.fromLTRB(4, 4, size.width - 4, size.height - 4);
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = Potatuhs.glaucous.withValues(alpha: 0.22)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = Potatuhs.glaucous.withValues(alpha: 0.32),
+    );
+  }
+}
+
+// Quadratic-bezier sampler for the manual's dotted paths.
+List<Offset> _bezier(Offset p0, Offset ctrl, Offset p1, int steps) {
+  final out = <Offset>[];
+  for (int i = 0; i <= steps; i++) {
+    final t = i / steps, u = 1 - t;
+    out.add(Offset(
+      u * u * p0.dx + 2 * u * t * ctrl.dx + t * t * p1.dx,
+      u * u * p0.dy + 2 * u * t * ctrl.dy + t * t * p1.dy,
+    ));
+  }
+  return out;
+}
+
+// ── Legend frame 1 — LAUNCH: drag toward the catcher; gravity bends the shot ──
+void _legendLaunch(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final w = size.width, h = size.height;
+  final cannon = Offset(w * 0.15, h * 0.82);
+  final target = Offset(w * 0.82, h * 0.24);
+  final well = Offset(w * 0.5, h * 0.62);
+
+  RicochetArt.well(canvas, well, w * 0.11, Potatuhs.airForce);
+  // Curved path bending around the well into the catcher.
+  final ctrl = Offset(w * 0.42, h * 0.20);
+  RicochetArt.path(canvas, _bezier(cannon, ctrl, target, 26));
+  RicochetArt.catcher(canvas, target, 22);
+  RicochetArt.cannon(canvas, cannon, atan2(ctrl.dy - cannon.dy, ctrl.dx - cannon.dx));
+}
+
+// ── Legend frame 2 — BANK: bounce off walls & asteroids; each bounce pays ────
+void _legendBank(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final w = size.width, h = size.height;
+  RicochetArt.walls(canvas, size);
+  final cannon = Offset(w * 0.14, h * 0.80);
+  final wall = Offset(w * 0.92, h * 0.42); // carom point on the right wall
+  final target = Offset(w * 0.30, h * 0.20);
+  final rock = Offset(w * 0.60, h * 0.60);
+
+  RicochetArt.asteroid(canvas, rock, w * 0.075, Potatuhs.copper);
+  // Path: cannon → right wall → up-left into the catcher (a 1-bank).
+  final up = _bezier(cannon, Offset(w * 0.75, h * 0.72), wall, 16);
+  final back = _bezier(wall, Offset(w * 0.62, h * 0.24), target, 16);
+  RicochetArt.path(canvas, [...up, ...back]);
+  // Bounce burst at the carom.
+  RicochetArt.planetlet(canvas, wall, bounces: 2);
+  RicochetArt.catcher(canvas, target, 22);
+  RicochetArt.cannon(canvas, cannon,
+      atan2(h * 0.72 - cannon.dy, w * 0.75 - cannon.dx));
+}
+
+// ── Legend frame 3 — BODIES: giants pull, asteroids only deflect ─────────────
+void _legendBodies(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final w = size.width, h = size.height;
+  RicochetArt.well(canvas, Offset(w * 0.30, h * 0.46), w * 0.13,
+      Potatuhs.sienna, giant: true, label: 'GIANT');
+  RicochetArt.asteroid(canvas, Offset(w * 0.74, h * 0.42), w * 0.07,
+      Potatuhs.copper, label: 'ROCK');
+  RicochetArt.planetlet(canvas, Offset(w * 0.52, h * 0.78), bounces: 1);
+}
+
+// ── Legend frame 4 — FIZZLE: a stalled shot dies; decay speeds up late ───────
+void _legendFizzle(Canvas canvas, Size size) {
+  if (size.width < 24 || size.height < 24) return;
+  final w = size.width, h = size.height;
+  final target = Offset(w * 0.80, h * 0.28);
+  // A dwindling comet arc that peters out short of the catcher.
+  final arc = _bezier(Offset(w * 0.16, h * 0.72), Offset(w * 0.42, h * 0.40),
+      Offset(w * 0.55, h * 0.52), 22);
+  for (int i = 0; i < arc.length; i++) {
+    final frac = i / arc.length;
+    canvas.drawCircle(
+      arc[i],
+      (2.4 - frac * 1.8).clamp(0.5, 2.4),
+      Paint()..color = Potatuhs.airForce.withValues(alpha: 0.5 * (1 - frac)),
+    );
+  }
+  // Fizzle puff at the stall point.
+  final stall = arc.last;
+  for (int i = 0; i < 6; i++) {
+    final a = i / 6 * 2 * pi;
+    canvas.drawCircle(stall + Offset(cos(a), sin(a)) * 8, 1.6,
+        Paint()..color = Potatuhs.glaucous.withValues(alpha: 0.35));
+  }
+  // The catcher it never reached — dimmed.
+  canvas.saveLayer(
+    Rect.fromCircle(center: target, radius: 40),
+    Paint()..color = Colors.white.withValues(alpha: 0.45),
+  );
+  RicochetArt.catcher(canvas, target, 20);
+  canvas.restore();
+}
+
+/// The visual manual for Ricochet — wired into the registry spec.
+final List<LegendFrame> orbitRicochetLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag toward the catcher — gravity bends the shot',
+      paint: _legendLaunch),
+  const LegendFrame(
+      caption: 'Bank off walls & asteroids: each bounce adds +55',
+      paint: _legendBank),
+  const LegendFrame(
+      caption: 'Giants pull your shot; asteroids only deflect it',
+      paint: _legendBodies),
+  const LegendFrame(
+      caption: 'Land the bank fast — stalled shots fizzle out',
+      paint: _legendFizzle),
+];

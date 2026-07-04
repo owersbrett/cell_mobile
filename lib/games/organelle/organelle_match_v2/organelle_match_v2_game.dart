@@ -317,12 +317,42 @@ class _OrganelleMatchV2GameState extends State<OrganelleMatchV2Game>
     _rebuildQueue();
     _loadNextQuestion();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer answers to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // ATTRACT autopilot
+  // ==========================================================================
+
+  /// One hands-free move per host tick. Plays Organelle Match v2 *correctly*,
+  /// not randomly — and works for BOTH question directions because the game
+  /// stores the winning option text in [_Item.correctOption] regardless of
+  /// whether it's asking clue→organelle (forward) or organelle→job (reverse).
+  /// While a question awaits an answer it taps that correct option through the
+  /// game's own [_onOptionTap] — promptly, so the speed bonus lands. During the
+  /// non-blocking reveal beat it does nothing: [_simulate] advances to the next
+  /// question automatically once [_revealTimer] elapses (there is no manual
+  /// skip). The host owns the clock and score HUD; the bot just banks real
+  /// points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_answerState == _AnswerState.waiting) {
+      // Answer with the correct option — right in either direction, no guessing.
+      _onOptionTap(_item.correctOption);
+    }
+    // else: reveal beat is showing; it auto-advances via _revealTimer.
   }
 
   // ==========================================================================
@@ -1099,3 +1129,299 @@ class _BgPainter extends CustomPainter {
   @override
   bool shouldRepaint(_BgPainter old) => true;
 }
+
+// ============================================================================
+// Visual manual — the legend carousel cards. These draw the LITERAL in-game
+// components (the option cards, the MATCH / RECALL mode chips, the streak
+// multiplier and OVERDRIVE badges) in the game's own palette, so the intro
+// carousel shows exactly what the player is about to meet. Static + cheap:
+// rendered once on the intro screen, never per-frame.
+// ============================================================================
+
+/// Paint centred multi-line text in the game's font. Guards nothing risky —
+/// callers guard the size.
+void _legendText(
+  Canvas canvas,
+  String s,
+  Offset c,
+  double fontSize,
+  Color color, {
+  FontWeight weight = FontWeight.w700,
+  double maxWidth = 400,
+  double letterSpacing = 0,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        color: color,
+        fontWeight: weight,
+        letterSpacing: letterSpacing,
+        height: 1.15,
+      ),
+    ),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+    maxLines: 3,
+  )..layout(maxWidth: maxWidth);
+  tp.paint(canvas, Offset(c.dx - tp.width / 2, c.dy - tp.height / 2));
+}
+
+/// A pill chip (mode chip / OVERDRIVE badge) exactly as the HUD draws them.
+void _legendChip(
+  Canvas canvas,
+  Offset center,
+  String label,
+  Color accent, {
+  double fontSize = 12,
+  double letterSpacing = 1.6,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: label,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        color: accent,
+        fontWeight: FontWeight.w800,
+        letterSpacing: letterSpacing,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final pillW = tp.width + 26;
+  final pillH = tp.height + 12;
+  final rect = Rect.fromCenter(center: center, width: pillW, height: pillH);
+  final rr = RRect.fromRectAndRadius(rect, Radius.circular(pillH / 2));
+  canvas.drawRRect(rr, Paint()..color = accent.withValues(alpha: 0.16));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = accent.withValues(alpha: 0.72),
+  );
+  tp.paint(canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
+}
+
+/// An option card exactly as the grid draws them (rounded rect, border, label).
+void _legendCard(
+  Canvas canvas,
+  Rect r,
+  String label,
+  Color borderColor, {
+  Color bg = _kCardBg,
+  Color textColor = _kTextPrimary,
+  double borderW = 1.6,
+  double fontSize = 14,
+}) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = bg);
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = borderW
+      ..color = borderColor,
+  );
+  _legendText(canvas, label, r.center, fontSize, textColor,
+      weight: FontWeight.w700, maxWidth: r.width - 14);
+}
+
+/// A short arrow (clue → answer) with a small head.
+void _legendArrow(Canvas canvas, Offset from, Offset to, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(from, to, p);
+  final dir = to - from;
+  final len = dir.distance;
+  if (len <= 0) return;
+  final u = dir / len;
+  final perp = Offset(-u.dy, u.dx);
+  canvas.drawLine(to, to - u * 8 + perp * 5, p);
+  canvas.drawLine(to, to - u * 8 - perp * 5, p);
+}
+
+// -- Frame 1: the core verb — read the clue, tap the matching organelle. ------
+void _legendMatchVerb(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+
+  _legendChip(canvas, Offset(w * 0.5, h * 0.11), 'MATCH', _kTeal);
+  _legendText(canvas, 'reads RNA to build proteins', Offset(w * 0.5, h * 0.26),
+      15, _kTextPrimary,
+      weight: FontWeight.w900, maxWidth: w * 0.82);
+
+  const names = ['Ribosome', 'Nucleus', 'Golgi', 'Lysosome'];
+  const correctIdx = 0;
+  final gap = w * 0.045;
+  final left = w * 0.09;
+  final gridTop = h * 0.40;
+  final gridH = h * 0.52;
+  final cardW = (w * 0.82 - gap) / 2;
+  final cardH = (gridH - gap) / 2;
+  for (var i = 0; i < 4; i++) {
+    final col = i % 2, row = i ~/ 2;
+    final r = Rect.fromLTWH(
+        left + col * (cardW + gap), gridTop + row * (cardH + gap), cardW, cardH);
+    final isCorrect = i == correctIdx;
+    _legendCard(
+      canvas,
+      r,
+      names[i],
+      isCorrect ? _kTeal : Color.lerp(_kCardBorder, _kTeal, 0.22)!,
+      bg: isCorrect ? _kTeal.withValues(alpha: 0.12) : _kCardBg,
+      textColor: isCorrect ? _kTeal : _kTextPrimary,
+      borderW: isCorrect ? 2.6 : 1.6,
+    );
+  }
+}
+
+// -- Frame 2: two directions — MATCH (clue→organelle), RECALL (organelle→job).
+void _legendTwoWays(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+
+  final cardW = w * 0.30;
+  final cardH = h * 0.13;
+
+  // MATCH row: clue → organelle.
+  _legendChip(canvas, Offset(w * 0.5, h * 0.11), 'MATCH', _kTeal);
+  _legendCard(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(w * 0.26, h * 0.30), width: cardW, height: cardH),
+    'clue',
+    Color.lerp(_kCardBorder, _kTeal, 0.22)!,
+    fontSize: 12,
+  );
+  _legendArrow(
+      canvas, Offset(w * 0.44, h * 0.30), Offset(w * 0.56, h * 0.30), _kTeal);
+  _legendCard(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(w * 0.74, h * 0.30), width: cardW, height: cardH),
+    'Nucleus',
+    _kTeal,
+    bg: _kTeal.withValues(alpha: 0.12),
+    textColor: _kTeal,
+    borderW: 2.2,
+    fontSize: 12,
+  );
+
+  // RECALL row: organelle → its job.
+  _legendChip(canvas, Offset(w * 0.5, h * 0.57), 'RECALL', _kGold);
+  _legendCard(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(w * 0.26, h * 0.76), width: cardW, height: cardH),
+    'Nucleus',
+    Color.lerp(_kCardBorder, _kGold, 0.22)!,
+    fontSize: 12,
+  );
+  _legendArrow(
+      canvas, Offset(w * 0.44, h * 0.76), Offset(w * 0.56, h * 0.76), _kGold);
+  _legendCard(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(w * 0.74, h * 0.76), width: cardW, height: cardH),
+    'its job',
+    _kGold,
+    bg: _kGold.withValues(alpha: 0.12),
+    textColor: _kGold,
+    borderW: 2.2,
+    fontSize: 12,
+  );
+}
+
+// -- Frame 3: score & danger — right builds the streak ×, wrong resets it. -----
+void _legendScore(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+
+  final cardW = w * 0.52;
+  final cardH = h * 0.17;
+
+  // Correct card (green) with the floating "+points" and gold streak badge.
+  _legendText(canvas, '+180  PERFECT', Offset(w * 0.5, h * 0.13), 18, _kGoodGreen,
+      weight: FontWeight.w900);
+  _legendCard(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(w * 0.5, h * 0.33), width: cardW, height: cardH),
+    'Ribosome',
+    _kGoodGreen.withValues(alpha: 0.9),
+    bg: _kGoodGreen.withValues(alpha: 0.12),
+    textColor: _kGoodGreen,
+    borderW: 2.2,
+    fontSize: 15,
+  );
+  _legendChip(canvas, Offset(w * 0.82, h * 0.33), '×3', _kGold, fontSize: 13,
+      letterSpacing: 0.5);
+
+  // Wrong card (red) — no points, streak resets.
+  _legendCard(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(w * 0.5, h * 0.72), width: cardW, height: cardH),
+    'Nucleus',
+    _kBadRed.withValues(alpha: 0.9),
+    bg: _kBadRed.withValues(alpha: 0.10),
+    textColor: _kBadRed,
+    borderW: 2.2,
+    fontSize: 15,
+  );
+  _legendText(canvas, 'miss → streak resets', Offset(w * 0.5, h * 0.90), 12,
+      _kTextSub,
+      weight: FontWeight.w600);
+}
+
+// -- Frame 4: the climax — final seconds go OVERDRIVE, fast = ×2, slow = zero. -
+void _legendOverdrive(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+
+  _legendChip(canvas, Offset(w * 0.5, h * 0.14), 'OVERDRIVE ×2', _kGold,
+      fontSize: 12, letterSpacing: 1.0);
+
+  _legendCard(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(w * 0.5, h * 0.42),
+        width: w * 0.56,
+        height: h * 0.17),
+    'Mitochondria',
+    _kGold,
+    bg: _kGold.withValues(alpha: 0.12),
+    textColor: _kGold,
+    borderW: 2.4,
+    fontSize: 15,
+  );
+
+  _legendText(canvas, 'FAST  →  ×2', Offset(w * 0.30, h * 0.72), 14,
+      _kGoodGreen,
+      weight: FontWeight.w800);
+  _legendText(canvas, 'SLOW  →  0', Offset(w * 0.72, h * 0.72), 14, _kBadRed,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Organelle Match v2 — wired into the registry spec.
+final List<LegendFrame> organelleMatchV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Read the clue, tap the organelle it names',
+      paint: _legendMatchVerb),
+  const LegendFrame(
+      caption: 'Play both ways: clue to organelle, organelle to job',
+      paint: _legendTwoWays),
+  const LegendFrame(
+      caption: 'Right builds a streak x; a miss resets it',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Final seconds go OVERDRIVE: fast x2, slow scores zero',
+      paint: _legendOverdrive),
+];

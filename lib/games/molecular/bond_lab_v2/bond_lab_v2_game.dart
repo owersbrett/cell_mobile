@@ -189,6 +189,201 @@ const List<_Pair> _pairs = [
   _Pair(7, 8, 'CuCl₂', 2), // Cu 1.90 — borderline metal → ionic
 ];
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME primitives the live
+// game uses (violet orbs + EN text, the EN ruler with the 2.0 divide, the bond
+// electrons and answer plates) so the intro shows the LITERAL bench, not a
+// diagram. Cheap + static: no ticker, no per-frame state.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One atom orb, exactly as `_paintAtom` renders it: violet orb, symbol, EN read
+/// — plus an optional charge badge (`+`/`−`/`δ±`) for the reveal frames.
+void _legendAtom(Canvas canvas, Offset c, _El el,
+    {double r = _kAtomR, String? badge, Color? badgeColor}) {
+  GameFx.orb(canvas, c, r, _kAccent, glow: 0.9);
+  GameFx.text(canvas, el.sym, c.translate(0, -2), r * 0.72, Colors.white,
+      weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, 'EN ${el.en.toStringAsFixed(2)}', c.translate(0, r + 14),
+      r * 0.38, Colors.white.withValues(alpha: 0.92),
+      weight: FontWeight.w700);
+  if (badge != null) {
+    final p = c.translate(r * 0.80, -r * 0.80);
+    canvas.drawCircle(p, 11, Paint()..color = badgeColor ?? _kElectron);
+    GameFx.text(canvas, badge, p, r * 0.40, Potatuhs.ink,
+        weight: FontWeight.w900);
+  }
+}
+
+/// The live EN axis (mirrors `_paintRuler`): the 2.0 metal/nonmetal divide and a
+/// dot for each atom's EN — reading the GAP is the whole game.
+void _legendRuler(Canvas canvas, Size size, double y, double en0, double en1) {
+  final x0 = size.width * 0.10, x1 = size.width * 0.90;
+  double px(double en) =>
+      x0 + (x1 - x0) * ((en - _kEnMin) / (_kEnMax - _kEnMin)).clamp(0.0, 1.0);
+  canvas.drawLine(Offset(x0, y), Offset(x1, y),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.22)
+        ..strokeWidth = 2);
+  final dx = px(_kMetalCutoff);
+  canvas.drawLine(Offset(dx, y - 12), Offset(dx, y + 12),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.5)
+        ..strokeWidth = 1.4);
+  GameFx.text(canvas, 'EN 2.0', Offset(dx, y - 22), 9,
+      Colors.white.withValues(alpha: 0.55));
+  GameFx.text(canvas, 'metal', Offset((x0 + dx) / 2, y + 22), 9,
+      _classColor(_Class.metallic).withValues(alpha: 0.7),
+      weight: FontWeight.w700);
+  GameFx.text(canvas, 'nonmetal', Offset((dx + x1) / 2, y + 22), 9,
+      _classColor(_Class.polar).withValues(alpha: 0.7),
+      weight: FontWeight.w700);
+  for (final en in [en0, en1]) {
+    final at = Offset(px(en), y);
+    canvas.drawCircle(
+        at, 6, Paint()..color = _kElectron.withValues(alpha: 0.9));
+    canvas.drawCircle(at, 6,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = Colors.white.withValues(alpha: 0.8));
+  }
+}
+
+/// A single shared/free electron, exactly as `_electron` draws it.
+void _legendElectron(Canvas canvas, Offset at) {
+  canvas.drawCircle(
+    at,
+    8,
+    Paint()
+      ..color = _kElectron.withValues(alpha: 0.4)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  canvas.drawCircle(at, 4, Paint()..color = _kElectron);
+  GameFx.text(canvas, '−', at, 9, Potatuhs.ink, weight: FontWeight.w900);
+}
+
+/// One answer plate, in the same style as the live 2×2 buttons — used to point
+/// at the correct call in a reveal frame.
+void _legendPlate(Canvas canvas, Rect r, _Class c, {bool correct = false}) {
+  final col = _classColor(c);
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.42));
+  if (correct) {
+    canvas.drawRRect(rr, Paint()..color = _kGood.withValues(alpha: 0.16));
+  }
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = (correct ? _kGood : col).withValues(alpha: correct ? 1.0 : 0.55),
+  );
+  GameFx.text(canvas, _className(c), r.center.translate(0, -7), 13, col,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, _classSub(c), r.center.translate(0, 11), 8,
+      Potatuhs.textSecondary, weight: FontWeight.w600);
+}
+
+// Frame 1 — the read: two atoms + the EN ruler (Na 0.93, Cl 3.16).
+void _legendReadFrame(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  _legendRuler(canvas, size, size.height * 0.24, _els[0].en, _els[8].en);
+  final y = size.height * 0.62;
+  _legendAtom(canvas, Offset(size.width * 0.30, y), _els[0]);
+  _legendAtom(canvas, Offset(size.width * 0.70, y), _els[8]);
+}
+
+// Frame 2 — score by classifying: metal + nonmetal → IONIC (an e− transfers).
+void _legendIonicFrame(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  final y = size.height * 0.34;
+  final l = Offset(size.width * 0.30, y), r = Offset(size.width * 0.70, y);
+  GameFx.glowLine(canvas, l, r, _kAccent.withValues(alpha: 0.5), width: 2);
+  _legendAtom(canvas, l, _els[0],
+      badge: '+', badgeColor: _classColor(_Class.ionic));
+  _legendAtom(canvas, r, _els[8], badge: '−', badgeColor: _kElectron);
+  _legendElectron(canvas, Offset.lerp(l, r, 0.66)!);
+  final pr = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.74),
+      width: (size.width * 0.56).clamp(120.0, 260.0),
+      height: 52);
+  _legendPlate(canvas, pr, _Class.ionic, correct: true);
+}
+
+// Frame 3 — the covalent split: two nonmetals SHARE, even = NONPOLAR (centred
+// pair), uneven = POLAR (pair pulled to the higher-EN atom, δ+/δ−).
+void _legendCovalentFrame(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  const r = 25.0;
+  // Top row: nonpolar — Cl₂, shared pair centred.
+  final yT = size.height * 0.28;
+  final lT = Offset(size.width * 0.32, yT), rT = Offset(size.width * 0.68, yT);
+  GameFx.glowLine(canvas, lT, rT, _kAccent.withValues(alpha: 0.45), width: 2);
+  _legendAtom(canvas, lT, _els[8], r: r);
+  _legendAtom(canvas, rT, _els[8], r: r);
+  _legendElectron(canvas, Offset.lerp(lT, rT, 0.5)!);
+  GameFx.text(canvas, 'NONPOLAR', Offset(size.width * 0.5, yT + r + 30), 11,
+      _classColor(_Class.nonpolar), weight: FontWeight.w800);
+  // Bottom row: polar — HCl, shared pair pulled toward Cl (δ−).
+  final yB = size.height * 0.68;
+  final lB = Offset(size.width * 0.32, yB), rB = Offset(size.width * 0.68, yB);
+  GameFx.glowLine(canvas, lB, rB, _kAccent.withValues(alpha: 0.45), width: 2);
+  _legendAtom(canvas, lB, _els[11],
+      r: r, badge: 'δ+', badgeColor: _classColor(_Class.ionic));
+  _legendAtom(canvas, rB, _els[8], r: r, badge: 'δ−', badgeColor: _kElectron);
+  _legendElectron(canvas, Offset.lerp(lB, rB, 0.66)!);
+  GameFx.text(canvas, 'POLAR', Offset(size.width * 0.5, yB + r + 30), 11,
+      _classColor(_Class.polar), weight: FontWeight.w800);
+}
+
+// Frame 4 — the trap: HF's huge gap LOOKS ionic, but both sit right of 2.0 so
+// nonmetals still SHARE — POLAR, never IONIC.
+void _legendTrapFrame(Canvas canvas, Size size) {
+  if (size.width < 40 || size.height < 40) return;
+  _legendRuler(canvas, size, size.height * 0.22, _els[11].en, _els[10].en);
+  final y = size.height * 0.52;
+  final l = Offset(size.width * 0.30, y), r = Offset(size.width * 0.70, y);
+  GameFx.glowLine(canvas, l, r, _kAccent.withValues(alpha: 0.45), width: 2);
+  _legendAtom(canvas, l, _els[11], badge: 'δ+', badgeColor: _classColor(_Class.ionic));
+  _legendAtom(canvas, r, _els[10], badge: 'δ−', badgeColor: _kElectron);
+  final w = (size.width * 0.40).clamp(90.0, 190.0);
+  _legendPlate(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(size.width * 0.28, size.height * 0.82),
+          width: w,
+          height: 50),
+      _Class.polar,
+      correct: true);
+  // Struck-out IONIC — the tempting wrong call.
+  final ir = Rect.fromCenter(
+      center: Offset(size.width * 0.72, size.height * 0.82),
+      width: w,
+      height: 50);
+  _legendPlate(canvas, ir, _Class.ionic);
+  canvas.drawLine(ir.topLeft, ir.bottomRight,
+      Paint()
+        ..color = _kBad.withValues(alpha: 0.85)
+        ..strokeWidth = 2.4
+        ..strokeCap = StrokeCap.round);
+}
+
+/// The visual manual for Bond Lab v2 — wired into the registry spec.
+final List<LegendFrame> bondLabV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Read each atom\'s EN: under 2.0 metal, over 2.0 nonmetal',
+      paint: _legendReadFrame),
+  const LegendFrame(
+      caption: 'Metal + nonmetal → tap IONIC as an electron transfers',
+      paint: _legendIonicFrame),
+  const LegendFrame(
+      caption: 'Two nonmetals share: even = NONPOLAR, uneven = POLAR',
+      paint: _legendCovalentFrame),
+  const LegendFrame(
+      caption: 'Trap: HF\'s huge gap still SHARES — POLAR, never IONIC',
+      paint: _legendTrapFrame),
+];
+
 // ── Game widget ─────────────────────────────────────────────────────────────
 class BondLabV2Game extends StatefulWidget {
   final MiniGameSession session;
@@ -227,12 +422,33 @@ class _BondLabV2GameState extends State<BondLabV2Game>
     super.initState();
     _pair = _pairs[_rng.nextInt(_pairs.length)];
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer to a human pace — a QUIZ game, so one classification per beat.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  /// One hands-free move per host tick. Plays Bond Lab v2 *correctly*, not
+  /// randomly: while a pair awaits an answer ([_transition] < 0) it reads the
+  /// electronegativity-derived class ([_Pair.cls]) and taps it through the
+  /// game's own [_choose] handler — always correct, deterministic. While a
+  /// result is resolving the game auto-advances to the next pair via its own
+  /// ticker ([_next]), so the bot simply waits. Host owns the clock/HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Resolving a previous answer — the ticker advances _next() on its own.
+    if (_transition >= 0) return;
+    // Awaiting input: answer with the EN-rule-correct bond class.
+    _choose(_pair.cls);
   }
 
   void _onTick(Duration now) {

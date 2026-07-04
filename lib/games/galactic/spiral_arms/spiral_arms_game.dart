@@ -74,6 +74,307 @@ const _kGood = Color(0xFF69F0AE);
 const _kBad = Color(0xFFFF6E6E);
 const _kWhite = Colors.white;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Static, cheap, drawn statically in
+// the pre-game intro. They redraw the LITERAL galaxy the player meets, using the
+// game's own palette + crisp-vs-sheared thesis (display = lerp(orbit, crisp,
+// coherence)) so the card shows exactly what "crisp arms" vs "a smear" mean.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legendText(
+  Canvas canvas,
+  String text,
+  Offset at, {
+  required double size,
+  required Color color,
+  bool bold = true,
+  bool leftAlign = false,
+  bool rightAlign = false,
+  Color? glow,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: size,
+        fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+        letterSpacing: 1.0,
+        color: color,
+        shadows: glow != null ? [Shadow(color: glow, blurRadius: 12)] : null,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final dx = rightAlign
+      ? at.dx - tp.width
+      : (leftAlign ? at.dx : at.dx - tp.width / 2);
+  tp.paint(canvas, Offset(dx, at.dy - tp.height / 2));
+}
+
+class _LegendStar {
+  final double r; // 0–1 radius fraction
+  final double jitter; // spread around the arm spine
+  final int arm;
+  final double brightness;
+  final bool blue;
+  const _LegendStar(this.r, this.jitter, this.arm, this.brightness, this.blue);
+}
+
+/// Deterministic star set for a legend disk (fewer than live play — static).
+List<_LegendStar> _legendStars(int arms, [int count = 90]) {
+  final rng = math.Random(11);
+  final out = <_LegendStar>[];
+  for (var i = 0; i < count; i++) {
+    final r = 0.16 + 0.82 * math.sqrt(rng.nextDouble());
+    final arm = rng.nextInt(arms);
+    final jitter = (rng.nextDouble() - 0.5) * 0.55;
+    out.add(_LegendStar(
+        r, jitter, arm, 0.45 + rng.nextDouble() * 0.55, rng.nextDouble() < 0.28));
+  }
+  return out;
+}
+
+/// The void backdrop + a faint deterministic star scatter (game background).
+void _legendVoid(Canvas canvas, Size size) {
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kVoid);
+  final w = math.max(1, size.width.toInt());
+  final h = math.max(1, size.height.toInt());
+  final bg = Paint();
+  for (var i = 0; i < 46; i++) {
+    final a = 0.10 + 0.16 * ((i * 31 % 100) / 100.0);
+    bg.color = _kWhite.withValues(alpha: a);
+    canvas.drawCircle(Offset((i * 73 % w).toDouble(), (i * 137 % h).toDouble()),
+        i.isEven ? 0.8 : 1.3, bg);
+  }
+}
+
+/// Draws one galaxy: disk glow, arm spines (only while coherent), stars whose
+/// position lerps between the SHEARED orbit and the CRISP wave by [coherence],
+/// and the bright core — the same physics the live painter renders.
+void _legendGalaxy(
+  Canvas canvas,
+  Offset center,
+  double diskR, {
+  required int arms,
+  required double coherence,
+  double patternPhase = 0.7,
+  double shear = 3.2,
+}) {
+  if (diskR <= 1) return;
+
+  // Faint disk halo.
+  canvas.drawCircle(
+    center,
+    diskR,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        _kAccent.withValues(alpha: 0.06),
+        _kAccent.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: center, radius: diskR)),
+  );
+
+  // Arm spines glow only while the wave is coherent — the density wave itself.
+  final glow = (coherence - 0.1).clamp(0.0, 1.0);
+  if (glow > 0.01) {
+    for (var arm = 0; arm < arms; arm++) {
+      final path = Path();
+      final armBase = arm * (2 * math.pi / arms);
+      var first = true;
+      for (double r = 0.16; r <= 1.0; r += 0.05) {
+        final ang = patternPhase + armBase - _kWind * r;
+        final p = center + Offset(math.cos(ang), math.sin(ang)) * (diskR * r);
+        if (first) {
+          path.moveTo(p.dx, p.dy);
+          first = false;
+        } else {
+          path.lineTo(p.dx, p.dy);
+        }
+      }
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 12
+          ..strokeCap = StrokeCap.round
+          ..color = _kArmHot.withValues(alpha: 0.12 * glow)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+      );
+    }
+  }
+
+  // Stars: display = lerp(sheared orbit, crisp wave) by coherence.
+  final dot = Paint();
+  for (final s in _legendStars(arms)) {
+    final armBase = s.arm * (2 * math.pi / arms);
+    final crisp = patternPhase + armBase - _kWind * s.r + s.jitter;
+    // Sheared: inner stars (small r) wound much further — differential rotation.
+    final orbit = crisp + shear / (_kOmegaSoft + s.r);
+    final rad = diskR * s.r;
+    final orbitP = Offset(math.cos(orbit), math.sin(orbit)) * rad;
+    final crispP = Offset(math.cos(crisp), math.sin(crisp)) * rad;
+    final pos = center + Offset.lerp(orbitP, crispP, coherence)!;
+
+    final base = s.blue ? _kArmCool : _kArmHot;
+    final col = Color.lerp(base, _kWhite, 0.25 + 0.35 * coherence)!;
+    final rr = (1.1 + 1.7 * s.brightness) * (1.0 + 0.5 * coherence);
+    final alpha = (s.brightness * (0.55 + 0.45 * coherence)).clamp(0.0, 1.0);
+    dot.color = col.withValues(alpha: alpha);
+    canvas.drawCircle(pos, rr, dot);
+  }
+
+  // Core.
+  canvas.drawCircle(
+    center,
+    diskR * 0.30,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        _kCore.withValues(alpha: 0.85),
+        _kArmHot.withValues(alpha: 0.20),
+        _kArmHot.withValues(alpha: 0.0),
+      ], stops: const [
+        0.0,
+        0.4,
+        1.0
+      ]).createShader(Rect.fromCircle(center: center, radius: diskR * 0.30)),
+  );
+  canvas.drawCircle(center, diskR * 0.05, Paint()..color = _kWhite);
+}
+
+/// The incoming/target beat rings (the timing tell the player pulses on).
+void _legendBeatRing(Canvas canvas, Offset center, double diskR,
+    {double beatPhase = 0.86, bool onBeat = true}) {
+  final targetR = diskR * 1.18;
+  final outerR = diskR * 1.62;
+  canvas.drawCircle(
+    center,
+    targetR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = onBeat ? 3.0 : 1.6
+      ..color =
+          (onBeat ? _kGood : _kAccent).withValues(alpha: onBeat ? 0.9 : 0.4),
+  );
+  final incomingR = outerR + (targetR - outerR) * beatPhase;
+  canvas.drawCircle(
+    center,
+    incomingR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = _kWhite.withValues(alpha: 0.55 + 0.35 * beatPhase),
+  );
+}
+
+/// The coherence HUD bar (same colors/states as the live game top bar).
+void _legendCoherenceBar(Canvas canvas, Size size, double coherence) {
+  const pad = 22.0;
+  final top = size.height * 0.10;
+  final w = size.width - pad * 2;
+  if (w <= 4) return;
+  const h = 12.0;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(pad, top, w, h), const Radius.circular(6)),
+    Paint()..color = _kWhite.withValues(alpha: 0.08),
+  );
+  final fillW = (w * coherence).clamp(0.0, w);
+  final crisp = coherence > 0.66;
+  final mid = coherence > 0.33;
+  final fillColor = crisp ? _kGood : (mid ? _kAccent : _kBad);
+  if (fillW > 2) {
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(pad, top, fillW, h), const Radius.circular(6)),
+      Paint()..color = fillColor.withValues(alpha: 0.9),
+    );
+  }
+  final state = crisp ? 'CRISP' : (mid ? 'SHEARING' : 'SMEARING');
+  _legendText(canvas, 'ARM COHERENCE', Offset(pad + 2, top + h + 10),
+      size: 9, color: _kWhite.withValues(alpha: 0.55), leftAlign: true);
+  _legendText(canvas, state, Offset(size.width - pad - 2, top + h + 10),
+      size: 9, color: fillColor, rightAlign: true);
+}
+
+// ── Frame 1 · the core object + the verb ────────────────────────────────────
+void _legendPulse(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size);
+  final center = Offset(size.width / 2, size.height * 0.48);
+  final diskR = math.min(size.width, size.height) * 0.30;
+  _legendGalaxy(canvas, center, diskR, arms: 2, coherence: 0.92);
+  _legendBeatRing(canvas, center, diskR, beatPhase: 0.86, onBeat: true);
+  _legendText(canvas, 'PULSE ON THE BEAT',
+      Offset(center.dx, center.dy + diskR * 1.6),
+      size: 11, color: _kAccent.withValues(alpha: 0.85));
+}
+
+// ── Frame 2 · how to score ──────────────────────────────────────────────────
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size);
+  final center = Offset(size.width / 2, size.height * 0.56);
+  final diskR = math.min(size.width, size.height) * 0.27;
+  _legendGalaxy(canvas, center, diskR, arms: 2, coherence: 0.95);
+  _legendCoherenceBar(canvas, size, 0.95);
+  _legendText(canvas, 'PERFECT  +18',
+      Offset(center.dx, center.dy - diskR * 1.25),
+      size: 18, color: _kGood, glow: _kGood.withValues(alpha: 0.7));
+  _legendText(canvas, '×3.0  · 12 streak',
+      Offset(center.dx, center.dy + diskR * 1.45),
+      size: 12, color: _kGood);
+}
+
+// ── Frame 3 · the danger ────────────────────────────────────────────────────
+void _legendSmear(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size);
+  final center = Offset(size.width / 2, size.height * 0.56);
+  final diskR = math.min(size.width, size.height) * 0.30;
+  _legendGalaxy(canvas, center, diskR, arms: 2, coherence: 0.12, shear: 5.5);
+  // Red bleed — the game's missed-beat flash.
+  canvas.drawRect(
+      Offset.zero & size, Paint()..color = _kBad.withValues(alpha: 0.10));
+  _legendCoherenceBar(canvas, size, 0.14);
+  _legendText(canvas, 'off-beat', Offset(center.dx, center.dy - diskR * 1.25),
+      size: 15, color: _kBad);
+}
+
+// ── Frame 4 · the escalation ────────────────────────────────────────────────
+void _legendLevels(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendVoid(canvas, size);
+  final cy = size.height * 0.44;
+  final xs = [size.width * 0.22, size.width * 0.5, size.width * 0.78];
+  const arms = [2, 3, 4];
+  final r = math.min(size.width * 0.15, size.height * 0.19);
+  for (var i = 0; i < 3; i++) {
+    _legendGalaxy(canvas, Offset(xs[i], cy), r,
+        arms: arms[i], coherence: 0.9, patternPhase: 0.5 + i);
+    _legendText(canvas, '${arms[i]} ARMS', Offset(xs[i], cy + r * 1.55),
+        size: 11, color: _kAccent);
+  }
+  _legendText(canvas, 'FASTER SPIN · TIGHTER BEAT',
+      Offset(size.width / 2, size.height * 0.85),
+      size: 11, color: _kWhite.withValues(alpha: 0.7));
+}
+
+/// The visual manual for Spiral Arms — wired into the registry spec.
+final List<LegendFrame> spiralArmsLegendFrames = [
+  const LegendFrame(
+      caption: "Tap on the beat to pulse the galaxy's spiral wave",
+      paint: _legendPulse),
+  const LegendFrame(
+      caption: 'Crisp arms score every second — chain on-beat pulses',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Miss the beat and the arms shear into a smear',
+      paint: _legendSmear),
+  const LegendFrame(
+      caption: 'Levels add arms (2 to 4) and tighten the beat',
+      paint: _legendLevels),
+];
+
 /// "Spiral Arms" — pulse on the beat to reinforce the galaxy's density wave and
 /// keep its spiral arms crisp while differential rotation tries to shear them
 /// into a featureless smear.
@@ -134,12 +435,61 @@ class _SpiralArmsGameState extends State<SpiralArmsGame>
     super.initState();
     _buildStars(_armsForLevel);
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself on the beat.
+    // Registered always (harmless in normal play — the host only calls it in
+    // autoplay). See [_autoStep]. Rhythm game → default cadence (every ~250ms
+    // tick) so the bot can act on every beat.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free pulse per host tick (~250ms), on the beat — never off it.
+  ///
+  /// The beat ring shrinks continuously ([_beatPhase] 0→1 each beat, advancing
+  /// at 1/[_beatPeriod] per second); the hit point is the wrap boundary and
+  /// [_beatError] is the distance to it (0 = perfect). Because the host only
+  /// polls every ~250ms while the ring keeps moving, we don't just "pulse if
+  /// on target now" — we look ONE tick ahead and fire at the local minimum of
+  /// the beat error (the ring's closest approach to the target ring):
+  ///
+  ///   • Only ever fire when firing NOW already scores — i.e. the current error
+  ///     is inside the on-beat window ([_hitWindow]). Tapping outside it is an
+  ///     off-beat penalty that resets the streak, so we never do it.
+  ///   • Predict the error one tick ahead ([_beatPhase] + rate·0.25, wrapped).
+  ///     If a tighter (closer-to-beat) tick is still ahead we wait for it; we
+  ///     fire only when NOW is at least as close as NEXT — the local minimum.
+  ///
+  /// [_handleTap] flips [_beatScored], so extra ticks in the same beat no-op:
+  /// exactly one on-beat pulse is banked per beat. Deterministic; no taps.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_beatScored) return; // already banked this beat — nothing to do.
+
+    // The host drives this on ~250ms cadence; look exactly one window ahead.
+    const window = 0.25;
+    final rate = 1.0 / _beatPeriod; // beatPhase advances this much per second.
+
+    final nowErr = _beatError;
+    // Off-beat would reset the streak — only pulse when NOW already scores.
+    if (nowErr > _hitWindow) return;
+
+    // Predict the beat error one tick ahead (wrap into the next beat if needed).
+    final nextPhase = _beatPhase + rate * window;
+    final wrapped = nextPhase - nextPhase.floorToDouble(); // 0..1
+    final nextErr = math.min(wrapped, 1.0 - wrapped);
+
+    // A tighter tick is still ahead → wait for the local minimum rather than
+    // pulse early. Fire only when NOW is at least as close as NEXT.
+    if (nextErr < nowErr) return;
+
+    _handleTap();
   }
 
   // ── Star field ────────────────────────────────────────────────────────────

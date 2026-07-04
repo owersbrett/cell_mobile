@@ -112,7 +112,7 @@ class VIPotatoService {
   static FirebaseFirestore get _db => FirebaseFirestore.instance;
   static String? get _uid => FirebaseAuth.instance.currentUser?.uid;
 
-  /// The current user's equipped avatar, kept live so the splash corner and the
+  /// The current user's equipped avatar, kept live so the home corner and the
   /// account sheet both reflect a freshly-built potato. Updated by
   /// [loadEquipped] and [saveAndEquip].
   static final ValueNotifier<VIPotatoConfig?> equipped =

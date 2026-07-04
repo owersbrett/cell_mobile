@@ -20,20 +20,20 @@ import '../maps/map_preview.dart';
 import '../maps/ops.dart';
 import '../party_models.dart';
 
-/// PLAY entry. Host a room (you get a code) or join one with a code; both put a
+/// PARTY entry. Host a room (you get a code) or join one with a code; both put a
 /// live [PartyNet] into [PartySession] and drop into the networked board once
 /// the host starts. A local pass-and-play fallback is always available (and is
 /// the only option if Firebase/anonymous-auth isn't reachable).
-class PlayLobbyPage extends StatefulWidget {
-  const PlayLobbyPage({Key? key}) : super(key: key);
+class PartyLobbyPage extends StatefulWidget {
+  const PartyLobbyPage({Key? key}) : super(key: key);
 
   @override
-  State<PlayLobbyPage> createState() => _PlayLobbyPageState();
+  State<PartyLobbyPage> createState() => _PartyLobbyPageState();
 }
 
 enum _LobbyStage { choose, room }
 
-class _PlayLobbyPageState extends State<PlayLobbyPage> {
+class _PartyLobbyPageState extends State<PartyLobbyPage> {
   // Created lazily only once Firebase is ready — never in a field initializer,
   // so building the lobby can't crash when Firebase isn't initialized.
   PartyTransport? _transport;
@@ -48,6 +48,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
   // host-a-room opens pre-set to that size. Still changeable via _modeToggle.
   PartyMode _mode = PlayConfig.partyMode;
   String _mapId = kDefaultMapId; // board chosen on the host card
+  int _rounds = kPartyRoundCounts.first; // match length chosen on the host card
   String? _error;
   bool _busy = false;
 
@@ -114,7 +115,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
         uid: _uid!,
         name: name,
         mode: _mode,
-        rounds: 7, // a match ends on the 7th-round BOSS showdown
+        rounds: _rounds, // WEEK/MOON/SEASON — ends on the final BOSS round
         mapId: _mapId,
       );
       PartySession.active = net;
@@ -183,7 +184,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
   }
 
   void _back() =>
-      context.read<NavigationBloc>().add(NavigateToScreen(AppScreen.splash));
+      context.read<NavigationBloc>().add(NavigateToScreen(AppScreen.home));
 
   @override
   Widget build(BuildContext context) {
@@ -192,7 +193,22 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: _stage == _LobbyStage.room ? _buildRoom() : _buildChoose(),
+          // Scroll-safe: the Spacer-driven Columns below distribute slack on a
+          // tall screen, but on a short viewport the content would overflow the
+          // bottom — so wrap in a scroll view sized to at least the viewport,
+          // letting IntrinsicHeight keep the Spacers working when there's room
+          // and letting it scroll when there isn't.
+          child: LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: IntrinsicHeight(
+                  child:
+                      _stage == _LobbyStage.room ? _buildRoom() : _buildChoose(),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -208,7 +224,7 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
         const SizedBox(height: 8),
         Row(children: [_backButton(_back), const Spacer()]),
         const Spacer(flex: 2),
-        Center(child: Text('PLAY', style: Potatuhs.display(size: 44))),
+        Center(child: Text('PARTY', style: Potatuhs.display(size: 44))),
         const SizedBox(height: 6),
         Center(
           child: Text('Host a room, or join a friend',
@@ -227,6 +243,8 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
               _modeToggle(),
               const SizedBox(height: 12),
               _mapPicker(),
+              const SizedBox(height: 12),
+              _roundsPicker(),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
@@ -568,6 +586,64 @@ class _PlayLobbyPageState extends State<PlayLobbyPage> {
               ),
             );
           }).toList(),
+        ),
+      ],
+    );
+  }
+
+  /// Host-card match-length chooser — WEEK · 7 / MOON · 28 / SEASON · 90. Shared
+  /// option list with the local setup screen ([kPartyRoundCounts]).
+  Widget _roundsPicker() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('LENGTH', style: Potatuhs.label(color: Potatuhs.textFaint)),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            for (var i = 0; i < kPartyRoundCounts.length; i++)
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => setState(() => _rounds = kPartyRoundCounts[i]),
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      color: _rounds == kPartyRoundCounts[i]
+                          ? Potatuhs.gold.withValues(alpha: 0.18)
+                          : null,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: _rounds == kPartyRoundCounts[i]
+                              ? Potatuhs.gold
+                              : Colors.white24,
+                          width: 1.5),
+                    ),
+                    child: Column(
+                      children: [
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            kPartyRoundLabels[i],
+                            style: Potatuhs.body(
+                                size: 11,
+                                weight: FontWeight.w700,
+                                color: _rounds == kPartyRoundCounts[i]
+                                    ? Potatuhs.gold
+                                    : Potatuhs.textFaint),
+                          ),
+                        ),
+                        Text(
+                          '${kPartyRoundCounts[i]}',
+                          style: Potatuhs.body(
+                              size: 10, color: Potatuhs.textFaint),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
       ],
     );

@@ -89,12 +89,75 @@ class _BubblesGameState extends State<BubblesGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: the game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Bubbles *correctly*, not
+  /// randomly: it reads the live field and takes the single highest-value legal
+  /// action via the game's own handlers.
+  ///   1. HARVEST the ripest mature bubble — the largest ripe bubble is worth
+  ///      the most points AND is the closest to colliding (it has grown the
+  ///      furthest), so harvesting it both banks score and defuses the biggest
+  ///      collision risk in one move.
+  ///   2. Otherwise, if the sea is sparse and there is a comfortably clear spot,
+  ///      NUCLEATE there so a future harvest can ripen — using the same
+  ///      openness heuristic the game uses, but on a deterministic grid.
+  ///   3. Otherwise do nothing — never force a nucleation into a crowded field,
+  ///      which the game penalizes with a spoil-collision.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_field == Size.zero) return;
+
+    // 1) Harvest the ripest (largest-radius) mature bubble.
+    _Bubble? ripest;
+    for (final b in _bubbles) {
+      if (!b.alive || !b.mature) continue;
+      if (ripest == null || b.radius > ripest.radius) ripest = b;
+    }
+    if (ripest != null) {
+      _harvest(ripest);
+      return;
+    }
+
+    // 2) Nothing ripe — nucleate only when the sea is sparse enough that a new
+    // bubble can ripen without an immediate collision.
+    final aliveCount = _bubbles.where((b) => b.alive).length;
+    if (aliveCount >= _kMaxBubbles ~/ 3) return;
+
+    // Deterministic grid scan for the openest spot (analog of the game's own
+    // farthest-from-neighbours nucleation, without _rng).
+    Offset? spot;
+    double bestClear = 0;
+    const cols = 5, rows = 4;
+    for (var gx = 1; gx <= cols; gx++) {
+      for (var gy = 1; gy <= rows; gy++) {
+        final cand = Offset(
+          _field.width * gx / (cols + 1),
+          _field.height * gy / (rows + 1),
+        );
+        final clear = _nearestEdgeDist(cand);
+        if (clear > bestClear) {
+          bestClear = clear;
+          spot = cand;
+        }
+      }
+    }
+    // Require room for the new bubble to grow to maturity before overlapping a
+    // neighbour, so the autopilot never induces a penalized collision.
+    if (spot != null && bestClear > _kStartRadius + _kMaturityRadius) {
+      _nucleate(spontaneous: false, at: spot);
+    }
   }
 
   double get _ramp {
@@ -508,3 +571,201 @@ class _BubblesPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BubblesPainter oldDelegate) => true;
 }
+
+// ============================================================================
+// Visual manual — legend carousel cards, drawn with the game's REAL bubble
+// rendering (same glow / membrane / rim / ripe-pip treatment as live play).
+// Static and cheap: painted once on the intro screen, never per-frame.
+// ============================================================================
+
+/// One bubble universe, exactly as `_BubblesPainter._paintBubble` renders it,
+/// frozen at a fixed wobble/pulse phase so the legend card is static.
+void _legendBubble(Canvas canvas, Offset c, double r, {bool ripe = false}) {
+  final core = ripe ? _kMatureA : _kAccent;
+
+  // Soft glow halo.
+  canvas.drawCircle(
+    c,
+    r + (ripe ? 8 : 4),
+    Paint()
+      ..color = core.withValues(alpha: ripe ? 0.32 : 0.16)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+  );
+
+  // Translucent membrane body.
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.45),
+        colors: [
+          core.withValues(alpha: 0.34),
+          core.withValues(alpha: 0.10),
+          (ripe ? _kMatureB : _kIndigo).withValues(alpha: 0.04),
+        ],
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(Rect.fromCircle(center: c, radius: r)),
+  );
+
+  // Membrane rim (ripe rim is thicker + brighter, like the live pulse peak).
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = ripe ? 2.4 : 1.4
+      ..color = core.withValues(alpha: ripe ? 0.95 : 0.6),
+  );
+
+  // Specular highlight.
+  canvas.drawCircle(
+    c.translate(-r * 0.34, -r * 0.36),
+    r * 0.18,
+    Paint()..color = Colors.white.withValues(alpha: 0.45),
+  );
+
+  // Ripe marker pip — the "harvest me" signal.
+  if (ripe) {
+    canvas.drawCircle(
+        c, 3.2, Paint()..color = _kMatureA.withValues(alpha: 0.9));
+  }
+}
+
+/// A tap cue: fingertip dot + two expanding rings, in the game accent.
+void _legendTapCue(Canvas canvas, Offset c, Color color) {
+  canvas.drawCircle(c, 4, Paint()..color = color.withValues(alpha: 0.95));
+  final ring = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2
+    ..color = color.withValues(alpha: 0.7);
+  canvas.drawCircle(c, 10, ring);
+  ring.color = color.withValues(alpha: 0.35);
+  canvas.drawCircle(c, 16, ring);
+}
+
+/// Faint concentric inflation rings — the false-vacuum sea backdrop.
+void _legendRings(Canvas canvas, Size size, {double strength = 0.10}) {
+  final c = size.center(Offset.zero);
+  final maxR = size.longestSide * 0.75;
+  final paint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.4;
+  for (var i = 0; i < 4; i++) {
+    final phase = 0.18 + i * 0.22;
+    paint.color = _kIndigo.withValues(alpha: (1 - phase) * strength);
+    canvas.drawCircle(c, phase * maxR, paint);
+  }
+}
+
+// Card 1 — the verb: tap the empty void, a bubble universe nucleates.
+void _legendNucleate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendRings(canvas, size);
+  final c = Offset(size.width * 0.5, size.height * 0.46);
+  _legendBubble(canvas, c, _kStartRadius + 4);
+  _legendTapCue(canvas, c.translate(0, 30), _kAccent);
+  GameFx.text(canvas, 'NUCLEATE', Offset(size.width * 0.5, size.height * 0.85),
+      11, _kAccent,
+      weight: FontWeight.w800);
+}
+
+// Card 2 — how to score: let it inflate to gold, tap the ripe bubble.
+void _legendHarvest(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendRings(canvas, size);
+  final cy = size.height * 0.44;
+  _legendBubble(canvas, Offset(size.width * 0.22, cy), _kStartRadius + 4);
+
+  // Growth arrow: young violet bubble → ripe gold bubble.
+  final arrow = Paint()
+    ..color = Potatuhs.textSecondary
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  final ax0 = size.width * 0.36, ax1 = size.width * 0.50;
+  canvas.drawLine(Offset(ax0, cy), Offset(ax1, cy), arrow);
+  canvas.drawLine(Offset(ax1 - 7, cy - 6), Offset(ax1, cy), arrow);
+  canvas.drawLine(Offset(ax1 - 7, cy + 6), Offset(ax1, cy), arrow);
+
+  final ripeC = Offset(size.width * 0.72, cy);
+  _legendBubble(canvas, ripeC, _kMaturityRadius, ripe: true);
+  _legendTapCue(canvas, ripeC.translate(0, _kMaturityRadius + 16), _kMatureA);
+  GameFx.text(canvas, '+10', ripeC.translate(0, -_kMaturityRadius - 14), 13,
+      _kGood,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'RIPE = GOLD',
+      Offset(size.width * 0.5, size.height * 0.88), 11, _kMatureA,
+      weight: FontWeight.w800);
+}
+
+// Card 3 — the danger: bubbles that grow into each other spoil.
+void _legendCollide(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendRings(canvas, size);
+  final cy = size.height * 0.46;
+  final a = Offset(size.width * 0.38, cy);
+  final b = Offset(size.width * 0.62, cy);
+  _legendBubble(canvas, a, size.width * 0.135);
+  _legendBubble(canvas, b, size.width * 0.135);
+
+  // The spoil flash at the overlap — same red crack ring as a live collision.
+  final hit = Offset(size.width * 0.5, cy);
+  canvas.drawCircle(
+    hit,
+    size.width * 0.085,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = _kSpoil.withValues(alpha: 0.9),
+  );
+  canvas.drawCircle(hit, size.width * 0.055,
+      Paint()..color = _kSpoil.withValues(alpha: 0.25));
+  GameFx.text(canvas, 'COLLIDED', hit.translate(0, -size.width * 0.15), 12,
+      _kSpoil,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'both lost · streak resets',
+      Offset(size.width * 0.5, size.height * 0.86), 11, Potatuhs.textSecondary);
+}
+
+// Card 4 — the escalation: the vacuum churns faster; the sea is never tamed.
+void _legendInflation(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legendRings(canvas, size, strength: 0.22);
+  const spots = [
+    Offset(0.20, 0.30),
+    Offset(0.52, 0.22),
+    Offset(0.80, 0.38),
+    Offset(0.32, 0.60),
+    Offset(0.66, 0.66),
+    Offset(0.14, 0.78),
+    Offset(0.86, 0.74),
+  ];
+  const radii = [0.055, 0.045, 0.075, 0.09, 0.05, 0.04, 0.06];
+  for (var i = 0; i < spots.length; i++) {
+    _legendBubble(
+      canvas,
+      Offset(size.width * spots[i].dx, size.height * spots[i].dy),
+      size.width * radii[i],
+      ripe: i == 3,
+    );
+  }
+  GameFx.text(canvas, 'FASTER · FASTER',
+      Offset(size.width * 0.5, size.height * 0.90), 11, _kIndigo,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Bubbles — wired into the registry spec.
+final List<LegendFrame> bubblesLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the empty void to nucleate a bubble universe',
+      paint: _legendNucleate),
+  const LegendFrame(
+      caption: 'Let it inflate gold, then tap to harvest points',
+      paint: _legendHarvest),
+  const LegendFrame(
+      caption: 'Keep bubbles apart — touching pairs spoil, 0 pts',
+      paint: _legendCollide),
+  const LegendFrame(
+      caption: 'The sea inflates ever faster — you can\'t fill it',
+      paint: _legendInflation),
+];

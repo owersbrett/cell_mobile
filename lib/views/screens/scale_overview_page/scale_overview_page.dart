@@ -269,7 +269,7 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                     GestureDetector(
                       onTap: () => context
                           .read<NavigationBloc>()
-                          .add(NavigateToScreen(AppScreen.splash)),
+                          .add(NavigateToScreen(AppScreen.home)),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 10),

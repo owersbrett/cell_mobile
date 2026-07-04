@@ -53,6 +53,11 @@ const double _kDriftMax = 0.35;
 // At level 4+ the target itself slowly drifts along the scale (moving goal).
 const double _kTargetDrift = 0.18; // pH/s
 
+// ATTRACT autopilot cadence — the host calls the hook roughly this often
+// (seconds). Used to look one tick ahead so the acidifying drift is corrected
+// before it pushes the needle out the bottom of the band.
+const double _kAutoTick = 0.25;
+
 // Scoring.
 const int _kHitBase = 40; // points for landing & holding a target
 const int _kHitBonus = 30; // extra, scaled by how centered the land was
@@ -155,13 +160,40 @@ class _PhBalanceGameState extends State<PhBalanceGame>
     for (var i = 0; i < 7; i++) {
       _bubbles.add(_Bubble.random(_rng));
     }
+    // ATTRACT autopilot: this game knows how to titrate itself. Registered
+    // always (harmless in normal play — the host only calls it in autoplay).
+    // See [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Titrates pH Balance
+  /// *correctly*, not randomly: it reads the current needle, projects it one
+  /// tick ahead by the acidifying drift, and adds a single ACID or BASE drop
+  /// to steer toward the target band. Once the needle is inside the band it
+  /// does NOTHING — so it never overshoots the neutralization spike past the
+  /// target. Holding in-band is passive (scored in [_onTick]); there is no
+  /// separate lock to call. The host owns the clock, so the round still ends
+  /// on time; the bot just banks real hold points until it does.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Where the needle will sit next tick: the passive drift acidifies (lowers)
+    // the pH, so project it downward by one tick's worth.
+    final projected = _ph - _driftRate * _kAutoTick;
+    if (projected > _target + _tol) {
+      _addDrop(true); // above the band → ACID lowers pH toward it
+    } else if (projected < _target - _tol) {
+      _addDrop(false); // below the band → BASE raises pH toward it
+    }
+    // In-band → hold: do nothing so we don't sling past the target.
   }
 
   void _onTick(Duration elapsed) {
@@ -584,14 +616,14 @@ class _PhPainter extends CustomPainter {
     canvas.drawRect(Offset.zero & size, Paint()..color = _kInk);
     _paintGrid(canvas, size);
 
-    final mainTop = _hudH + 8;
+    const mainTop = _hudH + 8;
     final mainBottom = size.height - _btnReserve;
 
     // pH scale strip on the right.
     const stripW = 42.0;
     final stripRight = size.width - 14;
     final stripLeft = stripRight - stripW;
-    final stripTop = mainTop + 10;
+    const stripTop = mainTop + 10;
     final stripBottom = mainBottom - 6;
     _paintScale(canvas, stripLeft, stripTop, stripW, stripBottom - stripTop);
 
@@ -810,7 +842,7 @@ class _PhPainter extends CustomPainter {
   // ── HUD ───────────────────────────────────────────────────────────────────
   void _paintHud(Canvas canvas, Size size) {
     // Level badge (left).
-    _badge(canvas, Offset(16, 14), 'LV $level', _kAccent);
+    _badge(canvas, const Offset(16, 14), 'LV $level', _kAccent);
     // Streak badge (right) when active.
     if (streak > 1) {
       _badge(canvas, Offset(size.width - 92, 14), 'STREAK $streak', _kGood);
@@ -822,7 +854,7 @@ class _PhPainter extends CustomPainter {
     final tp = _layout(label,
         size: 16, color: Potatuhs.textPrimary, bold: true);
     final tx = size.width / 2 - tp.width / 2;
-    final ty = 18.0;
+    const ty = 18.0;
     if (running) {
       canvas.drawCircle(
           Offset(tx - 12, ty + tp.height / 2), 6, Paint()..color = tColor);
@@ -924,3 +956,417 @@ class _PhPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _PhPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the REAL components
+// (same beaker / indicator strip / titration buttons the live game paints).
+// Static + cheap: rendered once on the intro screen, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool _lgDegenerate(Size size) =>
+    size.width <= 0 ||
+    size.height <= 0 ||
+    !size.width.isFinite ||
+    !size.height.isFinite;
+
+void _lgText(Canvas canvas, String text, Offset center, double fontSize,
+    Color color,
+    {FontWeight weight = FontWeight.w800}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: weight,
+        color: color,
+        letterSpacing: 0.5,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// The 0–14 universal-indicator strip: gradient, optional white target band,
+/// dashed neutral-7 line, and the current-pH marker arrow — mirrors
+/// [_PhPainter._paintScale].
+void _lgStrip(Canvas canvas, Rect r,
+    {required double ph,
+    double? target,
+    double tol = 0.9,
+    bool emphasizeSeven = false}) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(8));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: _kPhColors.reversed.toList(),
+      ).createShader(r)
+      ..colorFilter = ColorFilter.mode(
+          Colors.black.withValues(alpha: 0.18), BlendMode.darken),
+  );
+  canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.18));
+
+  double yFor(double p) => r.top + r.height * (1 - p.clamp(0.0, 14.0) / 14.0);
+
+  if (target != null) {
+    final band =
+        Rect.fromLTRB(r.left - 3, yFor(target + tol), r.right + 3, yFor(target - tol));
+    canvas.drawRect(band, Paint()..color = Colors.white.withValues(alpha: 0.22));
+    canvas.drawRect(
+        band,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = Colors.white.withValues(alpha: 0.9));
+  }
+
+  // Neutral pH-7 dashed reference.
+  final ny = yFor(7);
+  final dash = Paint()
+    ..color = Colors.white.withValues(alpha: emphasizeSeven ? 0.95 : 0.55)
+    ..strokeWidth = emphasizeSeven ? 2.0 : 1.4;
+  for (double x = r.left; x < r.right; x += 7) {
+    canvas.drawLine(Offset(x, ny), Offset(x + 3.5, ny), dash);
+  }
+  _lgText(canvas, '7', Offset(r.left - 10, ny), 9,
+      Colors.white.withValues(alpha: 0.8));
+  _lgText(canvas, '14', Offset(r.left - 11, r.top + 5), 8,
+      Colors.white.withValues(alpha: 0.55));
+  _lgText(canvas, '0', Offset(r.left - 9, r.bottom - 5), 8,
+      Colors.white.withValues(alpha: 0.55));
+
+  // Current-pH marker arrow + needle line.
+  final my = yFor(ph);
+  final tri = Path()
+    ..moveTo(r.left - 4, my)
+    ..lineTo(r.left - 13, my - 5)
+    ..lineTo(r.left - 13, my + 5)
+    ..close();
+  canvas.drawPath(tri, Paint()..color = _phColor(ph));
+  canvas.drawLine(
+      Offset(r.left, my),
+      Offset(r.right, my),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.9)
+        ..strokeWidth = 2);
+}
+
+/// The beaker with universal-indicator liquid, wobble line, bubbles, glass rim,
+/// pH readout and optional green hold ring — mirrors [_PhPainter._paintBeaker].
+void _lgBeaker(Canvas canvas, Rect area,
+    {required double ph, double holdFrac = 0}) {
+  final bw = math.min(area.width, 150.0);
+  final bh = math.min(area.height * 0.92, 190.0);
+  if (bw <= 0 || bh <= 0) return;
+  final glass = Rect.fromCenter(center: area.center, width: bw, height: bh);
+  final rr = RRect.fromRectAndCorners(glass,
+      bottomLeft: const Radius.circular(20),
+      bottomRight: const Radius.circular(20),
+      topLeft: const Radius.circular(5),
+      topRight: const Radius.circular(5));
+
+  canvas.drawRRect(rr, Paint()..color = Colors.white.withValues(alpha: 0.03));
+
+  // Liquid, colored by the indicator ramp.
+  const fillFrac = 0.74;
+  final liquidTopY = glass.bottom - glass.height * fillFrac;
+  final liquid = _phColor(ph);
+  canvas.save();
+  canvas.clipRRect(rr);
+  final liquidRect =
+      Rect.fromLTRB(glass.left, liquidTopY, glass.right, glass.bottom);
+  canvas.drawRect(
+    liquidRect,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          liquid.withValues(alpha: 0.85),
+          Color.lerp(liquid, Colors.black, 0.30)!.withValues(alpha: 0.95),
+        ],
+      ).createShader(liquidRect),
+  );
+
+  // Static surface wobble.
+  final wobble = Path()..moveTo(glass.left, liquidTopY);
+  for (double x = glass.left; x <= glass.right; x += 6) {
+    wobble.lineTo(x, liquidTopY + math.sin(x / 14) * 1.6);
+  }
+  canvas.drawPath(
+      wobble,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = Colors.white.withValues(alpha: 0.30));
+
+  // A few fixed bubbles.
+  final bubblePaint = Paint()..color = Colors.white.withValues(alpha: 0.30);
+  const bubbleSpots = [
+    Offset(0.30, 0.25),
+    Offset(0.62, 0.55),
+    Offset(0.45, 0.80),
+    Offset(0.74, 0.30),
+    Offset(0.22, 0.62),
+  ];
+  for (final b in bubbleSpots) {
+    final bx = glass.left + glass.width * b.dx;
+    final by = glass.bottom - (glass.bottom - liquidTopY) * b.dy;
+    canvas.drawCircle(Offset(bx, by), 1.6 + b.dx * 2.4, bubblePaint);
+  }
+  canvas.restore();
+
+  // Glass outline + rim.
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..color = _kGlass.withValues(alpha: 0.55));
+  canvas.drawLine(
+      Offset(glass.left - 5, glass.top),
+      Offset(glass.right + 5, glass.top),
+      Paint()
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..color = _kGlass.withValues(alpha: 0.7));
+
+  // Hold ring + readout, centered on the liquid.
+  final center =
+      Offset(glass.center.dx, liquidTopY + (glass.bottom - liquidTopY) * 0.46);
+  final ringR = math.min(bw, bh) * 0.26;
+  if (holdFrac > 0.01) {
+    canvas.drawArc(
+        Rect.fromCircle(center: center, radius: ringR),
+        -math.pi / 2,
+        2 * math.pi * holdFrac.clamp(0.0, 1.0),
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.5
+          ..strokeCap = StrokeCap.round
+          ..color = _kGood.withValues(alpha: 0.85)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5));
+  }
+  _lgText(canvas, ph.toStringAsFixed(1), center, math.min(26.0, bw * 0.20),
+      Colors.white);
+  final tag = ph < 6.4 ? 'ACIDIC' : (ph > 7.6 ? 'BASIC' : 'NEUTRAL');
+  _lgText(canvas, tag, center + Offset(0, ringR * 0.72), 9,
+      Colors.white.withValues(alpha: 0.85));
+}
+
+/// One titration button (the game's ACID / BASE controls), canvas-drawn to
+/// match [_DropButton]: tinted pill, border, chevron, label + formula line.
+void _lgButton(Canvas canvas, Rect r,
+    {required String label,
+    required String sub,
+    required Color color,
+    required bool up}) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(rr, Paint()..color = color.withValues(alpha: 0.20));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = color.withValues(alpha: 0.65));
+
+  // Chevron arrow (up for BASE, down for ACID).
+  final ac = Offset(r.center.dx - r.width * 0.28, r.center.dy - r.height * 0.14);
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 2.6
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  const s = 5.0;
+  if (up) {
+    canvas.drawLine(ac.translate(-s, s * 0.6), ac.translate(0, -s * 0.6), p);
+    canvas.drawLine(ac.translate(s, s * 0.6), ac.translate(0, -s * 0.6), p);
+  } else {
+    canvas.drawLine(ac.translate(-s, -s * 0.6), ac.translate(0, s * 0.6), p);
+    canvas.drawLine(ac.translate(s, -s * 0.6), ac.translate(0, s * 0.6), p);
+  }
+
+  _lgText(
+      canvas,
+      label,
+      Offset(r.center.dx + r.width * 0.08, r.center.dy - r.height * 0.14),
+      14,
+      Potatuhs.textPrimary);
+  _lgText(canvas, sub, Offset(r.center.dx, r.center.dy + r.height * 0.22), 10,
+      color.withValues(alpha: 0.95), weight: FontWeight.w700);
+}
+
+// ── Frame 1: the beaker, the indicator scale, the target band ────────────────
+void _legendTarget(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kInk);
+
+  // TARGET readout with its color dot, like the in-game HUD.
+  const target = 4.0;
+  final ty = size.height * 0.10;
+  canvas.drawCircle(Offset(size.width * 0.30, ty), 5,
+      Paint()..color = _phColor(target));
+  canvas.drawCircle(
+      Offset(size.width * 0.30, ty),
+      5,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.6));
+  _lgText(canvas, 'TARGET  pH 4.0', Offset(size.width * 0.52, ty), 12,
+      Potatuhs.textPrimary);
+
+  // Beaker (current pH 9.5, basic blue) + the strip showing the band to reach.
+  _lgBeaker(
+      canvas,
+      Rect.fromLTRB(size.width * 0.06, size.height * 0.20, size.width * 0.66,
+          size.height * 0.96),
+      ph: 9.5);
+  _lgStrip(
+      canvas,
+      Rect.fromLTWH(size.width * 0.80, size.height * 0.20,
+          math.min(26.0, size.width * 0.09), size.height * 0.74),
+      ph: 9.5,
+      target: target);
+}
+
+// ── Frame 2: the verb — ACID and BASE drop buttons ───────────────────────────
+void _legendDrops(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kInk);
+
+  // Mini strip showing what each drop does to the marker.
+  final strip = Rect.fromLTWH(size.width * 0.44, size.height * 0.08,
+      math.min(24.0, size.width * 0.08), size.height * 0.44);
+  _lgStrip(canvas, strip, ph: 7.0);
+  final arrow = Paint()
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  // Red arrow pulling the marker down (acid)…
+  arrow.color = _kAcid;
+  final ax = strip.left - size.width * 0.14;
+  canvas.drawLine(Offset(ax, strip.top + strip.height * 0.42),
+      Offset(ax, strip.top + strip.height * 0.78), arrow);
+  canvas.drawLine(Offset(ax - 5, strip.top + strip.height * 0.68),
+      Offset(ax, strip.top + strip.height * 0.78), arrow);
+  canvas.drawLine(Offset(ax + 5, strip.top + strip.height * 0.68),
+      Offset(ax, strip.top + strip.height * 0.78), arrow);
+  // …blue arrow pushing it up (base).
+  arrow.color = _kBase;
+  final bx = strip.right + size.width * 0.14;
+  canvas.drawLine(Offset(bx, strip.top + strip.height * 0.58),
+      Offset(bx, strip.top + strip.height * 0.22), arrow);
+  canvas.drawLine(Offset(bx - 5, strip.top + strip.height * 0.32),
+      Offset(bx, strip.top + strip.height * 0.22), arrow);
+  canvas.drawLine(Offset(bx + 5, strip.top + strip.height * 0.32),
+      Offset(bx, strip.top + strip.height * 0.22), arrow);
+
+  // The two real bottom buttons.
+  final btnTop = size.height * 0.62;
+  final btnH = size.height * 0.26;
+  _lgButton(
+      canvas,
+      Rect.fromLTWH(size.width * 0.06, btnTop, size.width * 0.41, btnH),
+      label: 'ACID',
+      sub: 'H⁺  pH ▼',
+      color: _kAcid,
+      up: false);
+  _lgButton(
+      canvas,
+      Rect.fromLTWH(size.width * 0.53, btnTop, size.width * 0.41, btnH),
+      label: 'BASE',
+      sub: 'OH⁻  pH ▲',
+      color: _kBase,
+      up: true);
+}
+
+// ── Frame 3: how to score — land in the band and hold it ─────────────────────
+void _legendHold(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kInk);
+
+  // Beaker sitting ON target (pH 4.0) with the green hold ring 3/4 full.
+  _lgBeaker(
+      canvas,
+      Rect.fromLTRB(size.width * 0.06, size.height * 0.16, size.width * 0.66,
+          size.height * 0.96),
+      ph: 4.0,
+      holdFrac: 0.75);
+  // Strip: marker inside the white band.
+  _lgStrip(
+      canvas,
+      Rect.fromLTWH(size.width * 0.80, size.height * 0.16,
+          math.min(26.0, size.width * 0.09), size.height * 0.74),
+      ph: 4.0,
+      target: 4.0);
+
+  // The score popup the hit fires.
+  _lgText(canvas, '+70', Offset(size.width * 0.36, size.height * 0.10), 20,
+      _kGood);
+}
+
+// ── Frame 4: the danger — the steep zone around pH 7 slings past the band ────
+void _legendSteep(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kInk);
+
+  // Strip with a near-neutral band; the neutral-7 line is the hot zone.
+  final strip = Rect.fromLTWH(size.width * 0.60, size.height * 0.10,
+      math.min(26.0, size.width * 0.09), size.height * 0.80);
+  _lgStrip(canvas, strip, ph: 9.4, target: 6.4, tol: 0.7, emphasizeSeven: true);
+
+  double yFor(double p) =>
+      strip.top + strip.height * (1 - p.clamp(0.0, 14.0) / 14.0);
+
+  // Red swing arc: one drop near 7 flings the needle from 5.6 clean past
+  // the band to 9.4 — the overshoot that breaks the streak.
+  final swing = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..color = _kBad;
+  final x0 = strip.left - size.width * 0.10;
+  final path = Path()
+    ..moveTo(x0, yFor(5.6))
+    ..quadraticBezierTo(
+        x0 - size.width * 0.22, (yFor(5.6) + yFor(9.4)) / 2, x0, yFor(9.4));
+  canvas.drawPath(path, swing);
+  // Arrowhead at the flung end.
+  canvas.drawLine(Offset(x0, yFor(9.4)), Offset(x0 - 9, yFor(9.4) + 3), swing);
+  canvas.drawLine(Offset(x0, yFor(9.4)), Offset(x0 - 4, yFor(9.4) + 9), swing);
+
+  _lgText(canvas, 'OVERSHOOT!', Offset(size.width * 0.26, yFor(9.4) - 16), 13,
+      _kBad);
+  _lgText(canvas, 'STREAK ✕', Offset(size.width * 0.26, yFor(9.4) + 4), 10,
+      _kBad.withValues(alpha: 0.85), weight: FontWeight.w700);
+  _lgText(canvas, 'steep near 7', Offset(size.width * 0.30, yFor(7.0)), 10,
+      Colors.white.withValues(alpha: 0.75), weight: FontWeight.w700);
+  _lgText(canvas, 'one drop', Offset(size.width * 0.26, yFor(5.6) + 14), 10,
+      Colors.white.withValues(alpha: 0.6), weight: FontWeight.w700);
+}
+
+/// The visual manual for pH Balance — wired into the registry spec.
+final List<LegendFrame> phBalanceLegendFrames = [
+  const LegendFrame(
+      caption: 'Steer the beaker\'s pH onto the white target band',
+      paint: _legendTarget),
+  const LegendFrame(
+      caption: 'Tap ACID (H⁺) to lower pH · BASE (OH⁻) to raise it',
+      paint: _legendDrops),
+  const LegendFrame(
+      caption: 'Hold in the band till the green ring fills: +40',
+      paint: _legendHold),
+  const LegendFrame(
+      caption: 'Drops swing hardest near pH 7 — don\'t overshoot',
+      paint: _legendSteep),
+];

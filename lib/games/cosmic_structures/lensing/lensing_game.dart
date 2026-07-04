@@ -37,6 +37,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -126,6 +127,274 @@ class _Ray {
 double _lerp(double a, double b, double t) => a + (b - a) * t;
 double _pick(Random r, double a, double b) => _lerp(a, b, r.nextDouble());
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each is drawn STATICALLY with the
+// game's OWN components (the violet dark-matter warp, curved gold/blue rays, the
+// spiral-galaxy source, the gold detector) and the same constants + palette the
+// live game uses, so the intro shows the literal things the player meets.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One curved light ray, drawn in the game's ray style (soft glow + white core).
+/// [hit] rays are gold (focused); misses are Air-Force blue.
+void _legendRay(Canvas canvas, Offset from, Offset ctrl, Offset to,
+    {required bool hit}) {
+  final col = hit ? Potatuhs.gold : Potatuhs.airForce;
+  final path = Path()
+    ..moveTo(from.dx, from.dy)
+    ..quadraticBezierTo(ctrl.dx, ctrl.dy, to.dx, to.dy);
+  final glow = Paint()
+    ..color = col.withValues(alpha: hit ? 0.4 : 0.22)
+    ..strokeWidth = hit ? 4.5 : 3.0
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+  final core = Paint()
+    ..color = Colors.white.withValues(alpha: hit ? 0.85 : 0.5)
+    ..strokeWidth = hit ? 1.6 : 1.0
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawPath(path, glow);
+  canvas.drawPath(path, core);
+}
+
+/// The invisible dark-matter halo, rendered as the game's ghostly violet warp:
+/// soft core, spacetime-grid rings, a mass-scaled dashed boundary + label.
+void _legendHalo(Canvas canvas, Offset c, double mass) {
+  final reach = _kHaloVisRadius + mass * 34;
+  canvas.drawCircle(
+    c,
+    reach,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Potatuhs.glaucous.withValues(alpha: 0.10 + 0.05 * mass / 3),
+          Potatuhs.glaucous.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromCircle(center: c, radius: reach)),
+  );
+  final ringCount = (3 + mass * 1.4).round().clamp(3, 7);
+  for (int i = ringCount; i >= 1; i--) {
+    final rr = _kHaloVisRadius * 0.6 +
+        i * (reach - _kHaloVisRadius * 0.6) / (ringCount + 1);
+    final a = 0.05 + 0.05 * (1 - i / ringCount);
+    canvas.drawCircle(
+      c,
+      rr,
+      Paint()
+        ..color = Potatuhs.glaucous.withValues(alpha: a)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.9,
+    );
+  }
+  final dashPaint = Paint()
+    ..color = Potatuhs.glaucous.withValues(alpha: 0.35 + 0.25 * (mass / _kMaxMass))
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.6;
+  const dashes = 28;
+  for (int i = 0; i < dashes; i++) {
+    if (i.isOdd) continue;
+    final a0 = i / dashes * 2 * pi;
+    final a1 = (i + 1) / dashes * 2 * pi;
+    canvas.drawArc(Rect.fromCircle(center: c, radius: _kHaloVisRadius), a0,
+        a1 - a0, false, dashPaint);
+  }
+  canvas.drawCircle(
+    c,
+    _kHaloVisRadius * 0.5,
+    Paint()
+      ..color = Potatuhs.glaucous.withValues(alpha: 0.18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+  );
+  GameFx.text(canvas, 'DARK MATTER', c.translate(0, _kHaloVisRadius + 14), 8.5,
+      Potatuhs.glaucous.withValues(alpha: 0.8));
+}
+
+/// A spiral-galaxy light source — the game's tilted disc glow + bright core.
+void _legendSource(Canvas canvas, Offset c, Color color) {
+  canvas.save();
+  canvas.translate(c.dx, c.dy);
+  canvas.scale(1.0, 0.5);
+  canvas.drawCircle(
+    Offset.zero,
+    16,
+    Paint()
+      ..color = color.withValues(alpha: 0.3)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  canvas.restore();
+  GameFx.orb(canvas, c, 8, color, glow: 1.5, specular: true);
+}
+
+/// The detector telescope — gold intake orb, crosshair, optional lock ring.
+void _legendDetector(Canvas canvas, Offset c, double radius,
+    {double lock = 0.0, bool moves = false}) {
+  for (int i = 0; i < 2; i++) {
+    canvas.drawCircle(
+      c,
+      radius + 9 + i * 8,
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.16 - i * 0.06)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+  if (moves) {
+    final ax = Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.4)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+        c.translate(-radius - 14, 0), c.translate(radius + 14, 0), ax);
+  }
+  GameFx.orb(canvas, c, radius, Potatuhs.gold,
+      glow: 2.0, rim: Potatuhs.sienna, specular: true);
+  final ch = Paint()
+    ..color = Potatuhs.ink.withValues(alpha: 0.7)
+    ..strokeWidth = 1.4
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(
+      c.translate(-radius * 0.5, 0), c.translate(radius * 0.5, 0), ch);
+  canvas.drawLine(
+      c.translate(0, -radius * 0.5), c.translate(0, radius * 0.5), ch);
+  if (lock > 0) {
+    canvas.drawArc(
+      Rect.fromCircle(center: c, radius: radius + 6),
+      -pi / 2,
+      2 * pi * lock,
+      false,
+      Paint()
+        ..color = Potatuhs.gold
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.2
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+}
+
+/// Frame 1 — the core loop: a galaxy pours light, the invisible halo bends it,
+/// the beam lands on the detector. Shows every object + the drag verb.
+void _legendCore(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+  final src = Offset(w * 0.12, h * 0.40);
+  final halo = Offset(w * 0.52, h * 0.62);
+  final det = Offset(w * 0.86, h * 0.42);
+  for (int i = 0; i < 3; i++) {
+    final o = (i - 1) * 12.0;
+    final from = src.translate(0, o);
+    final ctrl = Offset.lerp(
+        Offset((from.dx + det.dx) / 2, (from.dy + det.dy) / 2), halo, 0.7)!;
+    _legendRay(canvas, from, ctrl, det, hit: true);
+  }
+  _legendHalo(canvas, halo, 1.6);
+  _legendSource(canvas, src, Potatuhs.airForce);
+  _legendDetector(canvas, det, _kDetectorBase);
+}
+
+/// Frame 2 — scoring: a fully focused beam charges the detector's lock ring;
+/// hold the focus and the reading banks points.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+  final src = Offset(w * 0.12, h * 0.36);
+  final halo = Offset(w * 0.50, h * 0.58);
+  final det = Offset(w * 0.82, h * 0.40);
+  for (int i = 0; i < 5; i++) {
+    final o = (i - 2) * 9.0;
+    final from = src.translate(0, o);
+    final ctrl = Offset.lerp(
+        Offset((from.dx + det.dx) / 2, (from.dy + det.dy) / 2), halo, 0.72)!;
+    _legendRay(canvas, from, ctrl, det, hit: true);
+  }
+  _legendHalo(canvas, halo, 1.5);
+  _legendSource(canvas, src, Potatuhs.airForce);
+  _legendDetector(canvas, det, _kDetectorBase, lock: 0.7);
+  GameFx.text(canvas, 'FOCUS 100%', Offset(w * 0.82, h * 0.14), 10,
+      Potatuhs.gold,
+      weight: FontWeight.w800);
+}
+
+/// Frame 3 — the danger: get the mass wrong and the rays over/under-bend and
+/// sail past the detector (blue = missed). Tune the mass bar to fix it.
+void _legendMiss(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+  final src = Offset(w * 0.12, h * 0.34);
+  final halo = Offset(w * 0.50, h * 0.52);
+  final det = Offset(w * 0.84, h * 0.40);
+  // Under-bent rays fly straight past above; over-bent cross under — all miss.
+  _legendRay(canvas, src.translate(0, -8), Offset(halo.dx, halo.dy - 40),
+      Offset(w * 0.98, h * 0.24),
+      hit: false);
+  _legendRay(canvas, src.translate(0, 10), Offset(halo.dx, halo.dy + 46),
+      Offset(w * 0.98, h * 0.74),
+      hit: false);
+  _legendHalo(canvas, halo, 0.5);
+  _legendSource(canvas, src, Potatuhs.airForce);
+  _legendDetector(canvas, det, _kDetectorMin);
+  // A miniature mass bar — the second control that fixes the bend.
+  final barY = h * 0.86;
+  final track = Rect.fromCenter(
+      center: Offset(w * 0.5, barY), width: w * 0.6, height: 6);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(track, const Radius.circular(3)),
+    Paint()
+      ..shader = LinearGradient(colors: [
+        Potatuhs.glaucous.withValues(alpha: 0.25),
+        Potatuhs.airForce.withValues(alpha: 0.4),
+        Potatuhs.gold.withValues(alpha: 0.6),
+      ]).createShader(track),
+  );
+  canvas.drawCircle(
+    Offset(track.left + track.width * 0.28, barY),
+    9,
+    Paint()..color = Potatuhs.glaucous,
+  );
+  GameFx.text(canvas, 'MASS', Offset(w * 0.5, barY - 16), 9,
+      Potatuhs.glaucous.withValues(alpha: 0.85),
+      weight: FontWeight.w800);
+}
+
+/// Frame 4 — the escalation: two galaxies appear and one halo must bend BOTH
+/// bundles onto a single detector — a true Einstein-ring convergence.
+void _legendEinstein(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+  final det = Offset(w * 0.84, h * 0.46);
+  final halo = Offset(w * 0.50, h * 0.46);
+  final srcTop = Offset(w * 0.12, h * 0.24);
+  final srcBot = Offset(w * 0.12, h * 0.68);
+  for (final s in [srcTop, srcBot]) {
+    final ctrl = Offset.lerp(
+        Offset((s.dx + det.dx) / 2, (s.dy + det.dy) / 2), halo, 0.62)!;
+    _legendRay(canvas, s, ctrl, det, hit: true);
+    _legendRay(canvas, s.translate(0, 8), ctrl, det, hit: true);
+  }
+  _legendHalo(canvas, halo, 1.8);
+  _legendSource(canvas, srcTop, Potatuhs.glaucous);
+  _legendSource(canvas, srcBot, Potatuhs.airForce);
+  _legendDetector(canvas, det, _kDetectorMin, lock: 1.0, moves: true);
+  GameFx.text(canvas, 'EINSTEIN RING', Offset(w * 0.5, h * 0.90), 10,
+      Potatuhs.orange,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Lensing — wired into the registry spec (orchestrator).
+final List<LegendFrame> lensingLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag the dark-matter halo to bend the galaxy\'s light',
+      paint: _legendCore),
+  const LegendFrame(
+      caption: 'Focus the beam on the detector to bank a reading',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Tune MASS — too weak or too strong misses the lens',
+      paint: _legendMiss),
+  const LegendFrame(
+      caption: 'Later: bend TWO galaxies onto one detector',
+      paint: _legendEinstein),
+];
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 class LensingGame extends StatefulWidget {
@@ -137,7 +406,8 @@ class LensingGame extends StatefulWidget {
 
 class _LensingGameState extends State<LensingGame>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
 
   // progress (host owns score/timer/results)
   int _level = 0; // index into the ladder
@@ -170,20 +440,74 @@ class _LensingGameState extends State<LensingGame>
   Size _canvasSize = Size.zero;
   static const double _sliderReserve = 74.0; // bottom strip owned by the mass bar
 
+  // ── ATTRACT autopilot state ──────────────────────────────────────────────
+  // 1-D hill-climb on mass: remember the last focus-error we saw and the
+  // direction we were nudging, so we can reverse when the error grows.
+  double _autoLastErr = 2.0;
+  double _autoMassDir = 1.0;
+
   @override
   void initState() {
     super.initState();
     _round = _generate();
     _resetHaloForRound();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick);
-    _ctrl.forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to sculpt its own lens. Registered
+    // always (harmless in normal play — the host only calls it hands-free). See
+    // [_autoStep]. Default interval (~250ms) is fine; this isn't a quiz.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One competent hands-free move per host tick. Plays Lensing *correctly*, not
+  /// randomly: it parks the dark-matter halo on the light path — the midpoint
+  /// between the galaxy(ies) and the detector, using the game's OWN source /
+  /// detector fractions — so the halo's gravity bends the beam toward the lens.
+  /// Then it tunes MASS by hill-climbing the game's own focus-error signal
+  /// ([_avgMinFrac], 0 = a dead-centre focus): nudge the mass, and if the error
+  /// grew, reverse next tick. Once the rays read as focused ([_focus] past the
+  /// lock threshold) it HOLDS mass + halo steady and lets the detector's lock
+  /// ring finish the reading — [_tick] auto-invokes [_onLock] to bank the score.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // Park the halo at the midpoint of the light path (mean source → detector).
+    final det = _round.detectorFrac;
+    double srcX = 0.0, srcY = 0.0;
+    for (final s in _round.sources) {
+      srcX += s.originFrac.dx;
+      srcY += s.originFrac.dy;
+    }
+    final n = _round.sources.length;
+    srcX /= n;
+    srcY /= n;
+    final target = Offset((srcX + det.dx) / 2, (srcY + det.dy) / 2);
+
+    // Focused already → hold everything; the lock ring takes the reading.
+    if (_focus >= _kLockThreshold) {
+      setState(() => _haloFrac = target);
+      return;
+    }
+
+    // Hill-climb MASS toward minimum focus-error. If the error grew since the
+    // last move, we stepped the wrong way — flip direction.
+    final err = _avgMinFrac;
+    if (err > _autoLastErr + 0.001) _autoMassDir = -_autoMassDir;
+    _autoLastErr = err;
+    final step = _autoMassDir * 0.06 * (_kMaxMass - _kMinMass);
+    final nextMass = (_mass + step).clamp(_kMinMass, _kMaxMass);
+
+    setState(() {
+      _haloFrac = target;
+      _mass = nextMass;
+    });
   }
 
   // ── round generation ────────────────────────────────────────────────────────
@@ -293,8 +617,13 @@ class _LensingGameState extends State<LensingGame>
   }
 
   // ── main tick ───────────────────────────────────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the game must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     final running = widget.session.isRunning;
     _t += dt;
     if (_flash > 0) _flash = (_flash - dt * 2.2).clamp(0.0, 1.0);
@@ -497,7 +826,7 @@ class _LensingGameState extends State<LensingGame>
                   _loop > 0
                       ? 'Lens ${_level + 1} · Loop ${_loop + 1}'
                       : 'Lens ${_level + 1}',
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontFamily: Potatuhs.bodyFont,
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
@@ -523,7 +852,7 @@ class _LensingGameState extends State<LensingGame>
               ),
               child: Text(
                 _round.hint,
-                style: TextStyle(
+                style: const TextStyle(
                   fontFamily: Potatuhs.displayFont,
                   fontSize: 12,
                   color: Potatuhs.gold,
@@ -628,7 +957,7 @@ class _MassBar extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
+                    const Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text('DARK-MATTER MASS',

@@ -251,12 +251,46 @@ class _PatternLockGameState extends State<PatternLockGame>
     super.initState();
     _puzzle = _generate(0); // first puzzle is always level 0 (calm)
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer picks to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // ATTRACT autopilot
+  // ==========================================================================
+
+  /// One hands-free move per host tick. Plays Pattern Lock *correctly*, not
+  /// randomly: while a puzzle awaits an answer it locks the RIGHT choice through
+  /// the game's own handlers — in continue mode it taps [_Puzzle.answer] (the
+  /// scored next element) via [_onOptionTap]; in odd-one-out mode it taps
+  /// [_Puzzle.badIndex] (the rule-breaking cell) via [_onCellTap]. While a
+  /// reveal card is up it advances with [_skipReveal]. The host owns the clock
+  /// and score HUD; the bot just banks real points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_answerState != _AnswerState.waiting) {
+      // Reveal card is showing — advance to the next puzzle.
+      _skipReveal();
+      return;
+    }
+    if (_puzzle.oddMode) {
+      // Odd-one-out: tap the cell that breaks the rule.
+      _onCellTap(_puzzle.badIndex);
+    } else {
+      // Continue: lock in the correct next element (handler matches by tag).
+      _onOptionTap(_puzzle.answer!);
+    }
   }
 
   // ==========================================================================
@@ -721,7 +755,7 @@ class _PatternLockGameState extends State<PatternLockGame>
                 ),
               ),
               const SizedBox(height: 10),
-              Text(
+              const Text(
                 'A pattern appears — 2, 4, 8, 16… Tap what comes NEXT. Faster picks score more. Every answer reveals the rule.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -1082,7 +1116,7 @@ class _PatternLockGameState extends State<PatternLockGame>
             Icon(Icons.touch_app_rounded,
                 size: 34, color: accent.withValues(alpha: 0.85)),
             const SizedBox(height: 12),
-            Text(
+            const Text(
               'One value above does NOT follow the rule.\nTap the cell that breaks it.',
               textAlign: TextAlign.center,
               style: TextStyle(
@@ -1259,6 +1293,271 @@ class _PatternLockGameState extends State<PatternLockGame>
     );
   }
 }
+
+// ============================================================================
+// Visual manual — legend carousel cards. Each frame draws the LITERAL in-game
+// components (the sequence cells, the accent `?` cell, the option cards with
+// their green/red answer states, the gold streak chip) using the same palette
+// and cell styling the live UI uses.
+// ============================================================================
+
+/// Draws one sequence/option cell: the rounded card the whole game is built of.
+void _legendCell(Canvas canvas, Rect r,
+    {Color border = _kCardBorder, Color bg = _kCardBg, double width = 1.6}) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = bg);
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = width
+      ..color = border,
+  );
+}
+
+void _legendText(Canvas canvas, String s, Offset center, double fontSize,
+    Color color, {FontWeight weight = FontWeight.w900}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: weight,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// Draws a Material icon glyph (the game's shape/arrow vocabulary), optionally
+/// rotated — mirrors [_elemContent]'s `Transform.rotate` for the ROTATION family.
+void _legendIcon(Canvas canvas, IconData icon, Offset center, double size,
+    Color color, {double angle = 0}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        fontSize: size,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  canvas.rotate(angle);
+  tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+  canvas.restore();
+}
+
+/// Draws the glowing spectrum dot used by the COLOR-CYCLE family.
+void _legendColorDot(Canvas canvas, Offset center, double radius, Color color) {
+  canvas.drawCircle(
+    center,
+    radius * 1.25,
+    Paint()
+      ..color = color.withValues(alpha: 0.45)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  canvas.drawCircle(center, radius, Paint()..color = color);
+}
+
+/// Draws the accent-tinted `?` cell that ends every continue-mode sequence.
+void _legendQCell(Canvas canvas, Rect r, Color accent) {
+  _legendCell(canvas, r,
+      border: accent.withValues(alpha: 0.65),
+      bg: accent.withValues(alpha: 0.10),
+      width: 1.8);
+  _legendText(canvas, '?', r.center, r.height * 0.5, accent);
+}
+
+/// Lays out one centred row of [n] square cells and returns their rects.
+List<Rect> _legendRow(Size size, int n, double cy, double cell) {
+  const gap = 8.0;
+  final total = n * cell + (n - 1) * gap;
+  final left = (size.width - total) / 2;
+  return List.generate(
+    n,
+    (i) => Rect.fromLTWH(left + i * (cell + gap), cy - cell / 2, cell, cell),
+  );
+}
+
+// -- Frame 1: the three sequence vocabularies + the `?` -----------------------
+
+void _legendFamilies(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cell =
+      math.min(size.width / 6.2, size.height * 0.24).clamp(20.0, 56.0);
+
+  // Numbers: 2, 4, 8, 16, ? — the geometric family.
+  final geo = _styleFor(_Family.geometric).color;
+  final r1 = _legendRow(size, 5, size.height * 0.20, cell);
+  const nums = ['2', '4', '8', '16'];
+  for (var i = 0; i < 4; i++) {
+    _legendCell(canvas, r1[i]);
+    _legendText(canvas, nums[i], r1[i].center, cell * 0.40, _kTextPrimary);
+  }
+  _legendQCell(canvas, r1[4], geo);
+
+  // Arrows: quarter-turn rotation family.
+  final rot = _styleFor(_Family.rotation).color;
+  final r2 = _legendRow(size, 5, size.height * 0.50, cell);
+  for (var i = 0; i < 4; i++) {
+    _legendCell(canvas, r2[i]);
+    _legendIcon(canvas, _kArrowIcon, r2[i].center, cell * 0.55, _kTextPrimary,
+        angle: i * math.pi / 2);
+  }
+  _legendQCell(canvas, r2[4], rot);
+
+  // Colors: the ROYGBIV cycle family.
+  final col = _styleFor(_Family.colorCycle).color;
+  final r3 = _legendRow(size, 5, size.height * 0.80, cell);
+  for (var i = 0; i < 4; i++) {
+    _legendCell(canvas, r3[i]);
+    _legendColorDot(canvas, r3[i].center, cell * 0.26, _kSpectrum[i]);
+  }
+  _legendQCell(canvas, r3[4], col);
+}
+
+// -- Frame 2: the verb — tap the option that comes next -----------------------
+
+void _legendPick(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final accent = _styleFor(_Family.arithmetic).color;
+  final cell =
+      math.min(size.width / 5.2, size.height * 0.26).clamp(20.0, 56.0);
+
+  // The sequence: 3, 6, 9, ? (add 3 each step).
+  final seq = _legendRow(size, 4, size.height * 0.22, cell);
+  const nums = ['3', '6', '9'];
+  for (var i = 0; i < 3; i++) {
+    _legendCell(canvas, seq[i]);
+    _legendText(canvas, nums[i], seq[i].center, cell * 0.42, _kTextPrimary);
+  }
+  _legendQCell(canvas, seq[3], accent);
+
+  // The 2×2 option grid — the correct card lit green, just like the reveal.
+  const gap = 10.0;
+  final gridW = math.min(size.width * 0.72, 220.0);
+  final cardW = (gridW - gap) / 2;
+  final cardH = cardW * 0.56;
+  final gx = (size.width - gridW) / 2;
+  final gy = size.height * 0.42;
+  const opts = ['12', '10', '15', '18'];
+  for (var i = 0; i < 4; i++) {
+    final r = Rect.fromLTWH(
+      gx + (i % 2) * (cardW + gap),
+      gy + (i ~/ 2) * (cardH + gap),
+      cardW,
+      cardH,
+    );
+    final correct = i == 0;
+    _legendCell(canvas, r,
+        border: correct ? _kGoodGreen.withValues(alpha: 0.9) : _kCardBorder,
+        bg: correct ? _kGoodGreen.withValues(alpha: 0.12) : _kCardBg);
+    _legendText(canvas, opts[i], r.center, cardH * 0.44,
+        correct ? _kGoodGreen : _kTextPrimary);
+  }
+  _legendText(canvas, '+120', Offset(size.width * 0.5, gy + cardH * 2 + 26),
+      15, _kGoodGreen);
+}
+
+// -- Frame 3: score fuel + the danger — streak builds, a miss resets ----------
+
+void _legendStreak(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final cell =
+      math.min(size.width / 6.2, size.height * 0.22).clamp(20.0, 48.0);
+
+  // Three correct in a row → the gold ×2 chip from the HUD.
+  final row = _legendRow(size, 3, size.height * 0.26, cell);
+  for (final r in row) {
+    _legendCell(canvas, r,
+        border: _kGoodGreen.withValues(alpha: 0.9),
+        bg: _kGoodGreen.withValues(alpha: 0.12));
+    _legendIcon(
+        canvas, Icons.check_rounded, r.center, cell * 0.55, _kGoodGreen);
+  }
+  final chip = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.52),
+      width: cell * 1.4,
+      height: cell * 0.72);
+  final chipRR = RRect.fromRectAndRadius(chip, const Radius.circular(8));
+  canvas.drawRRect(
+      chipRR, Paint()..color = _kGold.withValues(alpha: 0.18));
+  canvas.drawRRect(
+    chipRR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kGold.withValues(alpha: 0.7),
+  );
+  _legendText(canvas, '×2', chip.center, chip.height * 0.52, _kGold,
+      weight: FontWeight.w800);
+
+  // The danger: one wrong pick — 0 points, streak gone.
+  final bad = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.78),
+      width: cell,
+      height: cell);
+  _legendCell(canvas, bad,
+      border: _kBadRed.withValues(alpha: 0.9),
+      bg: _kBadRed.withValues(alpha: 0.10));
+  _legendIcon(canvas, Icons.close_rounded, bad.center, cell * 0.55, _kBadRed);
+  _legendText(canvas, 'streak resets',
+      Offset(size.width * 0.5, bad.bottom + 14), 11, _kBadRed,
+      weight: FontWeight.w700);
+}
+
+// -- Frame 4: the escalation — odd-one-out mode -------------------------------
+
+void _legendOdd(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final accent = _styleFor(_Family.arithmetic).color;
+  final cell =
+      math.min(size.width / 5.2, size.height * 0.30).clamp(20.0, 56.0);
+
+  // 4, 8, 13, 16 — the +4 rule, with 13 breaking it (should be 12).
+  final row = _legendRow(size, 4, size.height * 0.32, cell);
+  const nums = ['4', '8', '13', '16'];
+  for (var i = 0; i < 4; i++) {
+    final broken = i == 2;
+    _legendCell(canvas, row[i],
+        border: broken ? _kBadRed.withValues(alpha: 0.9) : _kCardBorder,
+        bg: broken ? _kBadRed.withValues(alpha: 0.10) : _kCardBg);
+    _legendText(canvas, nums[i], row[i].center, cell * 0.42,
+        broken ? _kBadRed : _kTextPrimary);
+  }
+
+  // The tap cue under the rule-breaking cell.
+  _legendIcon(canvas, Icons.touch_app_rounded,
+      Offset(row[2].center.dx, size.height * 0.66), cell * 0.62,
+      accent.withValues(alpha: 0.85));
+  _legendText(canvas, 'Rule: add 4 each step',
+      Offset(size.width * 0.5, size.height * 0.86), 12, accent,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Pattern Lock — wired into the registry spec.
+final List<LegendFrame> patternLockLegendFrames = [
+  const LegendFrame(
+      caption: 'Every sequence hides ONE rule — find what fits the ?',
+      paint: _legendFamilies),
+  const LegendFrame(
+      caption: 'Tap what comes NEXT — faster picks score more',
+      paint: _legendPick),
+  const LegendFrame(
+      caption: 'Every 3 in a row adds ×1 — a wrong pick resets it',
+      paint: _legendStreak),
+  const LegendFrame(
+      caption: 'Late game: tap the one that BREAKS the rule',
+      paint: _legendOdd),
+];
 
 // ============================================================================
 // Background + particles painter

@@ -9,14 +9,15 @@ import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/user_profile.dart';
 import 'package:cell_mobile/vipotato.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
+import 'package:cell_mobile/views/screens/attract/attract_config_page.dart';
 import 'package:cell_mobile/views/screens/games_debug_page/games_debug_page.dart';
-import 'package:cell_mobile/views/screens/splash_page/account_sheet.dart';
-import 'package:cell_mobile/views/screens/splash_page/settings_sheet.dart';
-import 'package:cell_mobile/views/screens/splash_page/vipotato_avatar.dart';
+import 'package:cell_mobile/views/screens/home_page/account_sheet.dart';
+import 'package:cell_mobile/views/screens/home_page/settings_sheet.dart';
+import 'package:cell_mobile/views/screens/home_page/vipotato_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-class SplashPage extends StatelessWidget {
+class HomePage extends StatelessWidget {
   List<Widget> _buildCellAnimation() {
     List<Widget> widgets = [Container()];
     for (int i = 0; i < organelles.length; i++) {
@@ -177,7 +178,7 @@ class SplashPage extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 24),
         child: Column(
           children: [
-            _SplashDoor(
+            _HomeDoor(
               title: 'LEARN',
               subtitle: 'Explore the cell, scale by scale',
               icon: Icons.biotech,
@@ -193,20 +194,20 @@ class SplashPage extends StatelessWidget {
               },
             ),
             const SizedBox(height: 14),
-            _SplashDoor(
-              title: 'PLAY',
+            _HomeDoor(
+              title: 'PARTY',
               subtitle: 'Party games — host or join a room',
               icon: Icons.sports_esports,
               accent: Potatuhs.orange,
               gradientFill: true,
               onTap: () => context
                   .read<NavigationBloc>()
-                  .add(NavigateToScreen(AppScreen.play)),
+                  .add(NavigateToScreen(AppScreen.partyLobby)),
             ),
             // The games triage console (ranks + feedback + filters) — now always
             // available, not just in debug builds.
             const SizedBox(height: 14),
-            _SplashDoor(
+            _HomeDoor(
               title: 'GAMES',
               subtitle: 'All games · ranks & feedback',
               icon: Icons.grid_view_rounded,
@@ -230,6 +231,18 @@ class SplashPage extends StatelessWidget {
                 );
               },
             ),
+            // Attract mode: the self-playing background for build-in-public
+            // b-roll. Opens the config picker (All Games or a party board).
+            const SizedBox(height: 14),
+            _HomeDoor(
+              title: 'ATTRACT',
+              subtitle: 'Self-playing background for streams',
+              icon: Icons.smart_toy,
+              accent: Potatuhs.airForce,
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AttractConfigPage()),
+              ),
+            ),
           ],
         ),
       ),
@@ -237,7 +250,7 @@ class SplashPage extends StatelessWidget {
   }
 }
 
-/// A circular, semi-transparent corner button for the splash overlay icons.
+/// A circular, semi-transparent corner button for the home overlay icons.
 class _CornerIcon extends StatelessWidget {
   final IconData icon;
   final String tooltip;
@@ -338,10 +351,10 @@ class _AccountButtonState extends State<_AccountButton> {
   }
 }
 
-/// A tall, tappable door on the home/splash. PLAY fills with the brand gradient
+/// A tall, tappable door on the home menu. PARTY fills with the brand gradient
 /// (ink text/border — the comic 'sticker' look on bright); LEARN is an ink
 /// panel with a cool accent glow.
-class _SplashDoor extends StatelessWidget {
+class _HomeDoor extends StatelessWidget {
   final String title;
   final String subtitle;
   final IconData icon;
@@ -349,7 +362,7 @@ class _SplashDoor extends StatelessWidget {
   final bool gradientFill;
   final VoidCallback onTap;
 
-  const _SplashDoor({
+  const _HomeDoor({
     required this.title,
     required this.subtitle,
     required this.icon,

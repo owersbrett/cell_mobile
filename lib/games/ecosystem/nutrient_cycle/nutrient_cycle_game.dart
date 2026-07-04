@@ -245,13 +245,65 @@ class _NutrientCycleGameState extends State<NutrientCycleGame>
   @override
   void initState() {
     super.initState();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). It routes
+    // the atom to the lit target along real process edges. See [_autoPilot].
+    widget.session.autoPilot = _autoPilot;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoPilot) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays Nutrient Cycle
+  /// *correctly*, not randomly: it BFS-routes the atom one hop along a real
+  /// process edge toward the lit GOLD target — never a dead-end tap, never a
+  /// wrong turn. One move per call; when a slide is already in flight, when it
+  /// is already sitting on the target (arrival resolves the delivery), or when
+  /// the target is unreachable, it simply waits. The host owns the clock, so
+  /// the round still ends on time; the bot just banks real deliveries until it
+  /// does. (The separate [_autoStep] is the idle-PREVIEW drift and is unrelated.)
+  void _autoPilot() {
+    if (!widget.session.isRunning) return;
+    if (_transferT < 1.0) return; // a slide is already in flight
+    if (_current == _target) return; // delivery resolves on arrival
+    final next = _nextHopToward(_target);
+    if (next < 0) return; // unreachable (shouldn't happen on a closed cycle)
+    _tapAt(_nodeCenter(next)); // drive the real input path (validates the edge)
+  }
+
+  /// Neighbour of [_current] that begins a shortest valid-edge path to [goal],
+  /// via BFS over the directed process edges. Returns -1 if [goal] is not
+  /// reachable from [_current].
+  int _nextHopToward(int goal) {
+    final n = _cycle.nodes.length;
+    final prev = List<int>.filled(n, -2);
+    prev[_current] = -1;
+    final q = <int>[_current];
+    var head = 0;
+    while (head < q.length) {
+      final u = q[head++];
+      if (u == goal) break;
+      for (final e in _cycle.edges) {
+        if (e.from == u && prev[e.to] == -2) {
+          prev[e.to] = u;
+          q.add(e.to);
+        }
+      }
+    }
+    if (prev[goal] == -2) return -1; // unreachable
+    // Walk the parent chain back to the hop that leaves [_current].
+    var node = goal;
+    while (prev[node] != _current) {
+      node = prev[node];
+      if (node < 0) return -1;
+    }
+    return node;
   }
 
   // ── Layout ──────────────────────────────────────────────────────────────────
@@ -772,3 +824,289 @@ class _NutrientCyclePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _NutrientCyclePainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each card draws the LITERAL board
+// (reservoir orbs, process edges + arrowheads, the lit GOLD target, the
+// travelling atom, the FLOW meter) with the SAME primitives + palette the live
+// painter uses, so newcomers see exactly what they will meet in play.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Node positions on a ring (mirrors `_recomputeLayout`).
+List<Offset> _legRing(Offset center, double ringR, int n) => [
+      for (var i = 0; i < n; i++)
+        center +
+            Offset(
+              math.cos(-math.pi / 2 + i * 2 * math.pi / n) * ringR,
+              math.sin(-math.pi / 2 + i * 2 * math.pi / n) * ringR,
+            ),
+    ];
+
+/// A directed process edge (faint by default; brighter + named when [active]).
+void _legEdge(Canvas canvas, Offset a, Offset b, double nodeR, Color color,
+    {bool active = false, String? process}) {
+  final dir = b - a;
+  final len = dir.distance;
+  if (len < 1) return;
+  final u = dir / len;
+  final p0 = a + u * (nodeR + 2);
+  final p1 = b - u * (nodeR + 6);
+  canvas.drawLine(
+    p0,
+    p1,
+    Paint()
+      ..color = (active ? color : Colors.white)
+          .withValues(alpha: active ? 0.55 : 0.14)
+      ..strokeWidth = active ? 2.4 : 1.2
+      ..strokeCap = StrokeCap.round,
+  );
+  final perp = Offset(-u.dy, u.dx);
+  final ah = active ? 7.0 : 5.0;
+  final base = p1 - u * ah;
+  final path = Path()
+    ..moveTo(p1.dx, p1.dy)
+    ..lineTo(base.dx + perp.dx * ah * 0.5, base.dy + perp.dy * ah * 0.5)
+    ..lineTo(base.dx - perp.dx * ah * 0.5, base.dy - perp.dy * ah * 0.5)
+    ..close();
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = (active ? color : Colors.white)
+          .withValues(alpha: active ? 0.7 : 0.18),
+  );
+  if (active && process != null) {
+    final mid = Offset.lerp(p0, p1, 0.5)! + perp * 9;
+    GameFx.text(canvas, process, mid, 8.5, color.withValues(alpha: 0.9),
+        weight: FontWeight.w800);
+  }
+}
+
+/// A reservoir orb (icon + name). Gold beacon when [target]; white rim when
+/// [current]; soft ring when [reachable].
+void _legNode(Canvas canvas, Offset c, double r, Color color, _Reservoir res,
+    {bool current = false,
+    bool target = false,
+    bool reachable = false,
+    bool showLabel = true}) {
+  if (target) {
+    canvas.drawCircle(
+        c,
+        r + 14,
+        Paint()
+          ..color = Potatuhs.gold.withValues(alpha: 0.16)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10));
+    canvas.drawCircle(
+        c,
+        r + 8,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.6
+          ..color = Potatuhs.gold.withValues(alpha: 0.7));
+    GameFx.text(canvas, 'TARGET', c.translate(0, -r - 14), 8.5, Potatuhs.gold,
+        weight: FontWeight.w800);
+  } else if (reachable) {
+    canvas.drawCircle(
+        c,
+        r + 5,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = color.withValues(alpha: 0.4));
+  }
+  GameFx.orb(canvas, c, r,
+      current ? color : Color.lerp(color, Potatuhs.ink, 0.5)!,
+      glow: current ? 1.0 : 0.35, specular: false);
+  if (current) {
+    canvas.drawCircle(
+        c,
+        r + 3,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.2
+          ..color = Colors.white.withValues(alpha: 0.7));
+  }
+  _legIcon(canvas, res.icon, c.translate(0, -2), r * 0.7,
+      Colors.white.withValues(alpha: 0.92));
+  if (showLabel) {
+    GameFx.text(canvas, res.name, c.translate(0, r + 10), 9,
+        Colors.white.withValues(alpha: current ? 0.95 : 0.7),
+        weight: FontWeight.w800);
+  }
+}
+
+/// The travelling atom (element symbol on a bright orb).
+void _legAtom(Canvas canvas, Offset pos, double r, _Cycle cycle) {
+  GameFx.orb(canvas, pos, r, Color.lerp(cycle.color, Colors.white, 0.55)!,
+      glow: 1.2);
+  GameFx.text(canvas, cycle.symbol, pos.translate(0, 0.5),
+      cycle.symbol.length > 1 ? 8.5 : 12, Potatuhs.ink,
+      weight: FontWeight.w800);
+}
+
+void _legIcon(Canvas canvas, IconData icon, Offset center, double sz,
+    Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontSize: sz,
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// The draining FLOW ("energy") meter, drawn at [frac] full.
+void _legFlowMeter(Canvas canvas, Size size, double frac, Color color) {
+  const pad = 16.0;
+  final y = size.height * 0.12;
+  final barW = size.width - pad * 2;
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(pad, y, barW, 7), const Radius.circular(4)),
+      Paint()..color = Colors.white.withValues(alpha: 0.08));
+  final col = Color.lerp(Potatuhs.orange, color, frac)!;
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(pad, y, barW * frac.clamp(0.0, 1.0), 7),
+          const Radius.circular(4)),
+      Paint()..color = col);
+  GameFx.text(canvas, 'FLOW', Offset(pad + 14, y - 9), 9,
+      Colors.white.withValues(alpha: 0.55),
+      weight: FontWeight.w800);
+}
+
+/// Draw the whole cycle board (edges → nodes → atom).
+void _legBoard(Canvas canvas, _Cycle cycle, List<Offset> pos, double nodeR,
+    {required int current,
+    required int target,
+    Offset? atomPos,
+    bool showProcess = true,
+    bool showLabel = true}) {
+  final reachable = {for (final e in cycle.edges) if (e.from == current) e.to};
+  for (final e in cycle.edges) {
+    _legEdge(canvas, pos[e.from], pos[e.to], nodeR, cycle.color,
+        active: e.from == current, process: showProcess ? e.process : null);
+  }
+  for (var i = 0; i < cycle.nodes.length; i++) {
+    _legNode(canvas, pos[i], nodeR, cycle.color, cycle.nodes[i],
+        current: i == current,
+        target: i == target,
+        reachable: reachable.contains(i),
+        showLabel: showLabel);
+  }
+  _legAtom(canvas, atomPos ?? pos[current], nodeR * 0.42, cycle);
+}
+
+// ── Card 1: the board + route verb ──────────────────────────────────────────
+void _legendBoard(Canvas canvas, Size size) {
+  if (size.width < 2 || size.height < 2) return;
+  const cycle = _kCarbon;
+  final center = Offset(size.width / 2, size.height * 0.54);
+  final ringR = math.min(size.width * 0.30, size.height * 0.28);
+  final nodeR = (ringR * 0.30).clamp(14.0, 28.0);
+  final pos = _legRing(center, ringR, cycle.nodes.length);
+  _legBoard(canvas, cycle, pos, nodeR, current: 0, target: 3);
+  GameFx.text(canvas, '${cycle.element} CYCLE',
+      Offset(size.width / 2, size.height * 0.10), 13, cycle.color,
+      weight: FontWeight.w800);
+}
+
+// ── Card 2: reach the gold target to deliver ────────────────────────────────
+void _legendDeliver(Canvas canvas, Size size) {
+  if (size.width < 2 || size.height < 2) return;
+  const cycle = _kCarbon;
+  final center = Offset(size.width / 2, size.height * 0.54);
+  final ringR = math.min(size.width * 0.30, size.height * 0.28);
+  final nodeR = (ringR * 0.30).clamp(14.0, 28.0);
+  final pos = _legRing(center, ringR, cycle.nodes.length);
+  final atom = Offset.lerp(pos[2], pos[0], 0.55)!;
+  _legBoard(canvas, cycle, pos, nodeR, current: 2, target: 0, atomPos: atom);
+  GameFx.text(canvas, 'DELIVERED +$_kDeliveryBonus',
+      Offset(size.width / 2, size.height * 0.10), 13, Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+// ── Card 3: dead end + draining flow ────────────────────────────────────────
+void _legendDeadEnd(Canvas canvas, Size size) {
+  if (size.width < 2 || size.height < 2) return;
+  const cycle = _kCarbon;
+  final center = Offset(size.width / 2, size.height * 0.57);
+  final ringR = math.min(size.width * 0.30, size.height * 0.27);
+  final nodeR = (ringR * 0.30).clamp(14.0, 28.0);
+  final pos = _legRing(center, ringR, cycle.nodes.length);
+  _legFlowMeter(canvas, size, 0.26, cycle.color);
+  _legBoard(canvas, cycle, pos, nodeR, current: 0, target: -1);
+  // A tap on a pool with no process from here — the DEAD END.
+  const dead = 2;
+  final c = pos[dead];
+  final s = nodeR * 0.5;
+  final p = Paint()
+    ..color = Potatuhs.orange
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(c.translate(-s, -s), c.translate(s, s), p);
+  canvas.drawLine(c.translate(s, -s), c.translate(-s, s), p);
+  GameFx.text(canvas, 'DEAD END', c.translate(0, -nodeR - 14), 9,
+      Potatuhs.orange,
+      weight: FontWeight.w800);
+}
+
+// ── Card 4: the element switches — new cycle, more pressure ──────────────────
+void _legendSwitch(Canvas canvas, Size size) {
+  if (size.width < 2 || size.height < 2) return;
+  const cycle = _kNitrogen; // a bigger cycle (5 pools) = more to read
+  final center = Offset(size.width / 2, size.height * 0.42);
+  final ringR = math.min(size.width * 0.26, size.height * 0.22);
+  final nodeR = (ringR * 0.30).clamp(11.0, 22.0);
+  final pos = _legRing(center, ringR, cycle.nodes.length);
+  _legBoard(canvas, cycle, pos, nodeR,
+      current: 0, target: 3, showProcess: false, showLabel: false);
+  GameFx.text(canvas, 'ELEMENT SWITCHES',
+      Offset(size.width / 2, size.height * 0.70), 10, Potatuhs.gold,
+      weight: FontWeight.w800);
+  // The rotation of elements/cycles you cycle through.
+  final n = _kCycles.length;
+  final gap = size.width / (n + 1);
+  final cy = size.height * 0.87;
+  for (var i = 0; i < n; i++) {
+    final cx = gap * (i + 1);
+    final cc = _kCycles[i];
+    GameFx.orb(canvas, Offset(cx, cy), 12,
+        i == 0 ? cc.color : Color.lerp(cc.color, Potatuhs.ink, 0.4)!,
+        glow: i == 0 ? 0.8 : 0.3, specular: false);
+    GameFx.text(canvas, cc.symbol, Offset(cx, cy),
+        cc.symbol.length > 1 ? 7 : 11, Potatuhs.ink,
+        weight: FontWeight.w800);
+    if (i < n - 1) {
+      canvas.drawLine(
+        Offset(cx + 13, cy),
+        Offset(gap * (i + 2) - 13, cy),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.28)
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+  }
+}
+
+/// The visual manual for Nutrient Cycle — wired into the registry spec.
+final List<LegendFrame> nutrientCycleLegendFrames = [
+  const LegendFrame(
+      caption: 'Route one atom around the cycle of reservoirs',
+      paint: _legendBoard),
+  const LegendFrame(
+      caption: 'Tap process edges to the GOLD target: DELIVER +5',
+      paint: _legendDeliver),
+  const LegendFrame(
+      caption: 'No process = DEAD END; keep FLOW from draining',
+      paint: _legendDeadEnd),
+  const LegendFrame(
+      caption: 'Deliver 3x and the whole element switches',
+      paint: _legendSwitch),
+];

@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../../fx.dart';
 import '../../mini_game.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 
@@ -96,14 +97,44 @@ class _BitMemoryGameState extends State<BitMemoryGame> {
   void initState() {
     super.initState();
     _session.addListener(_onSession);
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    _session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (_session.autoPilot == _autoStep) _session.autoPilot = null;
     _session.removeListener(_onSession);
     _windowTimer?.cancel();
     _resultTimer?.cancel();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays Bit Memory
+  /// *correctly*, not randomly: it dismisses the education card, lets the
+  /// memorize window show the bits (it already knows them — [_bits]), then
+  /// replays the exact string one bit per tick. The host owns the clock, so the
+  /// round still ends on time; the bot just banks real points until it does.
+  void _autoStep() {
+    if (!_session.isRunning) return;
+    switch (_phase) {
+      case _Phase.milestone:
+        _dismissMilestone(); // clear the teaching card
+        break;
+      case _Phase.answer:
+        // Enter the correct next bit; completing the string resolves the level.
+        if (_answerIndex < _bits.length) _onBit(_bits[_answerIndex]);
+        break;
+      case _Phase.memorize:
+      // Let the memorize window run its course (showing the bits) — it
+      // auto-advances to the answer phase on its own timer.
+      case _Phase.ready:
+      case _Phase.result:
+        break; // nothing to do; the game self-advances
+    }
   }
 
   void _onSession() {
@@ -552,7 +583,7 @@ class _BitMemoryGameState extends State<BitMemoryGame> {
           border: Border.all(color: _kAccent.withValues(alpha: 0.3)),
         ),
         child: Text(t,
-            style: TextStyle(
+            style: const TextStyle(
               fontFamily: Potatuhs.bodyFont,
               fontSize: 12,
               fontWeight: FontWeight.w700,
@@ -636,6 +667,215 @@ class _Milestone {
     this.table = const [],
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME components
+// the live game shows (bit cells in _kZero/_kOne, the 0/1 pad, the pips, the
+// memorize time bar), never abstract diagrams.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One bit tile — mirrors [_BitMemoryGameState._bitCell] exactly.
+void _legendBitCell(Canvas canvas, Offset center, double side, int b,
+    {bool dim = false}) {
+  final color = b == 1 ? _kOne : _kZero;
+  final rect = Rect.fromCenter(center: center, width: side, height: side);
+  final rrect = RRect.fromRectAndRadius(rect, Radius.circular(side * 0.25));
+  canvas.drawRRect(
+      rrect, Paint()..color = color.withValues(alpha: dim ? 0.10 : 0.18));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = color.withValues(alpha: dim ? 0.30 : 0.55),
+  );
+  GameFx.text(canvas, '$b', center, side * 0.55,
+      color.withValues(alpha: dim ? 0.6 : 1.0),
+      weight: FontWeight.w800);
+}
+
+/// A row of bit tiles centred on [center].
+void _legendBitRow(Canvas canvas, Offset center, double side, List<int> bits,
+    {bool dim = false}) {
+  final gap = side * 0.18;
+  final total = bits.length * side + (bits.length - 1) * gap;
+  var x = center.dx - total / 2 + side / 2;
+  for (final b in bits) {
+    _legendBitCell(canvas, Offset(x, center.dy), side, b, dim: dim);
+    x += side + gap;
+  }
+}
+
+/// One big input button — mirrors [_BitMemoryGameState._bitButton].
+void _legendBitButton(Canvas canvas, Rect r, int value, Color color) {
+  final rrect = RRect.fromRectAndRadius(r, const Radius.circular(16));
+  canvas.drawRRect(rrect, Paint()..color = color.withValues(alpha: 0.14));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = color.withValues(alpha: 0.6),
+  );
+  GameFx.text(canvas, '$value', r.center, r.height * 0.44, color,
+      display: true);
+}
+
+/// One answer-progress pip — mirrors [_BitMemoryGameState._progress].
+void _legendPip(Canvas canvas, Offset c, double r, bool filled) {
+  canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..color = filled ? _kAccent : Colors.white.withValues(alpha: 0.08));
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = _kAccent.withValues(alpha: filled ? 0.9 : 0.3),
+  );
+}
+
+/// Frame 1 — MEMORIZE: the bit string, the shrinking window bar, GO.
+void _legendMemorize(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  GameFx.text(canvas, 'MEMORIZE', Offset(w * 0.5, h * 0.12), 12, _kAccent,
+      weight: FontWeight.w800);
+
+  // Shrinking time bar (drawn ~60% elapsed, same accent as the live bar).
+  final bar = Rect.fromLTWH(w * 0.18, h * 0.22, w * 0.64, 8);
+  canvas.drawRRect(RRect.fromRectAndRadius(bar, const Radius.circular(6)),
+      Paint()..color = Colors.white.withValues(alpha: 0.08));
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(bar.left, bar.top, bar.width * 0.6, bar.height),
+        const Radius.circular(6)),
+    Paint()..color = _kAccent,
+  );
+
+  // The bits to memorize.
+  final side = (w * 0.13).clamp(18.0, 40.0);
+  _legendBitRow(canvas, Offset(w * 0.5, h * 0.48), side, const [1, 0, 1, 1]);
+
+  // The GO shortcut.
+  final go = Rect.fromCenter(
+      center: Offset(w * 0.5, h * 0.80), width: w * 0.4, height: h * 0.16);
+  final goR = RRect.fromRectAndRadius(go, Radius.circular(go.height / 2));
+  canvas.drawRRect(goR, Paint()..color = _kAccent.withValues(alpha: 0.16));
+  canvas.drawRRect(
+    goR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _kAccent.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, 'GO', go.center, go.height * 0.42, _kAccent,
+      display: true);
+}
+
+/// Frame 2 — ANSWER: bits hide (pips count entries), tap 0 / 1 in order.
+void _legendAnswer(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  GameFx.text(canvas, 'PLAY IT BACK', Offset(w * 0.5, h * 0.12), 12, _kOne,
+      weight: FontWeight.w800);
+
+  // Progress pips — 2 of 4 entered; the values stay hidden.
+  final pr = (w * 0.03).clamp(5.0, 10.0);
+  final gap = pr * 3.2;
+  final startX = w * 0.5 - gap * 1.5;
+  for (int i = 0; i < 4; i++) {
+    _legendPip(canvas, Offset(startX + gap * i, h * 0.32), pr, i < 2);
+  }
+
+  // The two big input buttons.
+  final btnW = w * 0.36, btnH = h * 0.42;
+  _legendBitButton(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(w * 0.29, h * 0.68), width: btnW, height: btnH),
+      0,
+      _kZero);
+  _legendBitButton(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(w * 0.71, h * 0.68), width: btnW, height: btnH),
+      1,
+      _kOne);
+}
+
+/// Frame 3 — SCORE + ESCALATION: clear it for length×10, string doubles.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  GameFx.text(canvas, 'CORRECT', Offset(w * 0.5, h * 0.14), 22, _kAccent,
+      display: true);
+  GameFx.text(canvas, '+40', Offset(w * 0.5, h * 0.32), 16, Potatuhs.gold,
+      display: true);
+
+  // The ladder: this level's string, then next level's — twice as long.
+  final side = (w * 0.105).clamp(14.0, 32.0);
+  _legendBitRow(canvas, Offset(w * 0.5, h * 0.55), side, const [0, 1, 1, 0]);
+  // Downward chevron between the rows.
+  final p = Paint()
+    ..color = _kAccent
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final cx = w * 0.5, cy = h * 0.70;
+  canvas.drawLine(Offset(cx - 8, cy - 5), Offset(cx, cy + 4), p);
+  canvas.drawLine(Offset(cx + 8, cy - 5), Offset(cx, cy + 4), p);
+  _legendBitRow(canvas, Offset(w * 0.5, h * 0.86), side * 0.78,
+      const [1, 0, 0, 1, 1, 1, 0, 1]);
+}
+
+/// Frame 4 — DANGER: one wrong bit fails the try; the string is revealed.
+void _legendWrong(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final w = size.width, h = size.height;
+  GameFx.text(canvas, 'WRONG', Offset(w * 0.5, h * 0.16), 22, Colors.redAccent,
+      display: true);
+  GameFx.text(canvas, 'the string was', Offset(w * 0.5, h * 0.36), 12,
+      Potatuhs.textSecondary);
+  final side = (w * 0.12).clamp(16.0, 36.0);
+  _legendBitRow(canvas, Offset(w * 0.5, h * 0.56), side, const [1, 1, 0, 1],
+      dim: true);
+  // The knock-back tag, styled like the header level tag.
+  final tag = Rect.fromCenter(
+      center: Offset(w * 0.5, h * 0.84), width: w * 0.42, height: h * 0.14);
+  final tagR = RRect.fromRectAndRadius(tag, const Radius.circular(8));
+  canvas.drawRRect(
+      tagR, Paint()..color = Colors.redAccent.withValues(alpha: 0.10));
+  canvas.drawRRect(
+    tagR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = Colors.redAccent.withValues(alpha: 0.45),
+  );
+  GameFx.text(canvas, 'LEVEL −1', tag.center, tag.height * 0.5,
+      Colors.redAccent,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Bit Memory — wired into the registry spec.
+final List<LegendFrame> bitMemoryLegendFrames = [
+  const LegendFrame(
+      caption: 'Memorize the bits — tap GO once you have them',
+      paint: _legendMemorize),
+  const LegendFrame(
+      caption: 'Bits hide: tap 0 and 1 to replay them in order',
+      paint: _legendAnswer),
+  const LegendFrame(
+      caption: 'Clear it: +10 per bit, next string is DOUBLE',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'One wrong bit ends the try — knocked back a level',
+      paint: _legendWrong),
+];
 
 /// A small, isolated shrinking time bar. Animates 1→0 over [seconds] using a
 /// single [TweenAnimationBuilder] so the memorize countdown never rebuilds the

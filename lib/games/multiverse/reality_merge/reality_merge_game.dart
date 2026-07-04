@@ -92,7 +92,7 @@ const List<_Prop> _rmOrder = [
 
 class RealityMergeGame extends StatefulWidget {
   final MiniGameSession session;
-  const RealityMergeGame({Key? key, required this.session}) : super(key: key);
+  const RealityMergeGame({super.key, required this.session});
 
   @override
   State<RealityMergeGame> createState() => _RealityMergeGameState();
@@ -163,12 +163,64 @@ class _RealityMergeGameState extends State<RealityMergeGame>
       ..forward();
     _lastWall = _now();
     _newAttempt(first: true);
+
+    // ATTRACT autopilot: this game knows how to time its own locks. The host
+    // calls it on the autopilot cadence (~250ms) while running; it is a no-op
+    // during hands-on play. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One competent hands-free lock per host tick (~250ms). This is a TIMING
+  /// game: the live property sweeps as a triangle wave and can pass clean
+  /// through the target between two ticks, so "lock if aligned now" would miss
+  /// its closest approach most of the time. Instead we read the live value and
+  /// its sweep, then look exactly one tick ahead:
+  ///
+  ///   • Only ever lock when locking NOW already scores — i.e. the current
+  ///     error (via the game's own [_propError]) is inside the scoring band
+  ///     ([_rmOkErr]). Locking while the value is far off is a 0-point OFF lock,
+  ///     so we never do it.
+  ///   • Among the ticks inside that band, lock on the LOCAL MINIMUM of error:
+  ///     only when NOW is at least as close to the target as the NEXT tick will
+  ///     be (`errNow <= errNext`). If a tighter tick is still ahead we wait for
+  ///     it — this prefers PERFECT/GREAT and guarantees a positive score.
+  ///
+  /// Reuses the game's own lock handler ([_onTap]) so there is exactly one place
+  /// that freezes the value and scores it. Deterministic; no synthetic taps.
+  void _autoStep() {
+    if (!widget.session.isRunning || _size == Size.zero) return;
+    // Nothing live to lock: mid-merge celebration or fully-locked attempt.
+    if (_merging || _liveIdx < 0 || _liveIdx >= _activeDims) return;
+    // Respect the tap guard so we don't waste a tick on a no-op lock.
+    if (_sinceLock < _rmTapGuard) return;
+
+    final prop = _rmOrder[_liveIdx];
+    final tgt = _target[prop]!;
+
+    // The host drives this on ~250ms cadence; look exactly one window ahead.
+    const window = 0.25;
+    final valueNow = _liveValue();
+    final errNow = _propError(prop, valueNow, tgt);
+    if (errNow > _rmOkErr) return; // off-target → a lock would score nothing.
+
+    // Predict the value one tick from now by advancing the sweep phase, then
+    // measure its error with the same property-aware metric the lock uses.
+    final nextT = _sweepT + window / _sweepPeriod();
+    final valueNext = _sweepLo + (_sweepHi - _sweepLo) * _tri(nextT);
+    final errNext = _propError(prop, valueNext, tgt);
+
+    // A tighter tick is still ahead → wait for it rather than settle now.
+    if (errNow > errNext) return;
+
+    _onTap();
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
@@ -574,12 +626,6 @@ class _RMPainter extends CustomPainter {
     required this.pops,
   });
 
-  /// Map a hue-norm (0..1) to a readable saturated color.
-  Color _hueColor(double hueNorm, {double sat = 0.62, double val = 1.0}) {
-    final h = (hueNorm % 1.0) * 360.0;
-    return HSVColor.fromAHSV(1.0, h.isFinite ? h : 0.0, sat, val).toColor();
-  }
-
   @override
   void paint(Canvas canvas, Size size) {
     GameFx.atmosphere(canvas, size, _rmAccent, clock, motes: 40);
@@ -587,9 +633,9 @@ class _RMPainter extends CustomPainter {
     // ── Target (ghost) ring ────────────────────────────────────────────────
     final tCenter = centerFor(target[_Prop.x]!, target[_Prop.y]!);
     final tRadius = radiusFor(target[_Prop.size]!);
-    final tHue = _hueColor(target[_Prop.hue]!, sat: 0.35, val: 0.72);
+    final tHue = _RMArt.hueColor(target[_Prop.hue]!, sat: 0.35, val: 0.72);
     if (_okRect(tCenter, tRadius)) {
-      _drawGhostRing(canvas, tCenter, tRadius, target[_Prop.rotation]!, tHue);
+      _RMArt.ghostRing(canvas, tCenter, tRadius, target[_Prop.rotation]!, tHue);
     }
 
     // ── Your (bright) ring ─────────────────────────────────────────────────
@@ -598,9 +644,10 @@ class _RMPainter extends CustomPainter {
     final mHueNorm = activeDims > _rmOrder.indexOf(_Prop.hue)
         ? mine[_Prop.hue]!
         : target[_Prop.hue]!;
-    final mColor = _hueColor(mHueNorm, sat: 0.72, val: 1.0);
+    final mColor = _RMArt.hueColor(mHueNorm, sat: 0.72, val: 1.0);
     if (_okRect(mCenter, mRadius)) {
-      _drawLiveRing(canvas, mCenter, mRadius, mine[_Prop.rotation]!, mColor);
+      _RMArt.liveRing(canvas, mCenter, mRadius, mine[_Prop.rotation]!, mColor,
+          lockPulse: lockPulse);
     }
 
     // ── Merge celebration: collapsing bright rings into one ────────────────
@@ -640,9 +687,25 @@ class _RMPainter extends CustomPainter {
   bool _okRect(Offset c, double r) =>
       c.dx.isFinite && c.dy.isFinite && r.isFinite && r > 1.0;
 
-  // ── ring drawing ─────────────────────────────────────────────────────────
+  @override
+  bool shouldRepaint(covariant _RMPainter old) => true;
+}
 
-  void _drawGhostRing(
+// ═══════════════════════════════════════════════════════════════════════════
+// _RMArt — the ring component draws, shared by the live painter and the visual
+// manual so the manual shows the EXACT ghost/bright rings the player will meet.
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _RMArt {
+  _RMArt._();
+
+  /// Map a hue-norm (0..1) to a readable saturated color.
+  static Color hueColor(double hueNorm, {double sat = 0.62, double val = 1.0}) {
+    final h = (hueNorm % 1.0) * 360.0;
+    return HSVColor.fromAHSV(1.0, h.isFinite ? h : 0.0, sat, val).toColor();
+  }
+
+  static void ghostRing(
       Canvas canvas, Offset c, double r, double rotNorm, Color hue) {
     // Faint filled disc so the target reads as a "dim other reality."
     canvas.drawCircle(
@@ -651,7 +714,7 @@ class _RMPainter extends CustomPainter {
       Paint()..color = _rmGhost.withValues(alpha: 0.05),
     );
     // Dashed ghost outline.
-    _dashedRing(canvas, c, r, _rmGhost.withValues(alpha: 0.45), 1.6);
+    dashedRing(canvas, c, r, _rmGhost.withValues(alpha: 0.45), 1.6);
     // Subtle hue hint on the ring so a hue mismatch is legible.
     canvas.drawCircle(
       c,
@@ -662,7 +725,7 @@ class _RMPainter extends CustomPainter {
         ..color = hue.withValues(alpha: 0.18),
     );
     // Target notch (rotation marker) — a ghosted tick at the rotation angle.
-    _drawNotch(canvas, c, r, rotNorm, _rmGhost.withValues(alpha: 0.6), 2.2);
+    notch(canvas, c, r, rotNorm, _rmGhost.withValues(alpha: 0.6), 2.2);
     // Center crosshair so position alignment is readable.
     final cp = Paint()
       ..color = _rmGhost.withValues(alpha: 0.4)
@@ -671,8 +734,9 @@ class _RMPainter extends CustomPainter {
     canvas.drawLine(c.translate(0, -6), c.translate(0, 6), cp);
   }
 
-  void _drawLiveRing(
-      Canvas canvas, Offset c, double r, double rotNorm, Color color) {
+  static void liveRing(
+      Canvas canvas, Offset c, double r, double rotNorm, Color color,
+      {double lockPulse = 0}) {
     // Lock-snap pulse expands a faint echo.
     if (lockPulse > 0) {
       canvas.drawCircle(
@@ -714,14 +778,14 @@ class _RMPainter extends CustomPainter {
         ..color = Colors.white.withValues(alpha: 0.35),
     );
     // Rotation notch — a bright marker bump the player aligns to the target's.
-    _drawNotch(canvas, c, r, rotNorm, Colors.white.withValues(alpha: 0.95), 3.2,
+    notch(canvas, c, r, rotNorm, Colors.white.withValues(alpha: 0.95), 3.2,
         bulb: true, bulbColor: color);
     // Center dot.
     canvas.drawCircle(c, 3.0, Paint()..color = color.withValues(alpha: 0.9));
   }
 
   /// A radial tick (and optional bulb) at angle [rotNorm] (0..1 of a turn).
-  void _drawNotch(Canvas canvas, Offset c, double r, double rotNorm,
+  static void notch(Canvas canvas, Offset c, double r, double rotNorm,
       Color color, double width,
       {bool bulb = false, Color? bulbColor}) {
     final ang = (rotNorm % 1.0) * 2 * pi - pi / 2; // 0 = top
@@ -752,7 +816,8 @@ class _RMPainter extends CustomPainter {
     }
   }
 
-  void _dashedRing(Canvas canvas, Offset c, double r, Color color, double w) {
+  static void dashedRing(
+      Canvas canvas, Offset c, double r, Color color, double w) {
     if (r <= 1) return;
     const segments = 48;
     final paint = Paint()
@@ -772,7 +837,161 @@ class _RMPainter extends CustomPainter {
       );
     }
   }
-
-  @override
-  bool shouldRepaint(covariant _RMPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components (same _RMArt the live painter uses).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Hue-norm used for the manual's bright ring — lands on the multiverse violet.
+const double _rmLegendHue = 0.72;
+
+/// Outward double-chevrons on the diagonals: "this dimension is sweeping."
+void _legendSweepChevrons(Canvas canvas, Offset c, double rInner, double rOuter) {
+  final p = Paint()
+    ..color = _rmAccent.withValues(alpha: 0.85)
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  for (int k = 0; k < 4; k++) {
+    final a = pi / 4 + k * pi / 2;
+    final dir = Offset(cos(a), sin(a));
+    final side = Offset(-dir.dy, dir.dx);
+    final tip = c + dir * (rInner + (rOuter - rInner) * 0.62);
+    canvas.drawLine(tip - dir * 7 + side * 5, tip, p);
+    canvas.drawLine(tip - dir * 7 - side * 5, tip, p);
+  }
+}
+
+/// One mini ghost+bright ring pair, mis-aligned per [dim] (index into _rmOrder).
+void _legendMiniPair(Canvas canvas, Offset c, double r, int dim) {
+  final ghostHue = _RMArt.hueColor(_rmLegendHue, sat: 0.35, val: 0.72);
+  const rot = 0.0; // notch up unless rotation is the mismatch
+  switch (dim) {
+    case 0: // SIZE — same centre, smaller bright ring.
+      _RMArt.ghostRing(canvas, c, r, rot, ghostHue);
+      _RMArt.liveRing(canvas, c, r * 0.55, rot, _RMArt.hueColor(_rmLegendHue));
+      break;
+    case 1: // X — bright ring shifted sideways.
+      _RMArt.ghostRing(canvas, c.translate(-r * 0.42, 0), r * 0.8, rot, ghostHue);
+      _RMArt.liveRing(canvas, c.translate(r * 0.42, 0), r * 0.8, rot,
+          _RMArt.hueColor(_rmLegendHue));
+      break;
+    case 2: // Y — bright ring shifted down.
+      _RMArt.ghostRing(canvas, c.translate(0, -r * 0.42), r * 0.8, rot, ghostHue);
+      _RMArt.liveRing(canvas, c.translate(0, r * 0.42), r * 0.8, rot,
+          _RMArt.hueColor(_rmLegendHue));
+      break;
+    case 3: // ROTATION — same ring, notches at different angles.
+      _RMArt.ghostRing(canvas, c, r, 0.0, ghostHue);
+      _RMArt.liveRing(canvas, c, r, 0.35, _RMArt.hueColor(_rmLegendHue));
+      break;
+    default: // HUE — aligned geometry, clashing colors.
+      _RMArt.ghostRing(canvas, c, r, rot, _RMArt.hueColor(0.35, sat: 0.5, val: 0.85));
+      _RMArt.liveRing(canvas, c, r, rot, _RMArt.hueColor(_rmLegendHue));
+  }
+}
+
+void _legendAlign(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.50);
+  final big = size.shortestSide * 0.34;
+  if (!big.isFinite || big <= 2) return;
+  // The dim other-reality target, and your bright ring off in ONE dimension.
+  _RMArt.ghostRing(
+      canvas, c, big, 0.1, _RMArt.hueColor(_rmLegendHue, sat: 0.35, val: 0.72));
+  _RMArt.liveRing(canvas, c, big * 0.55, 0.1, _RMArt.hueColor(_rmLegendHue));
+  _legendSweepChevrons(canvas, c, big * 0.55, big);
+  GameFx.text(canvas, 'TAP = LOCK', Offset(c.dx, size.height * 0.93), 11,
+      Colors.white.withValues(alpha: 0.85),
+      weight: FontWeight.w800);
+}
+
+void _legendMerge(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.52);
+  final r = size.shortestSide * 0.26;
+  if (!r.isFinite || r <= 2) return;
+  const bright = Color(0xFFB9AEFF); // celebration violet (same as in-game)
+  // Expanding merge echoes, exactly like the in-game celebration.
+  for (int k = 0; k < 3; k++) {
+    final t = 0.25 + k * 0.18;
+    canvas.drawCircle(
+      c,
+      r * (1.0 + t * 1.6),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.0 * (1 - t) + 0.5
+        ..color = bright.withValues(alpha: (1.0 - t) * 0.5),
+    );
+  }
+  // Rings fully aligned — one reality.
+  _RMArt.ghostRing(
+      canvas, c, r, 0.1, _RMArt.hueColor(_rmLegendHue, sat: 0.35, val: 0.72));
+  _RMArt.liveRing(canvas, c, r, 0.1, _RMArt.hueColor(_rmLegendHue));
+  GameFx.text(canvas, 'MERGE +60', Offset(c.dx, size.height * 0.10), 13, bright,
+      weight: FontWeight.w800);
+}
+
+void _legendDimensions(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const labels = ['SIZE', 'X', 'Y', 'ROT', 'HUE'];
+  final cellW = size.width / 5;
+  final r = min(cellW * 0.30, size.height * 0.18);
+  if (!r.isFinite || r <= 1.5) return;
+  final cy = size.height * 0.42;
+  for (int i = 0; i < 5; i++) {
+    final cx = cellW * (i + 0.5);
+    _legendMiniPair(canvas, Offset(cx, cy), r, i);
+    GameFx.text(canvas, labels[i], Offset(cx, size.height * 0.76), 10,
+        _rmAccent.withValues(alpha: 0.95),
+        weight: FontWeight.w800);
+  }
+  GameFx.text(canvas, '+1 DIMENSION EVERY 3 MERGES',
+      Offset(size.width * 0.5, size.height * 0.92), 10,
+      Colors.white.withValues(alpha: 0.75),
+      weight: FontWeight.w800);
+}
+
+void _legendScoring(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  // Same tier colors the in-game chips use.
+  const tiers = ['PERFECT', 'GREAT', 'OK'];
+  const pts = ['+100', '+55', '+22'];
+  const colors = [Color(0xFF69F0AE), Color(0xFF40C4FF), Color(0xFFFFD54F)];
+  final offs = [0.0, 0.28, 0.62]; // lock error grows left → right
+  final cellW = size.width / 3;
+  final r = min(cellW * 0.30, size.height * 0.20);
+  if (!r.isFinite || r <= 1.5) return;
+  final cy = size.height * 0.42;
+  final ghostHue = _RMArt.hueColor(_rmLegendHue, sat: 0.35, val: 0.72);
+  for (int i = 0; i < 3; i++) {
+    final c = Offset(cellW * (i + 0.5), cy);
+    _RMArt.ghostRing(canvas, c, r, 0.0, ghostHue);
+    _RMArt.liveRing(canvas, c.translate(r * offs[i], r * offs[i] * 0.4), r,
+        0.0, _RMArt.hueColor(_rmLegendHue));
+    GameFx.text(canvas, tiers[i], Offset(c.dx, size.height * 0.78), 10,
+        colors[i],
+        weight: FontWeight.w800);
+    GameFx.text(canvas, pts[i], Offset(c.dx, size.height * 0.90), 10,
+        Colors.white.withValues(alpha: 0.8),
+        weight: FontWeight.w800);
+  }
+}
+
+/// The visual manual for Reality Merge — wired into the registry spec.
+final List<LegendFrame> realityMergeLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap to lock your bright ring onto the ghost ring',
+      paint: _legendAlign),
+  const LegendFrame(
+      caption: 'Lock every dimension to MERGE for a big bonus',
+      paint: _legendMerge),
+  const LegendFrame(
+      caption: 'Every 3 merges adds a dimension: size→x→y→rot→hue',
+      paint: _legendDimensions),
+  const LegendFrame(
+      caption: 'Tighter locks score more: PERFECT · GREAT · OK',
+      paint: _legendScoring),
+];

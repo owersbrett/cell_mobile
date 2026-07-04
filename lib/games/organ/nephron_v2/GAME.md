@@ -1,4 +1,8 @@
-# Nephron v2 — GAME.md (the Manual)
+# Nephron — GAME.md (the Manual)
+
+> Promoted 2026-07-03: judged against base nephron (v1 deleted); registry/
+> catalog id is now the canonical `nephron`. Internal file/class names keep
+> the v2 suffix per the promotion pattern.
 
 **Scale:** organ · **Duration:** 60 s · **Score unit:** molecules
 **Win:** Highest score when time runs out.
@@ -37,6 +41,13 @@ Five levels over 60 s: faster flow, more molecule types, and — from level 3 �
 the friend/foe tell is **stripped**, so you must read labels. The top of the
 ramp is the **Na⁺ vs Na⁺·EXCESS** call: identical orb, only the label differs —
 exactly how the kidney discards surplus ions while keeping the amount you need.
+
+The spawn rate itself is an **eased curve** (gentle early, steep late; interval
+1.15 s → 0.40 s, curve exponent 1.35). At 40% progress a one-shot **SURGE!**
+cue fires and **cluster spawns** unlock: ~45% of spawns arrive as a wave of 2
+(3 from 75% progress), spread across the tubule and height-staggered, buying a
+slightly longer beat before the next wave. Clusters continue through the
+climax (interval floor 0.26 s) — a perfect run is humanly impossible at peak.
 
 ## Climax
 The final 10 s become a red **FINAL FLUSH** surge (points ×1.5) with one big

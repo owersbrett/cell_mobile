@@ -1,8 +1,22 @@
-# Superposition v2 — Manual (M)
+# Superposition — Manual (M)
 
-> UX-passed alternative to `superposition`. Same quantum-measurement lesson,
-> dialed-up fun. Ships as a sibling spec (`superposition_v2`) so both are
-> A/B-comparable in-app.
+> Promoted 2026-07-01: judged against base superposition (v1 deleted); the
+> registry/catalog id is the canonical `superposition`. Internal file/class
+> names keep the v2 suffix per the promotion pattern.
+
+## Two mechanics by platform
+- **Web / desktop** (and any non-iOS/Android target): the tap-timing wave game
+  described under Rules below. Fully mouse/tap playable — no sensors involved.
+- **iOS / Android**: a tilt-to-aim variant — the state vector is a line pinned
+  at the sphere's centre; tilt the phone (gravity vector, drift-free) to sweep
+  the tip onto the target pole, then tap to measure. Tolerance tightens with
+  level; from level 2 a "blink" eyelid masks the screen on a shrinking interval
+  and wobbles the target while you can't see.
+- **Drag-aim fallback (2026-07-03)**: on the tilt variant, dragging aims the
+  vector directly. If the accelerometer never emits (iOS simulator, emulators
+  without virtual sensors) drag is the SOLE control and the hint reads
+  **DRAG TO AIM**; on a real device a drag simply overrides tilt for ~3s, then
+  tilt re-takes the vector. Measuring is a clean tap (a drag never measures).
 
 ## One-liner
 A qubit oscillates between |↑⟩ and |↓⟩. Ride the wave up to the glowing pole and

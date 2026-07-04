@@ -65,7 +65,7 @@ and legible; don't let it fight the play field.
 
 ## 7. Reference bar (study these before building)
 Good, on-standard examples in `lib/games/arcade/`: `atom_builder.dart`,
-`grow_the_plant.dart`, `corners.dart`, `collider.dart`. Match that level of
+`corners.dart`, `collider.dart`, `hungry_cell.dart`. Match that level of
 layering, glow, motion, and readability. If your result looks flatter than
 those, it's not done.
 

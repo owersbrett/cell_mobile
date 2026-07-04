@@ -282,12 +282,33 @@ class _PowersOfTenGameState extends State<PowersOfTenGame>
       ..addListener(_tick)
       ..forward();
     _lastWall = _now();
+
+    // ATTRACT autopilot: this game knows each thing's true magnitude, so it can
+    // play itself perfectly — drop the marker exactly on the item's own [exp].
+    // Registered always (dormant in normal play — the host only calls it in
+    // autoplay). Each tick banks one correct placement, so pace it out.
+    widget.session.autoPilot = _autoStep;
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick. Only acts while an item is awaiting
+  /// placement: it snaps the marker to the item's TRUE magnitude ([_current.exp]
+  /// — the field [_drop] scores against) and drops, banking a PERFECT. The
+  /// reveal phase self-advances via [_tick]; ready self-starts. Never wrong,
+  /// never random, one move per call.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_local != _Local.placing || _current == null) return;
+    _markerExp = _current!.exp; // correct scale for the current item
+    _drop(); // the game's own place/score handler
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
@@ -722,3 +743,279 @@ class _PoTPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _PoTPainter oldDelegate) => false;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the game's REAL components
+// (the log ladder with 10ⁿ gridlines + anchors, the draggable marker, the
+// reveal error band + ✓ truth orb) in the game's own style. Static + cheap:
+// rendered once on the intro screen, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool _lgDegenerate(Size size) =>
+    size.width <= 0 ||
+    size.height <= 0 ||
+    !size.width.isFinite ||
+    !size.height.isFinite;
+
+double _lgY(double e, double lo, double hi, double top, double bot) =>
+    bot - (e - lo) / (hi - lo) * (bot - top);
+
+/// Ladder spine + decade gridlines + faint named anchors — same recipe as
+/// [_PoTPainter._drawLadder], parameterised for a static card.
+void _lgSpine(
+  Canvas canvas,
+  double x,
+  double top,
+  double bot, {
+  required double lo,
+  required double hi,
+  required int tickStep,
+  List<MapEntry<double, String>> anchors = const [],
+  String? unit,
+}) {
+  canvas.drawLine(
+    Offset(x, top),
+    Offset(x, bot),
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.22)
+      ..strokeWidth = 2,
+  );
+  final startN = (lo / tickStep).ceil() * tickStep;
+  for (int n = startN; n <= hi + 0.001; n += tickStep) {
+    final y = _lgY(n.toDouble(), lo, hi, top, bot);
+    canvas.drawLine(
+      Offset(x - 6, y),
+      Offset(x + 6, y),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.18)
+        ..strokeWidth = 1,
+    );
+    GameFx.text(canvas, '10${_sup(n)}', Offset(x - 26, y), 11,
+        Colors.white.withValues(alpha: 0.55),
+        weight: FontWeight.w700);
+  }
+  if (unit != null) {
+    GameFx.text(
+        canvas, unit, Offset(x, top - 12), 9, Colors.white.withValues(alpha: 0.4));
+  }
+  for (final a in anchors) {
+    final y = _lgY(a.key, lo, hi, top, bot);
+    canvas.drawLine(
+      Offset(x, y),
+      Offset(x + 14, y),
+      Paint()
+        ..color = _accent.withValues(alpha: 0.25)
+        ..strokeWidth = 1,
+    );
+    GameFx.text(canvas, a.value, Offset(x + 14 + a.value.length * 3.2, y), 9,
+        _accent.withValues(alpha: 0.55));
+  }
+}
+
+/// The draggable marker — guide line, triangle handle on the spine, orb + glyph
+/// — same recipe as [_PoTPainter._drawMarker].
+void _lgMarker(Canvas canvas, double ladX, double gx, double y, String glyph,
+    Color color,
+    {double dim = 1.0, double r = 20}) {
+  canvas.drawLine(
+    Offset(ladX, y),
+    Offset(gx, y),
+    Paint()
+      ..color = color.withValues(alpha: 0.5 * dim)
+      ..strokeWidth = 1.5,
+  );
+  final tri = Path()
+    ..moveTo(ladX, y)
+    ..lineTo(ladX + 12, y - 7)
+    ..lineTo(ladX + 12, y + 7)
+    ..close();
+  canvas.drawPath(tri, Paint()..color = color.withValues(alpha: dim));
+  GameFx.orb(canvas, Offset(gx, y), r, color.withValues(alpha: 0.85 * dim),
+      glow: dim, specular: false);
+  GameFx.text(canvas, glyph, Offset(gx, y), r + 2,
+      Colors.white.withValues(alpha: dim));
+}
+
+// ── Frame 1: the verb — drag the marker onto the ladder ─────────────────────
+void _legendPlace(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  final w = size.width, h = size.height;
+  final ladX = w * 0.30, top = h * 0.18, bot = h * 0.90;
+  const lo = -12.0, hi = 24.0;
+  _lgSpine(canvas, ladX, top, bot,
+      lo: lo,
+      hi: hi,
+      tickStep: 10,
+      unit: 'meters',
+      anchors: const [
+        MapEntry(-10, 'atom'),
+        MapEntry(0, 'human'),
+        MapEntry(21, 'galaxy'),
+      ]);
+  GameFx.text(canvas, '🌍  Earth', Offset(w / 2, h * 0.075), 15, Colors.white,
+      weight: FontWeight.w800, glow: 0.4);
+  final gx = w * 0.64;
+  final y = _lgY(7, lo, hi, top, bot);
+  _lgMarker(canvas, ladX, gx, y, '🌍', _accent);
+  // drag chevrons above and below the orb
+  final p = Paint()
+    ..color = _accent
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(Offset(gx - 7, y - 32), Offset(gx, y - 40), p);
+  canvas.drawLine(Offset(gx + 7, y - 32), Offset(gx, y - 40), p);
+  canvas.drawLine(Offset(gx - 7, y + 32), Offset(gx, y + 40), p);
+  canvas.drawLine(Offset(gx + 7, y + 32), Offset(gx, y + 40), p);
+}
+
+// ── Frame 2: scoring — the reveal, a near-perfect drop ──────────────────────
+void _legendScore(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  final w = size.width, h = size.height;
+  final ladX = w * 0.28, top = h * 0.22, bot = h * 0.86;
+  const lo = 6.0, hi = 12.0;
+  _lgSpine(canvas, ladX, top, bot,
+      lo: lo,
+      hi: hi,
+      tickStep: 2,
+      unit: 'meters',
+      anchors: const [MapEntry(6.9, 'Earth')]);
+  final gx = w * 0.62;
+  final yDrop = _lgY(9.6, lo, hi, top, bot);
+  final yTrue = _lgY(9.14, lo, hi, top, bot);
+  // your drop (dimmed)
+  canvas.drawLine(
+      Offset(ladX, yDrop),
+      Offset(gx, yDrop),
+      Paint()
+        ..color = Colors.white24
+        ..strokeWidth = 1);
+  GameFx.text(canvas, '☀️', Offset(gx, yDrop), 16, Colors.white54);
+  // error band down to the truth
+  canvas.drawLine(
+      Offset(gx, yDrop),
+      Offset(gx, yTrue),
+      Paint()
+        ..color = _good.withValues(alpha: 0.5)
+        ..strokeWidth = 3);
+  // the truth marker
+  canvas.drawLine(
+      Offset(ladX, yTrue),
+      Offset(gx, yTrue),
+      Paint()
+        ..color = _good
+        ..strokeWidth = 2);
+  GameFx.orb(canvas, Offset(gx, yTrue), 18, _good, glow: 1.2, specular: false);
+  GameFx.text(canvas, '✓', Offset(gx, yTrue), 18, Colors.white,
+      weight: FontWeight.w900);
+  GameFx.text(canvas, 'PERFECT · +150', Offset(w / 2, h * 0.10), 16, _good,
+      weight: FontWeight.w800, glow: 0.6);
+  GameFx.text(canvas, 'The Sun · 1.39 million km', Offset(w / 2, h * 0.95), 11,
+      Colors.white, weight: FontWeight.w700);
+}
+
+// ── Frame 3: the penalty — a drop whole decades off the truth ───────────────
+void _legendMiss(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  final w = size.width, h = size.height;
+  final ladX = w * 0.28, top = h * 0.22, bot = h * 0.90;
+  const lo = -12.0, hi = 24.0;
+  _lgSpine(canvas, ladX, top, bot,
+      lo: lo,
+      hi: hi,
+      tickStep: 10,
+      unit: 'meters',
+      anchors: const [
+        MapEntry(-10, 'atom'),
+        MapEntry(21, 'galaxy'),
+      ]);
+  final gx = w * 0.62;
+  final yDrop = _lgY(14, lo, hi, top, bot); // whale dropped near planet scale
+  final yTrue = _lgY(1.4, lo, hi, top, bot);
+  // your drop (dimmed)
+  canvas.drawLine(
+      Offset(ladX, yDrop),
+      Offset(gx, yDrop),
+      Paint()
+        ..color = Colors.white24
+        ..strokeWidth = 1);
+  GameFx.text(canvas, '🐋', Offset(gx, yDrop), 16, Colors.white54);
+  // the huge error band
+  canvas.drawLine(
+      Offset(gx, yDrop),
+      Offset(gx, yTrue),
+      Paint()
+        ..color = _bad.withValues(alpha: 0.5)
+        ..strokeWidth = 3);
+  // the truth marker
+  canvas.drawLine(
+      Offset(ladX, yTrue),
+      Offset(gx, yTrue),
+      Paint()
+        ..color = _bad
+        ..strokeWidth = 2);
+  GameFx.orb(canvas, Offset(gx, yTrue), 18, _bad, glow: 1.2, specular: false);
+  GameFx.text(canvas, '✓', Offset(gx, yTrue), 18, Colors.white,
+      weight: FontWeight.w900);
+  GameFx.text(canvas, 'OFF · +0', Offset(w / 2, h * 0.095), 16, _bad,
+      weight: FontWeight.w800, glow: 0.6);
+  GameFx.text(canvas, '12.6 decades off · 🔥 streak → 0',
+      Offset(w / 2, h * 0.155), 11, Colors.white54);
+}
+
+// ── Frame 4: escalation — mass and time ladders rotate in ───────────────────
+void _legendKinds(Canvas canvas, Size size) {
+  if (_lgDegenerate(size)) return;
+  final w = size.width, h = size.height;
+  final top = h * 0.30, bot = h * 0.88;
+
+  // SIZE ladder
+  final xs = w * 0.18;
+  GameFx.text(canvas, 'SIZE · m', Offset(xs, h * 0.19), 10,
+      _accent.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+  _lgSpine(canvas, xs, top, bot,
+      lo: -15, hi: 25, tickStep: 20, anchors: const [MapEntry(-10, 'atom')]);
+  _lgMarker(canvas, xs, xs + 34, _lgY(6.9, -15, 25, top, bot), '🌍', _accent,
+      r: 13);
+
+  // MASS ladder
+  final xm = w * 0.50;
+  GameFx.text(canvas, 'MASS · kg', Offset(xm, h * 0.19), 10,
+      _accent.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+  _lgSpine(canvas, xm, top, bot,
+      lo: -31, hi: 54, tickStep: 40, anchors: const [MapEntry(30, 'Sun')]);
+  _lgMarker(canvas, xm, xm + 34, _lgY(5.18, -31, 54, top, bot), '🐋', _mid,
+      r: 13);
+
+  // TIME ladder
+  final xt = w * 0.82;
+  GameFx.text(canvas, 'TIME · s', Offset(xt, h * 0.19), 10,
+      _accent.withValues(alpha: 0.85),
+      weight: FontWeight.w700);
+  _lgSpine(canvas, xt, top, bot,
+      lo: -24, hi: 18, tickStep: 20, anchors: const [MapEntry(0, 'second')]);
+  _lgMarker(canvas, xt, xt + 34, _lgY(7.5, -24, 18, top, bot), '📅', _good,
+      r: 13);
+
+  GameFx.text(canvas, 'tolerances tighten every round',
+      Offset(w / 2, h * 0.075), 11, Colors.white54);
+}
+
+/// The visual manual for Powers of Ten — wired into the registry spec.
+final List<LegendFrame> powersOfTenLegendFrames = [
+  const LegendFrame(
+      caption: "Drag the marker to the thing's power of ten",
+      paint: _legendPlace),
+  const LegendFrame(
+      caption: 'Drop near the truth: up to +100, dead-on +50',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Miss the band: 0 points and your streak resets',
+      paint: _legendMiss),
+  const LegendFrame(
+      caption: 'Rounds add MASS then TIME · bands tighten',
+      paint: _legendKinds),
+];

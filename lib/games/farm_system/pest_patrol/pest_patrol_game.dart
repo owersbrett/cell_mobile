@@ -116,6 +116,19 @@ _PestType _prey(_BenType b) {
   }
 }
 
+/// Inverse of [_prey]: the correct beneficial to release on a given pest. Used
+/// by the ATTRACT autopilot so it only ever makes matching (never-spray) moves.
+_BenType _counter(_PestType p) {
+  switch (p) {
+    case _PestType.aphid:
+      return _BenType.ladybug;
+    case _PestType.mite:
+      return _BenType.lacewing;
+    case _PestType.caterpillar:
+      return _BenType.bird;
+  }
+}
+
 Color _pestColor(_PestType t) {
   switch (t) {
     case _PestType.aphid:
@@ -202,6 +215,236 @@ class _RepaintNotifier extends ChangeNotifier {
   void tick() => notifyListeners();
 }
 
+// ===========================================================================
+// Visual manual — the legend carousel cards. Each frame draws the LITERAL
+// in-game components (the same pests, beneficials, crops and spray button the
+// player meets) using this game's own constants + palette, so the intro shows
+// the real thing rather than an abstract diagram. Cheap + static: no ticker,
+// no state, size-guarded against degenerate boxes.
+// ===========================================================================
+
+/// A pest orb with legs and its type tell — mirrors `_drawPest`.
+void _legPest(Canvas canvas, Offset c, _PestType type,
+    {double r = _kPestRadius, double alpha = 1.0}) {
+  final color = _pestColor(type).withValues(alpha: alpha);
+  final leg = Paint()
+    ..color = Colors.black.withValues(alpha: 0.45 * alpha)
+    ..strokeWidth = 1.6
+    ..strokeCap = StrokeCap.round;
+  for (var i = -1; i <= 1; i++) {
+    canvas.drawLine(Offset(c.dx - r * 0.5, c.dy + i * 3),
+        Offset(c.dx - r - 3, c.dy + i * 4), leg);
+    canvas.drawLine(Offset(c.dx + r * 0.5, c.dy + i * 3),
+        Offset(c.dx + r + 3, c.dy + i * 4), leg);
+  }
+  GameFx.orb(canvas, c, r, color, glow: 0.5 * alpha);
+  if (type == _PestType.caterpillar) {
+    for (var k = 1; k <= 2; k++) {
+      canvas.drawCircle(Offset(c.dx, c.dy - k * 6.0), r * (0.8 - k * 0.12),
+          Paint()..color = color);
+    }
+  } else if (type == _PestType.mite) {
+    final eye = Paint()..color = Colors.white.withValues(alpha: 0.85 * alpha);
+    canvas.drawCircle(Offset(c.dx - 3, c.dy - 2), 1.6, eye);
+    canvas.drawCircle(Offset(c.dx + 3, c.dy - 2), 1.6, eye);
+  }
+}
+
+/// A released beneficial (emoji + hunting halo) — mirrors `_drawBen`.
+void _legBen(Canvas canvas, Offset c, _BenType type,
+    {double size = 22, double alpha = 1.0}) {
+  final color = _benColor(type);
+  canvas.drawCircle(
+      c,
+      16,
+      Paint()
+        ..color = color.withValues(alpha: 0.22 * alpha)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
+  _legGlyph(canvas, _benGlyph(type), c, size, alpha: alpha);
+}
+
+/// A pollinator bee — mirrors `_drawBee`.
+void _legBee(Canvas canvas, Offset c, {double alpha = 1.0}) {
+  GameFx.orb(canvas, c, 5, _kPollinator.withValues(alpha: alpha),
+      glow: 0.6 * alpha, specular: false);
+  final wing = Paint()..color = Colors.white.withValues(alpha: 0.45 * alpha);
+  canvas.drawOval(
+      Rect.fromCenter(center: Offset(c.dx - 4, c.dy - 3), width: 6, height: 4),
+      wing);
+  canvas.drawOval(
+      Rect.fromCenter(center: Offset(c.dx + 4, c.dy - 3), width: 6, height: 4),
+      wing);
+}
+
+/// A short crop row along [topY], tinted by [health] — mirrors `_drawCrops`.
+void _legCropRow(Canvas canvas, Size size, double topY, {double health = 1.0}) {
+  final color = Color.lerp(_kCropSick, _kCropHealthy, health)!;
+  const n = 7;
+  final dx = size.width / n;
+  final leaf = Paint()..color = color;
+  final stem = Paint()
+    ..color = Color.lerp(_kCropSick, const Color(0xFF2E6B2C), health)!
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  for (var i = 0; i < n; i++) {
+    final x = dx * (i + 0.5);
+    final h = 20 + health * 14;
+    canvas.drawLine(Offset(x, topY), Offset(x, topY - h), stem);
+    for (var k = 0; k < 3; k++) {
+      final ly = topY - h * (0.4 + 0.25 * k);
+      final side = k.isEven ? 1 : -1;
+      final tip = Offset(x + side * 9, ly - 3);
+      final path = Path()
+        ..moveTo(x, ly)
+        ..quadraticBezierTo(x + side * 6, ly - 7, tip.dx, tip.dy)
+        ..quadraticBezierTo(x + side * 5, ly + 1, x, ly);
+      canvas.drawPath(path, leaf);
+    }
+  }
+}
+
+/// Small text/emoji glyph — mirrors the painter's `_glyph`.
+void _legGlyph(Canvas canvas, String s, Offset center, double size,
+    {Color color = Colors.white, double alpha = 1.0}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: size,
+        fontWeight: FontWeight.w700,
+        color: color.withValues(alpha: alpha),
+      ),
+    ),
+    textDirection: ui.TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// A rightward arrow from [a] to [b].
+void _legArrow(Canvas canvas, Offset a, Offset b) {
+  final p = Paint()
+    ..color = Colors.white70
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(a, b, p);
+  canvas.drawLine(Offset(b.dx - 6, b.dy - 5), b, p);
+  canvas.drawLine(Offset(b.dx - 6, b.dy + 5), b, p);
+}
+
+// ---- the four cards --------------------------------------------------------
+
+/// Card 1 — the core verb: each pest is countered by one matching beneficial.
+void _legendPairs(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  const pests = [_PestType.aphid, _PestType.mite, _PestType.caterpillar];
+  const bens = [_BenType.ladybug, _BenType.lacewing, _BenType.bird];
+  for (var i = 0; i < pests.length; i++) {
+    final y = size.height * (0.24 + 0.26 * i);
+    _legPest(canvas, Offset(size.width * 0.26, y), pests[i]);
+    _legArrow(canvas, Offset(size.width * 0.40, y), Offset(size.width * 0.56, y));
+    _legBen(canvas, Offset(size.width * 0.70, y), bens[i]);
+  }
+}
+
+/// Card 2 — scoring: a matched beneficial eats pests (+points) over green crops.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legCropRow(canvas, size, size.height * 0.82, health: 1.0);
+  _legBee(canvas, Offset(size.width * 0.80, size.height * 0.54));
+  final pc = Offset(size.width * 0.42, size.height * 0.44);
+  _legPest(canvas, pc, _PestType.aphid, alpha: 0.45);
+  for (var i = 0; i < 6; i++) {
+    final a = i / 6 * math.pi * 2;
+    canvas.drawCircle(pc + Offset(math.cos(a), math.sin(a)) * 12, 2.2,
+        Paint()..color = _kAphid.withValues(alpha: 0.7));
+  }
+  _legBen(canvas, Offset(size.width * 0.30, size.height * 0.40), _BenType.ladybug);
+  GameFx.text(canvas, '+12', Offset(size.width * 0.54, size.height * 0.30), 18,
+      _kLadybug,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// Card 3 — the trap: SPRAY nukes the field but kills helpers/bees + resistance.
+void _legendSpray(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = Rect.fromCenter(
+      center: Offset(size.width * 0.5, size.height * 0.32),
+      width: size.width * 0.30,
+      height: size.height * 0.26);
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = _kDanger.withValues(alpha: 0.16));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = _kDanger.withValues(alpha: 0.7));
+  _legGlyph(canvas, '☠', Offset(r.center.dx, r.center.dy - 6), 26,
+      color: _kDanger);
+  GameFx.text(canvas, 'SPRAY', Offset(r.center.dx, r.bottom - 12), 11, _kDanger,
+      weight: FontWeight.w800);
+  // Casualties below — a faded helper + bee.
+  _legBen(canvas, Offset(size.width * 0.28, size.height * 0.64), _BenType.ladybug,
+      alpha: 0.4);
+  _legBee(canvas, Offset(size.width * 0.72, size.height * 0.64), alpha: 0.4);
+  // A resistance meter climbing.
+  final by = size.height * 0.86;
+  final bw = size.width * 0.6;
+  final bx = size.width * 0.2;
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(bx, by, bw, 8), const Radius.circular(4)),
+      Paint()..color = Colors.black.withValues(alpha: 0.5));
+  canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(bx, by, bw * 0.6, 8), const Radius.circular(4)),
+      Paint()..color = _kResistance);
+  GameFx.text(canvas, 'RESISTANCE', Offset(size.width * 0.5, by - 11), 9,
+      _kResistance,
+      weight: FontWeight.w700);
+}
+
+/// Card 4 — escalation: swarms drop in, and pest variety unlocks over time.
+void _legendSwarm(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  _legCropRow(canvas, size, size.height * 0.86, health: 0.6);
+  const types = [
+    _PestType.aphid,
+    _PestType.mite,
+    _PestType.caterpillar,
+    _PestType.aphid,
+    _PestType.mite,
+    _PestType.caterpillar,
+    _PestType.aphid,
+  ];
+  for (var i = 0; i < types.length; i++) {
+    final fx = (i + 0.5) / types.length;
+    final x = size.width * (0.10 + 0.80 * fx);
+    final y = size.height * (0.20 + 0.34 * (((i * 7) % 5) / 4));
+    _legPest(canvas, Offset(x, y), types[i], r: 10);
+  }
+  GameFx.text(canvas, 'SWARM!', Offset(size.width * 0.5, size.height * 0.08), 16,
+      _kDanger,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// The visual manual for Pest Patrol — wired into the registry spec.
+final List<LegendFrame> pestPatrolLegendFrames = [
+  const LegendFrame(
+      caption: 'Match each pest to its predator, then release',
+      paint: _legendPairs),
+  const LegendFrame(
+      caption: 'A matched helper eats pests: +12 and keeps crops green',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'SPRAY nukes all — kills helpers, bees, breeds resistance',
+      paint: _legendSpray),
+  const LegendFrame(
+      caption: 'Swarms escalate: aphids, then mites, then caterpillars',
+      paint: _legendSwarm),
+];
+
 // ---- widget ----------------------------------------------------------------
 
 class PestPatrolGame extends StatefulWidget {
@@ -281,13 +524,48 @@ class _PestPatrolGameState extends State<PestPatrolGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ---- ATTRACT autopilot ----------------------------------------------------
+  /// One hands-free move per host tick (~250ms). This plays Pest Patrol
+  /// *correctly*, not randomly: it finds the pest closest to the crop (the most
+  /// urgent threat), ARMS the beneficial that counters that pest's type
+  /// (ladybug→aphid, lacewing→mite, bird→caterpillar) and releases it right on
+  /// that pest via the game's own [_deploy] handler. It NEVER sprays — spray
+  /// harms helpers/bees and breeds resistance. Deterministic; one action/tick.
+  /// The host owns the clock, so the round still ends on time; the bot just
+  /// banks real biocontrol kills until it does.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Summon is rationed and capped — wait rather than fire a no-op.
+    if (_deployCd > 0 || _liveBens >= _kBenMaxAlive) return;
+    // Most urgent pest = the live one nearest the crop (largest y). Feeding
+    // pests sit at the crop line, so this naturally prioritizes active damage.
+    _Pest? target;
+    double bestY = -double.infinity;
+    for (final p in _pests) {
+      if (p.dead) continue;
+      if (p.y > bestY) {
+        bestY = p.y;
+        target = p;
+      }
+    }
+    if (target == null) return; // no pests → nothing to do
+    final ben = _counter(target.type); // correct match only, never spray
+    _selected = ben; // arm the matching beneficial
+    _deploy(ben, Offset(target.x, target.y)); // release it on the pest
   }
 
   void _seed() {

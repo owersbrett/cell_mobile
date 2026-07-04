@@ -193,12 +193,46 @@ class _TangentGameState extends State<TangentGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays Tangent *correctly*,
+  /// not randomly. It reads the game's own phase and calls the same handlers a
+  /// finger would:
+  ///   • traveling  → freeze the dot ([_freeze]). Any freeze point is fine — the
+  ///     game snaps the tangent and computes the true slope for wherever it froze
+  ///     (`_slopeTrue` → `_slopeAns`), so the bot can always answer correctly.
+  ///   • frozen     → tap the CORRECT slope option: `_slopeAns` is, by
+  ///     construction, always one of the four `_options`, so [_onOption] with it
+  ///     scores every time (speed bonus × streak).
+  ///   • feedback   → advance the reveal by zeroing the timer; the tick loop
+  ///     picks up the next round on its own (same effect as [_onFieldTap]).
+  /// The host owns the clock, so the round still ends on time; the bot just banks
+  /// real points until it does.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    switch (_phase) {
+      case _Phase.traveling:
+        _freeze();
+        break;
+      case _Phase.frozen:
+        _onOption(_slopeAns);
+        break;
+      case _Phase.feedback:
+        _feedbackTimer = 0; // skip ahead; _onTick starts the next round
+        break;
+    }
   }
 
   // ── Game loop ───────────────────────────────────────────────────────────────
@@ -923,3 +957,340 @@ class _TangentGameLabel {
     return '$sign$str';
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the game's OWN style:
+// the same coordinate plane, curve bank, gold dot, cyan tangent, rise/run
+// triangle and option chips a player meets in play. Static + cheap.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Screen-space coordinate plane for a legend card (mirror of the live
+/// painter's plot/origin/unit mapping, sized to the card).
+class _LegendPlane {
+  final Rect plot;
+  final Offset origin;
+  final double unit;
+  _LegendPlane._(this.plot, this.origin, this.unit);
+
+  static _LegendPlane? of(Size size, {double bottomReserve = 0}) {
+    const pad = 8.0;
+    final plot = Rect.fromLTRB(
+        pad, pad, size.width - pad, size.height - bottomReserve - pad);
+    if (plot.width <= 0 || plot.height <= 0) return null;
+    final unit =
+        math.min(plot.width / 2 / _kXHalf, plot.height / 2 / _kYHalf);
+    if (unit <= 0 || !unit.isFinite) return null;
+    return _LegendPlane._(plot, plot.center, unit);
+  }
+
+  Offset map(double mx, double my) =>
+      Offset(origin.dx + mx * unit, origin.dy - my * unit);
+}
+
+void _legendText(Canvas canvas, String text, Offset center, double fontSize,
+    Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.w800,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+void _legendGridAxes(Canvas canvas, _LegendPlane p) {
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(p.plot, const Radius.circular(12)));
+  final grid = Paint()
+    ..color = _kGrid
+    ..strokeWidth = 1;
+  for (int gx = -_kXHalf.floor(); gx <= _kXHalf.floor(); gx++) {
+    final x = p.map(gx.toDouble(), 0).dx;
+    canvas.drawLine(Offset(x, p.plot.top), Offset(x, p.plot.bottom), grid);
+  }
+  for (int gy = -_kYHalf.floor(); gy <= _kYHalf.floor(); gy++) {
+    final y = p.map(0, gy.toDouble()).dy;
+    canvas.drawLine(Offset(p.plot.left, y), Offset(p.plot.right, y), grid);
+  }
+  final axis = Paint()
+    ..color = _kAxis
+    ..strokeWidth = 1.4;
+  canvas.drawLine(
+      Offset(p.plot.left, p.origin.dy), Offset(p.plot.right, p.origin.dy), axis);
+  canvas.drawLine(
+      Offset(p.origin.dx, p.plot.top), Offset(p.origin.dx, p.plot.bottom), axis);
+  canvas.restore();
+}
+
+void _legendCurvePath(Canvas canvas, _LegendPlane p, _CurveDef c) {
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(p.plot, const Radius.circular(12)));
+  final path = Path();
+  const samples = 120;
+  for (int i = 0; i <= samples; i++) {
+    final tt = i / samples;
+    final pt = p.map(c.fx(tt), c.fy(tt));
+    if (i == 0) {
+      path.moveTo(pt.dx, pt.dy);
+    } else {
+      path.lineTo(pt.dx, pt.dy);
+    }
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round
+      ..color = _kCurve.withValues(alpha: 0.18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..strokeCap = StrokeCap.round
+      ..color = _kCurve,
+  );
+  canvas.restore();
+}
+
+void _legendDot(Canvas canvas, Offset pos, {double r = 6.5}) {
+  canvas.drawCircle(
+    pos,
+    r + 7,
+    Paint()
+      ..color = _kDot.withValues(alpha: 0.25)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+  );
+  canvas.drawCircle(pos, r, Paint()..color = _kDot);
+  canvas.drawCircle(
+      pos, r * 0.4, Paint()..color = Colors.white.withValues(alpha: 0.9));
+}
+
+void _legendTangentLine(
+    Canvas canvas, _LegendPlane p, double px, double py, double slope) {
+  final x0 = px - _kXHalf * 2;
+  final x1 = px + _kXHalf * 2;
+  final a = p.map(x0, py + slope * (x0 - px));
+  final b = p.map(x1, py + slope * (x1 - px));
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(p.plot, const Radius.circular(12)));
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..strokeWidth = 4.5
+      ..strokeCap = StrokeCap.round
+      ..color = _kTangent.withValues(alpha: 0.18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+  );
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round
+      ..color = _kTangent,
+  );
+  canvas.restore();
+}
+
+void _legendChip(Canvas canvas, Rect r, String label,
+    {Color border = _kCardBorder, double fontSize = 16}) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = _kCardBg);
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = border,
+  );
+  _legendText(canvas, label, r.center, fontSize, _kTextPrimary);
+}
+
+// ── Frame 1: the verb — tap to freeze the dot riding the curve ──────────────
+
+void _legendFreeze(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final p = _LegendPlane.of(size);
+  if (p == null) return;
+
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  _legendGridAxes(canvas, p);
+  final curve = _kBank.first; // parabola — the opening curve
+  _legendCurvePath(canvas, p, curve);
+
+  // Fading trail behind the travelling dot (shows motion in a static card).
+  const t = 0.66;
+  for (int i = 3; i >= 1; i--) {
+    final tt = t - i * 0.045;
+    final pos = p.map(curve.fx(tt), curve.fy(tt));
+    canvas.drawCircle(
+        pos, 3.5, Paint()..color = _kDot.withValues(alpha: 0.30 - i * 0.07));
+  }
+  final dotPos = p.map(curve.fx(t), curve.fy(t));
+  _legendDot(canvas, dotPos);
+
+  // Tap ripple around the dot — the freeze gesture.
+  final ripple = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2
+    ..color = _kDot.withValues(alpha: 0.55);
+  canvas.drawCircle(dotPos, 14, ripple);
+  canvas.drawCircle(
+      dotPos, 22, ripple..color = _kDot.withValues(alpha: 0.25));
+}
+
+// ── Frame 2: the read — tangent line + rise/run triangle + options ──────────
+
+void _legendSlopeRead(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final chipH = (size.height * 0.18).clamp(0.0, 34.0);
+  final p = _LegendPlane.of(size, bottomReserve: chipH + 10);
+  if (p == null) return;
+
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  _legendGridAxes(canvas, p);
+  final curve = _kBank.first; // parabola: y = 0.32x² − 2.2, slope = 0.64x
+  _legendCurvePath(canvas, p, curve);
+
+  // Frozen at x = 3.125 → slope exactly +2.
+  const px = 3.125;
+  const py = 0.32 * px * px - 2.2;
+  const slope = 2.0;
+  _legendTangentLine(canvas, p, px, py, slope);
+
+  // Rise/run triangle (run toward centre, same as the live teaching aid).
+  const run = -1.0;
+  const rise = slope * run;
+  final a = p.map(px, py);
+  final b = p.map(px + run, py);
+  final c = p.map(px + run, py + rise);
+  final legRun = Paint()
+    ..color = _kTextSub.withValues(alpha: 0.85)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  final legRise = Paint()
+    ..color = _kTangent.withValues(alpha: 0.9)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(p.plot, const Radius.circular(12)));
+  canvas.drawLine(a, b, legRun);
+  canvas.drawLine(b, c, legRise);
+  _legendText(canvas, 'run ${_TangentGameLabel.fmt(run)}',
+      Offset((a.dx + b.dx) / 2, b.dy + 11), 10, _kTextSub);
+  _legendText(canvas, 'rise ${_TangentGameLabel.fmt(rise)}',
+      Offset(c.dx - 24, (b.dy + c.dy) / 2), 10, _kTangent);
+  canvas.restore();
+  _legendDot(canvas, a, r: 6);
+
+  // The four slope option chips, exactly as the answer row draws them.
+  const labels = ['−2', '0', '+2', '+3'];
+  const gap = 6.0;
+  final w = (size.width - 16 - gap * 3) / 4;
+  for (int i = 0; i < 4; i++) {
+    final r = Rect.fromLTWH(
+        8 + i * (w + gap), size.height - chipH - 6, w, chipH);
+    _legendChip(canvas, r, labels[i], fontSize: chipH * 0.42);
+  }
+}
+
+// ── Frame 3: scoring vs the penalty — fast correct pick vs wrong pick ────────
+
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+
+  final chipW = size.width * 0.30;
+  final chipH = (size.height * 0.26).clamp(0.0, 52.0);
+  final cy = size.height * 0.46;
+
+  // CORRECT — green ring, speed-bonus points and streak multiplier.
+  final goodR = Rect.fromCenter(
+      center: Offset(size.width * 0.28, cy), width: chipW, height: chipH);
+  _legendChip(canvas, goodR, '+2', border: _kGood, fontSize: chipH * 0.42);
+  // Check mark above.
+  final gTop = Offset(goodR.center.dx, goodR.top - 18);
+  final check = Paint()
+    ..color = _kGood
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(gTop.translate(-7, 0), gTop.translate(-2, 5), check);
+  canvas.drawLine(gTop.translate(-2, 5), gTop.translate(8, -6), check);
+  // Green sparks — the correct-answer burst.
+  final rng = math.Random(7);
+  for (int i = 0; i < 10; i++) {
+    final ang = rng.nextDouble() * math.pi * 2;
+    final d = 26 + rng.nextDouble() * 16;
+    canvas.drawCircle(
+      goodR.center + Offset(math.cos(ang), math.sin(ang)) * d,
+      1.5 + rng.nextDouble() * 2,
+      Paint()..color = _kGood.withValues(alpha: 0.35 + rng.nextDouble() * 0.4),
+    );
+  }
+  _legendText(canvas, '+100 ×2', Offset(goodR.center.dx, goodR.bottom + 16),
+      12, _kGood);
+
+  // WRONG — red ring, zero points, streak resets.
+  final badR = Rect.fromCenter(
+      center: Offset(size.width * 0.72, cy), width: chipW, height: chipH);
+  _legendChip(canvas, badR, '−1', border: _kBad, fontSize: chipH * 0.42);
+  final bTop = Offset(badR.center.dx, badR.top - 18);
+  final cross = Paint()
+    ..color = _kBad
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(bTop.translate(-6, -6), bTop.translate(6, 6), cross);
+  canvas.drawLine(bTop.translate(6, -6), bTop.translate(-6, 6), cross);
+  _legendText(canvas, 'streak resets', Offset(badR.center.dx, badR.bottom + 16),
+      12, _kBad);
+}
+
+// ── Frame 4: escalation — the lemniscate (∞) and a faster dot ────────────────
+
+void _legendEscalation(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final p = _LegendPlane.of(size);
+  if (p == null) return;
+
+  canvas.drawRect(Offset.zero & size, Paint()..color = _kBg);
+  _legendGridAxes(canvas, p);
+  final curve = _kBank.last; // lemniscate — the late-game curve
+  _legendCurvePath(canvas, p, curve);
+
+  // Long hot trail — the dot at full speed.
+  const t = 0.18;
+  for (int i = 6; i >= 1; i--) {
+    final tt = t - i * 0.022;
+    final pos = p.map(curve.fx(tt), curve.fy(tt));
+    canvas.drawCircle(
+        pos, 4.0 - i * 0.4, Paint()..color = _kDot.withValues(alpha: 0.42 - i * 0.06));
+  }
+  _legendDot(canvas, p.map(curve.fx(t), curve.fy(t)));
+}
+
+/// The visual manual for Tangent — wired into the registry spec.
+final List<LegendFrame> tangentLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap to freeze the dot riding the curve',
+      paint: _legendFreeze),
+  const LegendFrame(
+      caption: 'Read rise over run — pick the matching slope',
+      paint: _legendSlopeRead),
+  const LegendFrame(
+      caption: 'Answer fast: +100 and streaks — wrong resets',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Later: wilder curves and a faster dot',
+      paint: _legendEscalation),
+];

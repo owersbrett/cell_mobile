@@ -1,88 +1,181 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repository. **This codebase is built entirely by agentic
+engineering** — these docs are the primary interface to the code. Keep them truthful; when
+you change a convention, change it here in the same commit.
 
-## Project Overview
+## What this is
 
-This is a Flutter mobile application called "Cell" that provides an interactive educational experience for exploring cell biology. The app displays various cell organelles with animations and detailed information about each component.
+**Explore the Cell** — a Flutter *game-of-games* (Mario Party / WarioWare style), deployed
+to `explore-the-cell.web.app`. Not a single game: a board-game layer (PARTY) that triggers
+**mini-games**, plus a solo LEARN path through **22 scales** (nothings → infinities), each
+scale holding a list of games. ~125 games live in the registry today.
 
-## Key Commands
+- **Home** (`lib/views/screens/home_page/home_page.dart`) is a 4-door menu over an animated
+  cell: **LEARN** (scale carousel → per-scale game picker), **PARTY** (board game, online via
+  room codes), **GAMES** (all-games triage: ranks/feedback/filters), **ATTRACT** (self-playing
+  b-roll for OBS).
+- **Party mode**: 3 lengths (`kPartyRoundCounts = [7, 28, 90]` — WEEK/MOON/SEASON) × 3 maps
+  (`down_the_hole`, `into_the_void`, `through_the_aether`; spec locked in `docs/MAPS_SPEC.md`).
+- Navigation is a flat BLoC switch: `lib/blocs/navigation/` (`AppScreen` enum) routed by
+  `lib/views/app_view_delegate.dart`.
 
-### Running the app
+## Key commands
+
 ```bash
-flutter run
+flutter run                 # run (web: flutter run -d chrome)
+flutter analyze             # ALWAYS run before declaring work done
+flutter test                # tests
+flutter build web           # web build; deploy via the /deploy skill (bumps build number)
 ```
 
-### Building for iOS
-```bash
-flutter build ios
+## Agent operating rules (load-bearing)
+
+1. **One game = one scoped workspace.** Every game is a self-contained module in its own
+   folder with minimal deps. When working on a game, stay inside that game's directory plus
+   read-only shared kit. Do NOT edit other games or shared host code without explicit
+   escalation. Blast radius of one game.
+2. **Rules are the asset; implementation is disposable.** `GAME.md` (the spec) outranks the
+   `.dart`. Lock rules in `GAME.md` before/while implementing. A good concept with bad
+   execution gets re-implemented from the spec, not patched around.
+3. **Read `lib/games/GAME_DESIGN.md` before building or reworking any game.** It is the
+   gameplay law (~60s loop, score-driven, escalating-to-impossible difficulty, teach
+   in-context, always quittable) and the visual bar (anti-flat-circle rule, palette from
+   `lib/theme/potatuhs.dart`, motion/juice always on).
+4. **Procedural Canvas-drawn assets only.** `CustomPainter` + particles. No raster assets
+   in gameplay (only exception: character portraits in `assets/characters/`).
+5. **Scene isolation — a game can never trap the player.** The host owns timer, results,
+   and exit; a global `ErrorWidget.builder` in `my_app.dart` catches paint/build crashes.
+   Never build a game whose exit depends on the game's own state.
+6. **Performance: animated things live on the ticker-driven canvas, not in widget trees.**
+   The "screen goes black mid-game" class of bug is render-cost overload, not an exception.
+   In an `AnimatedBuilder`, hoist static subtrees into `child:`. Continuous motion belongs
+   in a `CustomPainter` repainted by one ticker — not in per-frame widget rebuilds.
+7. **The catalog is the SSOT for game identity + rank** (`lib/games/game_catalog.dart`).
+   When Brett says a game **"rocks"** (or equivalent strong praise), set that game's rank to
+   **S** (`rank: GameRank.s`) in the catalog immediately — persist it in code, never leave it
+   as session-only opinion.
+8. **Registry edits are conservative.** `lib/games/mini_game_registry.dart` (~2,800 lines)
+   and `lib/party/screens/party_page.dart` (~3,600 lines) are shared monster files touched by
+   many agents. Make surgical, append/patch-style edits there; never reformat, reorder, or
+   refactor them opportunistically. When dispatching per-game work to subagents, the
+   orchestrator keeps registry/catalog edits to itself.
+9. **`flutter analyze` clean before done.** Every task ends with a clean analyze.
+
+## The GAMES rubric — every game carries its docs
+
+Completeness contract (a game "counts" only when all are satisfied): **G**ame (the widget) ·
+**A**gent (`AGENT.md`) · **M**anual (`GAME.md` — the canonical rules spec) ·
+**E**ducation (`EDUCATION.md`) · **S**ession (close and re-enter cleanly).
+
+Per-game docs live in the game's folder (see `lib/games/ecosystem/food_web/` for a complete
+example); skeletons in `docs/templates/`. Note: `docs/templates/MANUAL.md` (player-facing
+copy, separate from GAME.md) exists but has not been adopted per-game — manuals are
+deferred; `GAME.md` is the M today. Per-scale `EDUCATION.md` is the block-association
+ledger. The learning-materials lessons app syncs from `EDUCATION.md` via the
+`/sync-education` skill — updating a game's education content should trigger a sync.
+
+## The mini-game contract (how games plug in)
+
+- **`MiniGameSpec`** (`lib/games/mini_game.dart`) — declarative record: id, name, scale,
+  rules, `durationSeconds`, `builder(context, session)`, `humanMax`, `starThresholds`.
+  Registered in `lib/games/mini_game_registry.dart`.
+- **`MiniGameSession`** — the host owns the clock; games call `addScore(delta)`,
+  `noteStreak()`, `endEarly()`. The `autoPilot` hook powers ATTRACT mode.
+- **`MiniGameHost`** (`lib/games/mini_game_host.dart`) — the launch widget. The seam:
+  **`onComplete == null` ⇒ solo** (spawns AI opponents via `opponentCount`);
+  **non-null ⇒ party** (real scores flow back). Games themselves are network-agnostic —
+  multiplayer plumbing wraps the host, never the game.
+- **Launch paths:** `CatalogGame.specId` non-null → registry game via `MiniGameRegistry` +
+  `MiniGameHost`; null → legacy game via `MiniGamePage._buildGame`
+  (`lib/views/screens/mini_game_page/`). Legacy games are being migrated into
+  `lib/games/<scale>/<game_id>/`; **new games always land registry-style** in that shape.
+
+## Party / multiplayer stack (three layers, know which you're in)
+
+| Layer | Files | Reusability |
+|---|---|---|
+| **Transport** (room primitive) | `lib/party/net/party_transport.dart` (abstract + in-memory fake), `firebase_party_transport.dart` | Game-agnostic: room code, roster, request queue, canonical stream. RTDB path `cell_games/$id`. |
+| **Coordinator** (board brain) | `lib/party/net/party_net.dart`, `party_controller.dart` | Party-specific: host-authoritative lockstep replay (input log + random tape). Do NOT reuse for real-time mini-games. |
+| **UI / flow** | `lib/party/screens/` (`party_lobby_page.dart` = room codes, `party_page.dart` = board) | Party-only. |
+
+Room codes: 4 uppercase letters (I/O excluded), the code IS the RTDB node id. Full handoff
+context, known bugs, and the board-vs-mini-game track boundary: `docs/MULTIPLAYER_HANDOFF.md`.
+
+**Quick match** (`lib/games/quick_match/`, see its `QUICK_MATCH.md`) — single-game rooms:
+any registry game is testable with friends via a room code. A thin score-broadcast
+coordinator (`QuickMatchNet`, NOT `PartyNet` — no lockstep) over its own
+`QuickMatchTransport`; rooms share the `cell_games/$id` namespace/rules, distinguished by
+meta shape (`specId` ⇒ quick). Bridges `MiniGameHost.onComplete` → score submission; zero
+changes inside individual games. Entry: group icon in the per-scale picker + games console
+(host), group-add in the console header (join).
+
+## Firebase
+
+- Project **`hot-potato-games`** (shared across HPG). Multiplayer + telemetry use **RTDB**
+  (`firebase_database`); Firestore is only for account/avatar (`user_profile.dart`,
+  `vipotato.dart`). Config: `lib/firebase_bootstrap.dart`, `lib/firebase_options.dart`.
+- Auth: cell runs in an iframe on `hotpotatogames.com`; custom-token SSO via
+  `auth_bridge_web.dart` → `AuthProfile`, else anonymous.
+- Telemetry: `lib/telemetry/cell_telemetry.dart` (`recordBoardPlay`, `recordMiniGamePlay` →
+  `cell/plays/daily/<UTC>`). Don't double-count board resumes.
+- Rules SSOT + deploy live at the Potatuhs root (`~/Potatuhs/.config/firestore.rules`,
+  `/deploy-rules` skill). Hosting deploy: the `/deploy` skill.
+
+## Shared kit (read-mostly; change here, nowhere else)
+
+- **`lib/games/potato.dart`** — `PotatoArt`, the CANONICAL potato renderer (lumpy silhouette
+  + warm radial gradient + skin rim + eyes). Any potato on any screen calls
+  `PotatoArt.paint/.path/.drawEyes`. Deliberately self-contained (Flutter + dart:math only)
+  so it can be copied verbatim into other Potatuhs apps.
+- **`lib/games/fx.dart`** — `GameFx`, premium-rendering toolkit (orbs, atmosphere, glow).
+- **`lib/theme/potatuhs.dart`** — palette + typography (Bowlby One SC display, Outfit body).
+  Never random hex; never `'Avenir'` in new code. Visual decisions defer to
+  `~/Potatuhs/potatuhs-design/DESIGN.md`.
+
+## Directory map
+
+```
+lib/
+  blocs/            # navigation + cell + scale_explorer BLoCs
+  data/             # organelles + per-scale entity blocks (lib/data/scales/)
+  games/            # THE GAMES — one folder per scale family, one subfolder per game
+    game_catalog.dart       # SSOT: every game + rank        (edit: orchestrator only)
+    mini_game.dart          # spec/session contract
+    mini_game_host.dart     # solo/party host
+    mini_game_registry.dart # all registry specs — MONSTER, surgical edits only
+    GAME_DESIGN.md          # the gameplay law — read before any game work
+    <scale>/<game_id>/      # game.dart + GAME.md + AGENT.md + EDUCATION.md (+ POTATUHS.md)
+    attract/                # self-playing attract mode
+  party/            # board game: models, controller, maps/, net/, screens/
+  telemetry/        # RTDB play counters
+  theme/            # potatuhs.dart design kit
+  views/            # home, scale overview/explorer, mini_game_page (legacy launcher)
+docs/
+  NORTH_STAR.md             # project constitution (vocabulary, principles, inventory)
+  MULTIPLAYER_HANDOFF.md    # board/online agent context + known bugs
+  MAPS_SPEC.md              # the 3 party maps — LOCKED spec
+  templates/                # GAME/AGENT/EDUCATION/MANUAL skeletons
+  game_feedback/ reviews/ ux_pass/   # playtest + UX teardown material
 ```
 
-### Building for Android
-```bash
-flutter build apk
-```
+**Doc freshness:** `docs/NORTH_STAR.md` §1–§7 (vocabulary, principles, doc system, target
+structure) are durable; its inventory/counts sections (§8–§10) predate the catalog expansion
+and lag reality — trust `game_catalog.dart` + `mini_game_registry.dart` for what exists.
 
-### Running tests
-```bash
-flutter test
-```
+## Platform notes
 
-### Analyzing code
-```bash
-flutter analyze
-```
-
-### Formatting code
-```bash
-flutter format .
-```
-
-## Architecture
-
-### State Management
-The app uses BLoC (Business Logic Component) pattern with flutter_bloc for state management:
-- `CellBloc`: Manages cell-related state and interactions
-- `GeneralNavigationBloc`: Handles navigation between screens
-
-### Navigation Flow
-1. **SplashPage** (`lib/views/screens/splash_page/splash_page.dart`): Initial launch screen with app branding
-2. **CellPage** (`lib/views/screens/cell_page/cell_page.dart`): Main interactive cell view with animations
-3. **DetailsPage** (`lib/views/screens/details_page/details_page.dart`): Detailed information about selected organelles
-
-### Key Components
-- **SplashDelegate** (`lib/views/splash_delegate.dart`): Controls whether to show splash screen based on SharedPreferences
-- **GeneralViewDelegate** (`lib/views/general_view_delegate.dart`): Routes to appropriate screen based on navigation state
-- **Organelle Animations** (`lib/views/screens/cell_page/animations/`): Custom animations for different cell components
-
-### Data Layer
-- **Organelles Data** (`lib/data/organelles.dart`): Contains information about cell organelles
-- **Organelle Model** (`lib/models/organelle.dart`): Data model for organelles
-
-### Shared rendering
-- **Potato renderer** (`lib/games/potato.dart`): `PotatoArt` — the CANONICAL way to draw a potato (lumpy silhouette + warm radial gradient + skin rim + eyes). Any game/screen that draws a potato should call `PotatoArt.paint`/`.path`/`.drawEyes` rather than hand-rolling an oval, so the spud looks identical everywhere. The file is deliberately **self-contained** (only Flutter + dart:math, no project imports) so it can be copied verbatim into other Potatuhs Flutter apps (e.g. sod_tori) that need potatoes. Change the potato look HERE, nowhere else. First consumer: Farm Panic (`mini_game_page/games/farm_panic_game.dart`).
-- **Game FX** (`lib/games/fx.dart`): `GameFx` — shared premium-rendering toolkit (orbs, atmosphere, glow) for mini-game painters.
-
-## Native Platform Configuration
-
-### iOS Splash Screen
-- LaunchScreen.storyboard: Black background with centered LaunchImage
-- Located at: `ios/Runner/Base.lproj/LaunchScreen.storyboard`
-
-### Android Splash Screen  
-- launch_background.xml: Black background
-- Located at: `android/app/src/main/res/drawable/launch_background.xml`
-
-## Important Notes
-- The app supports portrait orientation only
-- Uses SharedPreferences to track first-time app launch
-- Assets are stored in `assets/images/` directory
+- Portrait-only. Splash: `SplashDelegate` + SharedPreferences first-launch flag; native
+  splash in `ios/Runner/Base.lproj/LaunchScreen.storyboard` and
+  `android/app/src/main/res/drawable/launch_background.xml`. Config files in `config/`.
+- Primary target is **web** (iframe-embedded on hotpotatogames.com); iOS/Android builds
+  exist but web is the deploy path.
 
 ## BROADCAST PROTOCOL (consultant interface)
+
 A consultant session at the Potatuhs root coordinates this game with sod_tori, Tater Dash,
 and the HPG manual. Keep `~/Potatuhs/hpg/_status/cell_mobile.md` current — it is how the
 consultant reads your goals/progress without interrupting you. Update it when you (1) set or
 revise goals, (2) hit a milestone or blocker, (3) write/change `manual/manual-spec.json`.
 Follow the schema in `~/Potatuhs/hpg/_status/README.md`. Keep it short; it is a status board,
 not a devlog.
-- Configuration files are in `config/` directory

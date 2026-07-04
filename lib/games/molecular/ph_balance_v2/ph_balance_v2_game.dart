@@ -123,6 +123,368 @@ Color _phColor(double ph) {
   return Color.lerp(_kPhColors[i], _kPhColors[i + 1], p - i)!;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the REAL components
+// the live game paints: the beaker + universal-indicator liquid, the 0–14
+// indicator strip (STEEP zone, target band, neutral-7 line, ghost ticks,
+// current marker), the LOCK ring, and the ACID / BASE drop buttons.
+// Static + self-contained: they render once in the intro carousel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legendText(
+  Canvas canvas,
+  String text,
+  Offset center, {
+  required double size,
+  required Color color,
+  bool bold = false,
+  Color? shadow,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: size,
+        fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
+        color: color,
+        letterSpacing: 0.5,
+        shadows: shadow != null ? [Shadow(color: shadow, blurRadius: 10)] : null,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// The beaker + colored liquid + big pH readout (same look as `_paintBeaker`).
+Offset _legendBeaker(Canvas canvas, Rect area, double ph, {double lock = 0}) {
+  final bw = math.min(area.width, 150.0);
+  final bh = math.min(area.height * 0.9, 200.0);
+  if (bw <= 6 || bh <= 6) return area.center;
+  final cx = area.center.dx;
+  final glass =
+      Rect.fromCenter(center: Offset(cx, area.center.dy), width: bw, height: bh);
+  final rr = RRect.fromRectAndCorners(glass,
+      bottomLeft: const Radius.circular(22),
+      bottomRight: const Radius.circular(22),
+      topLeft: const Radius.circular(6),
+      topRight: const Radius.circular(6));
+
+  canvas.drawRRect(rr, Paint()..color = Colors.white.withValues(alpha: 0.03));
+
+  const fillFrac = 0.74;
+  final liquidTopY = glass.bottom - glass.height * fillFrac;
+  final liquid = _phColor(ph);
+  canvas.save();
+  canvas.clipRRect(rr);
+  final liquidRect =
+      Rect.fromLTRB(glass.left, liquidTopY, glass.right, glass.bottom);
+  canvas.drawRect(
+    liquidRect,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          liquid.withValues(alpha: 0.85),
+          Color.lerp(liquid, Colors.black, 0.30)!.withValues(alpha: 0.95),
+        ],
+      ).createShader(liquidRect),
+  );
+  canvas.drawLine(
+      Offset(glass.left, liquidTopY),
+      Offset(glass.right, liquidTopY),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.30)
+        ..strokeWidth = 2);
+  canvas.restore();
+
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = _kGlass.withValues(alpha: 0.55));
+  canvas.drawLine(
+      Offset(glass.left - 6, glass.top),
+      Offset(glass.right + 6, glass.top),
+      Paint()
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..color = _kGlass.withValues(alpha: 0.7));
+
+  final center = Offset(cx, liquidTopY + (glass.bottom - liquidTopY) * 0.46);
+  if (lock > 0.01) {
+    canvas.drawArc(
+        Rect.fromCircle(center: center, radius: 48),
+        -math.pi / 2,
+        2 * math.pi * lock,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 5
+          ..strokeCap = StrokeCap.round
+          ..color = _kGood.withValues(alpha: 0.9)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3));
+  }
+  _legendText(canvas, ph.toStringAsFixed(1), center,
+      size: 34,
+      color: Colors.white,
+      bold: true,
+      shadow: Colors.black.withValues(alpha: 0.5));
+  return center;
+}
+
+void _legendGhost(Canvas canvas, double left, double w, double y, Color color) {
+  canvas.drawLine(
+      Offset(left, y),
+      Offset(left + w, y),
+      Paint()
+        ..color = color.withValues(alpha: 0.55)
+        ..strokeWidth = 1.4);
+  final tipX = left + w + 6;
+  final tri = Path()
+    ..moveTo(tipX, y - 5)
+    ..lineTo(tipX, y + 5)
+    ..lineTo(tipX + 7, y)
+    ..close();
+  canvas.drawPath(tri, Paint()..color = color.withValues(alpha: 0.8));
+}
+
+/// The 0–14 indicator strip (same look as `_paintScale`), with any subset of the
+/// live overlays: STEEP zone, target band, neutral-7 line, ghost ticks, marker.
+void _legendStrip(
+  Canvas canvas,
+  Rect rect, {
+  double? marker,
+  double? target,
+  double? band,
+  double? ghostAcid,
+  double? ghostBase,
+  bool steep = false,
+  double lock = 0,
+}) {
+  final left = rect.left, top = rect.top, w = rect.width, h = rect.height;
+  if (w <= 6 || h <= 6) return;
+  double yForPh(double p) => top + h * (1.0 - (p.clamp(0.0, 14.0) / 14.0));
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: _kPhColors.reversed.toList(),
+      ).createShader(rect)
+      ..colorFilter =
+          ColorFilter.mode(Colors.black.withValues(alpha: 0.18), BlendMode.darken),
+  );
+
+  if (steep) {
+    final steepTop = yForPh(8.5), steepBot = yForPh(5.5);
+    final steepRect = Rect.fromLTRB(left, steepTop, left + w, steepBot);
+    canvas.save();
+    canvas.clipRRect(rr);
+    canvas.drawRect(
+        steepRect, Paint()..color = Colors.black.withValues(alpha: 0.22));
+    final hatch = Paint()
+      ..color = Colors.white.withValues(alpha: 0.10)
+      ..strokeWidth = 2;
+    for (double d = -h; d < w + h; d += 8) {
+      canvas.drawLine(
+          Offset(left + d, steepBot), Offset(left + d + h, steepTop), hatch);
+    }
+    canvas.restore();
+  }
+
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.18));
+
+  if (target != null && band != null) {
+    final bandTop = yForPh(target + band), bandBot = yForPh(target - band);
+    final bandRect = Rect.fromLTRB(left - 5, bandTop, left + w + 5, bandBot);
+    canvas.drawRect(bandRect,
+        Paint()..color = _kGood.withValues(alpha: 0.10 + 0.18 * lock));
+    canvas.drawRect(
+        bandRect,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = _kGood.withValues(alpha: 0.55 + 0.4 * lock));
+  }
+
+  final ny = yForPh(7);
+  final dash = Paint()
+    ..color = Colors.white.withValues(alpha: 0.55)
+    ..strokeWidth = 1.4;
+  for (double x = left; x < left + w; x += 7) {
+    canvas.drawLine(Offset(x, ny), Offset(x + 3.5, ny), dash);
+  }
+
+  if (ghostAcid != null) _legendGhost(canvas, left, w, yForPh(ghostAcid), _kAcid);
+  if (ghostBase != null) _legendGhost(canvas, left, w, yForPh(ghostBase), _kBase);
+
+  if (marker != null) {
+    final my = yForPh(marker);
+    final mc = _phColor(marker);
+    final pathm = Path()
+      ..moveTo(left - 6, my)
+      ..lineTo(left - 17, my - 7)
+      ..lineTo(left - 17, my + 7)
+      ..close();
+    canvas.drawPath(pathm, Paint()..color = mc);
+    canvas.drawPath(
+        pathm,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = Colors.white.withValues(alpha: 0.85));
+    canvas.drawLine(
+        Offset(left, my),
+        Offset(left + w, my),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.9)
+          ..strokeWidth = 2);
+  }
+}
+
+/// One ACID / BASE drop button (matches the `_DropButton` gradient + arrow).
+void _legendButton(
+    Canvas canvas, Rect r, Color c, IconData icon, String label) {
+  if (r.width <= 6 || r.height <= 6) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          c.withValues(alpha: 0.95),
+          Color.lerp(c, Colors.black, 0.40)!.withValues(alpha: 0.95),
+        ],
+      ).createShader(r),
+  );
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = Potatuhs.ink);
+  // Directional arrow (down = acid lowers pH, up = base raises it).
+  final ax = r.center.dx, ay = r.center.dy - 8;
+  final dir = icon == Icons.south_rounded ? 1.0 : -1.0;
+  final arrow = Paint()
+    ..color = Colors.white
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(Offset(ax, ay - 9 * dir), Offset(ax, ay + 9 * dir), arrow);
+  canvas.drawLine(
+      Offset(ax - 6, ay + 3 * dir), Offset(ax, ay + 9 * dir), arrow);
+  canvas.drawLine(
+      Offset(ax + 6, ay + 3 * dir), Offset(ax, ay + 9 * dir), arrow);
+  _legendText(canvas, label, Offset(r.center.dx, r.bottom - 13),
+      size: 13, color: Colors.white, bold: true);
+}
+
+// Frame 1 — the core verb: tap ACID to lower pH, BASE to raise it.
+void _legendTitrate(Canvas canvas, Size size) {
+  if (size.width <= 8 || size.height <= 8) return;
+  final beakerArea =
+      Rect.fromLTWH(0, 0, size.width * 0.56, size.height).deflate(10);
+  _legendBeaker(canvas, beakerArea, 7.0);
+
+  final bx = size.width * 0.60;
+  final bw = size.width - bx - 12;
+  final bh = math.min(size.height * 0.30, 62.0);
+  final gap = size.height * 0.10;
+  final topY = size.height * 0.5 - bh - gap / 2;
+  _legendButton(canvas, Rect.fromLTWH(bx, topY, bw, bh), _kBase,
+      Icons.north_rounded, 'BASE');
+  _legendButton(canvas, Rect.fromLTWH(bx, topY + bh + gap, bw, bh), _kAcid,
+      Icons.south_rounded, 'ACID');
+}
+
+// Frame 2 — how to score: hold the needle in the band, fill the LOCK ring.
+void _legendLock(Canvas canvas, Size size) {
+  if (size.width <= 8 || size.height <= 8) return;
+  const strip = 40.0;
+  final stripRect = Rect.fromLTWH(
+      size.width - strip - 12, size.height * 0.10, strip, size.height * 0.80);
+  final beakerArea =
+      Rect.fromLTWH(0, 0, size.width - strip - 34, size.height).deflate(10);
+  _legendBeaker(canvas, beakerArea, 5.5, lock: 0.72);
+  _legendStrip(canvas, stripRect, marker: 5.5, target: 5.5, band: 0.8, lock: 0.72);
+}
+
+// Frame 3 — the danger: near pH 7 the curve is steep, one drop leaps across.
+void _legendSteep(Canvas canvas, Size size) {
+  if (size.width <= 8 || size.height <= 8) return;
+  final stripRect = Rect.fromLTWH(
+      size.width * 0.42, size.height * 0.08, 46, size.height * 0.84);
+  _legendStrip(canvas, stripRect,
+      marker: 7.0, steep: true, ghostAcid: 5.9, ghostBase: 8.1);
+  _legendText(canvas, 'STEEP', Offset(size.width * 0.22, size.height * 0.5),
+      size: 15, color: _kBad, bold: true);
+  _legendText(canvas, 'near 7', Offset(size.width * 0.22, size.height * 0.5 + 20),
+      size: 12, color: Colors.white.withValues(alpha: 0.8));
+}
+
+// Frame 4 — the escalation: SURGE — CO₂ creep quickens, the band tightens.
+void _legendSurge(Canvas canvas, Size size) {
+  if (size.width <= 8 || size.height <= 8) return;
+  // Crimson surge vignette, exactly like the live final-seconds edge.
+  canvas.drawRect(
+    Offset.zero & size,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [Colors.transparent, _kBad.withValues(alpha: 0.26)],
+        stops: const [0.55, 1.0],
+      ).createShader(Offset.zero & size),
+  );
+  const strip = 40.0;
+  final stripRect = Rect.fromLTWH(
+      size.width - strip - 12, size.height * 0.10, strip, size.height * 0.80);
+  final beakerArea =
+      Rect.fromLTWH(0, 0, size.width - strip - 34, size.height).deflate(10);
+  final c = _legendBeaker(canvas, beakerArea, 3.4);
+  _legendStrip(canvas, stripRect, marker: 3.4, target: 4.0, band: 0.5);
+  // Downward CO₂ acid-creep arrow beside the beaker.
+  final ax = c.dx;
+  final arrow = Paint()
+    ..color = _kAcid
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final ay0 = size.height * 0.24, ay1 = size.height * 0.40;
+  canvas.drawLine(Offset(ax, ay0), Offset(ax, ay1), arrow);
+  canvas.drawLine(Offset(ax - 6, ay1 - 7), Offset(ax, ay1), arrow);
+  canvas.drawLine(Offset(ax + 6, ay1 - 7), Offset(ax, ay1), arrow);
+}
+
+/// The visual manual for pH Balance v2 — wired into the registry spec.
+final List<LegendFrame> phBalanceV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Tap ACID to lower pH, tap BASE to raise it',
+      paint: _legendTitrate),
+  const LegendFrame(
+      caption: 'Hold the needle centred in the band to fill the LOCK ring',
+      paint: _legendLock),
+  const LegendFrame(
+      caption: 'Near pH 7 the curve is steep — one drop leaps across',
+      paint: _legendSteep),
+  const LegendFrame(
+      caption: 'SURGE: CO2 creep quickens and the band tightens',
+      paint: _legendSurge),
+];
+
 /// "pH Balance v2" — titrate to the target and feather the CO₂ drift to lock it.
 /// Acid/base drops swing hardest near neutral, where the titration curve is steep.
 class PhBalanceV2Game extends StatefulWidget {
@@ -203,13 +565,45 @@ class _PhBalanceV2GameState extends State<PhBalanceV2Game>
     for (var i = 0; i < 7; i++) {
       _bubbles.add(_Bubble.random(_rng));
     }
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  // Titrate to the target band, then FEATHER the ever-present CO₂ acid-creep to
+  // hold dead-centre and fill the LOCK ring. One drop per host tick (~250ms),
+  // fully deterministic — reads the game's OWN fields and calls its OWN handler.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    final band = _bandHalf;
+    final hi = _target + band;
+    final lo = _target - band;
+    // Project the needle one host tick ahead along the downward CO₂ drift.
+    const projAhead = 0.25; // seconds — host's attract cadence
+    final projected = (_phGoal - _driftRate * projAhead).clamp(0.0, 14.0);
+
+    if (projected > hi) {
+      // Above the band. Drift already pulls pH DOWN into range; only add ACID to
+      // speed the descent when a full drop won't sling past the low edge.
+      if (_ghostAcid >= lo) _addDrop(true);
+    } else if (projected < lo) {
+      // Below the band. Drift makes this worse, so we MUST add BASE. Near
+      // neutral a drop overshoots the top — that's the intended PUMP: tap, let
+      // the drift sweep back down through the band, tap again.
+      _addDrop(false);
+    } else {
+      // In band: feather against the creep to stay centred and grow the lock.
+      // Tap BASE only once drift has pulled us below centre AND the drop stays
+      // inside the band (no overshoot); otherwise dwell and let drift carry us.
+      if (projected < _target && _ghostBase <= hi) _addDrop(false);
+    }
   }
 
   void _onTick(Duration elapsed) {

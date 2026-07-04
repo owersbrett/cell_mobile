@@ -159,12 +159,40 @@ class _StockItGameState extends State<StockItGame>
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
+    // ATTRACT autopilot: this game knows how to run its own warehouse. See
+    // [_autoStep]. Registered always (harmless in normal play — the host only
+    // calls it in autoplay); cleared on dispose.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ─── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One competent, hands-free order per host tick (~250ms). This plays
+  /// *base-stock* — the textbook anti-bullwhip policy:
+  ///   inventory position = on-hand ([_stock]) + in-transit ([_incoming])
+  /// If that position sits below the order-up-to target ([_target] =
+  /// demand level × (lead time + 1)) it orders exactly enough to lift the
+  /// position back to target, then stops. Crucially it counts what's already in
+  /// the pipeline, so it never re-orders spuds that are merely late — that's the
+  /// mistake that makes the bullwhip whip.
+  ///
+  /// It's safe to run every tick (no interval): warehouse state only changes on
+  /// day boundaries, so once one order lifts the position to target, every
+  /// further tick that day sees deficit ≤ 0 and does nothing. Deterministic —
+  /// no randomness, no synthetic taps.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    final position = _stock + _incoming; // on-hand + on-order
+    final deficit = (_target - position).round();
+    if (deficit <= 0) return; // at/above base-stock — more = holding + bullwhip
+    _setOrder(deficit.clamp(0, _kMaxOrder));
+    _placeOrder(); // the game's own order handler
   }
 
   // ─── Main loop (host owns the wall clock; we own the day clock) ────────────

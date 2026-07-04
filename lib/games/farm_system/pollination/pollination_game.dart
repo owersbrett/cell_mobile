@@ -212,13 +212,102 @@ class _PollinationGameState extends State<PollinationGame>
   void initState() {
     super.initState();
     _buildField();
+    // ATTRACT autopilot: this game knows how to fly itself. The host only calls
+    // it hands-free (harmless in normal play). See [_autoStep].
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent route decision per host tick (~250ms). No randomness, no
+  /// synthetic taps, no coordinate math — it reads the bee/flowers/hive/hornets
+  /// and reuses the game's own [_routeTo] with a chosen game object:
+  ///   1. Honey heavy or a hornet is on us  → fly to the HIVE and bank.
+  ///   2. Carrying pollen → cross to a DIFFERENT same-species bloom (pollinate).
+  ///      No partner in bloom → bank whatever we've gathered.
+  ///   3. Empty-handed → load pollen, preferring a species that has a partner.
+  /// The flight, pollination and deposit all resolve on the game's own ticker.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_beePos == null || _size == Size.zero) return;
+
+    final threatened = _predators
+        .any((p) => !p.leaving && (p.pos - _beePos!).distance < 140);
+
+    // 1. Bank the hoard when it's heavy or a hornet is chasing.
+    if (_honey >= 1.0 && (_honeyNorm >= 0.55 || threatened)) {
+      _routeTo(_hivePx);
+      return;
+    }
+
+    // 2. Carrying pollen → head to a DIFFERENT same-species bloom to pollinate.
+    if (_pollenType >= 0) {
+      final partner = _nearestBloom(_pollenType, _lastFlowerId);
+      if (partner != null) {
+        _routeTo(_flowerPx(partner));
+        return;
+      }
+      // No same-species partner is blooming — bank what we've already gathered.
+      if (_honey >= 1.0) {
+        _routeTo(_hivePx);
+        return;
+      }
+    }
+
+    // 3. Empty-handed → load pollen from a bloom that has a same-species partner.
+    final load = _bestLoadTarget();
+    if (load != null) _routeTo(_flowerPx(load));
+  }
+
+  Offset _flowerPx(_Flower f) =>
+      Offset(f.frac.dx * _size.width, f.frac.dy * _size.height);
+
+  bool _isBloom(_Flower f) =>
+      f.active && f.phase == _Phase.bloom && f.grow >= 1.0;
+
+  /// Nearest pollinatable bloom of [type], excluding the flower we're on.
+  _Flower? _nearestBloom(int type, int excludeId) {
+    _Flower? best;
+    var bestD = double.infinity;
+    for (final f in _flowers) {
+      if (!_isBloom(f) || f.type != type || f.id == excludeId) continue;
+      final d = (_flowerPx(f) - _beePos!).distance;
+      if (d < bestD) {
+        bestD = d;
+        best = f;
+      }
+    }
+    return best;
+  }
+
+  /// The bloom to load pollen from: prefer a species that has a partner to
+  /// pollinate (a lone bloom can be loaded but never scored); distance breaks
+  /// ties.
+  _Flower? _bestLoadTarget() {
+    final counts = <int, int>{};
+    for (final f in _flowers) {
+      if (_isBloom(f)) counts[f.type] = (counts[f.type] ?? 0) + 1;
+    }
+    _Flower? best;
+    var bestScore = double.infinity;
+    for (final f in _flowers) {
+      if (!_isBloom(f)) continue;
+      final hasPartner = (counts[f.type] ?? 0) >= 2;
+      final score =
+          (_flowerPx(f) - _beePos!).distance + (hasPartner ? 0.0 : 1e6);
+      if (score < bestScore) {
+        bestScore = score;
+        best = f;
+      }
+    }
+    return best;
   }
 
   // ── difficulty 0..1 from the host clock ────────────────────────────────────
@@ -614,6 +703,12 @@ class _PollinationGameState extends State<PollinationGame>
         target = fp;
       }
     }
+    _routeTo(target);
+  }
+
+  /// Route the bee toward [target] exactly as a tap does — set the seek target,
+  /// add a tap-boost and an impulse. Shared by the human tap and the autopilot.
+  void _routeTo(Offset target) {
     _target = target;
     _boost = (_boost + _kTapBoostGain).clamp(0.0, 1.0);
     if (_beePos != null) {
@@ -1167,3 +1262,349 @@ class _PollinationPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _PollinationPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VISUAL MANUAL — the legend carousel cards. Each is drawn with the REAL
+// components (the same bee / bloom / hornet / hive / potato the live game
+// renders), stripped of ticker state so they paint statically in the intro.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Draws the striped bee facing [heading] (matches [_PollinationPainter._paintBee]).
+void _legendBee(Canvas canvas, Offset p,
+    {double heading = -math.pi / 2, double scale = 1.0}) {
+  // Soft shadow.
+  canvas.drawCircle(
+      p.translate(0, 14 * scale),
+      9 * scale,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.18)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
+
+  canvas.save();
+  canvas.translate(p.dx, p.dy);
+  canvas.rotate(heading + math.pi / 2);
+  canvas.scale(scale);
+
+  final wingPaint = Paint()
+    ..color = Colors.white.withValues(alpha: 0.45)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+  for (final sgn in const [-1.0, 1.0]) {
+    canvas.drawOval(
+        Rect.fromCenter(center: Offset(sgn * 8, -2), width: 14, height: 9),
+        wingPaint);
+  }
+
+  final bodyRect = Rect.fromCenter(center: Offset.zero, width: 14, height: 20);
+  final rrect = RRect.fromRectAndRadius(bodyRect, const Radius.circular(7));
+  canvas.drawRRect(
+    rrect,
+    Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFFF6C544), Color(0xFFE19816)],
+      ).createShader(bodyRect),
+  );
+  final stripe = Paint()..color = const Color(0xFF2A2018);
+  canvas.save();
+  canvas.clipRRect(rrect);
+  for (var i = 0; i < 3; i++) {
+    canvas.drawRect(Rect.fromLTWH(-8, -3.0 + i * 5.0, 16, 2.4), stripe);
+  }
+  canvas.restore();
+  canvas.drawRRect(
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = const Color(0xFF2A2018).withValues(alpha: 0.7));
+
+  canvas.drawCircle(const Offset(0, -11), 4.2,
+      Paint()..color = const Color(0xFF2A2018));
+  final ant = Paint()
+    ..color = const Color(0xFF2A2018)
+    ..strokeWidth = 1.2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(const Offset(-2, -13), const Offset(-5, -18), ant);
+  canvas.drawLine(const Offset(2, -13), const Offset(5, -18), ant);
+  canvas.restore();
+}
+
+/// A honey/pollen aura ring behind the bee (drawn when it carries a load).
+void _legendAura(Canvas canvas, Offset p, Color col) {
+  canvas.drawCircle(
+    p,
+    24,
+    Paint()
+      ..color = col.withValues(alpha: 0.24)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+  );
+}
+
+/// Draws one full bloom of [col] (matches [_PollinationPainter._drawBloom]).
+void _legendBloom(Canvas canvas, Offset pos, Color col, {double scale = 1.0}) {
+  final stemPaint = Paint()
+    ..color = _kLeaf.withValues(alpha: 0.55)
+    ..strokeWidth = 2.4 * scale
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(pos, pos.translate(0, 16 * scale), stemPaint);
+
+  const petals = 6;
+  final petalLen = 11.0 * scale;
+  final petalW = 6.5 * scale;
+  final pp = Paint()..color = col.withValues(alpha: 0.92);
+  for (var i = 0; i < petals; i++) {
+    final a = i / petals * math.pi * 2;
+    canvas.save();
+    canvas.translate(pos.dx, pos.dy);
+    canvas.rotate(a);
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: Offset(0, -petalLen * 0.8),
+          width: petalW,
+          height: petalLen * 1.5),
+      pp,
+    );
+    canvas.restore();
+  }
+  final centerCol = Color.lerp(col, const Color(0xFFFFE08A), 0.6)!;
+  canvas.drawCircle(pos, 5.0 * scale, Paint()..color = centerCol);
+  canvas.drawCircle(
+      pos,
+      5.0 * scale,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = const Color(0xFF8A5A2B).withValues(alpha: 0.6));
+}
+
+/// Draws a hornet facing [heading] (matches [_PollinationPainter._paintPredator]).
+void _legendHornet(Canvas canvas, Offset p, {double heading = math.pi / 2}) {
+  canvas.drawCircle(
+    p,
+    16,
+    Paint()
+      ..color = _kPredator.withValues(alpha: 0.24)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+  );
+
+  canvas.save();
+  canvas.translate(p.dx, p.dy);
+  canvas.rotate(heading + math.pi / 2);
+
+  final wing = Paint()
+    ..color = Colors.white.withValues(alpha: 0.35)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+  for (final sgn in const [-1.0, 1.0]) {
+    canvas.drawOval(
+        Rect.fromCenter(center: Offset(sgn * 7, -2), width: 13, height: 8),
+        wing);
+  }
+
+  final body = Rect.fromCenter(center: Offset.zero, width: 12, height: 18);
+  final rr = RRect.fromRectAndRadius(body, const Radius.circular(6));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFFD24A30), _kPredator],
+        ).createShader(body));
+  final band = Paint()..color = const Color(0xFF1C1410);
+  canvas.save();
+  canvas.clipRRect(rr);
+  for (var i = 0; i < 3; i++) {
+    canvas.drawRect(Rect.fromLTWH(-7, -2.0 + i * 4.5, 14, 2.2), band);
+  }
+  canvas.restore();
+
+  canvas.drawPath(
+    Path()
+      ..moveTo(-2, 9)
+      ..lineTo(2, 9)
+      ..lineTo(0, 15)
+      ..close(),
+    Paint()..color = const Color(0xFF1C1410),
+  );
+  canvas.drawCircle(const Offset(0, -10), 3.6,
+      Paint()..color = const Color(0xFF1C1410));
+  canvas.restore();
+}
+
+/// Draws the honey-skep hive (matches [_PollinationPainter._paintHive]).
+void _legendHive(Canvas canvas, Offset pos) {
+  canvas.drawCircle(
+    pos,
+    _kHiveRadius + 10,
+    Paint()
+      ..color = _kHoney.withValues(alpha: 0.20)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+  const w = 46.0;
+  for (var i = 0; i < 4; i++) {
+    final ry = 9.0 - i * 1.2;
+    final cy = pos.dy + 10 - i * 9.0;
+    final tone = Color.lerp(const Color(0xFFE6A12E), _kHoney, i / 3)!;
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: Offset(pos.dx, cy), width: w - i * 7.0, height: ry * 2),
+      Paint()..color = tone,
+    );
+  }
+  canvas.drawCircle(
+      pos.translate(0, 8), 4, Paint()..color = const Color(0xFF3A2A12));
+}
+
+/// A short honey-gold flight guide from [a] toward [b] plus a target ring.
+void _legendRouteHint(Canvas canvas, Offset a, Offset b) {
+  final to = b - a;
+  final n = to.distance;
+  if (n < 1) return;
+  final dir = to / n;
+  final paint = Paint()
+    ..color = _kHoney.withValues(alpha: 0.5)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  // Dashed path so it reads as a route, not a bar.
+  for (double d = 10; d < n - 12; d += 12) {
+    canvas.drawLine(a + dir * d, a + dir * (d + 6), paint);
+  }
+  canvas.drawCircle(
+      b,
+      11,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8
+        ..color = _kHoney.withValues(alpha: 0.7));
+}
+
+// ── Frame 1: core objects + the verb (tap to route the bee) ─────────────────
+void _legendCore(Canvas canvas, Size size) {
+  if (!size.width.isFinite ||
+      !size.height.isFinite ||
+      size.shortestSide <= 0) {
+    return;
+  }
+  final w = size.width, h = size.height;
+  _legendBloom(canvas, Offset(w * 0.20, h * 0.30), _kSpecies[0], scale: 1.35);
+  _legendBloom(canvas, Offset(w * 0.80, h * 0.26), _kSpecies[2], scale: 1.35);
+  _legendBloom(canvas, Offset(w * 0.74, h * 0.72), _kSpecies[3], scale: 1.35);
+
+  final bee = Offset(w * 0.42, h * 0.60);
+  final target = Offset(w * 0.20, h * 0.30);
+  _legendRouteHint(canvas, bee, target);
+  final heading = math.atan2(target.dy - bee.dy, target.dx - bee.dx);
+  _legendBee(canvas, bee, heading: heading, scale: 1.4);
+}
+
+// ── Frame 2: how to score (cross same-species → fruit + honey → HIVE) ───────
+void _legendScore(Canvas canvas, Size size) {
+  if (!size.width.isFinite ||
+      !size.height.isFinite ||
+      size.shortestSide <= 0) {
+    return;
+  }
+  final w = size.width, h = size.height;
+  final col = _kSpecies[0];
+  final a = Offset(w * 0.24, h * 0.30);
+  final b = Offset(w * 0.50, h * 0.30);
+  _legendBloom(canvas, a, col, scale: 1.2);
+  _legendBloom(canvas, b, col, scale: 1.2);
+
+  // Pollen carried from A to B — honey sparks along the cross.
+  final spark = Paint()..color = _kHoney.withValues(alpha: 0.85);
+  final to = b - a;
+  for (double t = 0.28; t < 0.75; t += 0.14) {
+    canvas.drawCircle(a + to * t, 2.2, spark);
+  }
+
+  // The pollinated bloom sets a potato fruit.
+  final potato = Offset(w * 0.76, h * 0.30);
+  GameFx.orb(canvas, potato, 10, _kPotato, glow: 1.1, rim: _kLeaf, specular: true);
+
+  // Bank it at the hive.
+  _legendHive(canvas, Offset(w * 0.5, h * 0.80));
+}
+
+// ── Frame 3: the danger (hornets swoop and spill your honey) ────────────────
+void _legendDanger(Canvas canvas, Size size) {
+  if (!size.width.isFinite ||
+      !size.height.isFinite ||
+      size.shortestSide <= 0) {
+    return;
+  }
+  final w = size.width, h = size.height;
+  final bee = Offset(w * 0.36, h * 0.60);
+  _legendAura(canvas, bee, _kHoney);
+  _legendBee(canvas, bee, heading: -math.pi / 4, scale: 1.3);
+
+  final hornet = Offset(w * 0.68, h * 0.30);
+  final heading = math.atan2(bee.dy - hornet.dy, bee.dx - hornet.dx);
+  _legendHornet(canvas, hornet, heading: heading);
+
+  // Spilled honey between the strike and the bee.
+  final spill = Paint()..color = _kHoney.withValues(alpha: 0.75);
+  final mid = Offset.lerp(bee, hornet, 0.5)!;
+  for (var i = 0; i < 5; i++) {
+    final a = i / 5 * math.pi * 2;
+    canvas.drawCircle(
+        mid + Offset(math.cos(a), math.sin(a)) * 9, 2.2, spill);
+  }
+}
+
+// ── Frame 4: escalation (more honey → more, faster hornets) ─────────────────
+void _legendSwarm(Canvas canvas, Size size) {
+  if (!size.width.isFinite ||
+      !size.height.isFinite ||
+      size.shortestSide <= 0) {
+    return;
+  }
+  final w = size.width, h = size.height;
+
+  // A near-full honey meter, reddening toward danger (matches the HUD bar).
+  final barW = w * 0.52;
+  final barRect = Rect.fromLTWH((w - barW) / 2, h * 0.20, barW, 10);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(barRect, const Radius.circular(5)),
+    Paint()..color = Colors.black.withValues(alpha: 0.4),
+  );
+  const honeyNorm = 0.9;
+  final fillCol = Color.lerp(_kHoney, _kPredator, honeyNorm * 0.85)!;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(barRect.left, barRect.top, barW * honeyNorm, 10),
+        const Radius.circular(5)),
+    Paint()..color = fillCol,
+  );
+
+  // Three hornets converging on the loaded bee.
+  final bee = Offset(w * 0.5, h * 0.62);
+  _legendAura(canvas, bee, _kHoney);
+  _legendBee(canvas, bee, scale: 1.1);
+  final spots = [
+    Offset(w * 0.18, h * 0.44),
+    Offset(w * 0.82, h * 0.46),
+    Offset(w * 0.5, h * 0.90),
+  ];
+  for (final s in spots) {
+    final heading = math.atan2(bee.dy - s.dy, bee.dx - s.dx);
+    _legendHornet(canvas, s, heading: heading);
+  }
+}
+
+/// The visual manual for Pollination Dash — wired into the registry spec.
+final List<LegendFrame> pollinationLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap flowers to route the bee through them',
+      paint: _legendCore),
+  const LegendFrame(
+      caption: 'Cross same-color blooms, then bank honey at the HIVE',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Hornets swoop in and spill the honey you carry',
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'The more honey you hoard, the more hornets attack',
+      paint: _legendSwarm),
+];

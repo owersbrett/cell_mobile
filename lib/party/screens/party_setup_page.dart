@@ -21,13 +21,14 @@ class PartySetupView extends StatefulWidget {
 
 class _PartySetupViewState extends State<PartySetupView> {
   PartyMode _mode = PartyMode.ffa4;
-  int _rounds = 7;
+  int _rounds = kPartyRoundCounts.first;
   late final List<String> _names =
       kCharacters.map((c) => c.name).toList();
 
-  // The 7-round match ends on a BOSS round; 5 / 10 flank it for shorter/longer.
-  static const _roundCounts = [5, 7, 10];
-  static const _roundLabels = ['QUICK', 'STANDARD', 'MARATHON'];
+  // Shared with the online lobby — WEEK · 7 / MOON · 28 / SEASON · 90. The match
+  // ends on its final round (the BOSS showdown when the map fields a boss).
+  static const _roundCounts = kPartyRoundCounts;
+  static const _roundLabels = kPartyRoundLabels;
 
   /// Avatar for player [i]: the signed-in player (slot 0) uses their custom
   /// VIPotato; others use their character sticker; initial as last resort.

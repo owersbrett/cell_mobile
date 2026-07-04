@@ -29,7 +29,6 @@ const Color _kElectron = Color(0xFF8CF1FF); // bright electron spark
 const double _kAtomR = 38;
 const int _kCorrectScore = 10; // + streak bonus
 const int _kWrongScore = -5;
-const int _kBondTimeBonus = 2; // seconds added on a correct bond
 const double _kResultDur = 1.45; // celebration window after a correct bond
 const double _kWrongDur = 1.7; // longer, so the explanation can be read
 
@@ -186,12 +185,33 @@ class _BondLabGameState extends State<BondLabGame>
     super.initState();
     _pair = _pairs[_rng.nextInt(_pairs.length)];
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer to a human pace — a QUIZ game, so one classification per beat.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  /// One hands-free move per host tick. Plays Bond Lab *correctly*, not
+  /// randomly: while a pair awaits an answer ([_transition] < 0) it taps the
+  /// bond the electronegativity/metal-character rule dictates ([_Pair.bond])
+  /// through the game's own [_choose] handler — always correct. While a
+  /// result is resolving the game auto-advances to the next pair via its own
+  /// ticker ([_next]), so the bot simply waits. Host owns the clock/HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    // Resolving a previous answer — the ticker advances _next() on its own.
+    if (_transition >= 0) return;
+    // Awaiting input: answer with the rule-correct bond type.
+    _choose(_pair.bond);
   }
 
   void _onTick(Duration now) {
@@ -255,7 +275,6 @@ class _BondLabGameState extends State<BondLabGame>
       final gain = _kCorrectScore + math.min(_streak, 10).toInt();
       widget.session.addScore(gain);
       widget.session.noteStreak(_streak);
-      widget.session.addTime(const Duration(seconds: _kBondTimeBonus));
       final mid = Offset.lerp(_leftCenter, _rightCenter, 0.5)!;
       _pops.add(FxPop(mid.translate(0, -_kAtomR - 18), '+$gain',
           const Color(0xFFFFD54F)));
@@ -582,3 +601,216 @@ class _BondPainter extends CustomPainter {
   @override
   bool shouldRepaint(_BondPainter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME components
+// the live painter uses (orb atoms + EN/character labels, bond plates,
+// electron sparks) so the intro shows exactly what the player will meet.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One atom exactly as `_BondPainter._paintAtom` renders it: character-colored
+/// orb, symbol, optional EN readout and METAL/NONMETAL tag.
+void _legendAtom(Canvas canvas, Offset c, _El el, double r,
+    {bool showEn = true, bool showTag = true}) {
+  final color = el.metal ? _kMetal : _kNonmetal;
+  GameFx.orb(canvas, c, r, color, glow: 0.9);
+  GameFx.text(canvas, el.sym, c.translate(0, -1), math.max(12.0, r * 0.62),
+      Colors.white,
+      weight: FontWeight.w800, glow: 0.4);
+  var dy = r + 11;
+  if (showEn) {
+    GameFx.text(canvas, 'EN ${el.en.toStringAsFixed(2)}', c.translate(0, dy),
+        10, Colors.white.withValues(alpha: 0.9),
+        weight: FontWeight.w700);
+    dy += 16;
+  }
+  if (showTag) {
+    _legendTag(
+        canvas, c.translate(0, dy + 3), el.metal ? 'METAL' : 'NONMETAL', color);
+  }
+}
+
+/// The METAL / NONMETAL pill, mirroring `_BondPainter._tag`.
+void _legendTag(Canvas canvas, Offset center, String text, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(text: text, style: Potatuhs.label(size: 8, color: color)),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final rect = Rect.fromCenter(
+      center: center, width: tp.width + 14, height: tp.height + 7);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rect, const Radius.circular(6)),
+    Paint()..color = color.withValues(alpha: 0.16),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rect, const Radius.circular(6)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = color.withValues(alpha: 0.6),
+  );
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// One electron spark, mirroring `_BondPainter._electron`.
+void _legendElectron(Canvas canvas, Offset at, {double glow = 1.0}) {
+  canvas.drawCircle(
+    at,
+    7,
+    Paint()
+      ..color = _kElectron.withValues(alpha: 0.4 * glow)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawCircle(at, 3.5, Paint()..color = _kElectron);
+}
+
+/// One bond plate as the in-game buttons render: name + its one-line rule.
+void _legendPlate(Canvas canvas, Rect r, _Bond b) {
+  final color = _bondColor(b);
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.42));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = color.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, _bondName(b),
+      Offset(r.center.dx, r.top + r.height * 0.34), 10.5, color,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, _bondRule(b),
+      Offset(r.center.dx, r.bottom - r.height * 0.26), 7.5,
+      Potatuhs.textSecondary,
+      weight: FontWeight.w600);
+}
+
+/// The ionic charge badge that appears once the electron has transferred.
+void _legendBadge(Canvas canvas, Offset at, String sign, Color color) {
+  canvas.drawCircle(at, 9, Paint()..color = color);
+  GameFx.text(canvas, sign, at.translate(0, -0.5), 12, Potatuhs.ink,
+      weight: FontWeight.w900);
+}
+
+// Frame 1 — the core read: two tagged atoms above the three bond plates.
+void _legendRead(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = math.min(size.width * 0.115, size.height * 0.14);
+  final y = size.height * 0.26;
+  _legendAtom(canvas, Offset(size.width * 0.30, y), _els[0], r); // Na
+  _legendAtom(canvas, Offset(size.width * 0.70, y), _els[8], r); // Cl
+  final xs = [size.width * 0.19, size.width * 0.50, size.width * 0.81];
+  const bonds = [_Bond.ionic, _Bond.covalent, _Bond.metallic];
+  for (var i = 0; i < 3; i++) {
+    _legendPlate(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(xs[i], size.height * 0.80),
+          width: size.width * 0.28,
+          height: size.height * 0.19),
+      bonds[i],
+    );
+  }
+}
+
+// Frame 2 — the score: a correct IONIC call, electron mid-transfer, charges.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = math.min(size.width * 0.115, size.height * 0.14);
+  final y = size.height * 0.42;
+  final na = Offset(size.width * 0.28, y);
+  final cl = Offset(size.width * 0.72, y);
+  GameFx.glowLine(canvas, na, cl, _kAccent.withValues(alpha: 0.5), width: 2);
+  _legendElectron(canvas, Offset.lerp(na, cl, 0.55)!);
+  _legendAtom(canvas, na, _els[0], r, showEn: false); // Na → METAL
+  _legendAtom(canvas, cl, _els[8], r, showEn: false); // Cl → NONMETAL
+  _legendBadge(
+      canvas, na.translate(r * 0.78, -r * 0.78), '+', const Color(0xFFFF7043));
+  _legendBadge(canvas, cl.translate(r * 0.78, -r * 0.78), '−', _kNonmetal);
+  GameFx.text(canvas, '+12', Offset(size.width * 0.5, size.height * 0.14), 15,
+      const Color(0xFFFFD54F),
+      weight: FontWeight.w800, glow: 0.5);
+  GameFx.text(canvas, '✓  NaCl · table salt',
+      Offset(size.width * 0.5, size.height * 0.86), 13,
+      const Color(0xFF69F0AE),
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+// Frame 3 — the danger: a wrong call fizzles, −5, and the rule flashes.
+void _legendWrong(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = math.min(size.width * 0.115, size.height * 0.14);
+  final y = size.height * 0.36;
+  // Atoms nudged off-axis, as the wrong-answer shake reads in play.
+  _legendAtom(canvas, Offset(size.width * 0.28 - 4, y), _els[11], r,
+      showEn: false); // H
+  _legendAtom(canvas, Offset(size.width * 0.72 + 4, y), _els[9], r,
+      showEn: false); // O
+  GameFx.text(canvas, '−5', Offset(size.width * 0.5, size.height * 0.12), 15,
+      const Color(0xFFFF5252),
+      weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, '✗  nonmetal + nonmetal → COVALENT',
+      Offset(size.width * 0.5, size.height * 0.79), 11.5,
+      const Color(0xFFFF8A80),
+      weight: FontWeight.w800, glow: 0.5);
+  GameFx.text(canvas, 'H₂O · water',
+      Offset(size.width * 0.5, size.height * 0.91), 9.5,
+      Potatuhs.textSecondary);
+}
+
+// Frame 4 — the escalation: tier-1 traps — polar covalent pairs and alloys.
+void _legendTraps(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final r = math.min(size.width * 0.085, size.height * 0.105);
+  // Polar trap: H + F — wide EN gap, but two nonmetals share a pair.
+  final y1 = size.height * 0.24;
+  final h = Offset(size.width * 0.22, y1);
+  final f = Offset(size.width * 0.54, y1);
+  GameFx.glowLine(canvas, h, f, _kAccent.withValues(alpha: 0.45), width: 2);
+  final m1 = Offset.lerp(h, f, 0.5)!;
+  _legendElectron(canvas, m1.translate(-9, -5), glow: 0.9);
+  _legendElectron(canvas, m1.translate(9, 5), glow: 0.9);
+  _legendAtom(canvas, h, _els[11], r, showTag: false); // H · EN 2.20
+  _legendAtom(canvas, f, _els[10], r, showTag: false); // F · EN 3.98
+  GameFx.text(canvas, 'COVALENT', Offset(size.width * 0.81, y1 - 7), 12,
+      _bondColor(_Bond.covalent),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'polar · HF', Offset(size.width * 0.81, y1 + 10), 9,
+      Potatuhs.textSecondary);
+  // Alloy: Cu + Fe — two metals pool an electron sea.
+  final y2 = size.height * 0.70;
+  final cu = Offset(size.width * 0.22, y2);
+  final fe = Offset(size.width * 0.54, y2);
+  GameFx.glowLine(canvas, cu, fe, _kAccent.withValues(alpha: 0.4), width: 2);
+  final m2 = Offset.lerp(cu, fe, 0.5)!;
+  for (var i = 0; i < 5; i++) {
+    final a = i * (2 * math.pi / 5) + 0.5;
+    _legendElectron(
+        canvas,
+        m2 + Offset(math.cos(a) * (r + 18), math.sin(a) * (r * 0.55 + 7)),
+        glow: 0.7);
+  }
+  _legendAtom(canvas, cu, _els[7], r, showEn: false, showTag: false); // Cu
+  _legendAtom(canvas, fe, _els[6], r, showEn: false, showTag: false); // Fe
+  GameFx.text(canvas, 'METALLIC', Offset(size.width * 0.81, y2 - 7), 12,
+      _bondColor(_Bond.metallic),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'alloy · Cu·Fe', Offset(size.width * 0.81, y2 + 10), 9,
+      Potatuhs.textSecondary);
+}
+
+/// The visual manual for Bond Lab — wired into the registry spec.
+final List<LegendFrame> bondLabLegendFrames = [
+  const LegendFrame(
+      caption: 'Read both atoms, then tap the matching bond plate',
+      paint: _legendRead),
+  const LegendFrame(
+      caption: 'Metal + nonmetal → IONIC: +10 & streak, +2s time',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Wrong bond: −5, streak resets — read the fix',
+      paint: _legendWrong),
+  const LegendFrame(
+      caption: 'Watch for traps: polar covalent pairs and alloys',
+      paint: _legendTraps),
+];

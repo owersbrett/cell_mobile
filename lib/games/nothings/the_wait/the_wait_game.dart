@@ -49,6 +49,11 @@ const int _kStreakThreshold = 65;
 /// Accent — matches The Wait catalog entry (a calm, clockless violet).
 const Color _kAccent = Color(0xFF8C7AE6);
 
+/// ATTRACT autopilot cadence — the host calls [_autoStep] on roughly this
+/// interval. Used to fire ONE tick ahead so the bot taps as close to the
+/// target as it can without overshooting.
+const double _kAutoTick = 0.25;
+
 // ── Internal phases (distinct from host MiniGamePhase) ─────────────────────
 enum _Phase { ready, command, waiting, flash, done }
 
@@ -106,10 +111,15 @@ class _TheWaitGameState extends State<TheWaitGame>
   void initState() {
     super.initState();
     _session.addListener(_onSession);
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    _session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (_session.autoPilot == _autoStep) _session.autoPilot = null;
     _session.removeListener(_onSession);
     _commandTimer?.cancel();
     _windowTimer?.cancel();
@@ -126,14 +136,94 @@ class _TheWaitGameState extends State<TheWaitGame>
       _startRun();
       return; // _startRun calls setState
     }
-    // When the run ends, freeze any in-flight timers and the stopwatch.
-    if (!_session.isRunning && _started) {
+    // Host PAUSE (round frozen, will resume): stop the stopwatch and phase
+    // timers so paused time isn't counted as "waited" time. Distinct from a
+    // real round-end via [isPaused].
+    if (_session.isPaused && _started && !_pausedByHost) {
+      _pauseForHost();
+      setState(() {});
+      return;
+    }
+    // Resume from a host pause: rearm this phase's timing where we left off.
+    if (_session.isRunning && _pausedByHost) {
+      _resumeFromHost();
+      setState(() {});
+      return;
+    }
+    // Genuine run end (not a pause): freeze everything.
+    if (!_session.isRunning && !_session.isPaused && _started) {
       _commandTimer?.cancel();
       _windowTimer?.cancel();
       _flashTimer?.cancel();
       _watch.stop();
     }
     setState(() {});
+  }
+
+  /// True while the round is frozen by a host pause (see [_pauseForHost]).
+  bool _pausedByHost = false;
+
+  /// Freezes the current beat: stops the stopwatch (elapsed preserved) and
+  /// cancels the active phase timer, so no wall-clock time accrues while paused.
+  void _pauseForHost() {
+    _pausedByHost = true;
+    _commandTimer?.cancel();
+    _windowTimer?.cancel();
+    _flashTimer?.cancel();
+    if (_watch.isRunning) _watch.stop();
+  }
+
+  /// Resumes the current beat exactly where it was: the dark wait rearms its
+  /// window timeout for the time that was LEFT and restarts the stopwatch, so
+  /// the paused seconds never count. Command/flash beats simply rearm.
+  void _resumeFromHost() {
+    _pausedByHost = false;
+    switch (_phase) {
+      case _Phase.command:
+        _commandTimer = Timer(
+          Duration(milliseconds: (_kCommandSeconds * 1000).round()),
+          _enterDark,
+        );
+        break;
+      case _Phase.waiting:
+        _watch.start(); // resume elapsed from where it paused
+        final leftS = (_kRoundWindow - _watch.elapsedMilliseconds / 1000.0)
+            .clamp(0.0, _kRoundWindow);
+        _windowTimer = Timer(
+          Duration(milliseconds: (leftS * 1000).round()),
+          _onWindowExpired,
+        );
+        break;
+      case _Phase.flash:
+        _flashTimer = Timer(
+          Duration(milliseconds: (_kFlashSeconds * 1000).round()),
+          _nextRound,
+        );
+        break;
+      case _Phase.ready:
+      case _Phase.done:
+        break;
+    }
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). This plays The Wait
+  /// *perfectly*, not randomly: the only decision the game makes is WHEN to tap
+  /// during the black wait, and the bot can read the true target [_target] and
+  /// the running [_watch]. Every other phase (command / flash / done)
+  /// self-advances on its own timer, so there is nothing to do there.
+  ///
+  /// It fires ONE tick ahead: if the wait has run long enough that the NEXT
+  /// tick would sit at/after the target, this tick is the closest it can land
+  /// without overshooting — so it taps now. It never taps far from the target,
+  /// because the condition can only be met within a tick of it.
+  void _autoStep() {
+    if (!_session.isRunning) return;
+    if (_phase != _Phase.waiting) return; // only the dark wait needs a decision
+    final elapsed = _watch.elapsedMilliseconds / 1000.0;
+    if (elapsed + _kAutoTick >= _target) {
+      _onTap(); // reached the target (to within one tick) — feel it and tap
+    }
   }
 
   // ── Run / round lifecycle ───────────────────────────────────────────────
@@ -282,7 +372,7 @@ class _TheWaitGameState extends State<TheWaitGame>
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.hourglass_empty, color: _kAccent, size: 54),
+        const Icon(Icons.hourglass_empty, color: _kAccent, size: 54),
         const SizedBox(height: 18),
         Text('THE WAIT',
             style: Potatuhs.display(size: 34, color: Potatuhs.textPrimary)),
@@ -488,6 +578,164 @@ class _TheWaitGameState extends State<TheWaitGame>
     );
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn in the game's OWN minimal
+// language: the void backdrop, the WAIT-N command card, the white result
+// flash, and the closeness readout. Static and cheap — rendered once on the
+// intro screen, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Frame 1 — the command: "WAIT 10 SECONDS" floating on the void, exactly as
+/// the round shows it before the screen goes dark.
+void _legendCommand(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  // The same ambient void the lit states use (frozen at one instant).
+  GameFx.atmosphere(canvas, size, _kAccent, 12, motes: 12);
+
+  final cx = size.width / 2;
+
+  // Round tag, as in play.
+  final tag = Rect.fromCenter(
+      center: Offset(cx, size.height * 0.14),
+      width: min(size.width * 0.42, 96),
+      height: 18);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(tag, const Radius.circular(9)),
+    Paint()..color = _kAccent.withValues(alpha: 0.12),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(tag, const Radius.circular(9)),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kAccent.withValues(alpha: 0.45),
+  );
+  GameFx.text(canvas, 'ROUND 1 / $_kRounds', tag.center, 8, _kAccent,
+      weight: FontWeight.w800);
+
+  GameFx.text(canvas, 'WAIT', Offset(cx, size.height * 0.32), 12, _kAccent,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '10', Offset(cx, size.height * 0.52),
+      min(size.height * 0.30, size.width * 0.26), Potatuhs.textPrimary,
+      display: true);
+  GameFx.text(canvas, 'SECONDS', Offset(cx, size.height * 0.72), 12, _kAccent,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'the screen is about to go dark…',
+      Offset(cx, size.height * 0.88), 9, Potatuhs.textFaint);
+}
+
+/// Frame 2 — the tap moment: the pure-black wait on the left (your tap, the
+/// only event in the dark), the white flash with the frozen timestamp on the
+/// right — the exact readout the game freezes the instant you tap.
+void _legendTap(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final split = size.width * 0.44;
+
+  // Left: THE DARK — pure black, no cue, only your finger.
+  canvas.drawRect(
+      Rect.fromLTWH(0, 0, split, size.height), Paint()..color = Colors.black);
+  final tap = Offset(split * 0.5, size.height * 0.48);
+  canvas.drawCircle(tap, 6, Paint()..color = _kAccent);
+  for (int i = 1; i <= 3; i++) {
+    canvas.drawCircle(
+      tap,
+      6.0 + i * 9.0,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _kAccent.withValues(alpha: 0.55 - i * 0.15),
+    );
+  }
+  GameFx.text(canvas, 'TAP', Offset(tap.dx, size.height * 0.82), 10, _kAccent,
+      weight: FontWeight.w800);
+
+  // Right: the FLASH — white, black timestamp, target + delta (as in play).
+  canvas.drawRect(Rect.fromLTWH(split, 0, size.width - split, size.height),
+      Paint()..color = Colors.white);
+  final fx = split + (size.width - split) / 2;
+  GameFx.text(canvas, '9.87s', Offset(fx, size.height * 0.40),
+      min(size.height * 0.18, (size.width - split) * 0.20), Colors.black,
+      display: true);
+  GameFx.text(canvas, 'TARGET 10s', Offset(fx, size.height * 0.60), 9,
+      const Color(0xFF555555),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '0.13s EARLY', Offset(fx, size.height * 0.72), 9,
+      const Color(0xFF555555),
+      weight: FontWeight.w800);
+}
+
+/// Frame 3 — the scoring curve: a 0→10s timeline with the target tick; a tap
+/// near the target earns big points, a far one almost nothing.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  canvas.drawRect(Offset.zero & size, Paint()..color = Potatuhs.inkDeep);
+
+  final y = size.height * 0.56;
+  final x0 = size.width * 0.08;
+  final x1 = size.width * 0.92;
+
+  // The felt-time line (the only axis this game has).
+  canvas.drawLine(
+    Offset(x0, y),
+    Offset(x1, y),
+    Paint()
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = Potatuhs.textFaint.withValues(alpha: 0.5),
+  );
+
+  // Target tick — where 10 real seconds actually land.
+  final tx = size.width * 0.78;
+  canvas.drawLine(
+    Offset(tx, y - 14),
+    Offset(tx, y + 14),
+    Paint()
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = Potatuhs.textPrimary,
+  );
+  GameFx.text(canvas, 'TARGET 10s', Offset(tx, y + 26), 9,
+      Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+
+  // Close tap: a breath from the target — big points.
+  final nearX = size.width * 0.72;
+  canvas.drawCircle(Offset(nearX, y), 6, Paint()..color = _kAccent);
+  canvas.drawCircle(
+    Offset(nearX, y),
+    11,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _kAccent.withValues(alpha: 0.4),
+  );
+  GameFx.text(canvas, '+92', Offset(nearX, y - size.height * 0.24),
+      min(size.height * 0.14, 26), _kAccent,
+      display: true);
+
+  // Far tap: seconds off — nearly nothing.
+  final farX = size.width * 0.26;
+  canvas.drawCircle(
+      Offset(farX, y), 5, Paint()..color = Potatuhs.textFaint);
+  GameFx.text(canvas, '+18', Offset(farX, y - size.height * 0.20), 12,
+      Potatuhs.textFaint,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '4.1s', Offset(farX, y + 24), 9, Potatuhs.textFaint);
+}
+
+/// The visual manual for The Wait — wired into the registry spec.
+final List<LegendFrame> theWaitLegendFrames = [
+  const LegendFrame(
+      caption: 'Read the target — FEEL that many seconds pass',
+      paint: _legendCommand),
+  const LegendFrame(
+      caption: 'Tap in the dark — a white flash stamps your time',
+      paint: _legendTap),
+  const LegendFrame(
+      caption: 'Closer to the target = more points. Dead on = 100',
+      paint: _legendScore),
+];
 
 /// One ambient backdrop for the lit (non-dark) states — soft gradient + drift,
 /// from the shared FX kit. Driven by the single game ticker. The black wait

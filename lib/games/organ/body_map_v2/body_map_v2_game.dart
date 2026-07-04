@@ -113,6 +113,250 @@ class _RepaintNotifier extends ChangeNotifier {
   void tick() => notifyListeners();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards. Each draws the LITERAL components the
+// player meets (the human silhouette, the organ orbs at their REAL anatomical
+// homes, a name token, a gold JOB token, the decay ring) using the same
+// geometry (_bodyPoint / _bodyW / _kOrgans) and orb style the live game uses.
+// Cheap + static: no ticker, no state — safe to render in the intro carousel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kLegendMiss = Color(0xFFFF8A80); // matches the in-game MISS pop
+const Color _kLegendDecay = Color(0xFFFF5252); // matches the in-game decay ring
+
+/// Compact copy of the game silhouette so a legend body matches the play body.
+void _legendSilhouette(Canvas canvas, Size size, {double alpha = 1.0}) {
+  final cx = size.width / 2;
+  final top = size.height * _kBodyTopFrac;
+  final bh = size.height * _kBodyHeightFrac;
+  final bw = _bodyW(size);
+
+  final p = Path();
+  final headR = bw * 0.18;
+  p.addOval(
+      Rect.fromCircle(center: Offset(cx, top + headR * 0.95), radius: headR));
+  final shoulderY = top + bh * 0.20;
+  final hipY = top + bh * 0.82;
+  final shoulderHalf = bw * 0.40;
+  final waistHalf = bw * 0.30;
+  final hipHalf = bw * 0.35;
+  final torso = Path()
+    ..moveTo(cx - shoulderHalf, shoulderY)
+    ..lineTo(cx + shoulderHalf, shoulderY)
+    ..quadraticBezierTo(cx + waistHalf, top + bh * 0.50, cx + hipHalf, hipY)
+    ..lineTo(cx - hipHalf, hipY)
+    ..quadraticBezierTo(
+        cx - waistHalf, top + bh * 0.50, cx - shoulderHalf, shoulderY)
+    ..close();
+  p.addPath(torso, Offset.zero);
+
+  final armTop = shoulderY + bh * 0.01;
+  final armH = bh * 0.42;
+  final armW = bw * 0.15;
+  p.addRRect(RRect.fromRectAndRadius(
+      Rect.fromLTWH(cx - shoulderHalf - armW * 0.45, armTop, armW, armH),
+      Radius.circular(armW * 0.5)));
+  p.addRRect(RRect.fromRectAndRadius(
+      Rect.fromLTWH(cx + shoulderHalf - armW * 0.55, armTop, armW, armH),
+      Radius.circular(armW * 0.5)));
+
+  canvas.drawPath(
+    p,
+    Paint()
+      ..color = const Color(0xFFFDF5EB).withValues(alpha: 0.08 * alpha),
+  );
+  canvas.drawPath(
+    p,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = Colors.white.withValues(alpha: 0.16 * alpha),
+  );
+}
+
+/// The exact organ orb the game draws (radial gradient + rim + label), lifted to
+/// a top-level helper so the manual shows the literal token.
+void _legendOrb(Canvas canvas, Offset at, double r, Color color, String label,
+    {bool job = false, bool glow = false, double alpha = 1.0}) {
+  final rect = Rect.fromCenter(center: at, width: r * 2.1, height: r * 1.7);
+  if (glow) {
+    canvas.drawOval(
+      rect.inflate(7),
+      Paint()
+        ..color = color.withValues(alpha: 0.34 * alpha)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+    );
+  }
+  canvas.drawOval(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.3, -0.4),
+        colors: [
+          Color.lerp(color, Colors.white, 0.42)!.withValues(alpha: alpha),
+          color.withValues(alpha: alpha),
+          Color.lerp(color, Colors.black, 0.38)!.withValues(alpha: alpha),
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(rect),
+  );
+  canvas.drawOval(
+    rect,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = job ? 2.2 : 1.4
+      ..color = (job ? Potatuhs.gold : Colors.white)
+          .withValues(alpha: (job ? 0.85 : 0.55) * alpha),
+  );
+  final fontSize = (r * 0.40).clamp(8.5, 12.0);
+  GameFx.text(canvas, label, at.translate(0, r * 0.85 + fontSize), fontSize,
+      Colors.white.withValues(alpha: 0.94 * alpha),
+      weight: FontWeight.w700);
+  if (job) {
+    GameFx.text(canvas, '?', at, r * 0.7,
+        Colors.white.withValues(alpha: 0.9 * alpha),
+        weight: FontWeight.w900);
+  }
+}
+
+/// A downward chevron cue (the "drop here" arrow), matching the game's stroke.
+void _legendChevron(Canvas canvas, Offset tip, Color color, {double s = 9}) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(tip.translate(-s, -s), tip, p);
+  canvas.drawLine(tip.translate(s, -s), tip, p);
+}
+
+_Organ _legendOrgan(String id) => _kOrgans.firstWhere((o) => o.id == id);
+
+// Frame 1 — the body + the core verb: drag an organ from the tray to its home.
+void _legendPlace(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  _legendSilhouette(canvas, size);
+  final r = (_bodyW(size) * 0.115).clamp(12.0, 30.0);
+  // Organs already placed at their REAL anatomical homes.
+  for (final id in ['brain', 'heart', 'stomach']) {
+    final o = _legendOrgan(id);
+    _legendOrb(
+        canvas, _bodyPoint(size, o.nx, o.ny), r, o.color, o.label,
+        alpha: 0.95);
+  }
+  // A token in the tray dragging up toward the liver's home.
+  final liver = _legendOrgan('liver');
+  final home = _bodyPoint(size, liver.nx, liver.ny);
+  final trayPos = Offset(size.width * 0.78, size.height * 0.86);
+  final mid = Offset.lerp(trayPos, home, 0.5)!;
+  canvas.drawLine(
+    trayPos,
+    mid,
+    Paint()
+      ..color = liver.color.withValues(alpha: 0.5)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round,
+  );
+  _legendChevron(canvas, mid.translate(0, -6),
+      liver.color.withValues(alpha: 0.7));
+  _legendOrb(canvas, trayPos, r, liver.color, liver.label, glow: true);
+}
+
+// Frame 2 — score by dropping inside the glowing region ring.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  _legendSilhouette(canvas, size, alpha: 0.7);
+  final r = (_bodyW(size) * 0.115).clamp(12.0, 30.0);
+  final heart = _legendOrgan('heart');
+  final home = _bodyPoint(size, heart.nx, heart.ny);
+  final tol = _bodyW(size) * 0.20; // the L1 snap zone
+  // The glowing target ring (the ghost the game shows on learning levels).
+  canvas.drawCircle(
+    home,
+    tol,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = heart.color.withValues(alpha: 0.40),
+  );
+  canvas.drawCircle(home, 3.5, Paint()..color = heart.color.withValues(alpha: 0.6));
+  // The heart name token being lowered in, with a chevron cue.
+  final tokPos = home.translate(0, -tol - r * 0.7);
+  _legendChevron(canvas, home.translate(0, -tol + 4), heart.color, s: 8);
+  _legendOrb(canvas, tokPos, r, heart.color, heart.label, glow: true);
+  // A score pop like the game's +N tag.
+  GameFx.text(canvas, '+14', home.translate(tol + r * 0.4, -tol * 0.4),
+      15, heart.color, weight: FontWeight.w900, glow: 0.4);
+}
+
+// Frame 3 — the gold JOB token: read the function, worth ×1.5.
+void _legendJob(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = (_bodyW(size) * 0.14).clamp(16.0, 36.0);
+  final heart = _legendOrgan('heart');
+  // The literal gold-rimmed "?" job token, captioned with the FUNCTION.
+  _legendOrb(canvas, Offset(size.width * 0.5, size.height * 0.40), r,
+      heart.color, heart.job,
+      job: true, glow: true);
+  // The ×1.5 reward callout, in the game's gold.
+  GameFx.text(canvas, '×1.5', Offset(size.width * 0.5, size.height * 0.68),
+      22, Potatuhs.gold, weight: FontWeight.w900, glow: 0.5);
+  GameFx.text(canvas, 'know the JOB, know the organ',
+      Offset(size.width * 0.5, size.height * 0.78), 10.5,
+      Potatuhs.textSecondary,
+      weight: FontWeight.w700);
+}
+
+// Frame 4 — the decay danger: place before the ring empties or it's a miss.
+void _legendDecay(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = (_bodyW(size) * 0.125).clamp(14.0, 32.0);
+  final safe = _legendOrgan('lungL');
+  final gone = _legendOrgan('bladder');
+  final y = size.height * 0.45;
+  // A healthy token — nearly full decay ring in its own colour.
+  final leftPos = Offset(size.width * 0.32, y);
+  _legendDecayRing(canvas, leftPos, r, 0.82, safe.color);
+  _legendOrb(canvas, leftPos, r, safe.color, safe.label);
+  // A near-dead token — ring almost empty, red, about to MISS.
+  final rightPos = Offset(size.width * 0.68, y);
+  _legendDecayRing(canvas, rightPos, r, 0.12, _kLegendDecay);
+  _legendOrb(canvas, rightPos, r, gone.color, gone.label, alpha: 0.85);
+  GameFx.text(canvas, 'MISSED', rightPos.translate(0, -r - 16), 13,
+      _kLegendMiss, weight: FontWeight.w900);
+}
+
+void _legendDecayRing(
+    Canvas canvas, Offset at, double r, double frac, Color color) {
+  canvas.drawArc(
+    Rect.fromCircle(center: at, radius: r + 7),
+    -math.pi / 2,
+    2 * math.pi * frac.clamp(0.0, 1.0),
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = color.withValues(alpha: 0.85),
+  );
+}
+
+/// The visual manual for Body Map v2 — wired into the registry spec.
+final List<LegendFrame> bodyMapV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Drag each organ onto where it lives in the body',
+      paint: _legendPlace),
+  const LegendFrame(
+      caption: 'Drop inside the glowing ring to score points',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: "Gold '?' tokens show a JOB, not a name — worth ×1.5",
+      paint: _legendJob),
+  const LegendFrame(
+      caption: "Place before its ring empties or it's a miss",
+      paint: _legendDecay),
+];
+
 // ═══════════════════════════════════════════════════════════════ Widget ═══════
 
 class BodyMapV2Game extends StatefulWidget {
@@ -154,13 +398,44 @@ class _BodyMapV2GameState extends State<BodyMapV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Dormant in normal
+    // play — the host only calls it hands-free during attract. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ─── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free placement per host tick (~250ms). Plays Body Map v2
+  /// *correctly*, never randomly: it grabs the most urgent tray token (the one
+  /// closest to decaying away — "place it before it fades") and drops it onto
+  /// its OWN correct anatomical home by setting the token's position to the
+  /// exact [_bodyPoint] for that organ's nx/ny, then routing through the game's
+  /// own [_drop] handler. Distance is zero, so [_placeCorrect] always fires —
+  /// a clean placement every time, scoring job/climax bonuses included. One
+  /// token per tick; the tick loop keeps feeding the tray on its own, so the
+  /// bot just banks perfect placements until the host's clock ends the run.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (!_ready) return;
+    // Pick the most urgent placeable token: lowest remaining life, skipping any
+    // held (none, hands-free) or bouncing-back token. Deterministic.
+    _Token? target;
+    for (final tk in _tray) {
+      if (tk.held || tk.returning) continue;
+      if (target == null || tk.life < target.life) target = tk;
+    }
+    if (target == null) return; // nothing to place; the tick feeds the tray
+    // Snap the token exactly onto its organ's home, then place via the real
+    // handler — dist == 0, so it always scores correct.
+    target.pos = _bodyPoint(_size, target.organ.nx, target.organ.ny);
+    _drop(target);
   }
 
   // ─── Progress / difficulty ──────────────────────────────────────────────────

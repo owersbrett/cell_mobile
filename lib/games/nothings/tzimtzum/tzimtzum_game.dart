@@ -77,6 +77,11 @@ const double _kCleanSteadiness = 0.78;
 /// How long the per-prompt result flash lingers before the next prompt.
 const double _kFlashTime = 1.1;
 
+/// ATTRACT autopilot cadence (seconds) — the host calls [_autoStep] at ~this
+/// rate. Used to project the ideal void travel over one hands-free step so the
+/// bot withdraws at the game's own constant rate (idealRate × this).
+const double _kAutoTick = 0.25;
+
 enum _Phase { ready, playing, flash }
 
 class TzimtzumGame extends StatefulWidget {
@@ -129,13 +134,44 @@ class _TzimtzumGameState extends State<TzimtzumGame>
   @override
   void initState() {
     super.initState();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Tzimtzum *correctly*,
+  /// not randomly: it withdraws the void at the game's OWN ideal constant rate.
+  /// idealRate = _kTravel / _targetDur (void-level per second), so advancing the
+  /// void by idealRate × _kAutoTick each call keeps the average withdrawal rate
+  /// centred on the ideal band and lets the hold complete on the game's clock —
+  /// exactly the steady, restrained contraction the game rewards. Pinch drives
+  /// the void DOWN (toward 0 = withdrawn space); stretch drives it UP (toward
+  /// 1 = full light). It marks a valid two-finger gesture so the per-tick scorer
+  /// accrues hold + steadiness, mirroring [_onScaleUpdate]. Clamping near the
+  /// end means it maintains rather than jerking past the target. Only the
+  /// playing phase acts; ready/flash self-advance on the ticker. The host owns
+  /// the clock, so the round still ends on time; the bot just banks real points.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.playing) return; // ready / flash self-advance
+    // Correct direction for this prompt, and one autopilot-tick of ideal travel.
+    final dir = _isPinch ? -1.0 : 1.0;
+    final step = _idealRate * _kAutoTick * dir;
+    _voidLevel = (_voidLevel + step).clamp(0.0, 1.0);
+    // A valid, correct-direction two-finger gesture is in progress: this is what
+    // gates the per-tick quality/hold accrual (see the _Phase.playing branch).
+    _active = true;
+    _prevPointers = 2;
   }
 
   // ── Prompt lifecycle ───────────────────────────────────────────────────
@@ -499,7 +535,7 @@ class _TzimtzumPainter extends CustomPainter {
 
   // Live RATE gauge (with ideal band) + STEADINESS meter, anchored at bottom.
   void _paintGauge(Canvas canvas, Size size) {
-    final x0 = 28.0;
+    const x0 = 28.0;
     final x1 = size.width - 28.0;
     final w = x1 - x0;
     final gy = size.height - 84.0;
@@ -584,3 +620,251 @@ class _TzimtzumPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _TzimtzumPainter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards (see docs/LEGEND_COVERAGE.md). Each
+// card draws the game's OWN components — the light/void field, the two-finger
+// gesture, the RATE gauge with its ideal band, the STEADINESS meter — so the
+// manual shows the literal play surface. Static + cheap: rendered once on the
+// intro screen, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Mirrors [_TzimtzumPainter._paintVoid]: the light orb (Ein-Sof fullness)
+/// with the withdrawn dark space (chalal) at the core, at a fixed [voidLevel]
+/// (0 = fully withdrawn space, 1 = full light).
+void _legendVoidField(
+    Canvas canvas, Offset center, double maxR, double voidLevel) {
+  if (maxR <= 0) return;
+  final lightR = maxR * (0.55 + 0.55 * voidLevel).clamp(0.2, 1.1);
+  canvas.drawCircle(
+    center,
+    lightR,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Color.lerp(_kAccent, Colors.white, 0.7)!.withValues(alpha: 0.9),
+          _kAccent.withValues(alpha: 0.55),
+          _kAccent.withValues(alpha: 0.0),
+        ],
+        stops: const [0.0, 0.5, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: lightR)),
+  );
+  final spaceR = maxR * (1.0 - voidLevel).clamp(0.0, 1.0) * 0.92;
+  if (spaceR > 1) {
+    canvas.drawCircle(
+      center,
+      spaceR,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            Potatuhs.inkDeep,
+            Potatuhs.inkDeep.withValues(alpha: 0.0),
+          ],
+          stops: const [0.7, 1.0],
+        ).createShader(Rect.fromCircle(center: center, radius: spaceR)),
+    );
+    canvas.drawCircle(
+      center,
+      spaceR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _kAccent.withValues(alpha: 0.7)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+  }
+}
+
+/// A stylized finger contact point (glow pad + white ring) with a motion
+/// chevron pointing along [dir] — the two-finger gesture cue.
+void _legendFinger(Canvas canvas, Offset p, Offset dir, Color color) {
+  canvas.drawCircle(p, 13, Paint()..color = color.withValues(alpha: 0.28));
+  canvas.drawCircle(p, 8, Paint()..color = color.withValues(alpha: 0.95));
+  canvas.drawCircle(
+      p,
+      13,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = Colors.white.withValues(alpha: 0.75));
+  final len = dir.distance;
+  if (len <= 0) return;
+  final u = dir / len;
+  final n = Offset(-u.dy, u.dx);
+  final tail = p + u * 18.0;
+  final head = tail + u * len;
+  final stroke = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(tail, head, stroke);
+  canvas.drawLine(head, head - u * 9.0 + n * 6.0, stroke);
+  canvas.drawLine(head, head - u * 9.0 - n * 6.0, stroke);
+}
+
+/// Mirrors [_TzimtzumPainter._paintGauge]: the RATE track with its green
+/// ideal band, centre line and rate marker at [markerRel] (1.0 = ideal rate,
+/// gauge spans 0..2.4× ideal, like the live gauge).
+void _legendGauge(
+  Canvas canvas,
+  Size size,
+  double gy, {
+  required double markerRel,
+  required Color markerColor,
+  double tol = 0.55,
+}) {
+  final x0 = size.width * 0.10;
+  final w = size.width * 0.80;
+  if (w <= 0) return;
+  const maxRel = 2.4;
+  double mapRate(double r) => x0 + (r / maxRel).clamp(0.0, 1.0) * w;
+
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(x0, gy, w, 16), const Radius.circular(8)),
+    Paint()..color = Colors.white.withValues(alpha: 0.07),
+  );
+  final lo = mapRate(1 - tol);
+  final hi = mapRate(1 + tol);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(lo, gy, hi - lo, 16), const Radius.circular(8)),
+    Paint()..color = _kGood.withValues(alpha: 0.28),
+  );
+  final cx = mapRate(1.0);
+  canvas.drawLine(
+      Offset(cx, gy - 4),
+      Offset(cx, gy + 20),
+      Paint()
+        ..color = _kGood.withValues(alpha: 0.9)
+        ..strokeWidth = 2);
+  final mx = mapRate(markerRel);
+  canvas.drawCircle(Offset(mx, gy + 8), 9, Paint()..color = markerColor);
+  canvas.drawCircle(
+      Offset(mx, gy + 8),
+      9,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = Colors.white.withValues(alpha: 0.7));
+  GameFx.text(
+      canvas, 'RATE', Offset(x0 + 18, gy - 12), 10, Potatuhs.textSecondary,
+      weight: FontWeight.w800);
+}
+
+// ── Frame 1: the verb — two fingers pinch (or stretch) the light/void field ─
+void _legendGesture(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  GameFx.text(canvas, 'PINCH', Offset(size.width / 2, size.height * 0.10), 22,
+      _kAccent,
+      display: true, glow: 0.5);
+  final center = Offset(size.width / 2, size.height * 0.52);
+  final maxR = size.shortestSide * 0.24;
+  _legendVoidField(canvas, center, maxR, 0.55);
+  // Two finger pads on a diagonal across the field, chevrons pointing inward.
+  final off = Offset(maxR * 1.15, maxR * 0.85);
+  for (final p in [center - off, center + off]) {
+    final toCenter = center - p;
+    final u = toCenter / toCenter.distance;
+    _legendFinger(canvas, p, u * 20.0, _kAccent);
+  }
+  GameFx.text(canvas, 'two fingers · STRETCH moves apart',
+      Offset(size.width / 2, size.height * 0.90), 11, Potatuhs.textSecondary);
+}
+
+// ── Frame 2: the steady-rate target — marker parked in the green band ──────
+void _legendSteady(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final center = Offset(size.width / 2, size.height * 0.36);
+  final maxR = size.shortestSide * 0.20;
+  _legendVoidField(canvas, center, maxR, 0.5);
+  // Hold-progress arc, mid-hold — a valid steady hold is accruing.
+  canvas.drawArc(
+    Rect.fromCircle(center: center, radius: maxR + 10),
+    -math.pi / 2,
+    2 * math.pi * 0.55,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..color = _kGood.withValues(alpha: 0.85),
+  );
+  GameFx.text(canvas, 'constant rate', Offset(size.width / 2, size.height * 0.66),
+      12, Potatuhs.textSecondary);
+  _legendGauge(canvas, size, size.height * 0.80,
+      markerRel: 1.0, markerColor: _kGood);
+}
+
+// ── Frame 3: the danger — too fast collapses the void, ticks score zero ────
+void _legendTooFast(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final center = Offset(size.width / 2, size.height * 0.32);
+  final maxR = size.shortestSide * 0.20;
+  _legendVoidField(canvas, center, maxR, 0.06); // collapsed too hard
+  GameFx.text(canvas, 'TOO FAST', Offset(size.width / 2, size.height * 0.60),
+      24, _kWarn,
+      display: true, glow: 0.6);
+  _legendGauge(canvas, size, size.height * 0.80,
+      markerRel: 2.1, markerColor: _kWarn);
+}
+
+// ── Frame 4: the payoff — full arc + high steadiness = PERFECT + streak ────
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final center = Offset(size.width / 2, size.height * 0.30);
+  final maxR = size.shortestSide * 0.17;
+  _legendVoidField(canvas, center, maxR, 0.12);
+  // Full hold-progress arc — the hold completed.
+  canvas.drawArc(
+    Rect.fromCircle(center: center, radius: maxR + 10),
+    -math.pi / 2,
+    2 * math.pi,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..color = _kGood.withValues(alpha: 0.85),
+  );
+  GameFx.text(canvas, 'PERFECT', Offset(size.width / 2, size.height * 0.58),
+      24, _kGood,
+      display: true, glow: 0.6);
+  GameFx.text(canvas, '+167', Offset(size.width / 2, size.height * 0.67), 16,
+      Potatuhs.gold,
+      weight: FontWeight.w800);
+  // Steadiness meter, filled green.
+  final x0 = size.width * 0.10;
+  final w = size.width * 0.80;
+  final sy = size.height * 0.82;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(x0, sy, w, 8), const Radius.circular(4)),
+    Paint()..color = Colors.white.withValues(alpha: 0.07),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(x0, sy, w * 0.94, 8), const Radius.circular(4)),
+    Paint()..color = _kGood.withValues(alpha: 0.9),
+  );
+  GameFx.text(canvas, 'STEADINESS', Offset(x0 + 42, sy + 18), 10,
+      Potatuhs.textSecondary,
+      weight: FontWeight.w800);
+}
+
+/// The visual manual for Tzimtzum — wired into the registry spec.
+final List<LegendFrame> tzimtzumLegendFrames = [
+  const LegendFrame(
+      caption: 'Follow the cue: two-finger PINCH or STRETCH',
+      paint: _legendGesture),
+  const LegendFrame(
+      caption: 'Hold a CONSTANT rate — park the marker in the band',
+      paint: _legendSteady),
+  const LegendFrame(
+      caption: 'Too fast collapses the void — those ticks score 0',
+      paint: _legendTooFast),
+  const LegendFrame(
+      caption: 'Steady full holds score PERFECT and build a streak',
+      paint: _legendScore),
+];

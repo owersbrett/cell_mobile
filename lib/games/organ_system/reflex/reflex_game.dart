@@ -79,6 +79,10 @@ class _ReflexGameState extends State<ReflexGame>
   bool _wasRunning = false;
   bool _started = false;
 
+  // Last laid-out size — captured in [build] so the ATTRACT autopilot can drive
+  // the same fire handler a real tap uses (it needs a Size for spark geometry).
+  Size _lastSize = Size.zero;
+
   // Trial state.
   _Phase _phase = _Phase.idle;
   int _trial = 0;
@@ -114,12 +118,33 @@ class _ReflexGameState extends State<ReflexGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game can play itself hands-free. Registered
+    // always (harmless in normal play — the host only calls it in autoplay).
+    // See [_autoStep]. Dormant unless the host is driving.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Reflex *correctly*, not
+  /// randomly: it fires ONLY while the stimulus is live ([_Phase.fired] — the
+  /// valid GO cue), which is exactly when a real tap scores. During the
+  /// pre-stimulus wait ([_Phase.ready]) it does nothing, so it never triggers a
+  /// false start — not even when a DECOY flash is showing (a decoy is still the
+  /// ready phase, and any tap there is penalised). Every other phase (result
+  /// holds / idle) is a no-op; the game's own ticker self-advances the trial.
+  /// The tick cadence (~250ms) lands the reaction well inside the damage window.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase == _Phase.fired) {
+      _handleTap(_lastSize); // routes to _onReact — the real fire handler
+    }
   }
 
   void _onTick(Duration elapsed) {
@@ -300,6 +325,7 @@ class _ReflexGameState extends State<ReflexGame>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
+      _lastSize = size; // keep the autopilot's fire handler supplied with size
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTapDown: (_) => _handleTap(size),
@@ -632,3 +658,191 @@ class _ReflexPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ReflexPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the SAME _Arc geometry and
+// GameFx primitives the live game uses, so the manual shows the LITERAL reflex
+// arc (receptor · spinal cord · muscle · bypassed brain) the player will meet.
+// Static + cheap: rendered once on the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legendNodeLabel(
+    Canvas canvas, String s, Offset center, Color color, double fontSize) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: fontSize,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 1.0,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+void _legendDotted(Canvas canvas, Offset a, Offset b, Color color) {
+  final total = (b - a).distance;
+  if (total < 1) return;
+  final dir = (b - a) / total;
+  final paint = Paint()
+    ..color = color
+    ..strokeWidth = 1.6
+    ..strokeCap = StrokeCap.round;
+  for (double d = 0; d < total; d += 14) {
+    canvas.drawLine(
+        a + dir * d, a + dir * math.min(d + 7, total), paint);
+  }
+}
+
+/// Draws the static reflex-arc skeleton (brain link, sensory + motor limbs, the
+/// three nodes with labels). Flags light individual limbs / states per frame.
+void _legendArcBase(
+  Canvas canvas,
+  _Arc arc, {
+  bool stimActive = false,
+  bool litSensory = false,
+  bool litMotor = false,
+  double muscleFlash = 0.0,
+  double damageFrac = 0.0,
+}) {
+  // Brain — faded, dotted "bypassed" link to the cord.
+  final dim = _kCalm.withValues(alpha: 0.28);
+  _legendDotted(canvas, arc.cord, arc.brain, dim);
+  GameFx.orb(canvas, arc.brain, 16, _kCalm.withValues(alpha: 0.5),
+      glow: 0.3, specular: false);
+  _legendNodeLabel(canvas, 'BRAIN', arc.brain + const Offset(0, -26),
+      _kCalm.withValues(alpha: 0.6), 9);
+  _legendNodeLabel(canvas, 'bypassed', arc.brain + const Offset(0, 26),
+      _kCalm.withValues(alpha: 0.45), 8);
+
+  // Afferent (sensory) + efferent (motor) limbs.
+  GameFx.glowLine(canvas, arc.receptor, arc.cord,
+      _kSensory.withValues(alpha: litSensory ? 0.95 : 0.32),
+      width: litSensory ? 4 : 2.4);
+  GameFx.glowLine(canvas, arc.cord, arc.muscle,
+      _kMotor.withValues(alpha: litMotor ? 0.95 : 0.32),
+      width: litMotor ? 4 : 2.4);
+
+  // Receptor — the stimulus site.
+  if (stimActive) {
+    canvas.drawCircle(
+      arc.receptor,
+      34,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..color = _kStimulus.withValues(alpha: 0.6),
+    );
+  }
+  GameFx.orb(canvas, arc.receptor, 20,
+      stimActive ? _kStimulus : _kStimulus.withValues(alpha: 0.7),
+      glow: stimActive ? 1.4 : 0.6);
+  if (damageFrac > 0) {
+    canvas.drawArc(
+      Rect.fromCircle(center: arc.receptor, radius: 30),
+      -math.pi / 2,
+      math.pi * 2 * damageFrac.clamp(0.0, 1.0),
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round
+        ..color = Color.lerp(_kSignal, _kDanger, damageFrac.clamp(0.0, 1.0))!,
+    );
+  }
+  _legendNodeLabel(canvas, 'RECEPTOR', arc.receptor + const Offset(0, 38),
+      _kStimulus.withValues(alpha: 0.85), 9);
+
+  // Spinal cord — CNS hub.
+  GameFx.orb(canvas, arc.cord, 22, _kSignal.withValues(alpha: 0.85), glow: 0.8);
+  _legendNodeLabel(canvas, 'SPINAL CORD', arc.cord + const Offset(0, -32),
+      _kSignal.withValues(alpha: 0.9), 9);
+
+  // Muscle — the responder (enlarges + whitens as it contracts).
+  final mScale = 1.0 + 0.35 * muscleFlash;
+  GameFx.orb(canvas, arc.muscle, 20 * mScale,
+      Color.lerp(_kMotor, Colors.white, 0.5 * muscleFlash)!,
+      glow: 0.6 + muscleFlash);
+  _legendNodeLabel(canvas, 'MUSCLE', arc.muscle + const Offset(0, 38),
+      _kMotor.withValues(alpha: 0.85), 9);
+}
+
+// Frame 1 — the arc + REACT: the stimulus fires at the receptor.
+void _legendReact(Canvas canvas, Size size) {
+  if (size.width < 10 || size.height < 10) return;
+  final arc = _Arc.of(size);
+  _legendArcBase(canvas, arc, stimActive: true, damageFrac: 0.35);
+}
+
+// Frame 2 — scoring: the impulse races to the muscle; faster tap = more points.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width < 10 || size.height < 10) return;
+  final arc = _Arc.of(size);
+  _legendArcBase(canvas, arc, litSensory: true, litMotor: true, muscleFlash: 1.0);
+  // The travelling impulse, near the muscle end of the arc.
+  const p = 0.82;
+  final pos = arc.signalAt(p);
+  final trail = arc.signalAt(p - 0.1);
+  GameFx.glowLine(canvas, trail, pos, Colors.white, width: 5);
+  GameFx.orb(canvas, pos, 9, Color.lerp(_kMotor, Colors.white, 0.5)!, glow: 1.2);
+}
+
+// Frame 3 — danger: tapping early, or on a brain DECOY, is a false start.
+void _legendDanger(Canvas canvas, Size size) {
+  if (size.width < 10 || size.height < 10) return;
+  final arc = _Arc.of(size);
+  _legendArcBase(canvas, arc);
+  // Decoy flash at the brain — looks like a cue, but tapping it is penalised.
+  canvas.drawCircle(
+    arc.brain,
+    30,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = _kSensory.withValues(alpha: 0.8),
+  );
+  _legendNodeLabel(canvas, 'DECOY — do not react', arc.brain + const Offset(0, 44),
+      _kSensory.withValues(alpha: 0.85), 9);
+  // Red penalty banner near the callout line.
+  _legendNodeLabel(canvas, 'FALSE START  −15',
+      Offset(size.width / 2, size.height * 0.90), _kDanger, 15);
+}
+
+// Frame 4 — escalation: later trials shrink the wait + damage window, add decoys.
+void _legendRamp(Canvas canvas, Size size) {
+  if (size.width < 10 || size.height < 10) return;
+  final arc = _Arc.of(size);
+  // A near-full damage ring = the tight late-game reaction window.
+  _legendArcBase(canvas, arc, stimActive: true, damageFrac: 0.85);
+  // Extra decoy ring to signal rising decoy frequency.
+  canvas.drawCircle(
+    arc.brain,
+    28,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..color = _kSensory.withValues(alpha: 0.55),
+  );
+  _legendNodeLabel(canvas, 'FASTER', Offset(size.width / 2, size.height * 0.90),
+      _kDanger, 15);
+}
+
+/// The visual manual for Reflex — wired into the registry spec.
+final List<LegendFrame> reflexLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the instant the RECEPTOR flashes orange',
+      paint: _legendReact),
+  const LegendFrame(
+      caption: 'The impulse fires the MUSCLE — faster tap, more points',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: "Don't tap early or on a brain DECOY: false start, −15",
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'It speeds up: shorter windows, more decoys',
+      paint: _legendRamp),
+];

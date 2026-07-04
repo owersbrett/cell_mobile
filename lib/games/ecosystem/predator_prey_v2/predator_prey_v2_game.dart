@@ -149,6 +149,10 @@ class _PredatorPreyV2GameState extends State<PredatorPreyV2Game>
   @override
   void initState() {
     super.initState();
+    // ATTRACT autopilot: this game can hold its own dial green hands-free.
+    // Registered always (harmless in normal play — the host only calls it in
+    // attract mode). See [_autoStep].
+    widget.session.autoPilot = _autoStep;
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
@@ -156,8 +160,65 @@ class _PredatorPreyV2GameState extends State<PredatorPreyV2Game>
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). The whole game is "hold the
+  /// ECOSYSTEM HEALTH dial in the green": that dial ([_health]) is driven by how
+  /// close BOTH herds sit to their equilibria ([_preyEq]/[_predEq] via
+  /// [_targetHealth]). So the competent move is to steer whichever herd is
+  /// pulling the dial off-centre back toward its setpoint. It reads the game's
+  /// OWN state (populations, equilibria, live derivatives), projects one short
+  /// step ahead so it corrects BEFORE the dial leaves the green, and issues
+  /// exactly one of the game's own levers — release/cull hares, release/cull
+  /// lynx, or drop a refuge when prey is about to collapse. Deterministic; no
+  /// randomness, no taps. When both herds sit centred (dial comfortably green)
+  /// it holds.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    final preyEq = _preyEq;
+    final predEq = _predEq;
+
+    // Project one short horizon ahead using the live derivatives, so we act on
+    // where each population — and thus the dial — is HEADING, not just where it
+    // sits now.
+    const horizon = 0.4;
+    final preyNext = (_prey + _dPrey * horizon).clamp(0.0, _kMaxPop);
+    final predNext = (_pred + _dPred * horizon).clamp(0.0, _kMaxPop);
+
+    // Emergency: prey about to breach the balance floor and the refuge is ready
+    // — halving predation is the strongest way to keep the dial off red.
+    if (preyNext < preyEq * 0.45 && _protectCd <= 0 && _protectActive <= 0) {
+      _protect();
+      return;
+    }
+
+    // A comfort band tighter than the scoring band (0.4..2.6): correct only when
+    // a herd drifts out of the inner green zone, and leave it be once centred.
+    const lo = 0.6, hi = 1.7;
+    final preyLow = preyNext < preyEq * lo;
+    final preyHigh = preyNext > preyEq * hi;
+    final predLow = predNext < predEq * lo;
+    final predHigh = predNext > predEq * hi;
+
+    // Relative distance from equilibrium — pick the single most urgent lever
+    // (the herd dragging the dial furthest off green).
+    double urgency(double v, double eq, bool out) =>
+        out ? (v - eq).abs() / eq : 0.0;
+    final preyU = urgency(preyNext, preyEq, preyLow || preyHigh);
+    final predU = urgency(predNext, predEq, predLow || predHigh);
+
+    if (preyU <= 0 && predU <= 0) return; // dial comfortably green — hold
+
+    if (preyU >= predU) {
+      _nudgePrey(preyLow ? _kPreyNudge : -_kPreyNudge);
+    } else {
+      _nudgePred(predLow ? _kPredNudge : -_kPredNudge);
+    }
   }
 
   void _resetRun() {
@@ -664,7 +725,7 @@ class _EcoV2Painter extends CustomPainter {
     // Layout bands: dial strip on top, the living field, controls below.
     const double dialTop = 14;
     const double dialH = 58;
-    final double fieldTop = dialTop + dialH + 10;
+    const double fieldTop = dialTop + dialH + 10;
     final double fieldBottom = h - 132; // clear of the control stack
     final field =
         Rect.fromLTWH(10, fieldTop, w - 20, (fieldBottom - fieldTop).clamp(120.0, h));
@@ -990,3 +1051,270 @@ class _EcoV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _EcoV2Painter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the SAME
+// creatures, meadow and ECOSYSTEM HEALTH dial the live game uses (mirrors
+// _EcoV2Painter). Static poses, cheap, size-guarded; shown in the intro.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One creature in the exact live style (glow + shaded body + species tell:
+/// hare oval ears / lynx tufts / hawk wings). Mirrors [_EcoV2Painter._drawCreature]
+/// with a fixed pose so the manual shows the LITERAL creature the player meets.
+void _legendCreature(Canvas canvas, Offset c, double rad, Color col,
+    {double a = 1.0, bool ears = false, bool wings = false}) {
+  if (rad <= 0 || a <= 0.01) return;
+  canvas.drawCircle(
+    c,
+    rad + 2,
+    Paint()
+      ..color = col.withValues(alpha: 0.22 * a)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+  );
+  canvas.drawCircle(
+    c,
+    rad,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.45),
+        colors: [
+          Color.lerp(col, Colors.white, 0.4)!.withValues(alpha: a),
+          col.withValues(alpha: a),
+          Color.lerp(col, Colors.black, 0.4)!.withValues(alpha: a),
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: c, radius: rad)),
+  );
+  if (wings) {
+    const flap = 0.85; // fixed mid-flap pose (live game oscillates this)
+    final wp = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = Color.lerp(col, Colors.white, 0.3)!.withValues(alpha: 0.8 * a);
+    canvas.drawLine(c, c.translate(-rad * 1.7, -rad * flap), wp);
+    canvas.drawLine(c, c.translate(rad * 1.7, -rad * flap), wp);
+  } else if (ears) {
+    final ep = Paint()..color = col.withValues(alpha: a);
+    canvas.drawCircle(c.translate(-rad * 0.45, -rad * 0.9), rad * 0.3, ep);
+    canvas.drawCircle(c.translate(rad * 0.45, -rad * 0.9), rad * 0.3, ep);
+  } else {
+    final ep = Paint()
+      ..color = Color.lerp(col, Colors.white, 0.2)!.withValues(alpha: a);
+    canvas.drawOval(
+        Rect.fromCenter(
+            center: c.translate(-rad * 0.35, -rad * 1.1),
+            width: rad * 0.4,
+            height: rad * 1.1),
+        ep);
+    canvas.drawOval(
+        Rect.fromCenter(
+            center: c.translate(rad * 0.35, -rad * 1.1),
+            width: rad * 0.4,
+            height: rad * 1.1),
+        ep);
+  }
+}
+
+/// The ECOSYSTEM HEALTH dial exactly as [_EcoV2Painter._paintDial] draws it, at
+/// a fixed [health] (0..1) — track, green healthy band, red→gold→green fill and
+/// marker. Optional [streak] renders the headline BALANCE number.
+void _legendDialBar(Canvas canvas, Rect track, double health, {String? streak}) {
+  final tr = RRect.fromRectAndRadius(track, const Radius.circular(8));
+  canvas.drawRRect(tr, Paint()..color = Colors.white.withValues(alpha: 0.07));
+  final bandRect = Rect.fromLTWH(track.left + track.width * 0.5, track.top,
+      track.width * 0.42, track.height);
+  canvas.save();
+  canvas.clipRRect(tr);
+  canvas.drawRect(bandRect, Paint()..color = _kPrey.withValues(alpha: 0.16));
+  final fillCol = Color.lerp(_kRed, Potatuhs.gold, (health * 2).clamp(0.0, 1.0))!;
+  final col = health > 0.5
+      ? Color.lerp(Potatuhs.gold, _kPrey, ((health - 0.5) * 2).clamp(0.0, 1.0))!
+      : fillCol;
+  canvas.drawRect(
+      Rect.fromLTWH(track.left, track.top, track.width * health, track.height),
+      Paint()..color = col.withValues(alpha: 0.9));
+  canvas.restore();
+  canvas.drawRRect(
+      tr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = Colors.white.withValues(alpha: 0.18));
+  final mx = track.left + track.width * health;
+  canvas.drawCircle(Offset(mx, track.center.dy), 6,
+      Paint()..color = col..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
+  canvas.drawCircle(Offset(mx, track.center.dy), 4, Paint()..color = Colors.white);
+  if (streak != null) {
+    GameFx.text(canvas, streak, Offset(track.center.dx, track.top - 16), 12,
+        Potatuhs.gold,
+        weight: FontWeight.w800, glow: 0.4);
+  }
+}
+
+/// The meadow background + grass-toward-capacity wash, mirroring
+/// [_EcoV2Painter._paintField]. Draws fully and restores its own clip.
+void _legendField(Canvas canvas, Rect r, {double kFrac = 0.55}) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Color.lerp(Potatuhs.inkPanel, _kPrey, 0.05)!.withValues(alpha: 0.9),
+          Potatuhs.inkDeep.withValues(alpha: 0.95),
+        ],
+      ).createShader(r),
+  );
+  canvas.save();
+  canvas.clipRRect(rr);
+  final grassTop = r.bottom - r.height * (0.18 + 0.5 * kFrac.clamp(0.0, 1.0));
+  canvas.drawRect(
+    Rect.fromLTRB(r.left, grassTop, r.right, r.bottom),
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: [
+          _kPrey.withValues(alpha: 0.14),
+          _kPrey.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromLTRB(r.left, grassTop, r.right, r.bottom)),
+  );
+  canvas.restore();
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = _kPrey.withValues(alpha: 0.16),
+  );
+}
+
+// ── Frame 1: the cast + the food chain (the core objects) ──────────────────
+void _legendCast(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 40 || h <= 40) return;
+  final cy = h * 0.44;
+  final xs = [w * 0.22, w * 0.5, w * 0.78];
+  // Energy-flow arrows: hares -> lynx -> hawks.
+  final ap = Paint()
+    ..color = Potatuhs.textFaint.withValues(alpha: 0.6)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  for (var i = 0; i < 2; i++) {
+    final x1 = xs[i] + w * 0.08, x2 = xs[i + 1] - w * 0.08;
+    canvas.drawLine(Offset(x1, cy), Offset(x2, cy), ap);
+    canvas.drawLine(Offset(x2, cy), Offset(x2 - 7, cy - 5), ap);
+    canvas.drawLine(Offset(x2, cy), Offset(x2 - 7, cy + 5), ap);
+  }
+  _legendCreature(canvas, Offset(xs[0], cy), 12, _kPrey); // hare — oval ears
+  _legendCreature(canvas, Offset(xs[1], cy), 13, _kPred, ears: true); // lynx tufts
+  _legendCreature(canvas, Offset(xs[2], cy), 12, _kApex, wings: true); // hawk
+  const labels = ['HARES', 'LYNX', 'HAWKS'];
+  final cols = [_kPrey, _kPred, _kApex];
+  for (var i = 0; i < 3; i++) {
+    GameFx.text(canvas, labels[i], Offset(xs[i], h * 0.72), 11, cols[i],
+        weight: FontWeight.w800);
+  }
+}
+
+// ── Frame 2: the living meadow + release/cull levers (the verb) ────────────
+void _legendMeadow(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 40 || h <= 40) return;
+  final r = Rect.fromLTWH(w * 0.06, h * 0.08, w * 0.88, h * 0.66);
+  _legendField(canvas, r, kFrac: 0.62);
+  canvas.save();
+  canvas.clipRRect(RRect.fromRectAndRadius(r, const Radius.circular(14)));
+  // Hares graze low, lynx prowl mid — the boom-bust in one glance.
+  final hareX = [0.18, 0.34, 0.5, 0.62, 0.76, 0.88];
+  final hareY = [0.78, 0.66, 0.82, 0.72, 0.6, 0.8];
+  for (var i = 0; i < hareX.length; i++) {
+    _legendCreature(canvas,
+        Offset(r.left + r.width * hareX[i], r.top + r.height * hareY[i]),
+        5, _kPrey);
+  }
+  final lynxX = [0.3, 0.66];
+  final lynxY = [0.4, 0.5];
+  for (var i = 0; i < lynxX.length; i++) {
+    _legendCreature(canvas,
+        Offset(r.left + r.width * lynxX[i], r.top + r.height * lynxY[i]),
+        6.2, _kPred, ears: true);
+  }
+  canvas.restore();
+  // The cull/release lever, echoing the HARES control keys.
+  final ky = h * 0.86;
+  for (var i = 0; i < 2; i++) {
+    final kx = w * (i == 0 ? 0.4 : 0.6);
+    final kr = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(kx, ky), width: 34, height: 30),
+        const Radius.circular(9));
+    canvas.drawRRect(kr, Paint()..color = _kPrey.withValues(alpha: 0.18));
+    canvas.drawRRect(
+        kr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = _kPrey.withValues(alpha: 0.7));
+    GameFx.text(canvas, i == 0 ? '−' : '+', Offset(kx, ky), 20,
+        Potatuhs.textPrimary,
+        weight: FontWeight.w800);
+  }
+}
+
+// ── Frame 3: the ECOSYSTEM HEALTH dial in the green band (how to score) ────
+void _legendDial(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 40 || h <= 40) return;
+  GameFx.text(canvas, 'ECOSYSTEM HEALTH', Offset(w * 0.5, h * 0.28), 12,
+      Potatuhs.textSecondary,
+      weight: FontWeight.w800);
+  final track = Rect.fromLTWH(w * 0.1, h * 0.46, w * 0.8, 18);
+  _legendDialBar(canvas, track, 0.82, streak: 'BALANCE 6s');
+  GameFx.text(canvas, 'GREEN = both herds balanced · score ×2',
+      Offset(w * 0.5, h * 0.68), 10.5,
+      _kPrey.withValues(alpha: 0.9),
+      weight: FontWeight.w700);
+}
+
+// ── Frame 4: the danger + late escalation (crash + hawks + PEAK SEASON) ────
+void _legendPeak(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 40 || h <= 40) return;
+  // A collapsing dial pinned in the red.
+  final track = Rect.fromLTWH(w * 0.1, h * 0.34, w * 0.8, 18);
+  _legendDialBar(canvas, track, 0.16);
+  GameFx.text(canvas, 'CRASH — a herd wiped out', Offset(w * 0.5, h * 0.2), 11,
+      _kRed,
+      weight: FontWeight.w800, glow: 0.4);
+  // Hawks swarm in from above (the late apex escalation).
+  final hx = [0.3, 0.5, 0.7];
+  for (var i = 0; i < 3; i++) {
+    _legendCreature(
+        canvas, Offset(w * hx[i], h * (0.6 + (i.isEven ? 0.0 : 0.08))), 6,
+        _kApex,
+        wings: true);
+  }
+  GameFx.text(canvas, 'PEAK SEASON ×2', Offset(w * 0.5, h * 0.85), 14,
+      Potatuhs.orange,
+      display: true, weight: FontWeight.w800, glow: 0.5);
+}
+
+/// The visual manual for Predator & Prey v2 — wired into the registry spec.
+final List<LegendFrame> predatorPreyV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Hares feed lynx; lynx feed hawks — keep every herd alive',
+      paint: _legendCast),
+  const LegendFrame(
+      caption: 'Release or cull herds to steer the boom-bust cycle',
+      paint: _legendMeadow),
+  const LegendFrame(
+      caption: 'Hold ECOSYSTEM HEALTH in its green band to score',
+      paint: _legendDial),
+  const LegendFrame(
+      caption: 'A crash reddens the dial; late hawks & PEAK SEASON ×2',
+      paint: _legendPeak),
+];

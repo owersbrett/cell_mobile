@@ -172,12 +172,52 @@ class _ElectronShellsGameState extends State<ElectronShellsGame>
     super.initState();
     _loadElement(_elements[2]); // start on Lithium (2,1) — shows K then L
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to seat its own electrons. The host
+    // only invokes this in hands-free attract mode. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free seat per host tick (~250ms). Plays the game *correctly*:
+  /// it finds the innermost shell that still needs electrons (inside-out fill,
+  /// counting in-flight electrons so it never overfills or seats out of order),
+  /// selects that shell, then drops the nearest floating electron into its next
+  /// free slot via the game's own [_placeInto] handler — exactly one seat. When
+  /// the atom is neutral (or every remaining slot is already covered by
+  /// in-flight electrons) it returns and lets the celebration advance to the
+  /// next element. Deterministic: no randomness, no synthetic taps.
+  void _autoStep() {
+    if (!widget.session.isRunning || _celebT >= 0) return;
+    // Innermost shell that still needs electrons, counting in-flight ones so a
+    // slot already covered by a flying electron is not seated twice.
+    var target = -1;
+    for (var i = 0; i < _target.config.length; i++) {
+      if (_filled[i] + _pendingIn(i) < _target.config[i]) {
+        target = i;
+        break;
+      }
+    }
+    if (target < 0) return; // atom complete / all remaining slots in flight
+    if (_field.isEmpty) return; // no electron floating yet — wait a tick
+    _activeShell = target; // select the correct shell before seating
+    // Deterministic pick: the electron nearest the nucleus.
+    _Electron? pick;
+    var best = double.infinity;
+    for (final e in _field) {
+      final d = (e.pos - _center).distance;
+      if (d < best) {
+        best = d;
+        pick = e;
+      }
+    }
+    if (pick != null) _placeInto(pick);
   }
 
   // ----------------------------------------------------------------- model --
@@ -404,7 +444,6 @@ class _ElectronShellsGameState extends State<ElectronShellsGame>
       _streak++;
       widget.session.noteStreak(_streak);
       widget.session.addScore(_kAtom);
-      widget.session.addTime(const Duration(seconds: 3));
       _completedAtoms++;
       _pop('+$_kAtom', _center.translate(0, -8), _kGold);
       _pop('+3s', _center.translate(0, -34), _kGood);
@@ -454,31 +493,53 @@ class _ElectronShellsGameState extends State<ElectronShellsGame>
     }
   }
 
+  /// How many electrons are currently in flight toward shell [shell]. In-flight
+  /// electrons haven't seated (`_filled[shell]++` happens on landing), so they
+  /// must be counted alongside `_filled` to make overfill/order guards correct
+  /// under rapid taps.
+  int _pendingIn(int shell) => _flying.where((f) => f.shell == shell).length;
+
   void _placeInto(_Electron e) {
     final shell = _activeShell;
 
-    // Out-of-order: an inner shell still needs electrons.
-    var innerGap = false;
+    // Out-of-order: an inner shell still needs electrons — counting in-flight
+    // ones so a shell already being completed by pending electrons is not a gap.
+    var innerGap = false; // truly unfilled (deliberate wrong tap)
+    var innerGapPending = false; // only unfilled until in-flight ones land
     for (var i = 0; i < shell; i++) {
-      if (_filled[i] < _target.config[i]) {
+      if (_filled[i] + _pendingIn(i) < _target.config[i]) {
         innerGap = true;
         break;
+      }
+      if (_filled[i] < _target.config[i]) {
+        innerGapPending = true;
       }
     }
     if (innerGap) {
       _penalty('FILL INNER FIRST', e.pos);
       return;
     }
-    // Overfill: this shell already holds its share for a neutral atom.
-    if (_filled[shell] >= _target.config[shell]) {
-      final full = _filled[shell] >= _shellMax(shell);
-      _penalty(full ? 'SHELL FULL — NEXT RING' : 'NEUTRAL — TAP NEXT RING',
-          e.pos);
+    // Inner shells will be completed by in-flight electrons — quiet no-op
+    // (don't punish rapid taps for a gap already covered).
+    if (innerGapPending) return;
+
+    // Effective fill = seated + in-flight toward this shell.
+    final effective = _filled[shell] + _pendingIn(shell);
+    // Overfill: this shell already holds (or will hold) its share.
+    if (effective >= _target.config[shell]) {
+      // Only truly-full-by-seated placements are deliberate mistakes worth a
+      // penalty; "full" purely because of pending in-flight electrons is a
+      // rapid-tap artefact → silent no-op, no score/streak hit.
+      if (_filled[shell] >= _target.config[shell]) {
+        final full = _filled[shell] >= _shellMax(shell);
+        _penalty(full ? 'SHELL FULL — NEXT RING' : 'NEUTRAL — TAP NEXT RING',
+            e.pos);
+      }
       return;
     }
 
-    // Valid placement.
-    final slot = _filled[shell]; // next free slot index
+    // Valid placement — next free slot accounts for in-flight electrons.
+    final slot = effective; // next free slot index
     widget.session.addScore(_kPlace);
     _flying.add(_Flying(e.pos, shell, slot));
     _field.remove(e);
@@ -773,3 +834,223 @@ class _ShellsPainter extends CustomPainter {
   @override
   bool shouldRepaint(_ShellsPainter oldDelegate) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components (same GameFx orb / ring / slot language the live painter uses).
+// Static + cheap: rendered once in the intro carousel, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One floating field electron: blue orb + white "−" charge glint (the exact
+/// look of [_ShellsPainter._paintField]).
+void _legendElectron(Canvas canvas, Offset at, {double glow = 0.55}) {
+  GameFx.orb(canvas, at, _kElectronR, _kAccent, glow: glow);
+  GameFx.text(canvas, '−', at, _kElectronR * 1.1,
+      Colors.white.withValues(alpha: 0.85));
+}
+
+/// Radius of shell ring [i] of [n] rings inside a legend atom of [outerR] —
+/// the same inner-offset + even-step shape the live `_ringRadius` uses.
+double _legendRingR(double outerR, int n, int i) {
+  final nucleusR = math.max(11.0, outerR * 0.20);
+  final inner = nucleusR + outerR * 0.22;
+  if (n == 1) return inner + (outerR - inner) * 0.55;
+  return inner + (outerR - inner) / n * (i + 1);
+}
+
+/// Slot position [s] on ring [i] (slots spaced by FULL capacity so the
+/// octet gap stays visible, exactly like the live `_slotPos`).
+Offset _legendSlotPos(Offset c, double outerR, int n, int i, int s) {
+  final cap = _shellMax(i);
+  final a = -math.pi / 2 + 2 * math.pi * s / cap;
+  return c + Offset(math.cos(a), math.sin(a)) * _legendRingR(outerR, n, i);
+}
+
+/// Nucleus + concentric shells in the game's visual language: seated
+/// electrons are solid orbs, needed-but-empty slots blue outlines, octet-gap
+/// slots faint white ghosts. [config]/[filled] = electrons per shell.
+void _legendAtom(
+  Canvas canvas,
+  Offset c, {
+  required int z,
+  required List<int> config,
+  required List<int> filled,
+  required double outerR,
+  int activeShell = 0,
+}) {
+  if (outerR <= 0 || !outerR.isFinite) return;
+  final n = config.length;
+  for (var i = 0; i < n; i++) {
+    final active = i == activeShell;
+    canvas.drawCircle(
+      c,
+      _legendRingR(outerR, n, i),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = active ? 2.4 : 1.4
+        ..color = _kAccent.withValues(alpha: active ? 0.55 : 0.26),
+    );
+    final cap = _shellMax(i);
+    for (var s = 0; s < cap; s++) {
+      final at = _legendSlotPos(c, outerR, n, i, s);
+      if (s < filled[i]) {
+        GameFx.orb(canvas, at, _kElectronR * 0.9, _kAccent, glow: 0.8);
+      } else {
+        final needed = s < config[i];
+        canvas.drawCircle(
+          at,
+          _kElectronR * 0.7,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = needed ? 1.4 : 1.0
+            ..color = (needed ? _kAccent : Colors.white)
+                .withValues(alpha: needed ? 0.55 : 0.16),
+        );
+      }
+    }
+  }
+  // Warm nucleus, labeled with Z protons.
+  final nucleusR = math.max(11.0, outerR * 0.20);
+  GameFx.orb(canvas, c, nucleusR, _kNucleus, glow: 1.2);
+  GameFx.text(canvas, '$z', c, nucleusR * 0.8, Colors.white,
+      display: true, glow: 0.6);
+  if (nucleusR >= 14) {
+    GameFx.text(canvas, 'p+', c.translate(0, nucleusR * 0.62), 8,
+        Colors.white.withValues(alpha: 0.7));
+  }
+}
+
+/// (1) The verb: tap a floating electron → it flies into the selected shell.
+void _legendTapSeat(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.44, size.height * 0.60);
+  final outerR = math.min(size.width, size.height) * 0.30;
+  const config = [2, 1]; // Lithium — the game's start element
+  _legendAtom(canvas, c,
+      z: 3, config: config, filled: const [0, 0], outerR: outerR);
+
+  // The tapped electron (with a gold tap-ring cue) up in the field…
+  final e = Offset(size.width * 0.82, size.height * 0.16);
+  for (var i = 0; i < 2; i++) {
+    canvas.drawCircle(
+      e,
+      _kElectronR + 6.0 + i * 6.0,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = _kGold.withValues(alpha: 0.7 - i * 0.3),
+    );
+  }
+  _legendElectron(canvas, e, glow: 0.9);
+
+  // …and its twin mid-flight toward the open K slot (halo like _paintFlying).
+  final target = _legendSlotPos(c, outerR, config.length, 0, 0);
+  final mid = Offset.lerp(e, target, 0.58)!;
+  canvas.drawCircle(
+    mid,
+    _kElectronR + 5,
+    Paint()
+      ..color = _kAccent.withValues(alpha: 0.22)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+  );
+  GameFx.orb(canvas, mid, _kElectronR, _kAccent, glow: 1.0);
+}
+
+/// (2) Scoring: a completed Neon — every shell at its config → OCTET + STABLE.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.60);
+  final outerR = math.min(size.width, size.height) * 0.30;
+  _legendAtom(canvas, c,
+      z: 10,
+      config: const [2, 8],
+      filled: const [2, 8],
+      outerR: outerR,
+      activeShell: 1);
+  GameFx.text(canvas, 'OCTET! +12', Offset(size.width * 0.5, size.height * 0.10),
+      14, _kGold,
+      display: true, glow: 0.7);
+  final seat = _legendSlotPos(c, outerR, 2, 1, 2); // right-hand L electron
+  GameFx.text(canvas, '+$_kPlace', seat.translate(20, -12), 12, _kGood,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'STABLE! +$_kAtom',
+      Offset(size.width * 0.5, size.height * 0.22), 12, _kGold,
+      weight: FontWeight.w800);
+}
+
+/// (3) The danger: seating outward while K still has a gap → UNSTABLE −7.
+void _legendUnstable(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.62);
+  final outerR = math.min(size.width, size.height) * 0.32;
+  const config = [2, 8, 1]; // Sodium
+  _legendAtom(canvas, c,
+      z: 11,
+      config: config,
+      filled: const [1, 0, 0],
+      outerR: outerR,
+      activeShell: 2);
+
+  // An electron aimed at the OUTER ring while K is still open — crossed out.
+  final bad = _legendSlotPos(c, outerR, config.length, 2, 1); // upper right
+  _legendElectron(canvas, bad, glow: 0.8);
+  final x = Paint()
+    ..color = _kBad
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  const s = 13.0;
+  canvas.drawLine(bad.translate(-s, -s), bad.translate(s, s), x);
+  canvas.drawLine(bad.translate(s, -s), bad.translate(-s, s), x);
+  GameFx.text(canvas, '$_kPenalty', bad.translate(0, -_kElectronR - 16), 13,
+      _kBad,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'FILL INNER FIRST',
+      Offset(size.width * 0.5, size.height * 0.10), 12, _kBad,
+      weight: FontWeight.w800);
+}
+
+/// (4) Escalation: bigger atoms (more shells) + faster-drifting electrons.
+void _legendEscalate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.58);
+  final outerR = math.min(size.width, size.height) * 0.36;
+  _legendAtom(canvas, c,
+      z: 20, // Calcium — a late 4-shell atom
+      config: const [2, 8, 8, 2],
+      filled: const [2, 8, 3, 0],
+      outerR: outerR,
+      activeShell: 2);
+
+  // Speed-streaked field electrons.
+  const spots = [Offset(0.13, 0.16), Offset(0.88, 0.30), Offset(0.16, 0.90)];
+  const dirs = [Offset(0.83, 0.55), Offset(-0.9, 0.44), Offset(0.94, -0.34)];
+  for (var i = 0; i < spots.length; i++) {
+    final p = Offset(size.width * spots[i].dx, size.height * spots[i].dy);
+    canvas.drawLine(
+      p - dirs[i] * 24,
+      p,
+      Paint()
+        ..color = _kAccent.withValues(alpha: 0.35)
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+    _legendElectron(canvas, p, glow: 0.7);
+  }
+}
+
+/// The visual manual for Electron Shells — wired into the registry spec.
+final List<LegendFrame> electronShellsLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap a drifting electron to seat it in the ring',
+      paint: _legendTapSeat),
+  const LegendFrame(
+      caption: 'Fill every shell: octet +12, stable atom +40',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Skip or overfill a shell: unstable, −7',
+      paint: _legendUnstable),
+  const LegendFrame(
+      caption: 'Later: bigger atoms, faster-drifting electrons',
+      paint: _legendEscalate),
+];

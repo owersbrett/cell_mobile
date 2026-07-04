@@ -76,6 +76,346 @@ Offset _bodyPoint(Size s, double nx, double ny) {
   return Offset(s.width / 2 + (nx - 0.5) * bw, top + ny * bh);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BodyMapArt — the component draws, shared by the live painter and the visual
+// manual so the manual shows the EXACT silhouette, organ tokens and ghost
+// rings the player meets in play.
+// ═══════════════════════════════════════════════════════════════════════════
+
+class BodyMapArt {
+  BodyMapArt._();
+
+  static const Color accent = Color(0xFFB23A48); // anatomical red
+
+  /// The human silhouette (head → legs), mapped into [size] by the same
+  /// geometry ([_bodyW]/[_bodyPoint]) the game uses for hit testing.
+  static void silhouette(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final top = size.height * _kBodyTopFrac;
+    final bh = size.height * _kBodyHeightFrac;
+    final bw = _bodyW(size);
+
+    final p = Path();
+    final headR = bw * 0.18;
+    p.addOval(Rect.fromCircle(
+        center: Offset(cx, top + headR * 0.95), radius: headR));
+    p.addRRect(RRect.fromRectAndRadius(
+        Rect.fromCenter(
+            center: Offset(cx, top + bh * 0.165),
+            width: bw * 0.20,
+            height: bh * 0.07),
+        Radius.circular(bw * 0.06)));
+
+    final shoulderY = top + bh * 0.20;
+    final hipY = top + bh * 0.82;
+    final shoulderHalf = bw * 0.40;
+    final waistHalf = bw * 0.30;
+    final hipHalf = bw * 0.35;
+    final torso = Path()
+      ..moveTo(cx - shoulderHalf, shoulderY)
+      ..lineTo(cx + shoulderHalf, shoulderY)
+      ..quadraticBezierTo(
+          cx + waistHalf, top + bh * 0.50, cx + hipHalf, hipY)
+      ..lineTo(cx - hipHalf, hipY)
+      ..quadraticBezierTo(
+          cx - waistHalf, top + bh * 0.50, cx - shoulderHalf, shoulderY)
+      ..close();
+    p.addPath(torso, Offset.zero);
+
+    // Arms.
+    final armTop = shoulderY + bh * 0.01;
+    final armH = bh * 0.42;
+    final armW = bw * 0.15;
+    p.addRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(cx - shoulderHalf - armW * 0.45, armTop, armW, armH),
+        Radius.circular(armW * 0.5)));
+    p.addRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(cx + shoulderHalf - armW * 0.55, armTop, armW, armH),
+        Radius.circular(armW * 0.5)));
+
+    // Legs.
+    final legBot = size.height * 0.985;
+    final legW = bw * 0.27;
+    p.addRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(cx - hipHalf * 0.96, hipY, legW, legBot - hipY),
+        Radius.circular(legW * 0.4)));
+    p.addRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(cx + hipHalf * 0.96 - legW, hipY, legW, legBot - hipY),
+        Radius.circular(legW * 0.4)));
+
+    // Soft body fill (single draw → uniform translucency, no seam darkening).
+    canvas.drawPath(
+      p,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            const Color(0xFFFDF5EB).withValues(alpha: 0.10),
+            const Color(0xFFFDF5EB).withValues(alpha: 0.05),
+          ],
+        ).createShader(Offset.zero & size),
+    );
+    canvas.drawPath(
+      p,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.16),
+    );
+  }
+
+  /// One organ token: shaded oval + rim + optional label ([label] empty skips
+  /// the text — the manual's mini bodies are too small for names).
+  static void organ(
+      Canvas canvas, Offset at, double r, Color color, String label,
+      {bool glow = false, bool labelBelow = false}) {
+    final rect = Rect.fromCenter(center: at, width: r * 2.1, height: r * 1.7);
+    if (glow) {
+      canvas.drawOval(
+        rect.inflate(7),
+        Paint()
+          ..color = color.withValues(alpha: 0.34)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+      );
+    }
+    canvas.drawOval(
+      rect,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-0.3, -0.4),
+          colors: [
+            Color.lerp(color, Colors.white, 0.42)!,
+            color,
+            Color.lerp(color, Colors.black, 0.38)!,
+          ],
+          stops: const [0.0, 0.55, 1.0],
+        ).createShader(rect),
+    );
+    canvas.drawOval(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.55),
+    );
+    if (label.isEmpty) return;
+    final fontSize = (r * 0.42).clamp(9.0, 13.0);
+    final labelPos = labelBelow ? at.translate(0, r * 0.85 + fontSize) : at;
+    GameFx.text(canvas, label, labelPos, fontSize,
+        Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+  }
+
+  /// The pulsing ghost target ring shown in training rounds.
+  static void ghostRing(Canvas canvas, Offset target, double tol, Color color,
+      {double pulse = 0.6}) {
+    canvas.drawCircle(
+      target,
+      tol,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = color.withValues(alpha: 0.22 + pulse * 0.18),
+    );
+    canvas.drawCircle(
+        target, 3.5, Paint()..color = color.withValues(alpha: 0.55));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components (same BodyMapArt the live game uses). Cards are landscape.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws a body into [region] with optional [placed] organs and a [ghost]
+/// target ring, using the game's own geometry. Returns the organ radius used.
+double _legendBody(Canvas canvas, Rect region,
+    {List<_OrganDef> placed = const [], _OrganDef? ghost}) {
+  canvas.save();
+  canvas.translate(region.left, region.top);
+  final s = region.size;
+  BodyMapArt.silhouette(canvas, s);
+  final r = (_bodyW(s) * 0.13).clamp(4.5, 42.0);
+  if (ghost != null) {
+    BodyMapArt.ghostRing(canvas, _bodyPoint(s, ghost.nx, ghost.ny),
+        _bodyW(s) * 0.15, ghost.color);
+  }
+  for (final d in placed) {
+    BodyMapArt.organ(canvas, _bodyPoint(s, d.nx, d.ny), r, d.color, '');
+  }
+  canvas.restore();
+  return r;
+}
+
+/// A dotted drag trail from [from] to [to] with a chevron head at [to].
+void _legendTrail(Canvas canvas, Offset from, Offset to, Color color) {
+  final dotPaint = Paint()..color = color.withValues(alpha: 0.75);
+  const dots = 6;
+  for (int i = 1; i <= dots; i++) {
+    final t = i / (dots + 1);
+    canvas.drawCircle(Offset.lerp(from, to, t)!, 2.2, dotPaint);
+  }
+  final dir = (to - from);
+  final len = dir.distance;
+  if (len <= 0) return;
+  final u = dir / len;
+  final n = Offset(-u.dy, u.dx);
+  final tip = to;
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(tip - u * 10.0 + n * 6.0, tip, p);
+  canvas.drawLine(tip - u * 10.0 - n * 6.0, tip, p);
+}
+
+// Frame 1 — the verb: drag the staged organ token onto its home in the body.
+void _legendDrag(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final heart = _kOrgans[1];
+  final bodyRect = Rect.fromLTWH(size.width * 0.05, size.height * 0.03,
+      size.width * 0.36, size.height * 0.94);
+  _legendBody(canvas, bodyRect,
+      placed: [_kOrgans[0]], ghost: heart); // brain already home
+  final ring = bodyRect.topLeft +
+      _bodyPoint(bodyRect.size, heart.nx, heart.ny);
+
+  // The staged organ token, exactly as it looks at the staging slot.
+  final tokenR = (size.height * 0.16).clamp(10.0, 22.0);
+  final token = Offset(size.width * 0.74, size.height * 0.66);
+  BodyMapArt.organ(canvas, token, tokenR, heart.color, 'Heart',
+      glow: true, labelBelow: true);
+
+  _legendTrail(canvas, token.translate(-tokenR * 1.4, -tokenR * 0.4),
+      ring.translate(10, 6), heart.color);
+}
+
+// Frame 2 — scoring: a clean snap, with the bonus stack that rewards it.
+void _legendScore(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final heart = _kOrgans[1];
+  final bodyRect = Rect.fromLTWH(size.width * 0.05, size.height * 0.03,
+      size.width * 0.36, size.height * 0.94);
+  _legendBody(canvas, bodyRect,
+      placed: [_kOrgans[0], _kOrgans[2], _kOrgans[3], heart]);
+  final at = bodyRect.topLeft + _bodyPoint(bodyRect.size, heart.nx, heart.ny);
+
+  // Snap burst — rays in the organ's color, like the in-game FxBurst.
+  final ray = Paint()
+    ..color = heart.color.withValues(alpha: 0.85)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  for (int i = 0; i < 8; i++) {
+    final a = i * math.pi / 4 + 0.35;
+    final d = Offset(math.cos(a), math.sin(a));
+    canvas.drawLine(at + d * 9.0, at + d * 16.0, ray);
+  }
+  GameFx.text(canvas, '+72', at.translate(16, -18), 13, heart.color,
+      weight: FontWeight.w800, glow: 0.5);
+
+  // The bonus stack.
+  final bx = size.width * 0.70;
+  GameFx.text(canvas, 'PLACE  +30', Offset(bx, size.height * 0.22), 12,
+      Colors.white.withValues(alpha: 0.92),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'FAST  up to +30', Offset(bx, size.height * 0.44), 11,
+      Potatuhs.gold,
+      weight: FontWeight.w700);
+  GameFx.text(canvas, 'EXACT  up to +20', Offset(bx, size.height * 0.64), 11,
+      Potatuhs.gold,
+      weight: FontWeight.w700);
+  GameFx.text(canvas, 'STREAK  +5 each', Offset(bx, size.height * 0.84), 11,
+      const Color(0xFFFFB74D),
+      weight: FontWeight.w700);
+}
+
+// Frame 3 — the penalty: a wrong drop bounces back to staging, −5, streak dead.
+void _legendWrong(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final stomach = _kOrgans[4];
+  final bodyRect = Rect.fromLTWH(size.width * 0.05, size.height * 0.03,
+      size.width * 0.36, size.height * 0.94);
+  _legendBody(canvas, bodyRect, placed: [_kOrgans[0], _kOrgans[1]]);
+
+  // The stomach dropped on the shoulder — not its home.
+  const bad = Color(0xFFFF5252);
+  final wrongAt =
+      bodyRect.topLeft + _bodyPoint(bodyRect.size, 0.22, 0.24);
+  final tokenR = (size.height * 0.13).clamp(9.0, 18.0);
+  BodyMapArt.organ(canvas, wrongAt, tokenR, stomach.color, '');
+  canvas.drawCircle(
+    wrongAt,
+    tokenR * 1.5,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = bad.withValues(alpha: 0.85),
+  );
+  GameFx.text(canvas, 'Not there', wrongAt.translate(0, -tokenR * 2.2), 11,
+      bad,
+      weight: FontWeight.w800);
+
+  // Bounce trail back down to the staging slot.
+  final staging = Offset(size.width * 0.72, size.height * 0.78);
+  _legendTrail(canvas, wrongAt.translate(tokenR * 1.6, tokenR), staging, bad);
+  BodyMapArt.organ(canvas, staging, tokenR, stomach.color, 'Stomach',
+      labelBelow: true);
+  GameFx.text(canvas, '−5  streak lost', Offset(size.width * 0.72, size.height * 0.18),
+      12, bad,
+      weight: FontWeight.w800);
+}
+
+// Frame 4 — the climb: more organs each body, ghost rings gone from body 3.
+void _legendClimb(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final left = Rect.fromLTWH(size.width * 0.09, size.height * 0.03,
+      size.width * 0.26, size.height * 0.80);
+  final right = Rect.fromLTWH(size.width * 0.63, size.height * 0.03,
+      size.width * 0.26, size.height * 0.80);
+
+  // Early body: few organs, ghost ring showing the heart's home.
+  _legendBody(canvas, left,
+      placed: [_kOrgans[0], _kOrgans[2]], ghost: _kOrgans[1]);
+  GameFx.text(canvas, 'BODY 1 · rings on',
+      Offset(left.center.dx, size.height * 0.93), 10, Potatuhs.textSecondary,
+      weight: FontWeight.w700);
+
+  // Late body: crowded, no ring — pure recall.
+  _legendBody(canvas, right, placed: _kOrgans.take(9).toList());
+  GameFx.text(canvas, 'BODY 3+ · no rings',
+      Offset(right.center.dx, size.height * 0.93), 10, Potatuhs.gold,
+      weight: FontWeight.w700);
+
+  // Progress chevrons between the two.
+  final p = Paint()
+    ..color = Potatuhs.gold.withValues(alpha: 0.9)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final cy = size.height * 0.45;
+  for (int i = 0; i < 2; i++) {
+    final cx = size.width * (0.45 + i * 0.06);
+    canvas.drawLine(Offset(cx - 5, cy - 7), Offset(cx + 2, cy), p);
+    canvas.drawLine(Offset(cx - 5, cy + 7), Offset(cx + 2, cy), p);
+  }
+}
+
+/// The visual manual for Body Map — wired into the registry spec.
+final List<LegendFrame> bodyMapLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag each organ to where it lives', paint: _legendDrag),
+  const LegendFrame(
+      caption: 'Snap it in the ring — fast, exact drops pay more',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Wrong spot bounces back: −5, streak lost',
+      paint: _legendWrong),
+  const LegendFrame(
+      caption: 'Each body adds organs — rings vanish from body 3',
+      paint: _legendClimb),
+];
+
 // ---------------------------------------------------------------------------
 // Live organ being placed.
 // ---------------------------------------------------------------------------
@@ -166,12 +506,40 @@ class _BodyMapGameState extends State<BodyMapGame>
     _lastT = DateTime.now().microsecondsSinceEpoch / 1e6;
     _initGame();
     _started = true;
+    // ATTRACT autopilot: this game knows how to play itself. Dormant in normal
+    // play — the host only calls it hands-free during attract. See [_autoStep].
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Body Map *correctly*,
+  /// never randomly: it takes the current staged organ and drops it onto its
+  /// OWN correct anatomical home — the exact [_bodyPoint] for that organ's
+  /// nx/ny — via the game's own [_placeCorrect] handler, scoring a clean
+  /// placement every time. One organ per tick. The tick loop spawns the next
+  /// organ and advances between rounds on its own, so the bot just banks
+  /// perfect placements until the host's clock ends the run.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_sz == Size.zero) return;
+    if (_roundClearT >= 0) return; // between-rounds pause; self-advances
+    final a = _active;
+    if (a == null) return; // the tick brings up the next organ
+    if (a.bouncing || a.grabbed) return; // let any bounce/hold settle
+    if (a.flyT < 1) return; // let the fly-in finish first
+    setState(() {
+      final target = _bodyPoint(_sz, a.def.nx, a.def.ny);
+      final tol = _bodyW(_sz) * _tolFrac;
+      a.pos = target; // snap exactly onto the correct home
+      _placeCorrect(a, target, 0, tol); // dist 0 → clean, correct placement
+    });
   }
 
   // ---- setup ----
@@ -429,20 +797,18 @@ class _BodyMapPainter extends CustomPainter {
     required this.pops,
   });
 
-  static const Color _accent = Color(0xFFB23A48); // anatomical red
-
   @override
   void paint(Canvas canvas, Size size) {
     if (size.width <= 0 || size.height <= 0) return;
 
-    GameFx.atmosphere(canvas, size, _accent, clock, motes: 22);
+    GameFx.atmosphere(canvas, size, BodyMapArt.accent, clock, motes: 22);
 
     if (wrongFlash > 0) {
       canvas.drawRect(Offset.zero & size,
           Paint()..color = const Color(0xFFFF1744).withValues(alpha: wrongFlash * 0.16));
     }
 
-    _drawSilhouette(canvas, size);
+    BodyMapArt.silhouette(canvas, size);
 
     // Ghost target for the active organ (training rounds only).
     final a = active;
@@ -450,16 +816,7 @@ class _BodyMapPainter extends CustomPainter {
       final target = _bodyPoint(size, a.def.nx, a.def.ny);
       final tol = _bodyW(size) * tolFrac;
       final pulse = 0.5 + 0.5 * math.sin(clock * 3.2);
-      canvas.drawCircle(
-        target,
-        tol,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..color = a.def.color.withValues(alpha: 0.22 + pulse * 0.18),
-      );
-      canvas.drawCircle(target, 3.5,
-          Paint()..color = a.def.color.withValues(alpha: 0.55));
+      BodyMapArt.ghostRing(canvas, target, tol, a.def.color, pulse: pulse);
     }
 
     // Already-placed organs.
@@ -467,7 +824,7 @@ class _BodyMapPainter extends CustomPainter {
       final at = _bodyPoint(size, p.def.nx, p.def.ny);
       final pop = ((clock - p.bornClock) / 0.3).clamp(0.0, 1.0);
       final scale = 0.6 + 0.4 * Curves.easeOutBack.transform(pop);
-      _drawOrgan(canvas, at, organR * scale, p.def.color, p.def.label,
+      BodyMapArt.organ(canvas, at, organR * scale, p.def.color, p.def.label,
           labelBelow: true);
     }
 
@@ -480,7 +837,7 @@ class _BodyMapPainter extends CustomPainter {
 
     // The live organ (flying / held).
     if (a != null) {
-      _drawOrgan(canvas, a.pos, organR, a.def.color, a.def.label,
+      BodyMapArt.organ(canvas, a.pos, organR, a.def.color, a.def.label,
           glow: true, labelBelow: true);
     }
 
@@ -503,124 +860,6 @@ class _BodyMapPainter extends CustomPainter {
         weight: FontWeight.w600,
       );
     }
-  }
-
-  // ---- silhouette ----
-
-  void _drawSilhouette(Canvas canvas, Size size) {
-    final cx = size.width / 2;
-    final top = size.height * _kBodyTopFrac;
-    final bh = size.height * _kBodyHeightFrac;
-    final bw = _bodyW(size);
-
-    final p = Path();
-    final headR = bw * 0.18;
-    p.addOval(Rect.fromCircle(
-        center: Offset(cx, top + headR * 0.95), radius: headR));
-    p.addRRect(RRect.fromRectAndRadius(
-        Rect.fromCenter(
-            center: Offset(cx, top + bh * 0.165),
-            width: bw * 0.20,
-            height: bh * 0.07),
-        Radius.circular(bw * 0.06)));
-
-    final shoulderY = top + bh * 0.20;
-    final hipY = top + bh * 0.82;
-    final shoulderHalf = bw * 0.40;
-    final waistHalf = bw * 0.30;
-    final hipHalf = bw * 0.35;
-    final torso = Path()
-      ..moveTo(cx - shoulderHalf, shoulderY)
-      ..lineTo(cx + shoulderHalf, shoulderY)
-      ..quadraticBezierTo(
-          cx + waistHalf, top + bh * 0.50, cx + hipHalf, hipY)
-      ..lineTo(cx - hipHalf, hipY)
-      ..quadraticBezierTo(
-          cx - waistHalf, top + bh * 0.50, cx - shoulderHalf, shoulderY)
-      ..close();
-    p.addPath(torso, Offset.zero);
-
-    // Arms.
-    final armTop = shoulderY + bh * 0.01;
-    final armH = bh * 0.42;
-    final armW = bw * 0.15;
-    p.addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(cx - shoulderHalf - armW * 0.45, armTop, armW, armH),
-        Radius.circular(armW * 0.5)));
-    p.addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(cx + shoulderHalf - armW * 0.55, armTop, armW, armH),
-        Radius.circular(armW * 0.5)));
-
-    // Legs.
-    final legBot = size.height * 0.985;
-    final legW = bw * 0.27;
-    p.addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(cx - hipHalf * 0.96, hipY, legW, legBot - hipY),
-        Radius.circular(legW * 0.4)));
-    p.addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(cx + hipHalf * 0.96 - legW, hipY, legW, legBot - hipY),
-        Radius.circular(legW * 0.4)));
-
-    // Soft body fill (single draw → uniform translucency, no seam darkening).
-    canvas.drawPath(
-      p,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color(0xFFFDF5EB).withValues(alpha: 0.10),
-            const Color(0xFFFDF5EB).withValues(alpha: 0.05),
-          ],
-        ).createShader(Offset.zero & size),
-    );
-    canvas.drawPath(
-      p,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..color = Colors.white.withValues(alpha: 0.16),
-    );
-  }
-
-  // ---- organ token ----
-
-  void _drawOrgan(Canvas canvas, Offset at, double r, Color color, String label,
-      {bool glow = false, bool labelBelow = false}) {
-    final rect = Rect.fromCenter(center: at, width: r * 2.1, height: r * 1.7);
-    if (glow) {
-      canvas.drawOval(
-        rect.inflate(7),
-        Paint()
-          ..color = color.withValues(alpha: 0.34)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
-      );
-    }
-    canvas.drawOval(
-      rect,
-      Paint()
-        ..shader = RadialGradient(
-          center: const Alignment(-0.3, -0.4),
-          colors: [
-            Color.lerp(color, Colors.white, 0.42)!,
-            color,
-            Color.lerp(color, Colors.black, 0.38)!,
-          ],
-          stops: const [0.0, 0.55, 1.0],
-        ).createShader(rect),
-    );
-    canvas.drawOval(
-      rect,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..color = Colors.white.withValues(alpha: 0.55),
-    );
-    final fontSize = (r * 0.42).clamp(9.0, 13.0);
-    final labelPos =
-        labelBelow ? at.translate(0, r * 0.85 + fontSize) : at;
-    GameFx.text(canvas, label, labelPos, fontSize,
-        Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
   }
 
   // ---- HUD ----

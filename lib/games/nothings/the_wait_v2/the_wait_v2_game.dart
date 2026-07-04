@@ -76,6 +76,11 @@ const double _kFlashSeconds = 1.5;
 /// dead air short: window = target + this (vs the old flat 10s).
 const double _kWindowGrace = 2.5;
 
+/// ATTRACT autopilot cadence — the host calls [_TheWaitV2GameState._autoStep]
+/// on roughly this interval (~250ms). Used to decide, one tick ahead, when the
+/// bot's tap lands closest to the target without overshooting.
+const double _kAutoTick = 0.25;
+
 /// Accent — a calm, clockless violet (distinct from The Wait v1's entry).
 const Color _kAccent = Color(0xFF9B8BF5);
 const Color _kGood = Color(0xFF3DDC97);
@@ -152,10 +157,14 @@ class _TheWaitV2GameState extends State<TheWaitV2Game>
   void initState() {
     super.initState();
     _session.addListener(_onSession);
+    // ATTRACT mode: the host drives hands-free by calling [_autoStep]. Dormant
+    // unless the host is driving; a human's own taps ignore it entirely.
+    _session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (_session.autoPilot == _autoStep) _session.autoPilot = null;
     _session.removeListener(_onSession);
     _commandTimer?.cancel();
     _windowTimer?.cancel();
@@ -171,13 +180,92 @@ class _TheWaitV2GameState extends State<TheWaitV2Game>
       _startRun();
       return; // _startRun calls setState
     }
-    if (!_session.isRunning && _started) {
+    // Host PAUSE (frozen, will resume): stop the stopwatch + phase timer so
+    // paused seconds aren't counted as waited time.
+    if (_session.isPaused && _started && !_pausedByHost) {
+      _pauseForHost();
+      setState(() {});
+      return;
+    }
+    // Resume from a host pause: rearm this phase where it left off.
+    if (_session.isRunning && _pausedByHost) {
+      _resumeFromHost();
+      setState(() {});
+      return;
+    }
+    // Genuine run end (not a pause): freeze everything.
+    if (!_session.isRunning && !_session.isPaused && _started) {
       _commandTimer?.cancel();
       _windowTimer?.cancel();
       _flashTimer?.cancel();
       _watch.stop();
     }
     setState(() {});
+  }
+
+  /// True while the round is frozen by a host pause.
+  bool _pausedByHost = false;
+
+  void _pauseForHost() {
+    _pausedByHost = true;
+    _commandTimer?.cancel();
+    _windowTimer?.cancel();
+    _flashTimer?.cancel();
+    if (_watch.isRunning) _watch.stop();
+  }
+
+  /// Resumes the current beat where it paused — the dark wait keeps its elapsed
+  /// and rearms the target-relative window for the time that was LEFT.
+  void _resumeFromHost() {
+    _pausedByHost = false;
+    switch (_phase) {
+      case _Phase.command:
+        _commandTimer = Timer(
+          Duration(milliseconds: (_kCommandSeconds * 1000).round()),
+          _enterDark,
+        );
+        break;
+      case _Phase.waiting:
+        _watch.start();
+        final leftMs = (((_target + _kWindowGrace) -
+                    _watch.elapsedMilliseconds / 1000.0) *
+                1000)
+            .round()
+            .clamp(0, 1 << 31);
+        _windowTimer = Timer(Duration(milliseconds: leftMs), _onWindowExpired);
+        break;
+      case _Phase.flash:
+        _flashTimer = Timer(
+          Duration(milliseconds: (_kFlashSeconds * 1000).round()),
+          _nextRound,
+        );
+        break;
+      case _Phase.ready:
+      case _Phase.done:
+        break;
+    }
+  }
+
+  /// One hands-free move per host tick (~250ms). Plays The Wait v2 *perfectly*,
+  /// not randomly: the only decision the game makes is WHEN to tap during the
+  /// black wait, and the bot can read the round's true target [_target] and the
+  /// running [_watch]. Every other phase (command / flash / done) self-advances
+  /// on its own timer, so there is nothing to do there.
+  ///
+  /// The tightening arc needs no special handling — [_target] is refreshed each
+  /// round to [_kTargets] so reading it live already tracks the descending,
+  /// shrinking-band targets. It fires ONE tick ahead: if the wait has run long
+  /// enough that the NEXT tick would sit at/after the target, this tick is the
+  /// closest it can land without overshooting — so it taps now. It never taps
+  /// far from the target, because the condition can only be met within a tick
+  /// of it, keeping the bot inside the round's tight band.
+  void _autoStep() {
+    if (!_session.isRunning) return;
+    if (_phase != _Phase.waiting) return; // only the dark wait needs a decision
+    final elapsed = _watch.elapsedMilliseconds / 1000.0;
+    if (elapsed + _kAutoTick >= _target) {
+      _onTap(); // reached the target (to within one tick) — feel it and tap
+    }
   }
 
   // ── Run / round lifecycle ───────────────────────────────────────────────
@@ -699,3 +787,178 @@ class _AmbientPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _AmbientPainter oldDelegate) => false;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the REAL
+// components The Wait v2 uses in play: the WAIT command + band chip, the
+// black→white timestamp reveal, the shrinking pip standing + tightening arc.
+// Cheap, static, self-contained; guards degenerate sizes. Palette from the
+// game's own constants (_kAccent/_kGood/_kWarn) + potatuhs.dart. No new hex.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The round-standing pips, exactly as the play area draws them (dead-on = good,
+/// tight = accent filled, pending = hollow). [filled] rounds are already scored.
+void _legendPips(Canvas canvas, Offset center, double width,
+    {required int filled}) {
+  final gap = (width * 0.62 / (_kRounds - 1)).clamp(14.0, 26.0);
+  final start = center.dx - gap * (_kRounds - 1) / 2;
+  for (var i = 0; i < _kRounds; i++) {
+    final c = Offset(start + i * gap, center.dy);
+    final done = i < filled;
+    final col = done ? (i == 0 ? _kGood : _kAccent) : Colors.white24;
+    if (done) {
+      canvas.drawCircle(c, 6, Paint()..color = col);
+    }
+    canvas.drawCircle(
+      c,
+      6,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = col,
+    );
+  }
+}
+
+/// The BAND chip — the shrinking tolerance readout shown on the command card.
+void _legendBandChip(Canvas canvas, Offset center, double width, String label) {
+  final cw = (width * 0.52).clamp(96.0, 220.0);
+  final rect = Rect.fromCenter(center: center, width: cw, height: 26);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = _kAccent.withValues(alpha: 0.12));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = _kAccent.withValues(alpha: 0.45),
+  );
+  GameFx.text(canvas, label, center, 11, _kAccent, weight: FontWeight.w700);
+}
+
+/// Frame 1 — the WAIT command: the target seconds + the round's tolerance band,
+/// with the pip standing building above it. This is what a round opens on.
+void _legendCommand(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  final w = size.width, h = size.height;
+  final cx = w / 2;
+  _legendPips(canvas, Offset(cx, h * 0.16), w, filled: 2);
+  GameFx.text(canvas, 'WAIT', Offset(cx, h * 0.34),
+      (h * 0.06).clamp(11.0, 16.0), _kAccent,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '3', Offset(cx, h * 0.52),
+      (h * 0.26).clamp(40.0, 96.0), Potatuhs.textPrimary,
+      display: true);
+  GameFx.text(canvas, 'SECONDS', Offset(cx, h * 0.68),
+      (h * 0.045).clamp(10.0, 14.0), _kAccent,
+      weight: FontWeight.w700);
+  _legendBandChip(canvas, Offset(cx, h * 0.83), w, 'BAND ±0.46s');
+}
+
+/// Frame 2 — the identity move: tap while the screen is pure BLACK, then a
+/// WHITE flash freezes your exact timestamp and verdict. Both literal stages.
+void _legendReveal(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  final w = size.width, h = size.height;
+
+  // The dark stage — a black panel with a tap ripple where the finger lands.
+  final topRect = Rect.fromLTWH(w * 0.12, h * 0.10, w * 0.76, h * 0.34);
+  final topRR = RRect.fromRectAndRadius(topRect, const Radius.circular(14));
+  canvas.drawRRect(topRR, Paint()..color = Colors.black);
+  canvas.drawRRect(
+    topRR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = _kAccent.withValues(alpha: 0.30),
+  );
+  final tapC = Offset(topRect.center.dx, topRect.center.dy - 4);
+  for (final r in const [10.0, 18.0, 26.0]) {
+    canvas.drawCircle(
+      tapC,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = _kAccent.withValues(alpha: 0.22),
+    );
+  }
+  canvas.drawCircle(tapC, 6, Paint()..color = _kAccent);
+  GameFx.text(canvas, 'TAP IN THE DARK',
+      Offset(topRect.center.dx, topRect.bottom - 14), 10,
+      _kAccent.withValues(alpha: 0.75),
+      weight: FontWeight.w800);
+
+  // The white flash — the frozen timestamp + verdict, black-on-white.
+  final botRect = Rect.fromLTWH(w * 0.12, h * 0.54, w * 0.76, h * 0.36);
+  final botRR = RRect.fromRectAndRadius(botRect, const Radius.circular(14));
+  canvas.drawRRect(botRR, Paint()..color = Colors.white);
+  final bcx = botRect.center.dx;
+  GameFx.text(canvas, '3.02s', Offset(bcx, botRect.top + botRect.height * 0.32),
+      (h * 0.11).clamp(24.0, 40.0), Colors.black,
+      display: true);
+  GameFx.text(canvas, 'DEAD ON',
+      Offset(bcx, botRect.top + botRect.height * 0.62), 12, _kGood,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '+150 ×2',
+      Offset(bcx, botRect.top + botRect.height * 0.84), 13, _kAccent,
+      weight: FontWeight.w800);
+}
+
+/// Frame 3 — the tightening arc: the targets DESCEND and the tolerance band
+/// NARROWS every round (final wait in gold). Drift outside the band and the
+/// precision streak resets — calibration, not luck, wins.
+void _legendTighten(Canvas canvas, Size size) {
+  if (size.width < 12 || size.height < 12) return;
+  final w = size.width, h = size.height;
+  // Three sampled rounds: first (widest), middle, final (tightest).
+  final idx = [0, _kRounds ~/ 2, _kRounds - 1];
+  final full = (w * 0.46).clamp(60.0, 260.0);
+  final barCx = w * 0.62;
+  for (var row = 0; row < idx.length; row++) {
+    final i = idx[row];
+    final y = h * (0.26 + row * 0.24);
+    final isFinal = i == _kRounds - 1;
+    final col = isFinal ? Potatuhs.gold : _kAccent;
+    // Target label.
+    GameFx.text(canvas, '${_legendFmt(_kTargets[i])}s', Offset(w * 0.16, y),
+        (h * 0.06).clamp(13.0, 20.0), col,
+        display: true);
+    // Full range (faint) with the shrinking band drawn on top.
+    canvas.drawLine(
+      Offset(barCx - full / 2, y),
+      Offset(barCx + full / 2, y),
+      Paint()
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round
+        ..color = Colors.white24,
+    );
+    final bandW = full * (_kBands[i] / _kBands.first);
+    canvas.drawLine(
+      Offset(barCx - bandW / 2, y),
+      Offset(barCx + bandW / 2, y),
+      Paint()
+        ..strokeWidth = 5
+        ..strokeCap = StrokeCap.round
+        ..color = col,
+    );
+    // Dead-centre target tick.
+    canvas.drawCircle(Offset(barCx, y), 3.2, Paint()..color = Potatuhs.gold);
+  }
+}
+
+String _legendFmt(double v) =>
+    v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+
+/// The visual manual for The Wait v2 — wired into the registry spec.
+final List<LegendFrame> theWaitV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Read the target: feel that many seconds pass.',
+      paint: _legendCommand),
+  const LegendFrame(
+      caption: 'Tap in the dark — a white flash freezes your time.',
+      paint: _legendReveal),
+  const LegendFrame(
+      caption: 'Each wait shrinks; stay in the band or lose the streak.',
+      paint: _legendTighten),
+];

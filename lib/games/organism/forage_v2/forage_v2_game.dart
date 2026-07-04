@@ -197,11 +197,16 @@ class _ForageV2GameState extends State<ForageV2Game>
     super.initState();
     _lastPhase = widget.session.phase;
     widget.session.addListener(_onSession);
+    // ATTRACT autopilot: this game knows how to forage itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     widget.session.removeListener(_onSession);
     _ticker.dispose();
     _repaint.dispose();
@@ -594,6 +599,75 @@ class _ForageV2GameState extends State<ForageV2Game>
   // Convenience for the session (named to avoid clashing with the getter style).
   MiniGameSession get session_ => widget.session;
 
+  // ─── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free steering decision per host tick (~250ms). This forages the
+  /// game *correctly*, playing the same net-energy equation the game teaches:
+  /// intake − expenditure. It never taps or fabricates input — it drives the
+  /// exact `_target` steer channel a human drag uses, and the tick loop does the
+  /// rest (glide, eat-on-contact, cost accounting).
+  ///
+  /// Priority: (1) FLEE the nearest predator inside its fear/drain zone —
+  /// staying near one is pure energy OUT; (2) otherwise steer to the food with
+  /// the best NET value (`value − move-cost-to-reach − cost already spent`),
+  /// exactly the EFFICIENT scoring rule; (3) if nothing is net-positive but
+  /// energy is running low, take the nearest food to avoid a starve-collapse;
+  /// (4) if energy is healthy and nothing pays, REST (clear the target) — the
+  /// game rewards resting between meals. Deterministic; no randomness.
+  void _autoStep() {
+    if (!widget.session.isRunning || !_ready || _collapsed) return;
+
+    // ── (1) Flee the closest predator whose fear zone we're inside ──
+    _Predator? threat;
+    var threatD = double.infinity;
+    for (final v in _predators) {
+      final d = (v.pos - _pos).distance;
+      if (d < _kAnimalRadius + _kPredFearRadius && d < threatD) {
+        threatD = d;
+        threat = v;
+      }
+    }
+    if (threat != null) {
+      final away = _pos - threat.pos;
+      final dir = away.distance > 1 ? away / away.distance : const Offset(0, -1);
+      final flee = _pos + dir * (_kPredFearRadius + _kPredRadius);
+      _target = Offset(
+        flee.dx.clamp(_kAnimalRadius, _size.width - _kAnimalRadius),
+        flee.dy.clamp(_kAnimalRadius, _size.height - _kAnimalRadius),
+      );
+      return;
+    }
+
+    // ── (2) Best NET-value food (value minus the cost to reach it) ──
+    _Food? best;
+    var bestNet = -double.infinity;
+    _Food? nearest;
+    var nearestD = double.infinity;
+    for (final f in _food) {
+      if (f.respawn > 0) continue;
+      final d = (f.pos - _pos).distance;
+      // Move cost integrates to ~_kMoveCost * distance travelled.
+      final net = f.value - _kMoveCost * d - _spentSinceMeal;
+      if (net > bestNet) {
+        bestNet = net;
+        best = f;
+      }
+      if (d < nearestD) {
+        nearestD = d;
+        nearest = f;
+      }
+    }
+
+    if (best != null && bestNet > 0) {
+      _target = best.pos; // a genuinely profitable bite
+    } else if (nearest != null && _energy < _kThriveThreshold) {
+      // ── (3) Nothing pays, but survival pressure is on — eat the closest ──
+      _target = nearest.pos;
+    } else {
+      // ── (4) Healthy and no worthwhile move — rest, spend nothing ──
+      _target = null;
+    }
+  }
+
   // ─── Gestures ───────────────────────────────────────────────────────────────
 
   void _onPanStart(DragStartDetails d) {
@@ -848,7 +922,7 @@ class _ForageV2Painter extends CustomPainter {
       // Health ring — tap to chip it down. Background track + a fill arc that
       // drains and reddens as the predator takes damage.
       final frac = (v.health / v.maxHealth).clamp(0.0, 1.0);
-      final ringR = _kPredRadius + 5;
+      const ringR = _kPredRadius + 5;
       final ringRect = Rect.fromCircle(center: v.pos, radius: ringR);
       canvas.drawArc(ringRect, 0, math.pi * 2, false,
           Paint()
@@ -877,7 +951,7 @@ class _ForageV2Painter extends CustomPainter {
 
   void _paintAnimal(Canvas canvas, double t) {
     final pos = state._pos;
-    final r = _kAnimalRadius;
+    const r = _kAnimalRadius;
     var vis = 1.0;
     if (state._invuln > 0) {
       vis = 0.5 + 0.5 * (0.5 + 0.5 * math.sin(t * 30));
@@ -941,7 +1015,7 @@ class _ForageV2Painter extends CustomPainter {
     const pad = 14.0;
     const h = 16.0;
     final w = size.width - pad * 2;
-    final top = pad;
+    const top = pad;
     final track = RRect.fromRectAndRadius(
         Rect.fromLTWH(pad, top, w, h), const Radius.circular(8));
     canvas.drawRRect(track, Paint()..color = const Color(0xCC0A0010));
@@ -991,7 +1065,7 @@ class _ForageV2Painter extends CustomPainter {
   void _paintLedger(Canvas canvas, Size size) {
     const pad = 14.0;
     const h = 7.0;
-    final top = pad + 16 + 18; // below the meter + its ENERGY label
+    const top = pad + 16 + 18; // below the meter + its ENERGY label
     final w = size.width - pad * 2;
     final track = RRect.fromRectAndRadius(
         Rect.fromLTWH(pad, top, w, h), const Radius.circular(4));
@@ -1098,3 +1172,300 @@ class _ForageV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ForageV2Painter oldDelegate) => false;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards for the pre-game intro. Each card is
+// drawn with the game's OWN look (same GameFx orbs, same palette constants,
+// same halo / health-ring / tether treatments as the live painter) so the
+// player meets the LITERAL food, predator and forager they will face in play.
+// Static + cheap: painted once on the intro screen, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One food orb, exactly as `_paintFood` renders it: gold orb + leaf tick,
+/// wearing its v2 value-halo. `halo > 0` = net-positive (green ring, sized to
+/// the remaining net value); `halo <= 0` = net-loss (red break-even ring).
+void _legendFoodOrb(Canvas canvas, Offset c, double r, {double halo = 1.0}) {
+  if (halo > 0) {
+    canvas.drawCircle(
+      c,
+      r + 4 + 10 * halo,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0 + 1.4 * halo
+        ..color = _kEnergyHigh.withValues(alpha: 0.20 + 0.30 * halo),
+    );
+  } else {
+    canvas.drawCircle(
+      c,
+      r + 5,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = _kEnergyLow.withValues(alpha: 0.45),
+    );
+  }
+  GameFx.orb(canvas, c, r, _kFoodColor, glow: 0.9);
+  canvas.drawLine(
+    c.translate(0, -r - 1),
+    c.translate(r * 0.28, -r - r * 0.45),
+    Paint()
+      ..color = _kEnergyHigh.withValues(alpha: 0.7)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round,
+  );
+}
+
+/// The forager, exactly as `_paintAnimal` renders it: energy-tinted orb with
+/// the forward-leaning eye.
+void _legendAnimal(Canvas canvas, Offset c, double r,
+    {Color body = _kEnergyHigh, Offset facing = const Offset(1, 0)}) {
+  GameFx.orb(canvas, c, r, body, glow: 1.0);
+  final lean = facing * (r * 0.3);
+  canvas.drawCircle(c + lean, r * 0.26,
+      Paint()..color = Colors.white.withValues(alpha: 0.92));
+  canvas.drawCircle(c + lean + Offset(r * 0.08, 0), r * 0.12,
+      Paint()..color = Colors.black.withValues(alpha: 0.8));
+}
+
+/// A predator, exactly as `_paintPredators` renders it: red orb, heading eyes,
+/// optional fear ring, and the tap-to-chip HEALTH RING (track + fill arc).
+void _legendPredator(Canvas canvas, Offset c, double r,
+    {double hpFrac = 1.0, double fearR = 0, double heading = -math.pi / 5}) {
+  if (fearR > 0) {
+    canvas.drawCircle(
+      c,
+      fearR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = _kPredColor.withValues(alpha: 0.14),
+    );
+  }
+  GameFx.orb(canvas, c, r, _kPredColor, glow: 1.0);
+  final fwd = Offset.fromDirection(heading, r * 0.42);
+  final perp = Offset.fromDirection(heading + math.pi / 2, r * 0.24);
+  final eye = Paint()..color = Colors.white.withValues(alpha: 0.9);
+  canvas.drawCircle(c + fwd + perp, r * 0.14, eye);
+  canvas.drawCircle(c + fwd - perp, r * 0.14, eye);
+  final ringRect = Rect.fromCircle(center: c, radius: r + r * 0.30);
+  canvas.drawArc(
+      ringRect,
+      0,
+      math.pi * 2,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = Colors.black.withValues(alpha: 0.35));
+  final f = hpFrac.clamp(0.0, 1.0);
+  if (f > 0) {
+    canvas.drawArc(
+        ringRect,
+        -math.pi / 2,
+        math.pi * 2 * f,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round
+          ..color = Color.lerp(_kEnergyLow, _kEnergyHigh, f)!);
+  }
+}
+
+// ── Frame 1: the drag verb — steer the forager onto gold food ───────────────
+void _legendDrag(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final u = math.min(size.width, size.height);
+  final animal = Offset(size.width * 0.26, size.height * 0.60);
+  final target = Offset(size.width * 0.70, size.height * 0.38);
+
+  // The drag path — animal gliding toward the finger's steer target.
+  final to = target - animal;
+  final d = to.distance;
+  if (d > 1) {
+    final dir = to / d;
+    canvas.drawLine(
+      animal + dir * u * 0.12,
+      target - dir * u * 0.10,
+      Paint()
+        ..color = _kAccent.withValues(alpha: 0.35)
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round,
+    );
+    // Chevrons along the path — motion, not just a line.
+    final perp = Offset(-dir.dy, dir.dx);
+    for (final f in [0.42, 0.60]) {
+      final p = animal + to * f;
+      final tipP = p + dir * u * 0.028;
+      final chev = Paint()
+        ..color = _kAccent.withValues(alpha: 0.6)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(p + perp * u * 0.022, tipP, chev);
+      canvas.drawLine(p - perp * u * 0.022, tipP, chev);
+    }
+  }
+
+  // The steer target ring (where the finger is), as in play.
+  canvas.drawCircle(
+    target,
+    u * 0.055,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kAccent.withValues(alpha: 0.5),
+  );
+
+  // Food: a rich nearby orb at the target + a second one further off.
+  _legendFoodOrb(canvas, target, u * 0.05, halo: 0.9);
+  _legendFoodOrb(canvas, Offset(size.width * 0.82, size.height * 0.72),
+      u * 0.042, halo: 0.55);
+
+  final vd = (target - animal);
+  final facing = vd.distance > 1 ? vd / vd.distance : const Offset(1, 0);
+  _legendAnimal(canvas, animal, u * 0.095, facing: facing);
+}
+
+// ── Frame 2: the tap verb — chip a predator's health ring ───────────────────
+void _legendTapPredator(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final u = math.min(size.width, size.height);
+  final c = Offset(size.width * 0.42, size.height * 0.50);
+  final r = u * 0.11;
+
+  _legendPredator(canvas, c, r,
+      hpFrac: 2 / 3, fearR: u * 0.30, heading: math.pi * 0.85);
+
+  // Hit flash + chip fleck, as when a tap lands.
+  canvas.drawCircle(
+      c, r + 2, Paint()..color = Colors.white.withValues(alpha: 0.28));
+  GameFx.text(canvas, '-1', c.translate(0, -r - u * 0.10), 12, Colors.white,
+      weight: FontWeight.w800);
+
+  // The tapping finger cue — concentric tap rings beside the predator.
+  final tap = Offset(size.width * 0.74, size.height * 0.62);
+  for (var i = 0; i < 2; i++) {
+    canvas.drawCircle(
+      tap,
+      u * (0.035 + 0.03 * i),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0 - i * 0.8
+        ..color = Colors.white.withValues(alpha: 0.7 - 0.3 * i),
+    );
+  }
+  canvas.drawCircle(
+      tap, u * 0.014, Paint()..color = Colors.white.withValues(alpha: 0.85));
+  GameFx.text(canvas, '+$_kPredKillScore',
+      Offset(size.width * 0.74, size.height * 0.34), 13, _kEnergyHigh,
+      weight: FontWeight.w800);
+}
+
+// ── Frame 3: the penalty — bites drain energy; an empty meter = STARVED ─────
+void _legendPenalty(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final u = math.min(size.width, size.height);
+  final pred = Offset(size.width * 0.34, size.height * 0.42);
+  final animal = Offset(size.width * 0.60, size.height * 0.50);
+  final pr = u * 0.10;
+  final ar = u * 0.09;
+
+  _legendPredator(canvas, pred, pr, hpFrac: 1.0, heading: 0.2);
+  // The bitten forager: starving-red body, knocked away from the predator.
+  _legendAnimal(canvas, animal, ar,
+      body: _kEnergyLow, facing: const Offset(1, 0.2));
+
+  // Bite burst strokes between the two, in predator red.
+  final mid = Offset.lerp(pred, animal, 0.55)!;
+  final burst = Paint()
+    ..color = _kPredColor.withValues(alpha: 0.8)
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  for (var i = 0; i < 6; i++) {
+    final a = i * math.pi / 3 + 0.4;
+    final dir = Offset(math.cos(a), math.sin(a));
+    canvas.drawLine(mid + dir * u * 0.03, mid + dir * u * 0.065, burst);
+  }
+  GameFx.text(canvas, '-${_kPredBite.round()} ⚡',
+      mid.translate(0, -u * 0.12), 13, _kPredColor,
+      weight: FontWeight.w800);
+
+  // The energy meter running on empty — the real stake of getting caught.
+  final pad = size.width * 0.14;
+  final mw = size.width - pad * 2;
+  final mh = (u * 0.055).clamp(6.0, 14.0);
+  final top = size.height * 0.78;
+  final track = RRect.fromRectAndRadius(
+      Rect.fromLTWH(pad, top, mw, mh), Radius.circular(mh / 2));
+  canvas.drawRRect(track, Paint()..color = const Color(0xCC0A0010));
+  canvas.drawRRect(
+      track,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..color = Colors.white.withValues(alpha: 0.14));
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(pad + 1, top + 1, (mw - 2) * 0.10, mh - 2),
+        Radius.circular(mh / 2 - 1)),
+    Paint()..color = _kEnergyLow,
+  );
+  GameFx.text(
+      canvas,
+      'STARVED −${_kStarvePenalty.round()}',
+      Offset(size.width / 2, top + mh + 11),
+      11,
+      _kEnergyLow,
+      weight: FontWeight.w800);
+}
+
+// ── Frame 4: the escalation — scarce food, cold drain, a predator pack ──────
+void _legendEscalation(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final u = math.min(size.width, size.height);
+  final rect = Offset.zero & size;
+
+  // The late-game cold vignette, exactly as the live painter draws it.
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFF8FC7FF).withValues(alpha: 0.0),
+          const Color(0xFF6BA6E8).withValues(alpha: 0.16),
+        ],
+        stops: const [0.5, 1.0],
+      ).createShader(rect),
+  );
+
+  // A pack of predators closing in from the edges…
+  _legendPredator(canvas, Offset(size.width * 0.20, size.height * 0.30),
+      u * 0.075, hpFrac: 1.0, heading: 0.5);
+  _legendPredator(canvas, Offset(size.width * 0.80, size.height * 0.26),
+      u * 0.075, hpFrac: 1.0, heading: math.pi - 0.6);
+  _legendPredator(canvas, Offset(size.width * 0.76, size.height * 0.74),
+      u * 0.075, hpFrac: 1.0, heading: math.pi + 0.9);
+
+  // …around the forager and the LAST food on the field — already a net loss.
+  _legendAnimal(canvas, Offset(size.width * 0.46, size.height * 0.54),
+      u * 0.085, body: _kEnergyMid, facing: const Offset(-0.4, 0.4));
+  _legendFoodOrb(canvas, Offset(size.width * 0.28, size.height * 0.72),
+      u * 0.042, halo: 0.0);
+}
+
+/// The visual manual for Forage — wired into the registry spec by the
+/// orchestrator (`legendFrames: forageLegendFrames`).
+final List<LegendFrame> forageLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag to steer — eat gold food to refill energy',
+      paint: _legendDrag),
+  const LegendFrame(
+      caption: 'Tap a predator to chip its health ring: down it, +12',
+      paint: _legendTapPredator),
+  const LegendFrame(
+      caption: 'Bites cost 18 energy — hit 0 and you STARVE: −40',
+      paint: _legendPenalty),
+  const LegendFrame(
+      caption: 'Late game: food scarce, cold bites, predators hunt',
+      paint: _legendEscalation),
+];

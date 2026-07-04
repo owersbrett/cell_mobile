@@ -179,12 +179,45 @@ class _CosmicTimelineGameState extends State<CosmicTimelineGame>
       ..addListener(_onTick)
       ..forward();
     _newTimeline(first: true);
+    // ATTRACT autopilot: this game knows how to play itself. The host only
+    // calls [_autoStep] in autoplay; it is dormant in normal play. Each step
+    // banks a correct placement, so pace one placement per ~1.1s (see
+    // [_autoStep]).
+    widget.session.autoPilot = _autoStep;
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free move per host tick: place the card for the earliest slot
+  /// that is not yet correctly filled into that slot, using the game's own
+  /// [_placeCard] handler. Because we always drop the true epoch for the next
+  /// open slot (left → right, in chronological order), placements are never out
+  /// of order and each one banks points. When the timeline locks the game moves
+  /// to [_Phase.reveal], which auto-advances in [_onTick], so we simply idle.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.assemble) return; // reveal self-advances
+    for (var i = 0; i < _nSlots; i++) {
+      if (_cardInSlot(i)?.epoch == _correct[i]) continue; // already correct
+      final want = _correct[i];
+      _Card? card;
+      for (final c in _cards) {
+        if (c.epoch == want) {
+          card = c;
+          break;
+        }
+      }
+      if (card == null) return;
+      setState(() => _placeCard(card!, i)); // one move per tick
+      return;
+    }
   }
 
   // ── Timeline composition ─────────────────────────────────────────────────────
@@ -242,10 +275,25 @@ class _CosmicTimelineGameState extends State<CosmicTimelineGame>
       _slotRects = const [];
       return;
     }
-    const gap = 6.0;
     final avail = w - 16;
-    _slotW = ((avail - gap * (n - 1)) / n).clamp(30.0, 84.0);
-    _slotH = (_slotW * 1.32).clamp(48.0, 92.0);
+    // The slot row must NEVER overflow the viewport: on narrow phones with a
+    // long timeline (up to 11 slots) the end slots have to stay on-screen and
+    // droppable. Shrink the gap first, then let the slot width fall below the
+    // comfy floor rather than clip slots off the edges.
+    var gap = 6.0;
+    var sw = (avail - gap * (n - 1)) / n;
+    if (sw < 34 && n > 1) {
+      gap = 4.0;
+      sw = (avail - gap * (n - 1)) / n;
+    }
+    _slotW = sw.clamp(20.0, 84.0);
+    if (_slotW * n + gap * (n - 1) > avail) {
+      _slotW = math.max(12.0, (avail - gap * (n - 1)) / n);
+    }
+    // Slot height respects short viewports (hi never below the lo bound, so
+    // the clamp can't invert and throw).
+    final maxSlotH = math.max(44.0, math.min(92.0, h * 0.18));
+    _slotH = (_slotW * 1.32).clamp(44.0, maxSlotH);
     final totalW = _slotW * n + gap * (n - 1);
     final startX = (w - totalW) / 2;
     final top = h * 0.34;
@@ -262,9 +310,12 @@ class _CosmicTimelineGameState extends State<CosmicTimelineGame>
     final n = _cards.length;
     if (n == 0) return;
 
-    _trayW = (_slotW + 4).clamp(46.0, 96.0);
-    _trayH = 54;
-    const gap = 9.0;
+    // On narrow screens the tray cards track the (smaller) slot width so more
+    // fit per row; on short screens the tray rows compress vertically so the
+    // top tray row never climbs into the slot band.
+    _trayW = (_slotW + 4).clamp(42.0, 96.0);
+    _trayH = h < 480 ? 48 : 54;
+    final gap = w < 360 ? 7.0 : 9.0;
     final perRow = ((w - 14) / (_trayW + gap)).floor().clamp(1, n);
     final rows = (n / perRow).ceil();
     final baseY = h * 0.86;
@@ -449,8 +500,11 @@ class _CosmicTimelineGameState extends State<CosmicTimelineGame>
   void _onPanUpdate(Offset p) {
     final c = _drag;
     if (c == null) return;
-    c.x = p.dx; // ticker repaints; no setState needed for smooth drag
-    c.y = p.dy;
+    // Keep the carried card inside the play area — on phones the pan easily
+    // runs past the edge (or up under the host HUD) and would strand the card
+    // off-viewport. Ticker repaints; no setState needed for smooth drag.
+    c.x = _sz.width > 0 ? p.dx.clamp(0.0, _sz.width) : p.dx;
+    c.y = _sz.height > 0 ? p.dy.clamp(0.0, _sz.height) : p.dy;
   }
 
   void _onPanEnd() {
@@ -540,19 +594,53 @@ class _TimelinePainter extends CustomPainter {
     }
   }
 
+  // Lay out a single line, shrinking the font until it fits [maxW] — labels
+  // the player needs are never ellipsized (GAME_DESIGN law), they scale.
+  TextPainter _fitLine(String text, double fontSize, double maxW, Color color,
+      FontWeight weight) {
+    TextPainter layout(double fs) => TextPainter(
+          text: TextSpan(
+            text: text,
+            style: TextStyle(
+              fontFamily: 'Outfit',
+              fontSize: fs,
+              fontWeight: weight,
+              color: color,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+    var tp = layout(fontSize);
+    if (tp.width > maxW && tp.width > 0) {
+      tp = layout(math.max(6.0, fontSize * maxW / tp.width));
+    }
+    return tp;
+  }
+
+  void _fitText(Canvas canvas, String text, Offset center, double fontSize,
+      double maxW, Color color,
+      {FontWeight weight = FontWeight.w700}) {
+    final tp = _fitLine(text, fontSize, maxW, color, weight);
+    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+  }
+
   // Goal line + timeline counter at the very top.
   void _drawHeader(Canvas canvas, Size size) {
     final goal = s._phase == _Phase.reveal
         ? 'TIMELINE LOCKED — READ THE DEEP-TIME RIBBON'
         : 'ORDER THE EPOCHS — DRAG CARDS EARLIEST → LATEST';
-    GameFx.text(canvas, goal, Offset(size.width / 2, 14), 11,
-        Colors.white.withValues(alpha: 0.55), weight: FontWeight.w700);
+    // The goal line shrinks to the viewport; the TIMELINE badge shares its row
+    // only when there is room, otherwise it drops to the (short) subtitle row
+    // so the two never collide on phone widths.
+    _fitText(canvas, goal, Offset(size.width / 2, 14), 11, size.width - 20,
+        Colors.white.withValues(alpha: 0.55));
     GameFx.text(canvas, 'BIG BANG  ➜  NOW', Offset(size.width / 2, 31), 9,
         Colors.white.withValues(alpha: 0.32));
     if (s._level > 0) {
-      GameFx.text(canvas, 'TIMELINE ${s._level + 1}',
-          Offset(size.width - 42, 16), 10, _accent.withValues(alpha: 0.85),
-          weight: FontWeight.w700);
+      final badgeY = size.width >= 500 ? 16.0 : 31.0;
+      _fitText(canvas, 'TIMELINE ${s._level + 1}',
+          Offset(size.width - 42, badgeY), 10, 72,
+          _accent.withValues(alpha: 0.85));
     }
   }
 
@@ -646,8 +734,12 @@ class _TimelinePainter extends CustomPainter {
     final len = dir.distance;
     if (len <= 0) return;
     final n = dir / len;
-    final start = a + n * (s._slotW * 0.5 + 2);
-    final end = b - n * (s._slotW * 0.5 + 2);
+    // Inset from each card edge, but never so far that start crosses end —
+    // with 11 narrow slots on a phone the between-slot gap is only ~4px.
+    final inset = math.min(s._slotW * 0.5 + 2, len * 0.5 - 1);
+    if (inset <= 0) return;
+    final start = a + n * inset;
+    final end = b - n * inset;
     canvas.drawLine(start, end, paint);
     final perp = Offset(-n.dy, n.dx);
     final tip = end;
@@ -716,19 +808,31 @@ class _TimelinePainter extends CustomPainter {
           ..strokeWidth = correct ? 2.2 : 1.5
           ..color = border);
 
-    // Emoji icon + abbreviation, scaled to fit small slots.
+    // Emoji icon + name, scaled to fit small slots. Prefer the full name, but
+    // only if it actually fits the card (measured, with a small bleed
+    // allowance) — otherwise the abbrev, never overlapping neighbours and
+    // never ellipsized.
     final iconSize = (h * 0.30).clamp(13.0, 22.0);
     final labelSize = (w * 0.17).clamp(7.0, 10.5);
+    final labelMaxW = w + 6;
     GameFx.text(canvas, ep.emoji, Offset(c.x, c.y - h * 0.22), iconSize,
         Colors.white);
-    GameFx.text(canvas, w < 54 ? ep.abbrev : ep.name,
-        Offset(c.x, c.y + h * 0.04), labelSize,
-        Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+    final labelColor = Colors.white.withValues(alpha: 0.92);
+    var label = ep.name;
+    if (w < 54 ||
+        _fitLine(ep.name, labelSize, double.infinity, labelColor,
+                    FontWeight.w700)
+                .width >
+            labelMaxW) {
+      label = ep.abbrev;
+    }
+    _fitText(canvas, label, Offset(c.x, c.y + h * 0.04), labelSize, labelMaxW,
+        labelColor);
 
     // A correctly-placed card reveals its WHEN — the real moment it happened.
     if (correct) {
-      GameFx.text(canvas, ep.when, Offset(c.x, c.y + h * 0.32),
-          (w * 0.15).clamp(6.5, 9.5), _good.withValues(alpha: 0.95),
+      _fitText(canvas, ep.when, Offset(c.x, c.y + h * 0.32),
+          (w * 0.15).clamp(6.5, 9.5), w + 8, _good.withValues(alpha: 0.95),
           weight: FontWeight.w800);
     }
   }
@@ -736,11 +840,33 @@ class _TimelinePainter extends CustomPainter {
   void _drawFactCard(Canvas canvas, Size size) {
     if (s._factAge >= 3.6 || s._factText.isEmpty) return;
     final a = (1 - (s._factAge - 3.0).clamp(0.0, 0.6) / 0.6).clamp(0.0, 1.0);
-    final y = size.height * 0.555;
+
+    // Adaptive panel: never wider than the viewport, sized to the wrapped
+    // text (no ellipsis — the fact IS the education), and positioned midway
+    // between the slot row and the tray so it never covers the placed cards'
+    // WHEN labels on short phone viewports.
+    final panelW = math.max(140.0, math.min(size.width - 24.0, 460.0));
+    final fontSize = size.width < 360 ? 9.5 : 10.5;
+    final tp = _wrapText(s._factText, panelW - 18, fontSize,
+        Colors.white.withValues(alpha: 0.92 * a));
+    final panelH = tp.height + 16;
+
+    final slotBottom = s._slotRects.isEmpty
+        ? size.height * 0.44
+        : s._slotRects.first.bottom;
+    var trayTop = size.height * 0.86 - s._trayH / 2;
+    for (final c in s._cards) {
+      if (c.slot == null && !identical(c, s._drag)) {
+        trayTop = math.min(trayTop, c.homeY - s._trayH / 2);
+      }
+    }
+    var y = (slotBottom + trayTop) / 2;
+    final loY = slotBottom + 8 + panelH / 2;
+    final hiY = size.height - 8 - panelH / 2;
+    y = hiY <= loY ? hiY : y.clamp(loY, hiY); // guard: never an inverted clamp
+
     final rect = Rect.fromCenter(
-        center: Offset(size.width / 2, y),
-        width: (size.width - 32).clamp(160.0, 460.0),
-        height: 50);
+        center: Offset(size.width / 2, y), width: panelW, height: panelH);
     final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
     canvas.drawRRect(
         rr, Paint()..color = Colors.black.withValues(alpha: 0.40 * a));
@@ -750,32 +876,239 @@ class _TimelinePainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.2
           ..color = s._factColor.withValues(alpha: 0.5 * a));
-    _wrapText(canvas, s._factText, rect, 10.5,
-        Colors.white.withValues(alpha: 0.92 * a));
+    tp.paint(canvas, rect.center - Offset(tp.width / 2, tp.height / 2));
   }
 
-  // Tiny 2-line word wrap for the fact card (canvas TextPainter).
-  void _wrapText(
-      Canvas canvas, String text, Rect rect, double size, Color color) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontFamily: 'Outfit',
-          fontSize: size,
-          fontWeight: FontWeight.w600,
-          color: color,
-        ),
-      ),
-      textAlign: TextAlign.center,
-      textDirection: TextDirection.ltr,
-      maxLines: 3,
-      ellipsis: '…',
-    )..layout(maxWidth: rect.width - 18);
-    tp.paint(
-        canvas, rect.center - Offset(tp.width / 2, tp.height / 2));
+  // Word-wrapped fact text (canvas TextPainter); shrinks the font rather than
+  // ellipsize if a fact ever needs more than 4 lines at the given width.
+  TextPainter _wrapText(String text, double maxWidth, double size, Color color) {
+    TextPainter layout(double fs) => TextPainter(
+          text: TextSpan(
+            text: text,
+            style: TextStyle(
+              fontFamily: 'Outfit',
+              fontSize: fs,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+          textAlign: TextAlign.center,
+          textDirection: TextDirection.ltr,
+          maxLines: 4,
+        )..layout(maxWidth: maxWidth);
+    var tp = layout(size);
+    if (tp.didExceedMaxLines) tp = layout(size * 0.85);
+    return tp;
   }
 
   @override
   bool shouldRepaint(covariant _TimelinePainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards. Same library as the game, so these
+// reuse the REAL epoch catalog (`_kEpochs`), the log-time map (`_logFrac`) and
+// the exact card/slot/arrow style the live painter draws, so the manual shows
+// the literal components the player will meet. Static + cheap: no ticker.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kGoodLegend = Color(0xFF80D8FF); // teal "chronology flows"
+const Color _kSnapLegend = Color(0xFFFF5252); // red "order snaps here"
+const Color _kWarnLegend = Color(0xFFFF8A65); // out-of-place card border
+
+// One epoch card, drawn exactly like `_drawCard`: colour-tinted rounded rect,
+// emoji + abbrev, teal border + revealed WHEN when correctly placed.
+// state: 0 = tray card, 1 = placed-correct, 2 = placed-wrong.
+void _legCard(Canvas canvas, Offset c, double w, double h, _Epoch ep,
+    {int state = 0}) {
+  final rect = Rect.fromCenter(center: c, width: w, height: h);
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = ep.color.withValues(alpha: 0.30));
+  final Color border = state == 1
+      ? _kGoodLegend
+      : state == 2
+          ? _kWarnLegend
+          : ep.color.withValues(alpha: 0.7);
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = state == 1 ? 2.2 : 1.5
+        ..color = border);
+  final iconSize = (h * 0.30).clamp(11.0, 22.0);
+  GameFx.text(canvas, ep.emoji, c.translate(0, -h * 0.22), iconSize.toDouble(),
+      Colors.white);
+  final labelSize = (w * 0.17).clamp(7.0, 10.5);
+  GameFx.text(canvas, ep.abbrev, c.translate(0, h * 0.05), labelSize.toDouble(),
+      Colors.white.withValues(alpha: 0.92),
+      weight: FontWeight.w800);
+  if (state == 1) {
+    GameFx.text(canvas, ep.when, c.translate(0, h * 0.33),
+        (w * 0.15).clamp(6.5, 9.5).toDouble(), _kGoodLegend,
+        weight: FontWeight.w800);
+  }
+}
+
+// An empty ordered slot, drawn like `_drawSlots`: faint fill, dashed-look
+// stroke and its chronological rank number.
+void _legSlot(Canvas canvas, Rect r, int index) {
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(10));
+  canvas.drawRRect(rr, Paint()..color = Colors.white.withValues(alpha: 0.04));
+  canvas.drawRRect(
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = Colors.white.withValues(alpha: 0.18));
+  GameFx.text(canvas, '${index + 1}', Offset(r.left + 9, r.top + 8), 9,
+      Colors.white.withValues(alpha: 0.30),
+      weight: FontWeight.w700);
+}
+
+// A directional arrow between two points, matching the live `_arrow`.
+void _legArrow(Canvas canvas, Offset a, Offset b, Color color,
+    {double inset = 6}) {
+  final paint = Paint()
+    ..color = color
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  final dir = b - a;
+  final len = dir.distance;
+  if (len <= 0.001) return;
+  final n = dir / len;
+  final ins = math.min(inset, len * 0.5 - 1);
+  if (ins <= 0) return;
+  final start = a + n * ins;
+  final end = b - n * ins;
+  canvas.drawLine(start, end, paint);
+  final perp = Offset(-n.dy, n.dx);
+  canvas.drawLine(end, end - n * 7 + perp * 4, paint);
+  canvas.drawLine(end, end - n * 7 - perp * 4, paint);
+}
+
+// FRAME 1 — the verb: drag shuffled epoch cards into ordered slots.
+void _legendOrder(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+  final slotW = (w * 0.19).clamp(30.0, 70.0).toDouble();
+  final slotH = (slotW * 1.28).clamp(40.0, 82.0).toDouble();
+  final gap = (w * 0.04).clamp(6.0, 16.0).toDouble();
+  final total = slotW * 4 + gap * 3;
+  final startX = (w - total) / 2 + slotW / 2;
+  final rowY = h * 0.60;
+  final xs = [for (var i = 0; i < 4; i++) startX + i * (slotW + gap)];
+  // slots 0,1,3 filled in order; slot 2 is the open target.
+  final filled = [_epoch(_EpochId.bigBang), _epoch(_EpochId.firstStars), null,
+    _epoch(_EpochId.now)];
+  for (var i = 0; i < 4; i++) {
+    final r = Rect.fromCenter(
+        center: Offset(xs[i], rowY), width: slotW, height: slotH);
+    _legSlot(canvas, r, i);
+    if (filled[i] != null) {
+      _legCard(canvas, Offset(xs[i], rowY), slotW, slotH, filled[i]!,
+          state: 1);
+    }
+  }
+  // A card being carried down into the open slot 2, with a drop arrow.
+  final dragC = Offset(xs[2], h * 0.24);
+  _legCard(canvas, dragC, slotW, slotH, _epoch(_EpochId.sun), state: 0);
+  _legArrow(canvas, dragC.translate(0, slotH * 0.6),
+      Offset(xs[2], rowY - slotH * 0.55), _CosmicTimelineGameState._accent,
+      inset: 4);
+}
+
+// FRAME 2 — score: the right slot flows teal and reveals its WHEN.
+void _legendFlow(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+  final cw = (w * 0.26).clamp(40.0, 92.0).toDouble();
+  final ch = (cw * 1.3).clamp(52.0, 108.0).toDouble();
+  final cy = h * 0.52;
+  final ax = w * 0.32, bx = w * 0.68;
+  _legCard(canvas, Offset(ax, cy), cw, ch, _epoch(_EpochId.firstStars),
+      state: 1);
+  _legCard(canvas, Offset(bx, cy), cw, ch, _epoch(_EpochId.sun), state: 1);
+  _legArrow(canvas, Offset(ax + cw * 0.5, cy), Offset(bx - cw * 0.5, cy),
+      _kGoodLegend, inset: 4);
+  GameFx.text(canvas, '+15', Offset(bx, cy - ch * 0.72), 13,
+      _kGoodLegend, weight: FontWeight.w800);
+}
+
+// FRAME 3 — danger: wrong order snaps the arrow red.
+void _legendSnap(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+  final cw = (w * 0.26).clamp(40.0, 92.0).toDouble();
+  final ch = (cw * 1.3).clamp(52.0, 108.0).toDouble();
+  final cy = h * 0.52;
+  final ax = w * 0.32, bx = w * 0.68;
+  // Sun placed BEFORE the first stars — out of order: both borders warn.
+  _legCard(canvas, Offset(ax, cy), cw, ch, _epoch(_EpochId.sun), state: 2);
+  _legCard(canvas, Offset(bx, cy), cw, ch, _epoch(_EpochId.firstStars),
+      state: 2);
+  _legArrow(canvas, Offset(ax + cw * 0.5, cy), Offset(bx - cw * 0.5, cy),
+      _kSnapLegend, inset: 4);
+  GameFx.text(canvas, 'SNAP', Offset((ax + bx) / 2, cy - ch * 0.72), 12,
+      _kSnapLegend, weight: FontWeight.w800);
+}
+
+// FRAME 4 — the twist: lock the full order to plot the log deep-time ribbon.
+void _legendRibbon(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w <= 0 || h <= 0) return;
+  final left = w * 0.08, right = w * 0.92;
+  final y = h * 0.30;
+  final axis = Paint()
+    ..shader = LinearGradient(colors: [
+      _CosmicTimelineGameState._accent.withValues(alpha: 0.25),
+      _kGoodLegend.withValues(alpha: 0.7),
+    ]).createShader(Rect.fromLTWH(left, y, right - left, 1))
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(Offset(left, y), Offset(right, y), axis);
+  GameFx.text(canvas, 'log(time)', Offset(left + 26, y - 12), 8,
+      Colors.white.withValues(alpha: 0.30));
+  // Plot several correctly-ordered epochs at their true log positions — early
+  // epochs spread the left, recent eons cram the right.
+  final plotted = [
+    _EpochId.bigBang,
+    _EpochId.nucleosynthesis,
+    _EpochId.recombination,
+    _EpochId.firstStars,
+    _EpochId.sun,
+    _EpochId.now,
+  ];
+  final cw = ((right - left) / plotted.length * 0.7).clamp(22.0, 44.0).toDouble();
+  final ch = (cw * 1.3).clamp(28.0, 58.0).toDouble();
+  final cardY = h * 0.70;
+  for (final id in plotted) {
+    final ep = _epoch(id);
+    final fx = left + _logFrac(ep.tSec) * (right - left);
+    GameFx.orb(canvas, Offset(fx, y), 4, ep.color, glow: 0.8, specular: false);
+    GameFx.text(canvas, ep.when, Offset(fx, y - 13), 7.5,
+        Colors.white.withValues(alpha: 0.7), weight: FontWeight.w700);
+    canvas.drawLine(
+        Offset(fx, y + 3),
+        Offset(fx, cardY - ch * 0.5),
+        Paint()
+          ..color = ep.color.withValues(alpha: 0.20)
+          ..strokeWidth = 1);
+    _legCard(canvas, Offset(fx, cardY), cw, ch, ep, state: 1);
+  }
+}
+
+/// The visual manual for Cosmic Timeline — wired into the registry spec.
+final List<LegendFrame> cosmicTimelineLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag epoch cards into order: earliest → latest',
+      paint: _legendOrder),
+  const LegendFrame(
+      caption: 'Right slot flows teal and reveals its WHEN',
+      paint: _legendFlow),
+  const LegendFrame(
+      caption: 'Wrong order? The arrow SNAPS red — reorder it',
+      paint: _legendSnap),
+  const LegendFrame(
+      caption: 'Lock the full order to plot the log deep-time ribbon',
+      paint: _legendRibbon),
+];

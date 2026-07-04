@@ -219,6 +219,10 @@ class _SolarStormGameState extends State<SolarStormGame>
     // A couple of calm, never-erupting spots so the "ready" Sun has texture.
     _seedIdleSpots();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   void _seedIdleSpots() {
@@ -233,8 +237,43 @@ class _SolarStormGameState extends State<SolarStormGame>
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Reads the live threat board and
+  /// fires the single most competent move — no randomness, no synthetic taps,
+  /// reusing the game's own [_deflect] / [_quell] handlers.
+  ///
+  /// Priority = highest damage risk first: a moving storm (flare / CME) nearest
+  /// the satellite belt (max [_Storm.progress]) is the imminent grid hit, so it
+  /// is deflected first. With no storm in flight, the sunspot nearest eruption
+  /// (max [_Sunspot.intensity]) is quelled before it can launch a CME. Ties
+  /// resolve to the first match; deterministic. Does nothing if the sky is clear
+  /// or the round is not running.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // 1) Most urgent moving storm — the one closest to the belt.
+    _Storm? storm;
+    for (final st in _storms) {
+      if (st.deflected) continue;
+      if (storm == null || st.progress > storm.progress) storm = st;
+    }
+    if (storm != null) {
+      _deflect(storm);
+      return;
+    }
+
+    // 2) No storms → quell the sunspot nearest eruption, stopping the next CME.
+    _Sunspot? spot;
+    for (final s in _spots) {
+      if (s.quelled) continue;
+      if (spot == null || s.intensity > spot.intensity) spot = s;
+    }
+    if (spot != null) _quell(spot);
   }
 
   void _resetRun() {
@@ -865,3 +904,248 @@ class _SolarStormPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _SolarStormPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards. Each frame draws the LITERAL in-game
+// components (Sun, sunspot, flare/CME, satellite belt) in the game's own style
+// and palette, statically. Cheap, size-guarded, no per-frame animation.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The Sun disk (body gradient + limb) centred at [c] with radius [r] —
+/// mirrors `_SolarStormPainter._drawSun` without the drifting granulation.
+void _legendSun(Canvas canvas, Offset c, double r) {
+  if (r <= 0) return;
+  // Soft corona halo.
+  canvas.drawCircle(
+    c,
+    r * 1.7,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        _kCorona.withValues(alpha: 0.18),
+        _kCorona.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: c, radius: r * 1.7)),
+  );
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..shader = const RadialGradient(
+        colors: [_kSunCore, _kSunMid, _kSunEdge],
+        stops: [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: c, radius: r)),
+  );
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = _kSunEdge.withValues(alpha: 0.6),
+  );
+}
+
+/// One sunspot at [p]. [intensity] 0..1 sizes the umbra and lights the warning
+/// rim just as `_drawSunspots` does at high heat.
+void _legendSunspot(Canvas canvas, Offset p, double intensity) {
+  final r = 7.0 + intensity * 9.0;
+  canvas.drawCircle(p, r, Paint()..color = _kSpotDark);
+  canvas.drawCircle(
+      p, r * 1.45, Paint()..color = _kSpotDark.withValues(alpha: 0.4));
+  if (intensity > 0.45) {
+    final heat = ((intensity - 0.45) / 0.55).clamp(0.0, 1.0);
+    canvas.drawCircle(
+      p,
+      r + 3 + 3 * heat,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2 + 2 * heat
+        ..color = _kSpotRim.withValues(alpha: 0.4 + 0.6 * heat),
+    );
+  }
+}
+
+/// A travelling storm at [pos]: glow + white-hot core with a trail toward
+/// [origin]. [isFlare] picks the pale-flare vs orange-CME colour and size.
+void _legendStorm(Canvas canvas, Offset pos, Offset origin,
+    {required bool isFlare}) {
+  final col = isFlare ? _kFlare : _kCme;
+  final radius = isFlare ? 12.0 : 20.0;
+  for (var k = 5; k >= 1; k--) {
+    final tp = Offset.lerp(pos, origin, k / 14)!;
+    canvas.drawCircle(tp, radius * (1 - k / 8),
+        Paint()..color = col.withValues(alpha: 0.10 * (6 - k)));
+  }
+  canvas.drawCircle(
+      pos,
+      radius * 1.5,
+      Paint()
+        ..color = col.withValues(alpha: 0.5)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12));
+  canvas.drawCircle(pos, radius, Paint()..color = col);
+  canvas.drawCircle(
+      pos, radius * 0.45, Paint()..color = Colors.white.withValues(alpha: 0.9));
+}
+
+/// The satellite defense belt across [beltY]. [hurt] reddens it (grid damaged).
+void _legendBelt(Canvas canvas, Size size, double beltY, {bool hurt = false}) {
+  final satCol = hurt ? _kDanger : _kShield;
+  const n = 5;
+  final panel = Paint()..color = satCol.withValues(alpha: 0.75);
+  final body = Paint()..color = _kText;
+  for (var i = 0; i < n; i++) {
+    final c = Offset(size.width * ((i + 0.5) / n), beltY);
+    canvas.drawRect(
+        Rect.fromCenter(center: c.translate(-9, 0), width: 7, height: 12),
+        panel);
+    canvas.drawRect(
+        Rect.fromCenter(center: c.translate(9, 0), width: 7, height: 12),
+        panel);
+    canvas.drawCircle(c, 3.5, body);
+  }
+  canvas.drawArc(
+    Rect.fromCenter(
+        center: Offset(size.width * 0.5, beltY + 30),
+        width: size.width * 1.05,
+        height: 130),
+    math.pi,
+    math.pi,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = satCol.withValues(alpha: hurt ? 0.28 : 0.22),
+  );
+}
+
+/// A stroked shield ripple at [pos] — the deflect tell.
+void _legendShieldRipple(Canvas canvas, Offset pos, double radius) {
+  canvas.drawCircle(
+    pos,
+    radius + 22,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = _kShield.withValues(alpha: 0.8),
+  );
+}
+
+/// A tap cue ring + crosshair at [p].
+void _legendTapCue(Canvas canvas, Offset p, double radius) {
+  final ring = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.5
+    ..color = _kShield.withValues(alpha: 0.85);
+  canvas.drawCircle(p, radius, ring);
+  final tick = Paint()
+    ..color = _kShield.withValues(alpha: 0.85)
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  canvas.drawLine(p.translate(-radius - 6, 0), p.translate(-radius, 0), tick);
+  canvas.drawLine(p.translate(radius, 0), p.translate(radius + 6, 0), tick);
+}
+
+void _legendCaptionMark(
+    Canvas canvas, String s, Offset center, double size, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: s,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: size,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 0.5,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+// ── Frame 1: the core object + verb — tap a maturing sunspot ────────────────
+void _legendQuell(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.46);
+  final r = math.min(size.width * 0.30, size.height * 0.30).clamp(1.0, 9999.0);
+  _legendSun(canvas, c, r);
+  final spot = c + Offset(r * 0.28, -r * 0.10);
+  _legendSunspot(canvas, spot, 0.9);
+  _legendTapCue(canvas, spot, 26);
+}
+
+// ── Frame 2: how to score — deflect flares & CMEs high ──────────────────────
+void _legendDeflect(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final sun = Offset(size.width * 0.5, size.height * 0.16);
+  final sunR = math.min(size.width * 0.18, size.height * 0.16).clamp(1.0, 9999.0);
+  _legendSun(canvas, sun, sunR);
+  final beltY = size.height * 0.86;
+  _legendBelt(canvas, size, beltY);
+  // A flare caught high (small, near the Sun) with a shield ripple.
+  final flarePos = Offset(size.width * 0.34, size.height * 0.42);
+  _legendStorm(canvas, flarePos, sun, isFlare: true);
+  _legendShieldRipple(canvas, flarePos, 12);
+  _legendTapCue(canvas, flarePos, 24);
+  // A slower CME lower down still incoming.
+  final cmePos = Offset(size.width * 0.66, size.height * 0.58);
+  _legendStorm(canvas, cmePos, sun, isFlare: false);
+}
+
+// ── Frame 3: the danger — a storm hits the belt undefended ──────────────────
+void _legendHit(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final sun = Offset(size.width * 0.5, size.height * 0.16);
+  final sunR = math.min(size.width * 0.18, size.height * 0.16).clamp(1.0, 9999.0);
+  _legendSun(canvas, sun, sunR);
+  final beltY = size.height * 0.80;
+  final hitX = size.width * 0.5;
+  // Impact burst at the belt.
+  canvas.drawCircle(
+      Offset(hitX, beltY),
+      34,
+      Paint()
+        ..color = _kDanger.withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12));
+  _legendStorm(canvas, Offset(hitX, beltY), sun, isFlare: false);
+  _legendBelt(canvas, size, beltY, hurt: true);
+  _legendCaptionMark(canvas, '-18', Offset(hitX, beltY - 46), 20, _kDanger);
+}
+
+// ── Frame 4: escalation — solar maximum swarms with threats ─────────────────
+void _legendMaximum(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.30);
+  final r = math.min(size.width * 0.22, size.height * 0.20).clamp(1.0, 9999.0);
+  _legendSun(canvas, c, r);
+  // Several sunspots at once.
+  _legendSunspot(canvas, c + Offset(-r * 0.35, -r * 0.2), 0.85);
+  _legendSunspot(canvas, c + Offset(r * 0.42, r * 0.1), 0.6);
+  _legendSunspot(canvas, c + Offset(r * 0.05, r * 0.45), 0.95);
+  final beltY = size.height * 0.88;
+  _legendBelt(canvas, size, beltY);
+  // Simultaneous storms.
+  _legendStorm(canvas, Offset(size.width * 0.28, size.height * 0.60), c,
+      isFlare: true);
+  _legendStorm(canvas, Offset(size.width * 0.74, size.height * 0.66), c,
+      isFlare: false);
+  // "SOLAR MAX" tell in the game's danger colour.
+  _legendCaptionMark(
+      canvas, 'SOLAR MAX', Offset(size.width * 0.5, size.height * 0.09), 14,
+      _kDanger);
+}
+
+/// The visual manual for Solar Storm — wired into the registry spec.
+final List<LegendFrame> solarStormLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap a sunspot to quell it before it erupts',
+      paint: _legendQuell),
+  const LegendFrame(
+      caption: 'Tap flares and CMEs early to shield the grid',
+      paint: _legendDeflect),
+  const LegendFrame(
+      caption: 'Let one reach the belt and the grid takes damage',
+      paint: _legendHit),
+  const LegendFrame(
+      caption: 'At solar maximum, threats swarm — keep your streak',
+      paint: _legendMaximum),
+];

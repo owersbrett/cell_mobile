@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../../../theme/potatuhs.dart';
 import '../../mini_game.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -212,16 +213,39 @@ class _EverythingGameState extends State<EverythingGame>
       ..addListener(_tick)
       ..forward();
     _lastWallTime = _now();
+    // ATTRACT autopilot: this game knows the answer to every word — it stores
+    // it in [_EWWord.answer] to score against. Registered always (harmless in
+    // normal play; the host only calls it hands-free). See [_autoStep].
+    widget.session.autoPilot = _autoStep;
+    // Buffer answers to a human pace — else it types a correct word every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   double _now() => DateTime.now().microsecondsSinceEpoch / 1e6;
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     _textCtrl.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
+  /// One competent, deterministic move per host tick (~250ms). This plays
+  /// Everything Everywhere *correctly*, never by simulating keystrokes: it
+  /// already knows the English answer for the current word ([_current.answer]),
+  /// so it drops that exact word straight into the input buffer ([_textCtrl])
+  /// and fires the game's own answer-check handler ([_onTextChanged]). A correct
+  /// match scores + burst-particles + auto-advances to the next word (600ms
+  /// later), and the next tick simply submits that word too. Mid-transition —
+  /// game over, already-correct flash — there is nothing to answer, so return.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_gameOver || _correct || _correctFlash > 0) return; // nothing to answer
+    _textCtrl.text = _current.answer;             // set the input buffer
+    _onTextChanged(_current.answer);              // submit via the game's check
   }
 
   // Build a shuffled deck; refill when exhausted.
@@ -925,3 +949,327 @@ class _EverythingWheelPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _EverythingWheelPainter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards for the intro screen. Each frame is a
+// static snapshot of the LITERAL in-game components (the cosmic wheel field,
+// the cycling foreign word, the answer field, the hint chips, the word-timer
+// bar), drawn in the game's own palette. Cheap + self-contained: painted once
+// in the intro carousel, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// The game's own palette, named for the legend painters (same hex values used
+// throughout the live game above — no new colors).
+const Color _ewLegendBg = Color(0xFF050510);
+const Color _ewLegendPurple = Color(0xFF7E57C2);
+const Color _ewLegendPurpleMid = Color(0xFF9575CD);
+const Color _ewLegendPurpleLight = Color(0xFFCE93D8);
+const Color _ewLegendGold = Color(0xFFFFD54F);
+const Color _ewLegendAmber = Color(0xFFFFB300);
+const Color _ewLegendRed = Color(0xFFEF5350);
+
+/// Centred text helper for the legend cards (theme body face, not 'Avenir').
+void _ewLegendText(
+  Canvas canvas,
+  String text,
+  Offset center,
+  double fontSize,
+  Color color, {
+  FontWeight weight = FontWeight.w600,
+  List<Shadow>? shadows,
+  double letterSpacing = 0,
+}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: fontSize,
+        fontWeight: weight,
+        color: color,
+        shadows: shadows,
+        letterSpacing: letterSpacing,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// Deep-space backdrop + centre glow (gold-tinted when [flash] > 0), exactly
+/// like the live `_EverythingWheelPainter` background.
+void _ewLegendBackdrop(Canvas canvas, Size size, {double flash = 0}) {
+  canvas.drawRect(Offset.zero & size, Paint()..color = _ewLegendBg);
+  final c = Offset(size.width / 2, size.height * 0.45);
+  final glow = Color.lerp(
+    _ewLegendPurple.withValues(alpha: 0.10),
+    _ewLegendGold.withValues(alpha: 0.20),
+    flash.clamp(0.0, 1.0),
+  )!;
+  canvas.drawCircle(
+    c,
+    size.shortestSide * 0.55,
+    Paint()
+      ..color = glow
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30),
+  );
+}
+
+/// The three orbital word-wheels with a sprinkle of the real ring tokens.
+void _ewLegendWheels(Canvas canvas, Size size, Offset c) {
+  final base = size.shortestSide;
+  final radii = [base * 0.26, base * 0.38, base * 0.50];
+  const ringAlphas = [0.10, 0.07, 0.05];
+  final ringPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 0.8;
+  for (int i = 0; i < 3; i++) {
+    ringPaint.color = Colors.white.withValues(alpha: ringAlphas[i]);
+    canvas.drawCircle(c, radii[i], ringPaint);
+  }
+  const ringColors = [
+    _ewLegendPurpleLight,
+    _ewLegendPurpleMid,
+    _ewLegendPurple
+  ];
+  const tokenAlphas = [0.30, 0.24, 0.18];
+  for (int ring = 0; ring < 3; ring++) {
+    final n = 4 + ring;
+    for (int i = 0; i < n; i++) {
+      final a = ring * 0.7 + i / n * 2 * pi;
+      final pos = c + Offset(cos(a), sin(a)) * radii[ring];
+      final token = _ewWheelTokens[(ring * 7 + i * 3) % _ewWheelTokens.length];
+      _ewLegendText(canvas, token, pos, 7.5 + ring,
+          ringColors[ring].withValues(alpha: tokenAlphas[ring]),
+          weight: FontWeight.w500);
+    }
+  }
+}
+
+/// The per-word countdown bar (same track/fill as the live `_WordTimerBar`).
+void _ewLegendTimerBar(
+    Canvas canvas, Size size, double y, double fraction, Color color) {
+  final left = size.width * 0.14;
+  final width = size.width * 0.72;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, y, width, 5), const Radius.circular(2.5)),
+    Paint()..color = Colors.white.withValues(alpha: 0.08),
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, y, width * fraction.clamp(0.0, 1.0), 5),
+        const Radius.circular(2.5)),
+    Paint()..color = color,
+  );
+}
+
+/// One hint chip, matching the live `_HintChip` (purple = category hint,
+/// bright gold = first-letter hint).
+void _ewLegendChip(Canvas canvas, Offset center, String label,
+    {bool bright = false}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: label,
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: 11,
+        color: bright
+            ? _ewLegendGold.withValues(alpha: 0.9)
+            : Colors.white54,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final base = bright ? _ewLegendGold : _ewLegendPurple;
+  final r = RRect.fromRectAndRadius(
+    Rect.fromCenter(
+        center: center, width: tp.width + 24, height: tp.height + 10),
+    const Radius.circular(14),
+  );
+  canvas.drawRRect(r, Paint()..color = base.withValues(alpha: 0.07));
+  canvas.drawRRect(
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = base.withValues(alpha: bright ? 0.7 : 0.5),
+  );
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+/// The typing field, matching the live `_EWTextField` (gold when correct).
+void _ewLegendField(Canvas canvas, Size size, Offset center, String text,
+    {bool correct = false}) {
+  final r = RRect.fromRectAndRadius(
+    Rect.fromCenter(center: center, width: size.width * 0.58, height: 36),
+    const Radius.circular(12),
+  );
+  canvas.drawRRect(
+      r, Paint()..color = Colors.white.withValues(alpha: correct ? 0.08 : 0.04));
+  canvas.drawRRect(
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color =
+          correct ? _ewLegendGold : _ewLegendPurple.withValues(alpha: 0.6),
+  );
+  _ewLegendText(canvas, text, center, 15,
+      correct ? _ewLegendGold : Colors.white,
+      weight: FontWeight.bold, letterSpacing: 2);
+}
+
+/// Small downward chevron cue.
+void _ewLegendChevron(Canvas canvas, Offset c, Color color) {
+  final p = Paint()
+    ..color = color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  canvas.drawLine(Offset(c.dx - 8, c.dy - 5), Offset(c.dx, c.dy + 4), p);
+  canvas.drawLine(Offset(c.dx + 8, c.dy - 5), Offset(c.dx, c.dy + 4), p);
+}
+
+bool _ewLegendDegenerate(Size size) =>
+    size.width <= 0 ||
+    size.height <= 0 ||
+    !size.width.isFinite ||
+    !size.height.isFinite;
+
+// ── Frame 1: the core object — one word cycling through languages ──────────
+void _legendCycle(Canvas canvas, Size size) {
+  if (_ewLegendDegenerate(size)) return;
+  _ewLegendBackdrop(canvas, size);
+  final c = Offset(size.width / 2, size.height * 0.45);
+  _ewLegendWheels(canvas, size, c);
+  // The same word ("water") in three of its forms, mid-cycle: faded previous,
+  // bright current, faded next — with chevrons showing the flow.
+  _ewLegendText(canvas, 'agua', Offset(c.dx, c.dy - size.height * 0.24), 12,
+      Colors.white.withValues(alpha: 0.30));
+  _ewLegendChevron(canvas, Offset(c.dx, c.dy - size.height * 0.14),
+      _ewLegendPurpleLight.withValues(alpha: 0.5));
+  _ewLegendText(
+    canvas,
+    'mizu (水)',
+    c,
+    21,
+    Colors.white,
+    weight: FontWeight.bold,
+    shadows: [
+      Shadow(
+          color: _ewLegendPurple.withValues(alpha: 0.8), blurRadius: 14),
+    ],
+  );
+  _ewLegendChevron(canvas, Offset(c.dx, c.dy + size.height * 0.13),
+      _ewLegendPurpleLight.withValues(alpha: 0.5));
+  _ewLegendText(canvas, 'wasser', Offset(c.dx, c.dy + size.height * 0.23), 12,
+      Colors.white.withValues(alpha: 0.30));
+  _ewLegendText(canvas, '4 / 10', Offset(c.dx, c.dy + size.height * 0.33), 9,
+      Colors.white24);
+}
+
+// ── Frame 2: the verb + how to score — type the English meaning ────────────
+void _legendType(Canvas canvas, Size size) {
+  if (_ewLegendDegenerate(size)) return;
+  _ewLegendBackdrop(canvas, size, flash: 1);
+  _ewLegendText(
+    canvas,
+    'agua',
+    Offset(size.width / 2, size.height * 0.24),
+    19,
+    Colors.white,
+    weight: FontWeight.bold,
+    shadows: [
+      Shadow(
+          color: _ewLegendPurple.withValues(alpha: 0.8), blurRadius: 14),
+    ],
+  );
+  _ewLegendChevron(
+      canvas, Offset(size.width / 2, size.height * 0.40), _ewLegendGold);
+  final fieldC = Offset(size.width / 2, size.height * 0.57);
+  _ewLegendField(canvas, size, fieldC, 'water', correct: true);
+  // Gold burst particles, like the live correct-answer juice.
+  final rng = Random(7);
+  for (int i = 0; i < 12; i++) {
+    final a = i / 12 * 2 * pi;
+    final d = size.shortestSide * (0.20 + rng.nextDouble() * 0.14);
+    canvas.drawCircle(
+      fieldC + Offset(cos(a), sin(a)) * d,
+      1.5 + rng.nextDouble() * 2.5,
+      Paint()
+        ..color =
+            _ewLegendGold.withValues(alpha: 0.4 + rng.nextDouble() * 0.5),
+    );
+  }
+  _ewLegendText(canvas, '+10  + time bonus',
+      Offset(size.width / 2, size.height * 0.80), 11, _ewLegendGold,
+      weight: FontWeight.bold);
+}
+
+// ── Frame 3: the help — hints arrive while the word timer drains ───────────
+void _legendHints(Canvas canvas, Size size) {
+  if (_ewLegendDegenerate(size)) return;
+  _ewLegendBackdrop(canvas, size);
+  _ewLegendTimerBar(canvas, size, size.height * 0.22, 0.42, _ewLegendAmber);
+  _ewLegendText(
+    canvas,
+    'kokoro (心)',
+    Offset(size.width / 2, size.height * 0.42),
+    19,
+    Colors.white,
+    weight: FontWeight.bold,
+    shadows: [
+      Shadow(
+          color: _ewLegendPurple.withValues(alpha: 0.8), blurRadius: 14),
+    ],
+  );
+  _ewLegendChip(canvas, Offset(size.width * 0.35, size.height * 0.64), 'Body');
+  _ewLegendChip(canvas, Offset(size.width * 0.64, size.height * 0.64), 'H _ _ _',
+      bright: true);
+  _ewLegendText(canvas, 'hints cost your time bonus',
+      Offset(size.width / 2, size.height * 0.80), 9, Colors.white38);
+}
+
+// ── Frame 4: the danger + escalation — timeout scores zero, pace rises ─────
+void _legendTimeout(Canvas canvas, Size size) {
+  if (_ewLegendDegenerate(size)) return;
+  _ewLegendBackdrop(canvas, size);
+  _ewLegendTimerBar(canvas, size, size.height * 0.22, 0.10, _ewLegendRed);
+  _ewLegendText(canvas, 'zvezda', Offset(size.width / 2, size.height * 0.42),
+      19, Colors.white70,
+      weight: FontWeight.bold);
+  _ewLegendText(canvas, 'TOO SLOW · 0 points',
+      Offset(size.width / 2, size.height * 0.60), 12, _ewLegendRed,
+      weight: FontWeight.bold, letterSpacing: 1);
+  // Speed chevrons: every round the languages cycle faster.
+  final cy = size.height * 0.78;
+  for (int i = 0; i < 3; i++) {
+    final cx = size.width * 0.44 + i * 13;
+    final p = Paint()
+      ..color = _ewLegendPurpleLight.withValues(alpha: 0.35 + i * 0.25)
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(Offset(cx - 4, cy - 6), Offset(cx + 4, cy), p);
+    canvas.drawLine(Offset(cx + 4, cy), Offset(cx - 4, cy + 6), p);
+  }
+  _ewLegendText(canvas, 'faster every round',
+      Offset(size.width / 2, size.height * 0.88), 9, Colors.white38);
+}
+
+/// The visual manual for Everything Everywhere — wired into the registry spec.
+final List<LegendFrame> everythingLegendFrames = [
+  const LegendFrame(
+      caption: 'Watch one word cycle through many languages',
+      paint: _legendCycle),
+  const LegendFrame(
+      caption: 'Type its English meaning — answer fast for bonus',
+      paint: _legendType),
+  const LegendFrame(
+      caption: 'Stuck? Hints arrive: category, then first letter',
+      paint: _legendHints),
+  const LegendFrame(
+      caption: 'Beat the bar — timeout scores zero and pace quickens',
+      paint: _legendTimeout),
+];

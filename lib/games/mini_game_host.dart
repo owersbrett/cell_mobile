@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../party/party_models.dart';
 import '../telemetry/cell_telemetry.dart';
 import '../theme/potatuhs.dart';
+import 'attract/auto_tapper.dart';
 import 'leaderboard/leaderboard_models.dart';
 import 'leaderboard/leaderboard_panel.dart';
 import 'leaderboard/score_history_store.dart';
@@ -34,15 +37,41 @@ class MiniGameHost extends StatefulWidget {
   /// badge during play so the feature is testable even before a game wires it.
   final bool disruption;
 
+  /// Attract mode: the host runs the game hands-free — auto-starts past the
+  /// intro after a settle beat, drives a synthetic-tap bot at 250ms during
+  /// play, and (when [onAutoAdvance] is set) calls it a few seconds after the
+  /// results land so the caller can move to the next game. Flipping this back
+  /// to false mid-round stops the bot in place so a human can take over the
+  /// live round. See `AttractScreen`.
+  final bool autoPlay;
+
+  /// Called by attract mode once a round's results have settled, so the caller
+  /// (the attract loop) can advance to the next game. Ignored when [autoPlay]
+  /// is false.
+  final VoidCallback? onAutoAdvance;
+
+  /// Quick-hop between catalog games (the triage flow): when set, the intro
+  /// and results screens show a `◀ hopLabel ▶` strip; the arrows call this
+  /// with -1 / +1 and the CALLER swaps the spec (rebuild the host with a new
+  /// key). Never shown during countdown/play.
+  final void Function(int delta)? onHopGame;
+
+  /// The strip's label, e.g. `12/126` (current game / total games).
+  final String? hopLabel;
+
   const MiniGameHost({
-    Key? key,
+    super.key,
     required this.spec,
     required this.onExit,
     this.playerLabel,
     this.onComplete,
     this.opponentCount = 0,
     this.disruption = false,
-  }) : super(key: key);
+    this.autoPlay = false,
+    this.onAutoAdvance,
+    this.onHopGame,
+    this.hopLabel,
+  });
 
   bool get isParty => onComplete != null;
 
@@ -70,6 +99,25 @@ class _MiniGameHostState extends State<MiniGameHost> {
   Timer? _wrapTimer;
   int _wrapCount = 3; // 3 → 2 → 1 → 0(=STOP) → results
   bool _resultsReady = false;
+
+  // ── Attract mode (autoplay) ──────────────────────────────────────────────
+  // Marks the game surface so the bot can target taps inside it (below the HUD,
+  // never on the exit button / overlays which live above it).
+  final GlobalKey _gameAreaKey = GlobalKey();
+  final AutoTapper _tapper = AutoTapper();
+  final Random _botRng = Random();
+  Timer? _botTimer; // fires a synthetic action every 250ms during play
+  Timer? _autoIntroTimer; // settle beat, then auto-start past the intro
+  Timer? _autoAdvanceTimer; // dwell on results, then advance to the next game
+  bool _botBusy = false; // guards the async (pixel-capture) tick from re-entry
+
+  // Anti-stuck watchdog: if a round makes zero forward progress (score AND
+  // clock both frozen — e.g. a blocking teaching card the bot can't dismiss),
+  // force the round to end so the attract loop never hangs on camera.
+  int _wdScore = 0;
+  Duration _wdRemaining = Duration.zero;
+  int _wdStallTicks = 0;
+  static const _wdStallLimit = 40; // 40 × 250ms ≈ 10s of no progress
 
   /// Generate opponent scores from the configured character roster, scaled to
   /// the game's realistic human ceiling so the comparison feels fair, and tuned
@@ -110,6 +158,159 @@ class _MiniGameHostState extends State<MiniGameHost> {
     _session.hostReset();
     _session.addListener(_onSessionChanged);
     if (!widget.isParty) _loadBest();
+    if (widget.autoPlay) _armAutoIntro();
+  }
+
+  /// Attract mode: let the intro card breathe (rest/settle during the screen
+  /// transition), then auto-start the round.
+  void _armAutoIntro() {
+    _autoIntroTimer?.cancel();
+    _autoIntroTimer = Timer(const Duration(milliseconds: 1300), () {
+      if (mounted && _session.phase == MiniGamePhase.intro) _startCountdown();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant MiniGameHost old) {
+    super.didUpdateWidget(old);
+    // Ejected mid-round (autoPlay armed → disarmed on the SAME game): stop the
+    // bot and any pending auto-advance so the live round is handed to the human
+    // to play out. Re-arming is done by remounting a fresh host, not here.
+    if (old.autoPlay && !widget.autoPlay) {
+      _botTimer?.cancel();
+      _botTimer = null;
+      _autoIntroTimer?.cancel();
+      _autoAdvanceTimer?.cancel();
+      _autoAdvanceTimer = null;
+    }
+  }
+
+  static const _botTickMs = 250;
+  int _sinceActMs = 0; // time accumulated toward the next paced autopilot move
+
+  void _startBot() {
+    _botTimer?.cancel();
+    _wdScore = _session.score;
+    _wdRemaining = _session.remaining;
+    _wdStallTicks = 0;
+    _sinceActMs = 0;
+    _botTimer = Timer.periodic(const Duration(milliseconds: _botTickMs), (_) {
+      if (!mounted || !_session.isRunning) return;
+      if (_checkStall()) return; // watchdog force-ended the round (runs every tick)
+      // Per-game pacing: quizzes buffer to ~1s so answering isn't superhuman;
+      // action games leave the interval at zero and act every tick.
+      _sinceActMs += _botTickMs;
+      if (_sinceActMs < _session.autoPilotInterval.inMilliseconds) return;
+      _sinceActMs = 0;
+      _botTick();
+    });
+  }
+
+  /// Returns true if the round was force-ended for lack of progress. A stall =
+  /// score AND remaining-time both unchanged (a game that isn't advancing and
+  /// whose clock is frozen — a blocking modal the bot can't clear).
+  bool _checkStall() {
+    if (_session.score != _wdScore || _session.remaining != _wdRemaining) {
+      _wdScore = _session.score;
+      _wdRemaining = _session.remaining;
+      _wdStallTicks = 0;
+      return false;
+    }
+    if (++_wdStallTicks < _wdStallLimit) return false;
+    _session.endEarly(); // → _onSessionChanged → _finish → auto-advance
+    return true;
+  }
+
+  /// One hands-free action. FIRST choice: the game's OWN autopilot — it knows
+  /// its state and drives itself competently (the per-game reference). Only when
+  /// a game hasn't shipped one yet do we fall back to the generic driver: prefer
+  /// the brightest on-screen target, else a random tap/drag. Async because the
+  /// pixel capture is; guarded against re-entry.
+  Future<void> _botTick() async {
+    // Per-game autopilot wins — no guessing, no synthetic taps needed.
+    final hook = _session.autoPilot;
+    if (hook != null) {
+      hook();
+      return;
+    }
+    if (_botBusy) return;
+    _botBusy = true;
+    try {
+      final rect = _gameAreaRect();
+      if (rect == null) return;
+      Offset? target;
+      if (_botRng.nextDouble() < 0.8) target = await _brightestPoint();
+      if (!mounted || !_session.isRunning) return;
+      if (target != null && rect.contains(target)) {
+        _tapper.tap(target);
+      } else {
+        _tapper.act(rect); // random tap / occasional drag for motion
+      }
+    } finally {
+      _botBusy = false;
+    }
+  }
+
+  /// Global (logical-pixel) rect of the live game surface, slightly inset so the
+  /// bot's taps land cleanly inside it. Null until the game area is laid out.
+  Rect? _gameAreaRect() {
+    final box = _gameAreaKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    return (box.localToGlobal(Offset.zero) & box.size).deflate(12);
+  }
+
+  /// Captures the game surface at low resolution and returns the global position
+  /// of its brightest cluster (with a little jitter), or null if the screen is
+  /// essentially dark or the capture isn't available. Cheap: an ~1–2k pixel scan
+  /// a few times a second. Only used by the generic fallback tapper (a game with
+  /// no per-game autopilot).
+  Future<Offset?> _brightestPoint() async {
+    try {
+      final boundary =
+          _gameAreaKey.currentContext?.findRenderObject();
+      if (boundary is! RenderRepaintBoundary || boundary.debugNeedsPaint) {
+        return null;
+      }
+      const ratio = 0.08;
+      final image = await boundary.toImage(pixelRatio: ratio);
+      final w = image.width, h = image.height;
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      image.dispose();
+      if (data == null || w == 0 || h == 0) return null;
+      final bytes = data.buffer.asUint8List();
+      // Pass 1: peak luminance. Pass 2: centroid of the brightest band — this
+      // lands on a large filled button (many bright pixels) rather than on thin
+      // bright text (a title), which a single-brightest-pixel pick would miss.
+      var peak = 0.0;
+      for (var i = 0; i < w * h; i++) {
+        final o = i * 4;
+        final lum =
+            0.2126 * bytes[o] + 0.7152 * bytes[o + 1] + 0.0722 * bytes[o + 2];
+        if (lum > peak) peak = lum;
+      }
+      if (peak < 40) return null; // essentially dark → no clear target
+      final threshold = peak * 0.85;
+      var sumX = 0.0, sumY = 0.0, count = 0;
+      for (var i = 0; i < w * h; i++) {
+        final o = i * 4;
+        final lum =
+            0.2126 * bytes[o] + 0.7152 * bytes[o + 1] + 0.0722 * bytes[o + 2];
+        if (lum >= threshold) {
+          sumX += i % w;
+          sumY += i ~/ w;
+          count++;
+        }
+      }
+      if (count == 0) return null;
+      final localX = (sumX / count + 0.5) / ratio;
+      final localY = (sumY / count + 0.5) / ratio;
+      final global = boundary.localToGlobal(Offset(localX, localY));
+      return global +
+          Offset((_botRng.nextDouble() - 0.5) * 18,
+              (_botRng.nextDouble() - 0.5) * 18);
+    } catch (_) {
+      return null; // capture unsupported / transient failure → random fallback
+    }
   }
 
   Future<void> _loadBest() async {
@@ -143,11 +344,21 @@ class _MiniGameHostState extends State<MiniGameHost> {
   void _begin() {
     // Count this play into the shared hot-potato-games counter (Sessions KPI).
     // Fire-and-forget; never blocks or throws. See docs/SESSIONS_COUNTER.md.
-    CellTelemetry.recordMiniGamePlay(widget.spec.id);
+    // Attract-mode (autoPlay) is a bot loop — it must NOT inflate the Sessions
+    // KPI (the Honest-Sessions gate: a session is a real, non-Brett human).
+    if (!widget.autoPlay) CellTelemetry.recordMiniGamePlay(widget.spec.id);
     _endsAt = DateTime.now()
         .add(Duration(seconds: widget.spec.durationSeconds));
     _appliedBonus = Duration.zero;
     _session.hostSetPhase(MiniGamePhase.playing);
+    if (widget.autoPlay) _startBot();
+    _runClock();
+  }
+
+  /// Starts the 100ms round clock against [_endsAt]. Used by [_begin] and by
+  /// [_resume] (which first rebases [_endsAt] off the remaining time).
+  void _runClock() {
+    _clock?.cancel();
     _clock = Timer.periodic(const Duration(milliseconds: 100), (_) {
       final extra = _session.bonusTime - _appliedBonus;
       if (extra > Duration.zero) {
@@ -163,14 +374,57 @@ class _MiniGameHostState extends State<MiniGameHost> {
     });
   }
 
+  // ── Pause (solo human play) ───────────────────────────────────────────────
+  bool _paused = false;
+  Duration _pausedRemaining = Duration.zero;
+
+  /// Freezes the round: stops the clock, remembers the time left, and flips the
+  /// session out of `isRunning` so the game halts its own logic. A modal shows
+  /// over the top with Resume / Quit. Only meaningful during live play.
+  void _pause() {
+    if (_paused || !_session.isRunning) return;
+    _pausedRemaining = _session.remaining;
+    _clock?.cancel();
+    _clock = null;
+    setState(() => _paused = true);
+    _session.hostSetPaused(true); // isRunning → false; games stop advancing
+  }
+
+  /// Resumes: rebases the clock off the remembered remaining time and lets the
+  /// game run again.
+  void _resume() {
+    if (!_paused) return;
+    _session.hostSetPaused(false);
+    _endsAt = DateTime.now().add(_pausedRemaining);
+    _runClock();
+    setState(() => _paused = false);
+  }
+
   void _finish({bool fromSession = false}) {
     _clock?.cancel();
     _clock = null;
+    _botTimer?.cancel();
+    _botTimer = null;
     _session.hostTick(Duration.zero);
     if (!fromSession) _session.hostSetPhase(MiniGamePhase.finished);
     if (!widget.isParty) _recordRun();
     _generateOpponents();
     _startWrapUp();
+    // Attract mode: dwell on the score payoff (the wind-down + a beat of the
+    // results screen — good b-roll), then continue hands-free. Solo attract uses
+    // onAutoAdvance (next game); a party round has no auto-advance hook, so we
+    // auto-submit the score via onComplete to keep the board loop moving.
+    if (widget.autoPlay) {
+      _autoAdvanceTimer?.cancel();
+      _autoAdvanceTimer = Timer(const Duration(milliseconds: 4200), () {
+        if (!mounted) return;
+        if (widget.onAutoAdvance != null) {
+          widget.onAutoAdvance!();
+        } else if (widget.isParty) {
+          widget.onComplete!(_session.score);
+        }
+      });
+    }
     setState(() {});
   }
 
@@ -241,9 +495,62 @@ class _MiniGameHostState extends State<MiniGameHost> {
     _clock?.cancel();
     _countdownTimer?.cancel();
     _wrapTimer?.cancel();
+    _botTimer?.cancel();
+    _autoIntroTimer?.cancel();
+    _autoAdvanceTimer?.cancel();
     _session.removeListener(_onSessionChanged);
     _session.dispose();
     super.dispose();
+  }
+
+  /// Overlays the quick-hop strip (`◀ 12/126 ▶`) on a rest screen (intro /
+  /// results). No-op when the caller didn't wire [MiniGameHost.onHopGame].
+  Widget _withHopStrip(Widget screen) {
+    final hop = widget.onHopGame;
+    if (hop == null) return screen;
+    Widget arrow(IconData icon, int delta) => GestureDetector(
+          onTap: () => hop(delta),
+          behavior: HitTestBehavior.opaque,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            child: Icon(icon, size: 20, color: Colors.white70),
+          ),
+        );
+    return Stack(
+      children: [
+        screen,
+        Positioned(
+          top: 8,
+          right: 12,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0x66000000),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white24),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                arrow(Icons.chevron_left_rounded, -1),
+                if (widget.hopLabel != null)
+                  Text(
+                    widget.hopLabel!,
+                    style: const TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.5,
+                      color: Colors.white70,
+                    ),
+                  ),
+                arrow(Icons.chevron_right_rounded, 1),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -270,21 +577,36 @@ class _MiniGameHostState extends State<MiniGameHost> {
           builder: (context, gameChild) {
             switch (_session.phase) {
               case MiniGamePhase.intro:
-                return _IntroView(
+                return _withHopStrip(_IntroView(
                   spec: spec,
                   playerLabel: widget.playerLabel,
                   bestScore: widget.isParty ? null : _bestScore,
                   onStart: _startCountdown,
                   onExit: widget.onExit,
-                );
+                ));
               case MiniGamePhase.countdown:
               case MiniGamePhase.playing:
                 return Stack(
                   children: [
                     Column(
                       children: [
-                        _GameHud(session: _session),
-                        Expanded(child: gameChild!),
+                        _GameHud(
+                          session: _session,
+                          // Solo human play only — hidden in party rounds and in
+                          // attract mode (the autopilot owns the round).
+                          onPause: (!widget.isParty &&
+                                  !widget.autoPlay &&
+                                  _session.isRunning)
+                              ? _pause
+                              : null,
+                        ),
+                        // RepaintBoundary so attract mode's generic fallback
+                        // tapper can capture the game surface's pixels to aim at
+                        // the brightest target. Wraps ONLY the game area.
+                        Expanded(
+                          child: RepaintBoundary(
+                              key: _gameAreaKey, child: gameChild!),
+                        ),
                       ],
                     ),
                     if (_session.phase == MiniGamePhase.countdown)
@@ -329,29 +651,13 @@ class _MiniGameHostState extends State<MiniGameHost> {
                           ),
                         ),
                       ),
-                    // Always-available quit. In a party round the board overlays
-                    // its own SKIP/forfeit, so the in-game quit is for solo
-                    // Explore play (leave back to the scale).
-                    if (!widget.isParty)
-                      Positioned(
-                        top: 6,
-                        left: 10,
-                        child: SafeArea(
-                          child: GestureDetector(
-                            onTap: widget.onExit,
-                            child: Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.55),
-                                borderRadius: BorderRadius.circular(10),
-                                border:
-                                    Border.all(color: Colors.white24),
-                              ),
-                              child: const Icon(Icons.close,
-                                  color: Colors.white70, size: 20),
-                            ),
-                          ),
-                        ),
+                    // Pause modal (solo human play). Freezes the round + game;
+                    // Resume continues, Quit exits. See _pause/_resume.
+                    if (_paused)
+                      _PauseOverlay(
+                        accent: spec.accent,
+                        onResume: _resume,
+                        onQuit: widget.onExit,
                       ),
                   ],
                 );
@@ -366,7 +672,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
                     accent: spec.accent,
                   );
                 }
-                return _ResultsView(
+                return _withHopStrip(_ResultsView(
                   spec: spec,
                   score: _session.score,
                   playerLabel: widget.playerLabel,
@@ -382,7 +688,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
                       : null,
                   onPlayAgain: widget.isParty ? null : _playAgain,
                   onExit: widget.onExit,
-                );
+                ));
             }
           },
         ),
@@ -616,7 +922,12 @@ class _IntroView extends StatelessWidget {
 
 class _GameHud extends StatelessWidget {
   final MiniGameSession session;
-  const _GameHud({required this.session});
+
+  /// Pause control, shown to the LEFT of the game name. Null hides it (attract
+  /// mode, where the autopilot owns the round).
+  final VoidCallback? onPause;
+
+  const _GameHud({required this.session, this.onPause});
 
   @override
   Widget build(BuildContext context) {
@@ -634,13 +945,29 @@ class _GameHud extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                spec.name,
-                style: const TextStyle(
-                    fontFamily: _kFont,
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white54),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (onPause != null) ...[
+                    GestureDetector(
+                      onTap: onPause,
+                      behavior: HitTestBehavior.opaque,
+                      child: const Padding(
+                        padding: EdgeInsets.only(right: 8, top: 2, bottom: 2),
+                        child: Icon(Icons.pause_rounded,
+                            color: Colors.white54, size: 20),
+                      ),
+                    ),
+                  ],
+                  Text(
+                    spec.name,
+                    style: const TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white54),
+                  ),
+                ],
               ),
               Text(
                 '${session.score} ${spec.scoreUnit}',
@@ -874,6 +1201,72 @@ class _CosmicBurstPainter extends CustomPainter {
   @override
   bool shouldRepaint(_CosmicBurstPainter old) =>
       old.t != t || old.accent != accent;
+}
+
+/// Full-screen PAUSED modal (solo human play). The host has already frozen the
+/// clock and the game; this just offers Resume / Quit.
+class _PauseOverlay extends StatelessWidget {
+  final Color accent;
+  final VoidCallback onResume;
+  final VoidCallback onQuit;
+  const _PauseOverlay({
+    required this.accent,
+    required this.onResume,
+    required this.onQuit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.82),
+        alignment: Alignment.center,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.pause_circle_filled, color: accent, size: 56),
+              const SizedBox(height: 12),
+              Text(
+                'PAUSED',
+                style: TextStyle(
+                  fontFamily: Potatuhs.displayFont,
+                  fontSize: 30,
+                  color: Colors.white,
+                  letterSpacing: 3,
+                  shadows: [Shadow(color: accent, blurRadius: 18)],
+                ),
+              ),
+              const SizedBox(height: 28),
+              _BigButton(label: 'RESUME', color: accent, onTap: onResume),
+              const SizedBox(height: 12),
+              GestureDetector(
+                onTap: onQuit,
+                child: Container(
+                  height: 52,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: const Center(
+                    child: Text('QUIT',
+                        style: TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white70,
+                            letterSpacing: 2)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// A generated AI opponent and the score it posted this round.

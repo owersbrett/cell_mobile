@@ -175,12 +175,51 @@ class _CirculateV2GameState extends State<CirculateV2Game>
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
+    // ATTRACT autopilot: spend the reserve on the neediest organ, recharge at
+    // the lungs before running dry (see [MiniGameSession.autoPilot]).
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  /// One competent attract move per call (~every 250ms). Deterministic:
+  /// if the reserve is empty we can't deliver → recharge at the lungs; else we
+  /// deliver an O₂ charge to the neediest organ that has dropped into the LOW
+  /// zone; with nothing urgent to feed we top the reserve back up for the
+  /// climbing demand. Reuses the same handlers a human tap fires, so it never
+  /// over-queues (recharge self-guards on [_recharging]).
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    // Neediest organ = the one with the least oxygen.
+    int? neediest;
+    var lowest = double.infinity;
+    for (var i = 0; i < _organs.length; i++) {
+      if (_organs[i].o2 < lowest) {
+        lowest = _organs[i].o2;
+        neediest = i;
+      }
+    }
+
+    // Can't deliver oxygen we don't have → refuel at the lungs.
+    if (_charges <= 0) {
+      _routeRecharge();
+      return;
+    }
+
+    // An organ that has fallen into the LOW-O₂ alarm band still needs a charge.
+    if (neediest != null && lowest < _lowO2) {
+      _routeDelivery(neediest);
+      return;
+    }
+
+    // Nothing urgent: keep the reserve topped for the surge to come.
+    if (_charges <= _rechargePrompt) _routeRecharge();
   }
 
   // Real organs of the systemic circuit, ordered by how soon they appear.
@@ -748,3 +787,215 @@ class _CirculateV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CirculateV2Painter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the SAME GameFx
+// primitives + palette the live game uses. The player meets the literal heart,
+// the countable O₂ reserve pips, an organ ring-gauge, the lungs refuel node and
+// the CODE RED surge here, before ever tapping.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The countable O₂ charge magazine above the heart — the hero read, drawn the
+/// same way the live [_CirculateV2Painter._drawCharges] draws it.
+void _legendReservePips(
+    Canvas canvas, Offset heart, double r, int charges, int cap) {
+  const pipR = 8.0;
+  const gap = 9.0;
+  final totalW = cap * (pipR * 2) + (cap - 1) * gap;
+  final top = heart.dy - r - 30;
+  var x = heart.dx - totalW / 2 + pipR;
+  for (var i = 0; i < cap; i++) {
+    final c = Offset(x, top);
+    if (i < charges) {
+      GameFx.orb(canvas, c, pipR, _oxy, glow: 0.6, specular: false);
+    } else {
+      canvas.drawCircle(
+          c, pipR, Paint()..color = Colors.white.withValues(alpha: 0.10));
+      canvas.drawCircle(
+          c,
+          pipR,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.3
+            ..color = _oxy.withValues(alpha: 0.30));
+    }
+    x += pipR * 2 + gap;
+  }
+  GameFx.text(canvas, 'O₂ RESERVE  $charges/$cap', Offset(heart.dx, top - 18),
+      12, Colors.white.withValues(alpha: 0.9),
+      weight: FontWeight.w800);
+}
+
+/// One organ with its O₂ ring gauge — mirrors [_CirculateV2Painter._drawOrgan].
+void _legendOrgan(Canvas canvas, Offset c, double o2, String name,
+    {bool low = false, double rr = 18}) {
+  final base = Color.lerp(_danger, _good, o2.clamp(0.0, 1.0))!;
+  if (low) {
+    canvas.drawCircle(
+        c, rr + 10, Paint()..color = _danger.withValues(alpha: 0.16));
+  }
+  GameFx.orb(canvas, c, rr, base, glow: low ? 0.7 : 0.5);
+  final sweep = o2.clamp(0.0, 1.0) * 2 * math.pi;
+  canvas.drawArc(
+    Rect.fromCircle(center: c, radius: rr + 4),
+    -math.pi / 2,
+    sweep,
+    false,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = (low ? _danger : _good).withValues(alpha: 0.85),
+  );
+  GameFx.text(canvas, name, c.translate(0, rr + 13), 9.5,
+      Colors.white.withValues(alpha: 0.80),
+      weight: FontWeight.w700);
+  if (low) {
+    GameFx.text(canvas, 'LOW O₂', c.translate(0, rr + 25), 8.5,
+        _danger.withValues(alpha: 0.9),
+        weight: FontWeight.w800);
+  }
+}
+
+void _legendHeart(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final heart = Offset(w * 0.5, h * 0.62);
+  final r = math.min(w, h) * 0.13;
+  // Heart reddens with a full reserve (oxygenated).
+  final bloodCol = Color.lerp(_deoxy, _oxy, 3 / 5)!;
+  GameFx.orb(canvas, heart, r, bloodCol, glow: 0.9);
+  GameFx.text(canvas, 'HEART', heart.translate(0, r + 12), 11,
+      Colors.white.withValues(alpha: 0.78),
+      weight: FontWeight.w800);
+  _legendReservePips(canvas, heart, r, 3, 5);
+}
+
+void _legendDeliver(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final heart = Offset(w * 0.26, h * 0.60);
+  final organ = Offset(w * 0.74, h * 0.42);
+  final r = math.min(w, h) * 0.11;
+  // Artery to a LOW organ (danger-tinted, as the game draws low arteries).
+  canvas.drawLine(
+      heart,
+      organ,
+      Paint()
+        ..color = _danger.withValues(alpha: 0.32)
+        ..strokeWidth = 2);
+  // A red oxygenated pulse travelling heart → organ.
+  final pos = Offset.lerp(heart, organ, 0.55)!;
+  canvas.drawCircle(
+      pos,
+      7,
+      Paint()
+        ..color = _oxy.withValues(alpha: 0.30)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5));
+  canvas.drawCircle(pos, 4.5, Paint()..color = _oxy);
+  // The heart pays a charge (−1 pop).
+  GameFx.orb(canvas, heart, r, Color.lerp(_deoxy, _oxy, 0.6)!, glow: 0.9);
+  GameFx.text(canvas, 'HEART', heart.translate(0, r + 12), 10,
+      Colors.white.withValues(alpha: 0.78),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, '−1', heart.translate(0, -r - 16), 15, _oxy,
+      weight: FontWeight.w800, glow: 0.4);
+  // The rescued low organ + its score pop.
+  _legendOrgan(canvas, organ, 0.14, 'ORGAN', low: true, rr: r);
+  GameFx.text(canvas, '+18', organ.translate(0, -r - 14), 16, _good,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+void _legendRecharge(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final heart = Offset(w * 0.5, h * 0.74);
+  final lungs = Offset(w * 0.5, h * 0.28);
+  final r = math.min(w, h) * 0.11;
+  // Pulmonary vessel heart ↔ lungs, lit (blue, the recharge half of the loop).
+  canvas.drawLine(
+      heart,
+      lungs,
+      Paint()
+        ..color = _deoxy.withValues(alpha: 0.55)
+        ..strokeWidth = 3);
+  // A blue deoxygenated pulse travelling heart → lungs to reload.
+  final pos = Offset.lerp(heart, lungs, 0.5)!;
+  canvas.drawCircle(
+      pos,
+      7,
+      Paint()
+        ..color = _deoxy.withValues(alpha: 0.30)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5));
+  canvas.drawCircle(pos, 4.5, Paint()..color = _deoxy);
+  // The lungs — the big persistent REFUEL node.
+  canvas.drawCircle(
+      lungs,
+      30,
+      Paint()
+        ..color = _deoxy.withValues(alpha: 0.30)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
+  GameFx.orb(canvas, lungs, 22, _deoxy, glow: 0.9);
+  GameFx.text(canvas, '+O₂', lungs, 11, Colors.white.withValues(alpha: 0.9),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'LUNGS', lungs.translate(0, -34), 10,
+      Colors.white.withValues(alpha: 0.80),
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'TAP TO RECHARGE', lungs.translate(0, 36), 10, _oxy,
+      weight: FontWeight.w800, glow: 0.4);
+  // The heart, run dry (deoxygenated blue, 0/5 reserve).
+  GameFx.orb(canvas, heart, r, _deoxy, glow: 0.8);
+  GameFx.text(canvas, 'HEART', heart.translate(0, r + 12), 10,
+      Colors.white.withValues(alpha: 0.78),
+      weight: FontWeight.w800);
+  _legendReservePips(canvas, heart, r, 0, 5);
+}
+
+void _legendCodeRed(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (!w.isFinite || !h.isFinite || w <= 0 || h <= 0) return;
+  final heart = Offset(w * 0.28, h * 0.60);
+  final r = math.min(w, h) * 0.10;
+  final organs = [Offset(w * 0.68, h * 0.42), Offset(w * 0.80, h * 0.74)];
+  const names = ['Brain', 'Muscle'];
+  const o2s = [0.10, 0.20];
+  const pops = ['+40', '+30'];
+  // The CODE RED surge banner.
+  GameFx.text(canvas, 'CODE RED ×2', Offset(w * 0.5, h * 0.16), 20,
+      Potatuhs.orange,
+      display: true, weight: FontWeight.w800, glow: 0.7);
+  for (final o in organs) {
+    canvas.drawLine(
+        heart,
+        o,
+        Paint()
+          ..color = _danger.withValues(alpha: 0.32)
+          ..strokeWidth = 2);
+  }
+  GameFx.orb(canvas, heart, r, Color.lerp(_deoxy, _oxy, 0.4)!, glow: 0.9);
+  GameFx.text(canvas, 'HEART', heart.translate(0, r + 12), 10,
+      Colors.white.withValues(alpha: 0.78),
+      weight: FontWeight.w800);
+  for (var i = 0; i < organs.length; i++) {
+    _legendOrgan(canvas, organs[i], o2s[i], names[i], low: true, rr: r * 0.9);
+    GameFx.text(canvas, pops[i], organs[i].translate(0, -r - 12), 15,
+        Potatuhs.orange,
+        weight: FontWeight.w800, glow: 0.4);
+  }
+}
+
+/// The visual manual for Circulate v2 — wired into the registry spec.
+final List<LegendFrame> circulateV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Watch the heart’s O₂ reserve — 5 countable charges',
+      paint: _legendHeart),
+  const LegendFrame(
+      caption: 'Tap a LOW organ to deliver O₂: −1 charge, big points',
+      paint: _legendDeliver),
+  const LegendFrame(
+      caption: 'Reserve dry? Tap the LUNGS to recharge to full',
+      paint: _legendRecharge),
+  const LegendFrame(
+      caption: 'CODE RED: final 12s, demand spikes, every deliver ×2',
+      paint: _legendCodeRed),
+];

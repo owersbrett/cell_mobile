@@ -23,7 +23,7 @@
 // Self-contained module: framework deps only (mini_game.dart, fx.dart,
 // theme/potatuhs.dart). No import of any other game.
 //
-// PERFORMANCE: ONE AnimationController ticks the whole sim + fx + preview; one
+// PERFORMANCE: ONE Ticker drives the whole sim + fx + preview; one
 // CustomPainter draws everything. The widget subtree under CustomPaint stays
 // tiny (a few pills) to avoid the black-screen / jitter bug-class.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -31,6 +31,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
@@ -116,7 +117,8 @@ class BlackHoleGame extends StatefulWidget {
 
 class _BlackHoleGameState extends State<BlackHoleGame>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
+  late final Ticker _ticker;
+  Duration _lastElapsed = Duration.zero;
 
   Size _canvasSize = Size.zero;
   double _t = 0.0; // seconds since mount (atmosphere + schedule clock)
@@ -143,15 +145,67 @@ class _BlackHoleGameState extends State<BlackHoleGame>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(hours: 1))
-      ..addListener(_tick);
-    _ctrl.forward();
+    _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game can aim and fling itself. Registered here,
+    // dormant in normal play — the host only invokes it in hands-free mode.
+    // See [_autoStep]. Cleared on dispose.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent fling per host tick (~250ms). Acts only when the field is
+  /// IDLE (no star alive) so it never re-flings over a star that is still
+  /// riding. It births a star at a fixed radius from the black hole and
+  /// launches it TANGENTIALLY (perpendicular to the radial direction) at the
+  /// local circular-orbit speed — the dead centre of the stable band between
+  /// swallow (too slow) and escape (too fast, v_esc = √2·v_circ).
+  ///
+  /// The launch radius is pinned just OUTSIDE the ISCO (r = isco × 1.45): the
+  /// tightest orbit that still decays slowly, so the demo rides a high-
+  /// closeness, high-scoring orbit without being fed to the horizon on the
+  /// first lap (biased toward the faster/tighter, higher-scoring side while
+  /// staying stable). The circular speed uses the game's OWN gravity —
+  /// including the pseudo-relativistic close-in correction — so it is genuinely
+  /// circular here:  a = GM/r²·(1 + relK·horizon/r),  v_circ = √(a·r).
+  /// Reuses [_flingStar], the same spawn path a drag-release takes.
+  /// Deterministic; guarded on session.isRunning.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_canvasSize == Size.zero) return;
+    if (_aliveCount > 0) return; // a star is still riding — don't re-fling
+    if (_aliveCount >= _cap) return;
+
+    final c = _center;
+    final horizon = _horizon;
+    final r = _isco * 1.45; // just outside the ISCO — tight but stable
+    // Fixed radial direction (straight up); origin sits at radius r from the hole.
+    final origin = Offset(c.dx, c.dy - r);
+    final rel = origin - c; // radial vector (hole → star)
+    final rr = rel.distance;
+    if (rr <= horizon + _kStarRadius) return; // never birth inside the horizon
+
+    // Circular-orbit speed at r under the game's own (relativistic) gravity.
+    final a = (_kGM / (rr * rr)) * (1 + _kRelK * horizon / rr);
+    final vCirc = sqrt(a * rr);
+    // Unit tangent — perpendicular to the radial direction → a round orbit.
+    final tangent = Offset(-rel.dy, rel.dx) / rr;
+    _flingStar(origin, tangent * vCirc);
+  }
+
+  /// Births a star at [origin] with launch velocity [vel] — the shared spawn
+  /// path used by both a drag-release and the attract autopilot.
+  void _flingStar(Offset origin, Offset vel) {
+    setState(() {
+      _stars.add(_Star(
+          x: origin.dx, y: origin.dy, vx: vel.dx, vy: vel.dy, bornT: _t));
+    });
   }
 
   // ── derived geometry ───────────────────────────────────────────────────────
@@ -173,8 +227,13 @@ class _BlackHoleGameState extends State<BlackHoleGame>
   int get _aliveCount => _stars.where((s) => s.alive).length;
 
   // ── main tick ──────────────────────────────────────────────────────────────
-  void _tick() {
-    const dt = 1 / 60.0;
+  void _onTick(Duration elapsed) {
+    // REAL elapsed-time dt (clamped against stalls). A hardcoded 1/60 here
+    // turned every dropped frame into slow-motion gameplay — the sim must
+    // advance by wall-clock time no matter what the render rate does.
+    final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.04);
+    _lastElapsed = elapsed;
+    if (dt <= 0) return;
     if (!widget.session.isRunning) {
       // Keep the canvas alive behind the host's countdown / results.
       setState(() => _t += dt);
@@ -353,12 +412,8 @@ class _BlackHoleGameState extends State<BlackHoleGame>
       return;
     }
     final v = _launchVector();
-    setState(() {
-      _stars.add(_Star(
-          x: start.dx, y: start.dy, vx: v.dx, vy: v.dy, bornT: _t));
-      _dragStart = null;
-      _dragCurrent = null;
-    });
+    _clearDrag();
+    _flingStar(start, v);
   }
 
   void _clearDrag() {
@@ -511,7 +566,7 @@ class _BlackHoleGameState extends State<BlackHoleGame>
                     _aliveCount == 0
                         ? 'FLING A STAR INTO ORBIT'
                         : 'CLOSE = FAST = RISKY',
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontFamily: Potatuhs.displayFont,
                       fontSize: 12,
                       color: Potatuhs.gold,
@@ -532,6 +587,269 @@ class _BlackHoleGameState extends State<BlackHoleGame>
 const Color _kAccretionHot = Color(0xFFE16416); // brand orange, Doppler-bright
 const Color _kAccretionGold = Color(0xFFE1C916);
 const Color _kAccretionViolet = Color(0xFF8B5CF6);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the REAL components the
+// player meets in play (the same event-horizon + accretion-disk + star-orb
+// rendering the live painter uses), never abstract diagrams. Static + cheap.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The black hole itself: tilted accretion disk, lensing halo, pure-black void
+/// and the bright gold photon ring — a static twin of [_BlackHolePainter]'s
+/// `_paintAccretionDisk` + `_paintEventHorizon`.
+void _legendHole(Canvas canvas, Offset c, double horizon) {
+  final isco = horizon * _kIscoFactor;
+  canvas.save();
+  canvas.translate(c.dx, c.dy);
+  canvas.scale(1.0, 0.42); // foreshorten → disk tilt
+  final outer = isco * 3.4;
+  for (int i = 0; i < 5; i++) {
+    final rr = horizon * 1.2 + (outer - horizon) * (i / 5.0);
+    final hot = i / 4.0;
+    final col = Color.lerp(_kAccretionViolet, _kAccretionHot, hot)!;
+    canvas.drawCircle(
+      Offset.zero,
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = (10 - i * 1.4).clamp(2.0, 10.0)
+        ..color = col.withValues(alpha: 0.11 + 0.11 * hot)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+  }
+  canvas.drawCircle(
+    Offset.zero,
+    horizon * 1.45,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..color = _kAccretionGold.withValues(alpha: 0.38)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.restore();
+  // Lensing shadow halo.
+  canvas.drawCircle(
+    c,
+    horizon + 16,
+    Paint()
+      ..color = Colors.black.withValues(alpha: 0.55)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
+  );
+  // The void — pure black disk.
+  canvas.drawCircle(c, horizon, Paint()..color = Colors.black);
+  // Photon ring.
+  canvas.drawCircle(
+    c,
+    horizon + 1.5,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = _kAccretionGold.withValues(alpha: 0.9)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
+  );
+}
+
+/// A star orb — same [GameFx.orb] call the game uses; [closeness] 0..1 drives
+/// gold → Doppler-white (tighter = hotter).
+void _legendStar(Canvas canvas, Offset p, double closeness) {
+  final col = Color.lerp(Potatuhs.gold, Colors.white, closeness.clamp(0.0, 1.0))!;
+  GameFx.orb(canvas, p, _kStarRadius + 1, col,
+      glow: 1.6 + closeness, rim: Colors.white, specular: true);
+}
+
+/// A faint orbit ring guide.
+void _legendOrbit(Canvas canvas, Offset c, double r, Color color, double alpha) {
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = color.withValues(alpha: alpha),
+  );
+}
+
+/// A decaying spiral polyline (the star's trail bleeding inward), drawn in the
+/// game's airForce+white trail style.
+void _legendSpiral(
+    Canvas canvas, Offset c, double rStart, double rEnd, double turns) {
+  final path = Path();
+  const steps = 64;
+  for (int i = 0; i <= steps; i++) {
+    final f = i / steps;
+    final r = rStart + (rEnd - rStart) * f;
+    final ang = -pi / 2 + turns * 2 * pi * f;
+    final p = Offset(c.dx + cos(ang) * r, c.dy + sin(ang) * r);
+    i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round
+      ..color = Potatuhs.airForce.withValues(alpha: 0.32)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white.withValues(alpha: 0.6),
+  );
+}
+
+/// A bold aim arrow — the fling gesture, mirroring `_paintAim`.
+void _legendArrow(Canvas canvas, Offset from, Offset to, Color color) {
+  final d = to - from;
+  final len = d.distance;
+  if (len < 0.5) return;
+  final dir = d / len;
+  final p = Paint()
+    ..color = color.withValues(alpha: 0.95)
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round;
+  // Birth marker at the origin of the drag.
+  canvas.drawCircle(
+    from,
+    8,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = color.withValues(alpha: 0.8),
+  );
+  canvas.drawLine(from, to, p);
+  final perp = Offset(-dir.dy, dir.dx);
+  canvas.drawLine(to, to - dir * 11 + perp * 7, p);
+  canvas.drawLine(to, to - dir * 11 - perp * 7, p);
+}
+
+// ── Frame 1: the core object + the fling verb ───────────────────────────────
+void _legendFling(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 4 || h < 4) return;
+  final c = Offset(w * 0.5, h * 0.52);
+  final horizon = (min(w, h) * 0.12).clamp(14.0, 34.0);
+  final orbitR = horizon * 3.0;
+  _legendOrbit(canvas, c, orbitR, Potatuhs.airForce, 0.28);
+  _legendHole(canvas, c, horizon);
+  // Trajectory preview curving into the orbit ring.
+  for (int i = 0; i < 18; i++) {
+    final f = i / 18.0;
+    final ang = pi * 0.75 + f * pi * 0.9;
+    final rr = orbitR * (1.35 - 0.35 * f);
+    canvas.drawCircle(
+      Offset(c.dx + cos(ang) * rr, c.dy + sin(ang) * rr),
+      (2.6 - f * 1.6).clamp(0.8, 2.6),
+      Paint()..color = Potatuhs.gold.withValues(alpha: (1 - f) * 0.6),
+    );
+  }
+  // The star, riding the orbit.
+  _legendStar(canvas, Offset(c.dx + orbitR, c.dy - 2), 0.4);
+  // Fling gesture: birth marker + aim arrow from open space.
+  final birth = Offset(c.dx - orbitR * 1.15, c.dy + orbitR * 0.65);
+  _legendArrow(canvas, birth, birth + Offset(orbitR * 0.5, -orbitR * 0.55),
+      Potatuhs.gold);
+}
+
+// ── Frame 2: how to score — tighter orbits pay more ─────────────────────────
+void _legendScore(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 4 || h < 4) return;
+  final c = Offset(w * 0.5, h * 0.54);
+  final horizon = (min(w, h) * 0.12).clamp(14.0, 34.0);
+  final tightR = horizon * 2.0;
+  final wideR = horizon * 3.6;
+  _legendOrbit(canvas, c, wideR, Potatuhs.airForce, 0.22);
+  _legendOrbit(canvas, c, tightR, _kAccretionGold, 0.4);
+  _legendHole(canvas, c, horizon);
+  // Cool, distant star: dim gold, low payout.
+  _legendStar(canvas, Offset(c.dx - wideR, c.dy), 0.05);
+  GameFx.text(canvas, '+8', Offset(c.dx - wideR, c.dy - 20), 12,
+      Potatuhs.gold.withValues(alpha: 0.8),
+      display: true);
+  // Tight, hot star: Doppler-white, big payout.
+  _legendStar(canvas, Offset(c.dx + tightR, c.dy), 0.95);
+  GameFx.text(canvas, '+60', Offset(c.dx + tightR + 4, c.dy - 22), 15,
+      Potatuhs.gold,
+      display: true, glow: 0.5);
+}
+
+// ── Frame 3: the danger — swallowed or escaped, both lose the star ──────────
+void _legendDanger(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 4 || h < 4) return;
+  final c = Offset(w * 0.5, h * 0.52);
+  final horizon = (min(w, h) * 0.12).clamp(14.0, 34.0);
+  final escapeR = min(w, h) * 0.46;
+  // Faint escape boundary.
+  canvas.drawCircle(
+    c,
+    escapeR,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0
+      ..color = Colors.white.withValues(alpha: 0.14),
+  );
+  _legendHole(canvas, c, horizon);
+  // Left: a star spiralling past the horizon — swallowed.
+  _legendSpiral(canvas, c, horizon * 3.4, horizon + 3, 1.15);
+  _legendStar(canvas, Offset(c.dx - horizon * 3.4, c.dy - 6), 0.2);
+  GameFx.text(canvas, 'SWALLOWED', Offset(c.dx - horizon * 2.4, c.dy + horizon * 3.2),
+      10, _kAccretionViolet, display: true);
+  // Right: a star flung clear of the field — escaped.
+  final esc = Offset(c.dx + escapeR * 0.86, c.dy - escapeR * 0.34);
+  _legendStar(canvas, esc, 0.3);
+  _legendArrow(canvas, Offset(c.dx + horizon * 2.2, c.dy - horizon * 0.8), esc,
+      Potatuhs.airForce);
+  GameFx.text(canvas, 'ESCAPES', Offset(esc.dx - 6, esc.dy - 16), 10,
+      Potatuhs.airForce, display: true);
+}
+
+// ── Frame 4: late-game escalation — the gravitational kick ──────────────────
+void _legendKick(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 4 || h < 4) return;
+  final c = Offset(w * 0.5, h * 0.52);
+  final horizon = (min(w, h) * 0.12).clamp(14.0, 34.0);
+  final orbitR = horizon * 3.0;
+  // Violet whip-flash wash.
+  canvas.drawRect(Offset.zero & size,
+      Paint()..color = _kAccretionViolet.withValues(alpha: 0.10));
+  _legendOrbit(canvas, c, orbitR, Potatuhs.airForce, 0.22);
+  _legendHole(canvas, c, horizon);
+  final star = Offset(c.dx + orbitR * 0.72, c.dy - orbitR * 0.6);
+  _legendStar(canvas, star, 0.6);
+  // Jolt arrows kicking the star off its path in several directions.
+  const dirs = [
+    Offset(0.9, -0.5),
+    Offset(-0.3, -1.0),
+    Offset(1.0, 0.3),
+  ];
+  for (final d in dirs) {
+    final len = d.distance;
+    final u = d / len;
+    _legendArrow(canvas, star + u * 12, star + u * 30, _kAccretionViolet);
+  }
+}
+
+/// The visual manual for Black-Hole Heart — wired into the registry spec.
+final List<LegendFrame> blackHoleLegendFrames = [
+  const LegendFrame(
+      caption: 'Drag to fling a star into orbit around the hole',
+      paint: _legendFling),
+  const LegendFrame(
+      caption: 'Ride tight orbits: closer = faster = more points',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Too slow is swallowed, too fast escapes — both lost',
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'Gravitational kicks jolt every orbit — re-manage fast',
+      paint: _legendKick),
+];
 
 // ── Painter ─────────────────────────────────────────────────────────────────
 class _BlackHolePainter extends CustomPainter {
@@ -679,27 +997,44 @@ class _BlackHolePainter extends CustomPainter {
   }
 
   void _paintStar(Canvas canvas, _Star s) {
-    // Trail.
+    // Trail in a few alpha bands (old → new), each band ONE polyline path with
+    // one blurred stroke — not a blurred draw per segment. Per-segment blur was
+    // a Gaussian pass per trail segment per star per frame, the biggest cost
+    // in this painter.
     final trail = s.trail;
-    for (int i = 1; i < trail.length; i++) {
-      final frac = i / trail.length;
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Potatuhs.airForce.withValues(alpha: frac * 0.34)
-          ..strokeWidth = 5
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
-      );
-      canvas.drawLine(
-        trail[i - 1],
-        trail[i],
-        Paint()
-          ..color = Colors.white.withValues(alpha: frac * 0.7)
-          ..strokeWidth = 1.8
-          ..strokeCap = StrokeCap.round,
-      );
+    const bands = 3;
+    final n = trail.length;
+    if (n >= 2) {
+      for (var b = 0; b < bands; b++) {
+        // Overlap each band by one point so the polyline stays connected.
+        final start = max(0, n * b ~/ bands - 1);
+        final end = n * (b + 1) ~/ bands;
+        if (end - start < 2) continue;
+        final path = Path()..moveTo(trail[start].dx, trail[start].dy);
+        for (var i = start + 1; i < end; i++) {
+          path.lineTo(trail[i].dx, trail[i].dy);
+        }
+        final frac = (b + 1) / bands;
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Potatuhs.airForce.withValues(alpha: 0.34 * frac)
+            ..strokeWidth = 5
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Colors.white.withValues(alpha: 0.7 * frac)
+            ..strokeWidth = 1.8
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round,
+        );
+      }
     }
     if (!s.alive) return;
     // Closer + faster → hotter/whiter (Doppler-bright); far → cooler gold.

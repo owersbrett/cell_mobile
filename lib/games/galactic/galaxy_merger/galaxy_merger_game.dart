@@ -166,7 +166,7 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
 
   // ── live bodies ────────────────────────────────────────────────────────────
   final List<_Star> _stars = [];
-  late _Core _player; // the intruder core
+  _Core _player = _Core(0, 0, 0, 0); // the intruder core (repositioned on spawn)
   bool _merged = false; // cores have fused this round
   Offset _mergedPx = Offset.zero;
 
@@ -188,13 +188,44 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
   void initState() {
     super.initState();
     _round = _buildRound(0);
+    // ATTRACT autopilot: this game can aim and launch itself. Registered here,
+    // dormant in normal play — the host only invokes it in hands-free mode.
+    // See [_autoStep]. Cleared on dispose.
+    widget.session.autoPilot = _autoStep;
     _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One competent move per host tick (~250ms): when a launch is awaited (the
+  /// aiming phase), aim the intruder for a GRAZING pass at the host and release.
+  /// Direction is the round's own suggested graze point [_Round.aimFrac] (offset
+  /// just off the host core), and the speed is deliberately SLOW — half the
+  /// round's capture ceiling (_round.mergeSpeedMax is the flyby cutoff), clamped
+  /// into the launch bounds. That keeps the pass in the merge-not-flyby regime,
+  /// so the cores fall together instead of slingshotting apart. It reuses the
+  /// game's own [_launch] handler (identical to a drag release) and never fires
+  /// while a pass is already in flight (only acts in _Phase.aiming). Deterministic.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_phase != _Phase.aiming) return; // don't relaunch mid-pass
+    if (_canvasSize == Size.zero || _stars.isEmpty) return;
+    final from = _startPx(_canvasSize);
+    final aim = _fracPx(_round.aimFrac, _canvasSize); // the round's graze point
+    final d = aim - from;
+    final len = d.distance;
+    if (len < 0.001) return;
+    // Slow, merge-not-flyby speed: safely below the capture ceiling, clamped
+    // into the game's own launch bounds.
+    final speed =
+        (_round.mergeSpeedMax * 0.5).clamp(_kMinLaunch, _kMaxLaunch);
+    _launch(Offset(d.dx / len * speed, d.dy / len * speed));
   }
 
   // ── geometry helpers ───────────────────────────────────────────────────────
@@ -569,8 +600,16 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
       return;
     }
     final v = _launchVector();
-    // Give every intruder star the core's launch velocity (the whole galaxy
-    // translates while it keeps spinning).
+    _dragStart = null;
+    _dragCurrent = null;
+    _launch(v);
+  }
+
+  /// Release the intruder along launch velocity [v]. Shared by drag-release
+  /// input and the attract autopilot. Gives every intruder star the core's
+  /// launch velocity (the whole galaxy translates while it keeps spinning) and
+  /// hands the round to the collision sim.
+  void _launch(Offset v) {
     for (final st in _stars) {
       if (!st.host) {
         st.vx += v.dx;
@@ -579,8 +618,6 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
     }
     _player.vx = v.dx;
     _player.vy = v.dy;
-    _dragStart = null;
-    _dragCurrent = null;
     _phase = _Phase.simulating;
     _simTime = 0.0;
   }
@@ -650,6 +687,11 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       _canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
+      // First build runs before the first tick — spawn here so the painter
+      // never reads _player before it has been placed.
+      if (_stars.isEmpty && _canvasSize != Size.zero) {
+        _spawnGalaxies(_canvasSize);
+      }
       final preview = _buildPreview(_canvasSize);
       final merges = _phase == _Phase.aiming && _isDragging
           ? _previewMerges(preview, _canvasSize)

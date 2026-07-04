@@ -150,6 +150,224 @@ class _Flying {
   _Flying(this.from, this.shell, this.slot, this.wild);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — legend carousel cards, drawn with the REAL scene primitives
+// (same nucleus/shell/tray rendering the live game uses). Cheap + static.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Draws a literal in-game atom: warm nucleus, shell rings (active one brighter),
+/// seated electron orbs, and ghost slots for the octet gap — exactly as the play
+/// painter does. [base] scales the whole atom; optionally shows the NEXT label.
+void _legendAtom(
+  Canvas canvas,
+  Offset c,
+  List<int> config,
+  List<int> filled,
+  double base, {
+  bool showNext = false,
+}) {
+  final n = config.length;
+  if (n == 0) return;
+  final nucR = (base * 0.11).clamp(10.0, 30.0).toDouble();
+  final maxR = base * 0.44;
+  final inner = nucR + base * 0.10;
+  final step = ((maxR - inner) / n).clamp(1.0, base).toDouble();
+
+  var active = n - 1;
+  for (var i = 0; i < n; i++) {
+    if (filled[i] < config[i]) {
+      active = i;
+      break;
+    }
+  }
+
+  for (var i = 0; i < n; i++) {
+    final r = inner + step * (i + 1);
+    final cap = _shellMax(i);
+    final lvlColor = _levelColor(i + 1);
+    final isActive = i == active && filled[i] < config[i];
+
+    canvas.drawCircle(
+      c,
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = isActive ? 2.6 : 1.4
+        ..color = lvlColor.withValues(alpha: isActive ? 0.55 : 0.18),
+    );
+
+    // Ghost / needed-but-empty slots — spaced by full capacity so the gap reads.
+    for (var s = filled[i]; s < cap; s++) {
+      final a = -math.pi / 2 + 2 * math.pi * s / cap;
+      final at = c + Offset(math.cos(a), math.sin(a)) * r;
+      final needed = s < config[i];
+      canvas.drawCircle(
+        at,
+        _kElectronR * 0.7,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = needed ? 1.4 : 1.0
+          ..color = (needed ? lvlColor : Colors.white)
+              .withValues(alpha: needed ? 0.5 : 0.12),
+      );
+    }
+    // Seated electrons — the real orbs.
+    for (var s = 0; s < filled[i]; s++) {
+      final a = -math.pi / 2 + 2 * math.pi * s / cap;
+      final at = c + Offset(math.cos(a), math.sin(a)) * r;
+      GameFx.orb(canvas, at, _kElectronR, lvlColor, glow: 0.9);
+    }
+  }
+
+  // Nucleus (proton count).
+  GameFx.orb(canvas, c, nucR, _kNucleus, glow: 1.2);
+  final z = config.fold<int>(0, (a, b) => a + b);
+  GameFx.text(canvas, '$z', c, nucR * 0.8, Colors.white,
+      display: true, glow: 0.6);
+
+  if (showNext) {
+    GameFx.text(
+      canvas,
+      'NEXT ${_shellLetters[active]} · need ${config[active] - filled[active]}',
+      c.translate(0, -(inner + step * n) - 14),
+      12,
+      _levelColor(active + 1),
+      weight: FontWeight.w800,
+      glow: 0.5,
+    );
+  }
+}
+
+/// One tray electron orb with its energy-level letter (or `+` for a wildcard),
+/// matching `_paintTray`.
+void _legendTrayOrb(
+    Canvas canvas, Offset at, double r, Color color, String label) {
+  canvas.drawCircle(
+    at,
+    r + 6,
+    Paint()
+      ..color = color.withValues(alpha: 0.18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+  );
+  GameFx.orb(canvas, at, r, color, glow: 0.8);
+  GameFx.text(canvas, label, at, r * 0.95, Colors.white,
+      display: true, glow: 0.4);
+}
+
+// Frame A — the atom you build, filled inside-out.
+void _legendBuildFrame(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final base = math.min(size.width, size.height);
+  final c = Offset(size.width * 0.5, size.height * 0.52);
+  // Carbon-ish: K full (2/2), L partway (3/4) → active shell is L.
+  _legendAtom(canvas, c, const [2, 4], const [2, 3], base, showNext: true);
+}
+
+// Frame B — the tray: three lettered electrons; tap the one for the active shell.
+void _legendTrayFrame(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final base = math.min(size.width, size.height);
+  final cx = size.width * 0.5;
+  final cy = size.height * 0.54;
+  final r = (base * 0.12).clamp(14.0, 26.0).toDouble();
+  final spacing = math.min(size.width * 0.28, base * 0.42);
+
+  // Tray base bar.
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromCenter(
+          center: Offset(cx, cy), width: size.width * 0.9, height: base * 0.44),
+      const Radius.circular(16),
+    ),
+    Paint()..color = Colors.black.withValues(alpha: 0.32),
+  );
+
+  const labels = ['K', 'L', '+'];
+  const levels = [1, 2, 0]; // 0 = gold wildcard
+  const activeIdx = 1; // the L electron matches the active shell
+  for (var i = 0; i < 3; i++) {
+    final at = Offset(cx + (i - 1) * spacing, cy);
+    final wild = levels[i] == 0;
+    final color = wild ? _kGold : _levelColor(levels[i]);
+    if (i == activeIdx) {
+      // Selection ring around the electron the player should tap.
+      canvas.drawCircle(
+        at,
+        r + 9,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..color = color.withValues(alpha: 0.85),
+      );
+    }
+    _legendTrayOrb(canvas, at, r, color, labels[i]);
+  }
+  GameFx.text(canvas, 'TAP L', Offset(cx, cy - base * 0.30), 12,
+      _levelColor(2),
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+// Frame C — the danger: a wrong-level pick costs points and resets the streak.
+void _legendWrongFrame(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final base = math.min(size.width, size.height);
+  final c = Offset(size.width * 0.5, size.height * 0.46);
+  final r = (base * 0.15).clamp(16.0, 32.0).toDouble();
+  final color = _levelColor(3); // an M electron picked while L is still open
+  _legendTrayOrb(canvas, c, r, color, 'M');
+
+  // Red X over the bad pick.
+  final p = Paint()
+    ..color = _kBad
+    ..strokeWidth = 4
+    ..strokeCap = StrokeCap.round;
+  final s = r * 0.85;
+  canvas.drawLine(c.translate(-s, -s), c.translate(s, s), p);
+  canvas.drawLine(c.translate(s, -s), c.translate(-s, s), p);
+
+  GameFx.text(canvas, '-6', c.translate(0, -r - 16), 16, _kBad,
+      display: true, glow: 0.5);
+  GameFx.text(canvas, 'FILL L FIRST', Offset(size.width * 0.5, size.height * 0.82),
+      13, _kBad,
+      weight: FontWeight.w800);
+}
+
+// Frame D — the payoff / climax: full octet + the final-surge x2 band.
+void _legendSurgeFrame(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final base = math.min(size.width, size.height);
+  final c = Offset(size.width * 0.5, size.height * 0.56);
+  // Neon 2-8 fully filled — a stable noble octet.
+  _legendAtom(canvas, c, const [2, 8], const [2, 8], base);
+  GameFx.text(canvas, 'OCTET!', c.translate(0, -(base * 0.44) - 14), 14, _kGold,
+      display: true, glow: 0.6);
+
+  // Surge band across the top edge.
+  canvas.drawRect(
+    Rect.fromLTWH(0, 0, size.width, 6),
+    Paint()..color = _kGold.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, 'FINAL SURGE  x2',
+      Offset(size.width * 0.5, size.height * 0.12), 13, _kGold,
+      display: true, glow: 0.6);
+}
+
+/// The visual manual for Electron Shells v2 — wired into the registry spec.
+final List<LegendFrame> electronShellsV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Fill shells inside-out: K first, then L, M, N',
+      paint: _legendBuildFrame),
+  const LegendFrame(
+      caption: 'Tap the tray electron matching the active shell',
+      paint: _legendTrayFrame),
+  const LegendFrame(
+      caption: 'Avoid wrong picks: -6 and your streak resets',
+      paint: _legendWrongFrame),
+  const LegendFrame(
+      caption: 'Finish octets; last 8s SURGE doubles every point',
+      paint: _legendSurgeFrame),
+];
+
 // ---------------------------------------------------------------------------
 // Game widget
 // ---------------------------------------------------------------------------
@@ -200,12 +418,35 @@ class _ElectronShellsV2GameState extends State<ElectronShellsV2Game>
     super.initState();
     _loadElement(_elements[2]); // Lithium (2,1) — shows K then L
     _ticker = createTicker(_onTick)..start();
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // --------------------------------------------------------------- autopilot --
+
+  /// ATTRACT mode: one competent move per call. Sort electrons by energy level
+  /// inside-out — seat one tray electron into the CORRECT (lowest not-yet-full)
+  /// shell, which is exactly `_activeShell`. A valid tray electron is one whose
+  /// level matches the active shell (or a wildcard); `_ensureMatch` guarantees
+  /// at least one exists. Tapping it routes through the real `_tapTray` handler,
+  /// so it can never overfill or place out of order. No randomness, no synthetic
+  /// taps — if nothing can be placed (mid-flight or celebrating), return.
+  void _autoStep() {
+    if (!widget.session.isRunning || _celebT >= 0) return;
+    final lvl = _activeShell + 1;
+    for (var i = 0; i < _tray.length; i++) {
+      final e = _tray[i];
+      if (e.wild || e.level == lvl) {
+        _tapTray(i);
+        return;
+      }
+    }
   }
 
   // ----------------------------------------------------------------- model --
@@ -318,7 +559,7 @@ class _ElectronShellsV2GameState extends State<ElectronShellsV2Game>
 
   Offset get _center {
     final s = _fieldSize ?? const Size(360, 640);
-    final top = _kPanelReserve;
+    const top = _kPanelReserve;
     final bottom = s.height - _kTrayReserve;
     return Offset(s.width * 0.5, (top + bottom) * 0.5);
   }

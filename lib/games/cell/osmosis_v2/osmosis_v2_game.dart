@@ -91,6 +91,281 @@ const _kSafe = Color(0xFF69F0AE); // isotonic / firm turgor = green
 const _kRed = Color(0xFFFF5252); // danger
 const _kPotato = Potatuhs.sienna; // potato-cell cytoplasm base
 const _kWhite = Colors.white;
+const _kShrivel = Color(0xFF6B4423); // browned shrivel tint (matches _paintCell)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each is drawn statically with the
+// SAME literal components the live game uses: the potato cell (firm / swollen /
+// shriveled), the flux arrows, and the bottom BALANCE DECK with its knob.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The potato cell exactly as `_paintCell` renders it, minus the live jitter:
+/// firm golden turgor in-band, pale/taut when swelling, browned when shriveling.
+void _legendCell(Canvas canvas, Offset center, double r, double volume) {
+  if (r <= 1) return;
+  final swell = ((volume - _kBandMax) / (1.0 - _kBandMax)).clamp(0.0, 1.0);
+  final shrivel = ((_kBandMin - volume) / _kBandMin).clamp(0.0, 1.0);
+  final strain = math.max(swell, shrivel);
+  final inBand = volume >= _kBandMin && volume <= _kBandMax;
+
+  Color body = _kPotato;
+  if (swell > 0) body = Color.lerp(_kPotato, _kWater, swell * 0.5)!;
+  if (shrivel > 0) body = Color.lerp(_kPotato, _kShrivel, shrivel)!;
+
+  // Outer glow.
+  canvas.drawCircle(
+    center,
+    r + 10,
+    Paint()
+      ..color = body.withValues(alpha: 0.18 + 0.22 * (inBand ? 1 : 0.4))
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+
+  // Membrane — crenated (spiky inward) when shriveled, taut when swollen.
+  final path = Path();
+  const seg = 72;
+  final lobes = 7 + (shrivel * 5).round();
+  final crenAmp = 0.11 * shrivel;
+  final swellJitter = 0.018 * swell;
+  for (var i = 0; i <= seg; i++) {
+    final a = i / seg * 2 * math.pi;
+    var w = math.sin(a * 3) * 0.012;
+    w -= crenAmp * (0.5 + 0.5 * math.cos(a * lobes));
+    w += swellJitter * math.sin(a * 11);
+    final rr = r * (1 + w);
+    final pt = center + Offset(math.cos(a), math.sin(a)) * rr;
+    if (i == 0) {
+      path.moveTo(pt.dx, pt.dy);
+    } else {
+      path.lineTo(pt.dx, pt.dy);
+    }
+  }
+  path.close();
+
+  // Cytoplasm fill.
+  canvas.drawPath(
+    path,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.3, -0.4),
+        colors: [
+          Color.lerp(body, _kWhite, 0.45)!.withValues(alpha: 0.92),
+          body.withValues(alpha: 0.85),
+          Color.lerp(body, Colors.black, 0.5)!.withValues(alpha: 0.92),
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: r)),
+  );
+
+  // Membrane rim — whitens healthy, reddens under strain.
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4 + 1.8 * swell
+      ..color = Color.lerp(_kWhite, _kRed, strain)!
+          .withValues(alpha: 0.7 + 0.3 * strain),
+  );
+
+  // Nucleus — the potato "eye".
+  GameFx.orb(canvas, center.translate(r * 0.12, r * 0.1), r * 0.24,
+      Potatuhs.orange,
+      glow: 0.6);
+}
+
+/// The osmotic flux arrows as `_paintFluxArrows` draws them: inward blue when
+/// water enters (hypotonic), outward amber when water leaves (hypertonic).
+void _legendFluxArrows(Canvas canvas, Offset center, double r, bool inward) {
+  if (r <= 1) return;
+  final color = inward ? _kWater : _kSalt;
+  const n = 10;
+  for (var i = 0; i < n; i++) {
+    final a = i / n * 2 * math.pi;
+    final dir = Offset(math.cos(a), math.sin(a));
+    final rr = r * 1.28;
+    final pos = center + dir * rr;
+    final headDir = inward ? -dir : dir;
+    final paint = Paint()
+      ..color = color.withValues(alpha: 0.7)
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(pos - headDir * 9, pos, paint);
+    final perp = Offset(-headDir.dy, headDir.dx);
+    canvas.drawLine(pos, pos - headDir * 4 + perp * 3, paint);
+    canvas.drawLine(pos, pos - headDir * 4 - perp * 3, paint);
+  }
+}
+
+/// The bottom BALANCE DECK as `_paintDeck` draws it — WATER→ISOTONIC→SALT track,
+/// green safe zone, and the big grabbable knob at [tonicity] (-1 water … +1 salt).
+void _legendDeck(Canvas canvas, Size size, double tonicity) {
+  final left = size.width * 0.10;
+  final w = size.width * 0.80;
+  if (w <= 2) return;
+  final trackH = math.min(24.0, size.height * 0.11);
+  final trackY = size.height - trackH - 30;
+  final rect = Rect.fromLTWH(left, trackY, w, trackH);
+  final track = RRect.fromRectAndRadius(rect, Radius.circular(trackH / 2));
+
+  canvas.drawRRect(
+    track,
+    Paint()
+      ..shader = const LinearGradient(
+        colors: [_kWater, Color(0xFF2A2622), _kSalt],
+        stops: [0.0, 0.5, 1.0],
+      ).createShader(rect),
+  );
+
+  // Green isotonic safe zone in the centre.
+  final zoneHalf = w * 0.5 * _kIsoTol;
+  final cx = left + w / 2;
+  final zone = RRect.fromRectAndRadius(
+      Rect.fromLTRB(cx - zoneHalf, trackY - 2, cx + zoneHalf,
+          trackY + trackH + 2),
+      const Radius.circular(8));
+  final knobGreen = tonicity.abs() < _kIsoTol;
+  canvas.drawRRect(zone, Paint()..color = _kSafe.withValues(alpha: 0.22));
+  canvas.drawRRect(
+      zone,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = _kSafe.withValues(alpha: knobGreen ? 0.9 : 0.5));
+
+  // The knob at the current net tonicity.
+  final hx = cx + tonicity.clamp(-1.0, 1.0) * (w / 2);
+  final hy = trackY + trackH / 2;
+  final knobColor =
+      knobGreen ? _kSafe : (tonicity < 0 ? _kWater : _kSalt);
+  const knobR = 15.0;
+  canvas.drawCircle(Offset(hx, hy), knobR + 7,
+      Paint()
+        ..color = knobColor.withValues(alpha: 0.4)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
+  canvas.drawCircle(Offset(hx, hy), knobR, Paint()..color = knobColor);
+  canvas.drawCircle(Offset(hx, hy), knobR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = Potatuhs.ink);
+  for (var i = -1; i <= 1; i++) {
+    canvas.drawCircle(Offset(hx + i * 5.0, hy), 1.6,
+        Paint()..color = Potatuhs.ink.withValues(alpha: 0.7));
+  }
+
+  // End labels.
+  GameFx.text(canvas, '◀ WATER', Offset(left + 34, trackY - 14), 10, _kWater,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'SALT ▶', Offset(left + w - 30, trackY - 14), 10, _kSalt,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'ISOTONIC', Offset(cx, trackY - 14), 9,
+      _kSafe.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+// ── Frame 1 · the verb: hold firm turgor, knob in the green ──────────────────
+void _legendFrameHold(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final sceneH = size.height * 0.60;
+  final center = Offset(size.width * 0.5, sceneH * 0.5);
+  final r = math.min(size.width, sceneH) * 0.26;
+  // Faint green firm-turgor ring, as in _paintSafeRing.
+  canvas.drawCircle(
+    center,
+    r + 12,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..color = _kSafe.withValues(alpha: 0.32),
+  );
+  _legendCell(canvas, center, r, _kBandCentre);
+  GameFx.text(canvas, 'FIRM TURGOR', Offset(center.dx, center.dy + r + 20), 12,
+      _kSafe, weight: FontWeight.w800, glow: 0.5);
+  _legendDeck(canvas, size, 0.0);
+}
+
+// ── Frame 2 · how to score: stay in the band, combo climbs to ×3 ─────────────
+void _legendFrameScore(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final sceneH = size.height * 0.60;
+  final center = Offset(size.width * 0.42, sceneH * 0.5);
+  final r = math.min(size.width, sceneH) * 0.24;
+  canvas.drawCircle(
+    center,
+    r + 12,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..color = _kSafe.withValues(alpha: 0.32),
+  );
+  _legendCell(canvas, center, r, _kBandCentre);
+  // The live multiplier chip, at cap.
+  GameFx.text(canvas, '×3.0', Offset(size.width * 0.80, sceneH * 0.34), 22,
+      _kSafe, display: true, glow: 0.6);
+  GameFx.text(canvas, 'HEALTHY', Offset(size.width * 0.80, sceneH * 0.56), 10,
+      _kWhite.withValues(alpha: 0.6), weight: FontWeight.w700);
+  _legendDeck(canvas, size, 0.0);
+}
+
+// ── Frame 3 · the danger: burst when too dilute, shrivel when too salty ──────
+void _legendFrameDanger(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final sceneH = size.height * 0.66;
+  final r = math.min(size.width * 0.5, sceneH) * 0.28;
+  final cy = sceneH * 0.46;
+  // Left: swollen, bursting (lysis) — water flooding IN (hypotonic).
+  final lc = Offset(size.width * 0.28, cy);
+  _legendFluxArrows(canvas, lc, r * 1.28, true);
+  _legendCell(canvas, lc, r * 1.28, 0.92);
+  GameFx.text(canvas, 'LYSES', Offset(lc.dx, sceneH * 0.92), 11, _kWater,
+      weight: FontWeight.w800);
+  // Right: shriveled, crenated — water rushing OUT (hypertonic).
+  final rc = Offset(size.width * 0.72, cy);
+  _legendFluxArrows(canvas, rc, r * 0.68, false);
+  _legendCell(canvas, rc, r * 0.68, 0.10);
+  GameFx.text(canvas, 'CRENATES', Offset(rc.dx, sceneH * 0.92), 11, _kSalt,
+      weight: FontWeight.w800);
+  // The two knob extremes that cause each.
+  _legendDeck(canvas, size, 0.0);
+}
+
+// ── Frame 4 · the climax: final 10s surge, drift spikes, points ×2 ───────────
+void _legendFrameSurge(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  // Alarm vignette, as in _paintSurge.
+  final rect = Offset.zero & size;
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [Colors.transparent, _kRed.withValues(alpha: 0.26)],
+        stops: const [0.62, 1.0],
+      ).createShader(rect),
+  );
+  final sceneH = size.height * 0.60;
+  final center = Offset(size.width * 0.5, sceneH * 0.54);
+  final r = math.min(size.width, sceneH) * 0.24;
+  _legendCell(canvas, center, r, 0.62); // straining toward the top of the band
+  GameFx.text(canvas, 'FINAL SURGE  ×2', Offset(size.width / 2, sceneH * 0.14),
+      18, _kRed, display: true, glow: 0.8);
+  // A knob shoved off-centre by the escalated drift.
+  _legendDeck(canvas, size, 0.55);
+}
+
+/// The visual manual for Osmosis v2 — wired into the registry spec.
+final List<LegendFrame> osmosisV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Drag the knob to green — hold the cell at firm turgor',
+      paint: _legendFrameHold),
+  const LegendFrame(
+      caption: 'Stay in the band: points build a combo up to ×3',
+      paint: _legendFrameScore),
+  const LegendFrame(
+      caption: 'Too dilute bursts it (lysis); too salty shrivels it',
+      paint: _legendFrameDanger),
+  const LegendFrame(
+      caption: 'Last 10s: FINAL SURGE — drift spikes, points ×2',
+      paint: _legendFrameSurge),
+];
 
 /// Osmosis v2 — keep a POTATO cell at firm turgor by holding the surrounding
 /// water at isotonic. Drag the balance knob into the green against an
@@ -151,12 +426,41 @@ class _OsmosisV2GameState extends State<OsmosisV2Game>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────────
+  // One competent move per call: hold the potato cell at firm turgor by dragging
+  // the BALANCE KNOB. Volume drifts by -_kFlux * tonicity, so project it a short
+  // horizon ahead under the current (drift-shoved) knob; if that projection is
+  // leaving the healthy band, steer the knob target toward the tonicity that
+  // pushes volume back to centre (positive tonicity sheds water when swollen,
+  // negative draws it in when shriveled). When comfortably centred and already
+  // isotonic, hold the knob green. Deterministic — sets the same field a real
+  // drag sets (`_touching` + `_target`); no randomness, no synthetic taps.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    _everTouched = true; // dismiss the onboarding ghost hand
+    // Project volume a few ticks ahead assuming the knob stays near where it is.
+    const horizon = 0.35; // seconds
+    final projVol = (_volume - _kFlux * _tonicity * horizon).clamp(0.0, 1.0);
+    final err = projVol - _kBandCentre; // >0 too swollen, <0 too shriveled
+    double target;
+    if (err.abs() < 0.02 && _tonicity.abs() < _kIsoTol) {
+      target = 0.0; // centred and green: hold isotonic
+    } else {
+      // Proportional correction; sign(err) == sign(needed tonicity).
+      target = (err * 4.0).clamp(-1.0, 1.0);
+    }
+    _touching = true; // held drag: knob eases toward _target each tick
+    _target = target;
   }
 
   double _remainingSec() => widget.session.remaining.inMilliseconds / 1000.0;

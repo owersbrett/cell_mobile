@@ -166,12 +166,35 @@ class _DigestV2GameState extends State<DigestV2Game>
     // Seed one morsel so the calm pre-round preview reads as a live tract.
     _boluses.add(_Bolus(0, 0, _rng.nextDouble() * 6));
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Default cadence (~250ms): the tract accelerates and can carry
+    // up to five ripe boluses at once, so acting each tick just keeps the
+    // pipeline flowing — never superhuman, since a ripe target is required.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick. Plays Digest v2 *correctly*: it finds
+  /// the active target (the ripe bolus nearest the exit — the front of the
+  /// pipeline you must clear first) and presses the verb THAT organ needs, by
+  /// pressing the button under its own stage. Because the target's `stage` is
+  /// exactly the correct verb index, `_press(t.stage)` always takes the CHEW/
+  /// SWALLOW/CHURN/NUTRIENTS/WATER action the organ demands — never a wrong
+  /// verb. If nothing is ripe yet, it waits (the organs are still doing their
+  /// work); if the exit is fully processed, `_advance` scores and clears it.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    final t = _activeTarget();
+    if (t == null) return; // no ripe bolus — let the tract keep ripening
+    _press(t.stage); // the exact action this organ needs
   }
 
   // ── The active target: the bolus the next verb press will act on. ───────────
@@ -712,3 +735,248 @@ class _DigestV2Painter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _DigestV2Painter old) => true;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, drawn with the SAME components,
+// palette and primitives the live game uses (tube segments, organ icons, ripe
+// boluses, verb buttons). Static + cheap: they render once on the intro screen.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void _legIcon(
+    Canvas canvas, IconData icon, Offset center, double sz, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: String.fromCharCode(icon.codePoint),
+      style: TextStyle(
+        fontSize: sz,
+        fontFamily: icon.fontFamily,
+        package: icon.fontPackage,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+}
+
+void _legText(Canvas canvas, String text, Offset at, double size, Color color,
+    {int align = 0}) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontFamily: _kFont,
+        fontSize: size,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 0.4,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  final dx = align == 0 ? -tp.width / 2 : (align < 0 ? 0.0 : -tp.width);
+  tp.paint(canvas, at + Offset(dx, -tp.height / 2));
+}
+
+/// The five-organ tract with per-organ tints — the same tube the game draws.
+void _legTube(Canvas canvas, Size size, double top, double h) {
+  final colW = size.width / _kStages;
+  final rr = RRect.fromRectAndRadius(
+    Rect.fromLTWH(6, top, size.width - 12, h),
+    Radius.circular(h * 0.42),
+  );
+  canvas.drawRRect(rr, Paint()..color = _kTube);
+  canvas.save();
+  canvas.clipRRect(rr);
+  for (var i = 0; i < _kStages; i++) {
+    canvas.drawRect(
+      Rect.fromLTWH(colW * i, top, colW, h),
+      Paint()..color = _kStageDefs[i].tint.withValues(alpha: 0.14),
+    );
+    if (i > 0) {
+      canvas.drawLine(
+        Offset(colW * i, top + 4),
+        Offset(colW * i, top + h - 4),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.06)
+          ..strokeWidth = 1,
+      );
+    }
+  }
+  canvas.restore();
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = _kTubeEdge,
+  );
+}
+
+/// One morsel — a food orb, gold halo + ripening ring when [ready].
+void _legBolus(Canvas canvas, Offset center, int kind,
+    {bool ready = false, double radius = 16}) {
+  if (ready) {
+    canvas.drawCircle(
+      center,
+      radius + 7,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = _kReady.withValues(alpha: 0.75)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+  }
+  GameFx.orb(canvas, center, radius, _kFoodColors[kind % _kFoodColors.length],
+      glow: ready ? 1.0 : 0.5);
+  if (ready) {
+    // The completed ripening ring (the organ's work is done).
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius + 4),
+      -math.pi / 2,
+      2 * math.pi,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..strokeCap = StrokeCap.round
+        ..color = Colors.white.withValues(alpha: 0.7),
+    );
+  }
+}
+
+/// A verb button — same tinted pill the footer draws; [deny] paints it red.
+void _legVerb(Canvas canvas, Rect rect, _StageDef def, {bool deny = false}) {
+  final base = deny ? _kDeny : def.tint;
+  final rr = RRect.fromRectAndRadius(rect, const Radius.circular(12));
+  canvas.drawRRect(rr, Paint()..color = base.withValues(alpha: 0.14));
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = base.withValues(alpha: deny ? 0.9 : 0.5),
+  );
+  final txt = deny ? _kDeny : Colors.white.withValues(alpha: 0.85);
+  _legIcon(canvas, def.icon, rect.center.translate(0, -8), 17, txt);
+  _legText(canvas, def.action, rect.center.translate(0, 14), 8.5, txt);
+}
+
+// (a) The core object + verbs: food rides five organs, each a different job.
+void _legendTract(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final top = size.height * 0.42;
+  final h = math.max(26.0, size.height * 0.24);
+  final colW = size.width / _kStages;
+  for (var i = 0; i < _kStages; i++) {
+    final cx = colW * (i + 0.5);
+    _legIcon(canvas, _kStageDefs[i].icon, Offset(cx, top - 26), 15,
+        _kStageDefs[i].tint);
+    _legText(canvas, _kStageDefs[i].name, Offset(cx, top - 8), 7.5,
+        _kStageDefs[i].tint.withValues(alpha: 0.9));
+  }
+  _legTube(canvas, size, top, h);
+  _legBolus(canvas, Offset(colW * 0.5, top + h / 2), 0,
+      radius: math.min(colW * 0.26, 16));
+  // Exit glow at the far right — fully-processed food leaves here.
+  canvas.drawCircle(
+    Offset(size.width - 4, top + h / 2),
+    14,
+    Paint()
+      ..color = _kStageDefs[4].tint.withValues(alpha: 0.16)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+  );
+}
+
+// (b) How to score: a ripe morsel + the matching verb its organ needs.
+void _legendMatch(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final cx = size.width * 0.5;
+  final def = _kStageDefs[2]; // STOMACH · CHURN
+  _legIcon(canvas, def.icon, Offset(cx - 34, size.height * 0.18), 16, _kReady);
+  _legText(canvas, def.name, Offset(cx + 4, size.height * 0.18), 11, _kReady,
+      align: -1);
+  final bc = Offset(cx, size.height * 0.44);
+  _legBolus(canvas, bc, 0, ready: true, radius: 18);
+  // Beam linking the ripe morsel to the verb it needs.
+  final barTop = size.height * 0.72;
+  canvas.drawLine(
+    bc.translate(0, 26),
+    Offset(cx, barTop - 6),
+    Paint()
+      ..color = _kReady.withValues(alpha: 0.28)
+      ..strokeWidth = 2
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+  );
+  _legText(canvas, '↓ ACT', Offset(cx, (bc.dy + barTop) / 2 + 8), 9,
+      _kReady.withValues(alpha: 0.7));
+  _legVerb(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(cx, barTop + 26),
+        width: math.min(size.width * 0.42, 150),
+        height: 50),
+    def,
+  );
+}
+
+// (c) The danger: the wrong verb stalls the food and breaks the combo.
+void _legendWrong(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final cx = size.width * 0.5;
+  final bc = Offset(cx, size.height * 0.36);
+  _legBolus(canvas, bc, 1, ready: true, radius: 18);
+  _legText(canvas, 'WRONG · STOMACH', bc.translate(0, -32), 10.5, _kDeny);
+  final barTop = size.height * 0.70;
+  _legVerb(
+    canvas,
+    Rect.fromCenter(
+        center: Offset(cx, barTop + 24),
+        width: math.min(size.width * 0.42, 150),
+        height: 50),
+    _kStageDefs[4], // WATER pressed on a stomach morsel — wrong verb
+    deny: true,
+  );
+  _legText(canvas, 'COMBO BROKEN', Offset(cx, size.height * 0.92), 9.5,
+      _kDeny.withValues(alpha: 0.85));
+}
+
+// (d) The escalation: late game rides five ripe morsels — recall all five.
+void _legendClimax(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final top = size.height * 0.20;
+  final h = math.max(22.0, size.height * 0.20);
+  final colW = size.width / _kStages;
+  _legTube(canvas, size, top, h);
+  for (var i = 0; i < _kStages; i++) {
+    _legBolus(canvas, Offset(colW * (i + 0.5), top + h / 2), i,
+        ready: true, radius: math.min(colW * 0.22, 12));
+  }
+  final barTop = size.height * 0.64;
+  for (var i = 0; i < _kStages; i++) {
+    _legVerb(
+      canvas,
+      Rect.fromCenter(
+          center: Offset(colW * (i + 0.5), barTop + 24),
+          width: colW * 0.86,
+          height: 46),
+      _kStageDefs[i],
+    );
+  }
+}
+
+/// The visual manual for Digest v2 — wired into the registry spec.
+final List<LegendFrame> digestV2LegendFrames = [
+  const LegendFrame(
+      caption: 'Food rides five organs: mouth to large intestine',
+      paint: _legendTract),
+  const LegendFrame(
+      caption: "Match the verb to the ripe organ's icon to score",
+      paint: _legendMatch),
+  const LegendFrame(
+      caption: 'Wrong verb stalls the food and breaks your combo',
+      paint: _legendWrong),
+  const LegendFrame(
+      caption: 'Late game: five morsels ripe — recall all five verbs',
+      paint: _legendClimax),
+];

@@ -39,6 +39,257 @@ const Color _good = Color(0xFF66E08A); // healthy / rerouted green
 const Color _danger = Color(0xFFE5533D); // route down / starving red
 const Color _idleSrc = Color(0xFF8FA8B2); // a healthy-but-idle source
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards, each drawn with the SAME
+// primitives the live game uses (source orbs + stock arc, the factory + silo
+// gauge, the flowing goods beam and the severed-route dash). Static, cheap,
+// size-guarded — rendered once in the intro, never per-frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// One source node: an orb + its stock arc + name/state labels — a stripped
+/// copy of the game's own `_drawSource`.
+void _legSource(
+  Canvas canvas,
+  Offset c,
+  double r, {
+  required Color color,
+  double stock = 1.0,
+  bool active = false,
+  String? name,
+  String? state,
+  Color? stateColor,
+}) {
+  GameFx.orb(canvas, c, r, color, glow: active ? 1.0 : 0.5);
+  if (active) {
+    canvas.drawCircle(
+      c,
+      r + 6,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..color = _good.withValues(alpha: 0.9),
+    );
+  }
+  final sweep = stock.clamp(0.0, 1.0) * 2 * math.pi;
+  if (sweep > 0) {
+    canvas.drawArc(
+      Rect.fromCircle(center: c, radius: r + 4),
+      -math.pi / 2,
+      sweep,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..color = (stock < 0.2 ? _danger : _good).withValues(alpha: 0.85),
+    );
+  }
+  if (name != null) {
+    GameFx.text(canvas, name, c.translate(0, r + 14), 9.5,
+        Colors.white.withValues(alpha: 0.78), weight: FontWeight.w700);
+  }
+  if (state != null) {
+    GameFx.text(canvas, state, c.translate(0, r + 26), 8,
+        stateColor ?? Colors.white.withValues(alpha: 0.45),
+        weight: FontWeight.w800);
+  }
+}
+
+/// The factory orb + its input-silo gauge — a stripped copy of `_drawFactory`.
+void _legFactory(Canvas canvas, Offset c, double buffer, {bool starving = false}) {
+  const r = 28.0;
+  final body = starving ? Color.lerp(Potatuhs.orange, _danger, 0.55)! : Potatuhs.orange;
+  GameFx.orb(canvas, c, r, body, glow: 0.9);
+  GameFx.text(canvas, 'FACTORY', c.translate(0, r + 14), 11,
+      Colors.white.withValues(alpha: 0.75), weight: FontWeight.w800);
+
+  const barH = 60.0, barW = 12.0;
+  final left = c.dx - r - 24;
+  final top = c.dy - barH / 2;
+  final track = Rect.fromLTWH(left, top, barW, barH);
+  final rr = RRect.fromRectAndRadius(track, const Radius.circular(6));
+  canvas.drawRRect(rr, Paint()..color = Colors.black.withValues(alpha: 0.4));
+  final fillH = barH * buffer.clamp(0.0, 1.0);
+  final fillColor =
+      buffer < 0.18 ? _danger : (buffer < 0.45 ? Potatuhs.sienna : _good);
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top + (barH - fillH), barW, fillH),
+        const Radius.circular(6)),
+    Paint()..color = fillColor,
+  );
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = Colors.white.withValues(alpha: 0.25),
+  );
+  GameFx.text(canvas, 'SILO', Offset(left + barW / 2, top - 10), 8,
+      Colors.white.withValues(alpha: 0.5));
+  if (starving) {
+    GameFx.text(canvas, 'STARVING', c.translate(0, -r - 16), 12,
+        _danger.withValues(alpha: 0.9), weight: FontWeight.w800, glow: 0.5);
+  }
+}
+
+/// A live supply line: the bright flowing beam + travelling goods dots.
+void _legLiveRoute(Canvas canvas, Offset a, Offset b) {
+  GameFx.glowLine(canvas, a, b, _accent, width: 3.5);
+  for (var i = 0; i < 4; i++) {
+    final p = Offset.lerp(a, b, (i + 1) / 5)!;
+    canvas.drawCircle(p, 4, Paint()..color = _good.withValues(alpha: 0.95));
+    canvas.drawCircle(
+      p,
+      6,
+      Paint()
+        ..color = _good.withValues(alpha: 0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+  }
+}
+
+/// A severed route: red dashed line with a break + storm ✕ — mirrors
+/// `_drawBrokenRoute` without the live pulse.
+void _legBrokenRoute(Canvas canvas, Offset a, Offset b) {
+  final paint = Paint()
+    ..color = _danger.withValues(alpha: 0.65)
+    ..strokeWidth = 2.5
+    ..strokeCap = StrokeCap.round;
+  const dash = 10.0, gap = 8.0;
+  final dir = b - a;
+  final len = dir.distance;
+  if (len <= 0) return;
+  final unit = dir / len;
+  var d = 0.0;
+  while (d < len) {
+    if ((d / len - 0.5).abs() > 0.10) {
+      canvas.drawLine(
+          a + unit * d, a + unit * math.min(d + dash, len), paint);
+    }
+    d += dash + gap;
+  }
+  final breakPt = Offset.lerp(a, b, 0.5)!;
+  canvas.drawCircle(
+    breakPt,
+    8,
+    Paint()
+      ..color = _danger.withValues(alpha: 0.55)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  GameFx.text(canvas, '✕', breakPt, 16, _danger);
+}
+
+/// A dim, standing idle backup route (drawn under the nodes).
+void _legIdleRoute(Canvas canvas, Offset a, Offset b) {
+  canvas.drawLine(
+    a,
+    b,
+    Paint()
+      ..color = _idleSrc.withValues(alpha: 0.22)
+      ..strokeWidth = 2,
+  );
+}
+
+/// FRAME 1 — the network & the core verb: tap a healthy backup to reroute the
+/// live line onto it.
+void _legendReroute(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  final factory = Offset(w * 0.76, h * 0.5);
+  final active = Offset(w * 0.2, h * 0.3);
+  final backup = Offset(w * 0.2, h * 0.72);
+
+  _legLiveRoute(canvas, active, factory);
+  _legIdleRoute(canvas, backup, factory);
+  _legFactory(canvas, factory, 0.75);
+  _legSource(canvas, active, 18,
+      color: _accent, active: true, name: 'Farm', state: 'FEEDING', stateColor: _good);
+  _legSource(canvas, backup, 18,
+      color: _idleSrc, name: 'Port', state: 'READY');
+
+  // Tap cue on the ready backup.
+  canvas.drawCircle(
+    backup,
+    28,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = _good.withValues(alpha: 0.7),
+  );
+  GameFx.text(canvas, 'TAP', backup.translate(0, -34), 11, _good,
+      weight: FontWeight.w800, glow: 0.4);
+}
+
+/// FRAME 2 — scoring: a fed silo keeps the factory producing (+1 per unit).
+void _legendScore(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  final factory = Offset(w * 0.66, h * 0.5);
+  final source = Offset(w * 0.18, h * 0.5);
+
+  _legLiveRoute(canvas, source, factory);
+  _legFactory(canvas, factory, 0.95);
+  _legSource(canvas, source, 18,
+      color: _accent, active: true, name: 'Farm', state: 'FEEDING', stateColor: _good);
+  GameFx.text(canvas, '+1', factory.translate(w * 0.16, -h * 0.1), 22, _good,
+      weight: FontWeight.w800, glow: 0.6);
+}
+
+/// FRAME 3 — the danger: storms down routes, droughts empty sources; a cut-off
+/// factory starves and scores nothing.
+void _legendDanger(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  final factory = Offset(w * 0.76, h * 0.5);
+  final downSrc = Offset(w * 0.2, h * 0.3);
+  final drySrc = Offset(w * 0.2, h * 0.72);
+
+  _legBrokenRoute(canvas, downSrc, factory);
+  _legIdleRoute(canvas, drySrc, factory);
+  _legFactory(canvas, factory, 0.06, starving: true);
+  _legSource(canvas, downSrc, 18,
+      color: _danger, stock: 1.0, name: 'Farm', state: 'DOWN', stateColor: _danger);
+  _legSource(canvas, drySrc, 18,
+      color: _danger, stock: 0.0, name: 'Port', state: 'EMPTY', stateColor: _danger);
+}
+
+/// FRAME 4 — the escalation: late in the round shocks strike TWO routes at
+/// once, so keep diverse backups ready.
+void _legendEscalation(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 8 || h < 8) return;
+  final factory = Offset(w * 0.76, h * 0.5);
+  final s0 = Offset(w * 0.2, h * 0.22);
+  final s1 = Offset(w * 0.2, h * 0.5);
+  final s2 = Offset(w * 0.2, h * 0.78);
+
+  _legBrokenRoute(canvas, s0, factory);
+  _legBrokenRoute(canvas, s2, factory);
+  _legLiveRoute(canvas, s1, factory);
+  _legFactory(canvas, factory, 0.6);
+  _legSource(canvas, s0, 15, color: _danger, name: null, state: 'DOWN', stateColor: _danger);
+  _legSource(canvas, s1, 15,
+      color: _accent, active: true, name: null, state: 'FEEDING', stateColor: _good);
+  _legSource(canvas, s2, 15, color: _danger, name: null, state: 'DOWN', stateColor: _danger);
+}
+
+/// The visual manual for Reroute! — wired into the registry spec.
+final List<LegendFrame> rerouteLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap a healthy source to REROUTE the live line',
+      paint: _legendReroute),
+  const LegendFrame(
+      caption: 'A fed silo keeps the factory making fries: +1 each',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Storms down routes, droughts empty sources — starve = 0',
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'Late game shocks hit TWO routes — keep backups ready',
+      paint: _legendEscalation),
+];
+
 /// A source farm/port and its single route to the factory.
 class _Source {
   final String name;
@@ -103,12 +354,61 @@ class _RerouteGameState extends State<RerouteGame>
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
+    // ATTRACT autopilot: this game knows how to keep its own line fed. Registered
+    // always (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ctrl.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ────────────────────────────────────────────────────
+  /// One competent, deterministic reroute per host tick. It reads the sim's own
+  /// state and calls the game's own reroute handler ([_onTap]) — no randomness,
+  /// no synthetic taps. Policy: hold position while the active line is healthy
+  /// and the silo is comfortably full; otherwise pick the best HEALTHY source
+  /// reachable by an OPEN route (high delivery rate weighted by remaining stock
+  /// so it won't run dry mid-feed) and reroute to it. Never reroutes onto a
+  /// down/empty source, and won't churn off a fine line unless a candidate is
+  /// genuinely stronger.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+
+    final active = _sources[_active];
+    final lineHealthy = active.usable;
+
+    // Supply line is fine and the silo is comfortably full — hold position.
+    if (lineHealthy && _buffer > 0.5) return;
+
+    // Best healthy source: yield weighted by how much stock it still holds.
+    int? best;
+    var bestScore = 0.0;
+    for (var i = 0; i < _sources.length; i++) {
+      final s = _sources[i];
+      if (!s.usable) continue; // never reroute to a down/empty source
+      final score = s.yield * (0.3 + 0.7 * s.stock);
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    if (best == null || best == _active) return;
+
+    // If the current line still feeds, only switch to a genuinely stronger
+    // source (avoid pointless churn between comparable backups).
+    if (lineHealthy) {
+      final activeScore = active.yield * (0.3 + 0.7 * active.stock);
+      if (bestScore <= activeScore) return;
+    }
+
+    // Route the tap through the game's own reroute handler via the source's
+    // normalised position (sources are >0.2 apart, so this selects exactly it).
+    _onTap(_sources[best].pos);
   }
 
   List<_Source> _buildSources() {

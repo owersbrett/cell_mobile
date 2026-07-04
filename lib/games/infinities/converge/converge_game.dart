@@ -45,6 +45,7 @@ const double _kDecayWindow = 5.0;  // seconds over which the speed bonus decays
 const int    _kStreakStep  = 3;    // every N correct = +1× multiplier
 const double _kRevealHold   = 1.9; // seconds the behavior flare stays up
 const int    _kMaxTerms     = 40;  // cap streamed terms per round
+const double _kButtonHeight = 60;  // answer-button band height (layout math)
 
 // ============================================================================
 // Series data
@@ -213,6 +214,273 @@ final List<_Series> _kSeries = [
 enum _Mode { judge, limit }
 
 // ============================================================================
+// Visual manual — the legend carousel cards. Each card is drawn with the
+// game's OWN chart + answer-button primitives (the same partial-sum polyline,
+// dashed limit asymptote and rounded verb buttons the player meets in play).
+// Static and cheap: rendered once in the intro carousel, never per frame.
+// ============================================================================
+
+/// Draws the streaming partial-sum polyline for [sums] inside [rect], in the
+/// live game's style (soft glow pass + crisp line + term dots, newest as an
+/// orb). Optional [limit] snaps a dashed cyan asymptote like the reveal does.
+void _lmCurve(
+  Canvas canvas,
+  Rect rect,
+  List<double> sums,
+  Color line, {
+  Color? live,
+  double? limit,
+}) {
+  if (rect.width < 8 || rect.height < 8 || sums.isEmpty) return;
+
+  var lo = 0.0, hi = 0.0;
+  for (final s in sums) {
+    lo = math.min(lo, s);
+    hi = math.max(hi, s);
+  }
+  if (limit != null) hi = math.max(hi, limit);
+  if (hi - lo < 1e-6) hi = lo + 1;
+  final pad = (hi - lo) * 0.14;
+  lo -= pad;
+  hi += pad;
+
+  double xOf(int i) {
+    final n = sums.length;
+    final f = n <= 1 ? 0.0 : i / (n - 1);
+    return rect.left + f * rect.width;
+  }
+
+  double yOf(double v) => rect.bottom - ((v - lo) / (hi - lo)) * rect.height;
+
+  // Zero baseline — the floor the sum builds from.
+  if (lo <= 0 && hi >= 0) {
+    final y0 = yOf(0);
+    canvas.drawLine(
+      Offset(rect.left, y0),
+      Offset(rect.right, y0),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.10)
+        ..strokeWidth = 1,
+    );
+  }
+
+  final liveColor = live ?? line;
+
+  // Dashed asymptote where a convergent sum is heading.
+  if (limit != null) {
+    final y = yOf(limit);
+    final dash = Paint()
+      ..color = _kConverge.withValues(alpha: 0.7)
+      ..strokeWidth = 1.4;
+    const seg = 9.0;
+    for (var x = rect.left; x < rect.right; x += seg * 2) {
+      canvas.drawLine(
+          Offset(x, y), Offset(math.min(x + seg, rect.right), y), dash);
+    }
+    GameFx.text(canvas, 'limit', Offset(rect.right - 16, y - 9), 10,
+        _kConverge.withValues(alpha: 0.85));
+  }
+
+  // The partial-sum polyline (glow pass + crisp line).
+  final path = Path();
+  for (var i = 0; i < sums.length; i++) {
+    final p = Offset(xOf(i), yOf(sums[i]));
+    if (i == 0) {
+      path.moveTo(p.dx, p.dy);
+    } else {
+      path.lineTo(p.dx, p.dy);
+    }
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..strokeJoin = StrokeJoin.round
+      ..color = liveColor.withValues(alpha: 0.25)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..color = line.withValues(alpha: 0.95),
+  );
+
+  // Term dots; newest emphasised as the live partial sum.
+  for (var i = 0; i < sums.length; i++) {
+    final p = Offset(xOf(i), yOf(sums[i]));
+    if (i == sums.length - 1) {
+      GameFx.orb(canvas, p, 5.5, line, glow: 1.0);
+    } else {
+      canvas.drawCircle(
+          p, 2.4, Paint()..color = line.withValues(alpha: 0.85));
+    }
+  }
+}
+
+/// Draws one answer button in the live game's [_bigButton] style: rounded card,
+/// accent border, glow. [correct] highlights it green (the true answer), [dim]
+/// fades it (a not-chosen option).
+void _lmButton(
+  Canvas canvas,
+  Rect r,
+  String label,
+  Color color, {
+  bool correct = false,
+  bool wrong = false,
+  bool dim = false,
+}) {
+  if (r.width < 10 || r.height < 10) return;
+  final rr = RRect.fromRectAndRadius(r, const Radius.circular(14));
+
+  Color bg = _kCardBg;
+  Color border = color.withValues(alpha: 0.55);
+  Color fg = Potatuhs.textPrimary;
+  if (correct) {
+    bg = Color.alphaBlend(_kGood.withValues(alpha: 0.12), _kCardBg);
+    border = _kGood.withValues(alpha: 0.9);
+    fg = _kGood;
+  } else if (wrong) {
+    bg = Color.alphaBlend(_kBad.withValues(alpha: 0.10), _kCardBg);
+    border = _kBad.withValues(alpha: 0.9);
+    fg = _kBad;
+  } else if (dim) {
+    border = _kCardLine.withValues(alpha: 0.5);
+    fg = Potatuhs.textFaint;
+  }
+
+  canvas.drawRRect(rr, Paint()..color = bg);
+  canvas.drawRRect(
+    rr,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.7
+      ..color = border,
+  );
+  GameFx.text(canvas, label, r.center, math.min(16.0, r.height * 0.42), fg,
+      weight: FontWeight.w800);
+}
+
+/// Two side-by-side judge buttons inside [band].
+void _lmTwoButtons(Canvas canvas, Rect band) {
+  final gap = band.width * 0.06;
+  final half = (band.width - gap) / 2;
+  final l = Rect.fromLTWH(band.left, band.top, half, band.height);
+  final rgt = Rect.fromLTWH(band.left + half + gap, band.top, half, band.height);
+  _lmButton(canvas, l, 'CONVERGES', _kConverge);
+  _lmButton(canvas, rgt, 'DIVERGES', _kDiverge);
+}
+
+// -- Frame 1: the core read — watch Sₙ climb, then judge --------------------
+void _legendJudge(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  GameFx.text(canvas, '½ + ¼ + ⅛ + ¹⁄₁₆ + ⋯', Offset(w * 0.5, h * 0.12), 19,
+      Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+  final chart = Rect.fromLTRB(w * 0.10, h * 0.26, w * 0.90, h * 0.62);
+  _lmCurve(canvas, chart, const [0.5, 0.75, 0.875, 0.9375, 0.969, 0.984, 0.992],
+      _kConverge);
+  _lmTwoButtons(
+      canvas, Rect.fromLTWH(w * 0.08, h * 0.74, w * 0.84, h * 0.15));
+}
+
+// -- Frame 2: how to score — call it early, the speed bonus decays -----------
+void _legendScore(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  final chart = Rect.fromLTRB(w * 0.10, h * 0.22, w * 0.90, h * 0.66);
+  const sums = [0.5, 0.75, 0.875, 0.9375, 0.969, 0.984, 0.992, 0.996];
+  _lmCurve(canvas, chart, sums, _kConverge);
+  // Early call → big points; late call → the floor. Same "+pts ×mult" pop the
+  // live game spawns on a correct call.
+  GameFx.text(canvas, '+130  ×2', Offset(w * 0.26, h * 0.30), 15, _kGood,
+      weight: FontWeight.w900, glow: 0.6);
+  GameFx.text(canvas, 'call now', Offset(w * 0.26, h * 0.40), 10,
+      Potatuhs.textSecondary);
+  GameFx.text(canvas, '+25', Offset(w * 0.80, h * 0.80), 13,
+      Potatuhs.textFaint,
+      weight: FontWeight.w800);
+  GameFx.text(canvas, 'too late', Offset(w * 0.80, h * 0.88), 10,
+      Potatuhs.textFaint);
+}
+
+// -- Frame 3: the danger — slow ≠ safe; the harmonic crawls but diverges ------
+void _legendDanger(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  GameFx.text(canvas, '1 + ½ + ⅓ + ¼ + ⅕ + ⋯', Offset(w * 0.5, h * 0.12), 18,
+      Potatuhs.textPrimary,
+      weight: FontWeight.w800);
+  // Harmonic partial sums — a slow, relentless climb that never levels off.
+  final chart = Rect.fromLTRB(w * 0.10, h * 0.24, w * 0.90, h * 0.60);
+  const harm = [1.0, 1.5, 1.833, 2.083, 2.283, 2.45, 2.593, 2.718, 2.829];
+  _lmCurve(canvas, chart, harm, _kDiverge);
+  // A wrong CONVERGES tap glows red; DIVERGES is the true call.
+  final band = Rect.fromLTWH(w * 0.08, h * 0.74, w * 0.84, h * 0.15);
+  final gap = band.width * 0.06;
+  final half = (band.width - gap) / 2;
+  _lmButton(canvas, Rect.fromLTWH(band.left, band.top, half, band.height),
+      'CONVERGES', _kConverge,
+      wrong: true);
+  _lmButton(
+      canvas,
+      Rect.fromLTWH(band.left + half + gap, band.top, half, band.height),
+      'DIVERGES',
+      _kDiverge,
+      correct: true);
+}
+
+// -- Frame 4: the escalation — name the exact limit it settles on ------------
+void _legendLimit(Canvas canvas, Size size) {
+  final w = size.width, h = size.height;
+  if (w < 40 || h < 40) return;
+  GameFx.text(canvas, 'WHAT\'S THE LIMIT?', Offset(w * 0.5, h * 0.11), 12,
+      _kConverge,
+      weight: FontWeight.w800);
+  final chart = Rect.fromLTRB(w * 0.10, h * 0.22, w * 0.90, h * 0.60);
+  _lmCurve(
+    canvas,
+    chart,
+    const [0.5, 0.75, 0.875, 0.9375, 0.969, 0.984, 0.992],
+    _kConverge,
+    limit: 1.0,
+  );
+  // Three limit options; the true value is highlighted.
+  final band = Rect.fromLTWH(w * 0.08, h * 0.74, w * 0.84, h * 0.15);
+  const labels = ['½', '1', '2'];
+  const correctIdx = 1;
+  final gap = band.width * 0.05;
+  final third = (band.width - 2 * gap) / 3;
+  for (var i = 0; i < 3; i++) {
+    final r =
+        Rect.fromLTWH(band.left + i * (third + gap), band.top, third, band.height);
+    _lmButton(canvas, r, labels[i], _kConverge,
+        correct: i == correctIdx, dim: i != correctIdx);
+  }
+}
+
+/// The visual manual for Converge — wired into the registry spec.
+final List<LegendFrame> convergeLegendFrames = [
+  const LegendFrame(
+      caption: 'Watch Sₙ climb — call CONVERGES or DIVERGES',
+      paint: _legendJudge),
+  const LegendFrame(
+      caption: 'Call it early — the speed bonus decays fast',
+      paint: _legendScore),
+  const LegendFrame(
+      caption: 'Slow isn\'t safe: the harmonic crawls but DIVERGES',
+      paint: _legendDanger),
+  const LegendFrame(
+      caption: 'Late rounds: name the exact limit it settles on',
+      paint: _legendLimit),
+];
+
+// ============================================================================
 // Widget
 // ============================================================================
 
@@ -274,12 +542,45 @@ class _ConvergeGameState extends State<ConvergeGame>
     _pool = List<_Series>.from(_kSeries)..shuffle(_rng);
     _loadRound();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
+    // Buffer calls to a human pace — else it banks a correct answer every tick.
+    widget.session.autoPilotInterval = const Duration(milliseconds: 1100);
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     super.dispose();
+  }
+
+  // ==========================================================================
+  // ATTRACT autopilot
+  // ==========================================================================
+
+  /// One hands-free move per host tick (~250ms). Plays Converge *correctly*,
+  /// not randomly: while a series awaits a call it decides via the game's own
+  /// judgment field — [_Series.converges] in judge mode, [_correctLabel] (the
+  /// series' true limit label) in name-the-limit mode — and taps that answer
+  /// through the same [_judge] / [_name] handlers a finger would hit, so the
+  /// speed bonus lands. While the post-answer reveal flare is up it advances
+  /// via [_skipReveal]. Mid-transition it does nothing. Host owns clock/HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (!_answered) {
+      // Answer with the series' own scored-against truth — never a guess.
+      if (_mode == _Mode.judge) {
+        _judge(_series.converges);
+      } else {
+        _name(_correctLabel);
+      }
+    } else {
+      // Reveal flare is showing — advance to the next series.
+      _skipReveal();
+    }
   }
 
   // ==========================================================================
@@ -436,6 +737,10 @@ class _ConvergeGameState extends State<ConvergeGame>
     return LayoutBuilder(builder: (context, constraints) {
       _field = Size(constraints.maxWidth, constraints.maxHeight);
       final short = constraints.maxHeight < 460;
+      // Pixel height of the interaction band the chart must never draw under:
+      // bottom padding + answer buttons + the gap above them (+ safe inset).
+      final safeBottom = MediaQuery.paddingOf(context).bottom;
+      final chartBottomInset = safeBottom + 12 + _kButtonHeight + 12;
       return ClipRect(
         child: Stack(
           children: [
@@ -450,6 +755,7 @@ class _ConvergeGameState extends State<ConvergeGame>
                   converges: _series.converges,
                   showLimit: _answered && _series.converges,
                   limit: _series.limit,
+                  bottomInset: chartBottomInset,
                   particles: _particles,
                   pops: _pops,
                 ),
@@ -462,26 +768,21 @@ class _ConvergeGameState extends State<ConvergeGame>
                   child: Column(
                     children: [
                       const SizedBox(height: 40), // clear the host score HUD
-                      _buildHeader(),
+                      _buildHeader(short),
                       const Spacer(),
+                      // Behavior reveal flare — its own band ABOVE the answer
+                      // buttons. Column layout guarantees the fact card and the
+                      // interaction row can never overlap at any viewport size
+                      // (the Spacer absorbs the card's height, buttons stay put).
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 200),
+                        child: _answered
+                            ? _buildReveal(short)
+                            : const SizedBox.shrink(),
+                      ),
                       _buildAnswerArea(),
                     ],
                   ),
-                ),
-              ),
-            ),
-            // Behavior reveal flare.
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: 12,
-              child: SafeArea(
-                top: false,
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: _answered
-                      ? _buildReveal()
-                      : const SizedBox.shrink(),
                 ),
               ),
             ),
@@ -493,7 +794,7 @@ class _ConvergeGameState extends State<ConvergeGame>
 
   // -- Header: streamed expression + mode prompt + running sum ---------------
 
-  Widget _buildHeader() {
+  Widget _buildHeader(bool short) {
     final mode = _mode == _Mode.judge ? 'CONVERGE OR DIVERGE?' : 'WHAT\'S THE LIMIT?';
     return Column(
       children: [
@@ -509,12 +810,12 @@ class _ConvergeGameState extends State<ConvergeGame>
             style: Potatuhs.label(size: 11, color: _accent),
           ),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: short ? 8 : 12),
         Text(
           _series.display,
           textAlign: TextAlign.center,
           style: Potatuhs.body(
-            size: 24,
+            size: short ? 20 : 24,
             weight: FontWeight.w800,
             color: Potatuhs.textPrimary,
           ),
@@ -615,7 +916,7 @@ class _ConvergeGameState extends State<ConvergeGame>
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        height: 60,
+        height: _kButtonHeight,
         decoration: BoxDecoration(
           color: bg,
           borderRadius: BorderRadius.circular(14),
@@ -654,7 +955,7 @@ class _ConvergeGameState extends State<ConvergeGame>
 
   // -- Reveal flare ----------------------------------------------------------
 
-  Widget _buildReveal() {
+  Widget _buildReveal(bool short) {
     final headColor = _correct ? _kGood : _kBad;
     final head = _correct
         ? (_series.converges ? 'CONVERGES' : 'DIVERGES')
@@ -664,9 +965,15 @@ class _ConvergeGameState extends State<ConvergeGame>
       onTap: _skipReveal,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        width: double.infinity,
+        // The bottom margin IS the gap above the answer buttons — the card
+        // occupies its own band and can never stack on the interaction row.
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: EdgeInsets.symmetric(horizontal: 16, vertical: short ? 9 : 12),
         decoration: BoxDecoration(
-          color: headColor.withValues(alpha: 0.10),
+          // Opaque tinted base: the card may sit over the chart's tail, so the
+          // fact text must not have plot lines bleeding through it.
+          color: Color.alphaBlend(headColor.withValues(alpha: 0.10), _kCardBg),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: headColor.withValues(alpha: 0.55), width: 1.3),
         ),
@@ -684,7 +991,11 @@ class _ConvergeGameState extends State<ConvergeGame>
             const SizedBox(height: 4),
             Text(
               _series.behavior,
-              style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary, height: 1.35),
+              style: Potatuhs.body(
+                size: short ? 12 : 13,
+                color: Potatuhs.textSecondary,
+                height: 1.3,
+              ),
             ),
             const SizedBox(height: 6),
             Text(
@@ -710,6 +1021,7 @@ class _ChartPainter extends CustomPainter {
   final bool converges;
   final bool showLimit;
   final double? limit;
+  final double bottomInset; // px band at the bottom (answer buttons) to avoid
   final List<FxParticle> particles;
   final List<FxPop> pops;
 
@@ -721,6 +1033,7 @@ class _ChartPainter extends CustomPainter {
     required this.converges,
     required this.showLimit,
     required this.limit,
+    required this.bottomInset,
     required this.particles,
     required this.pops,
   });
@@ -738,12 +1051,20 @@ class _ChartPainter extends CustomPainter {
   void _paintChart(Canvas canvas, Size size) {
     if (sums.isEmpty) return;
 
-    // Plot rectangle: leaves room for the header above and buttons below.
-    final rect = Rect.fromLTWH(
+    // Plot rectangle: below the header band, and never inside the measured
+    // answer-button band ([bottomInset], passed from the widget's
+    // LayoutBuilder). math.max keeps the rect valid on tiny viewports —
+    // no inverted ranges.
+    final top = size.height * 0.30;
+    final bottom = math.max(
+      top + 40.0,
+      math.min(size.height * 0.72, size.height - bottomInset),
+    );
+    final rect = Rect.fromLTRB(
       size.width * 0.08,
-      size.height * 0.30,
-      size.width * 0.84,
-      size.height * 0.40,
+      top,
+      size.width * 0.92,
+      bottom,
     );
 
     // Vertical range from the data (and the limit, when shown).

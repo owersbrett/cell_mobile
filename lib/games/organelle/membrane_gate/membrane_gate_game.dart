@@ -97,6 +97,10 @@ const List<_MolDef> _kUnwanted = [
       ''),
 ];
 
+// Lookup by label so the legend can pull the EXACT _MolDef the game spawns.
+_MolDef _defFor(String label) =>
+    [..._kWanted, ..._kUnwanted].firstWhere((d) => d.label == label);
+
 class _Molecule {
   Offset pos;
   double vx;
@@ -148,13 +152,41 @@ class _MembraneGateGameState extends State<MembraneGateGame>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
+    // ATTRACT autopilot: this game knows how to play itself. Registered always
+    // (harmless in normal play — the host only calls it in autoplay). See
+    // [_autoStep]. Dormant unless the host is driving hands-free.
+    widget.session.autoPilot = _autoStep;
   }
 
   @override
   void dispose() {
+    if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
+  }
+
+  // ── ATTRACT autopilot ───────────────────────────────────────────────────
+  /// One hands-free move per host tick (~250ms). Plays Membrane Gate the way a
+  /// competent gatekeeper would: it transports the single most-urgent WANTED
+  /// molecule (the one nearest the membrane, about to be missed) into the cell
+  /// and NEVER taps a toxin/virus/waste — those are left to bounce off the
+  /// selectively-permeable membrane for free. Deterministic: reads the game's
+  /// own [_mols], picks by descending y (ties → first encountered), then fires
+  /// the game's own [_act] handler. The host owns the clock and HUD.
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    _Molecule? target;
+    var bestDy = double.negativeInfinity;
+    for (final m in _mols) {
+      if (m.dead || !m.def.wanted) continue; // never a toxin — let it bounce
+      if (m.pos.dy > bestDy) {
+        bestDy = m.pos.dy;
+        target = m;
+      }
+    }
+    if (target == null) return; // no wanted molecule on screen — do nothing
+    _act(target); // one catch this tick
   }
 
   // ─── Difficulty ───────────────────────────────────────────────────────────
@@ -721,3 +753,369 @@ class _MembraneGatePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _MembraneGatePainter oldDelegate) => false;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Visual manual — the legend carousel cards. Each is drawn with the SAME
+// molecule defs, colors and glyph shapes the live game uses, so the manual
+// shows the LITERAL O₂ / Na⁺ / glucose / toxin the player will meet. Static
+// and cheap; rendered once in the intro carousel, never per frame.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Static clone of the painter's `_orbDot` (a shaded molecule sphere).
+void _lgOrb(Canvas canvas, Offset at, double r, Color c) {
+  if (r <= 0) return;
+  canvas.drawCircle(
+    at,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.4),
+        colors: [Color.lerp(c, Colors.white, 0.5)!, c],
+      ).createShader(Rect.fromCircle(center: at, radius: r)),
+  );
+}
+
+void _lgGlyphText(Canvas canvas, String s, double size, Color color) {
+  final tp = TextPainter(
+    text: TextSpan(
+        text: s,
+        style: TextStyle(
+            fontFamily: _kFont,
+            fontSize: size,
+            fontWeight: FontWeight.w800,
+            color: color)),
+    textDirection: TextDirection.ltr,
+  )..layout();
+  tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+}
+
+void _lgPolygon(Canvas canvas, int sides, double r, Color c, double rot,
+    {double wobble = 0}) {
+  if (r <= 0) return;
+  final path = Path();
+  for (var i = 0; i <= sides; i++) {
+    final a = rot + i / sides * math.pi * 2;
+    final rr = r * (1 + wobble * math.sin(a * 3));
+    final pt = Offset(math.cos(a) * rr, math.sin(a) * rr);
+    if (i == 0) {
+      path.moveTo(pt.dx, pt.dy);
+    } else {
+      path.lineTo(pt.dx, pt.dy);
+    }
+  }
+  path.close();
+  canvas.drawPath(
+      path,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-0.3, -0.3),
+          colors: [Color.lerp(c, Colors.white, 0.35)!, c],
+        ).createShader(Rect.fromCircle(center: Offset.zero, radius: r)));
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Color.lerp(c, Colors.white, 0.4)!.withValues(alpha: 0.8));
+}
+
+void _lgStar(Canvas canvas, int points, double outer, double inner, Color c) {
+  if (outer <= 0) return;
+  final path = Path();
+  for (var i = 0; i < points * 2; i++) {
+    final a = i / (points * 2) * math.pi * 2 - math.pi / 2;
+    final r = i.isEven ? outer : inner;
+    final pt = Offset(math.cos(a) * r, math.sin(a) * r);
+    if (i == 0) {
+      path.moveTo(pt.dx, pt.dy);
+    } else {
+      path.lineTo(pt.dx, pt.dy);
+    }
+  }
+  path.close();
+  canvas.drawPath(path, Paint()..color = c);
+  canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..color = Color.lerp(c, Colors.white, 0.5)!);
+}
+
+/// Draws one molecule at [center] using its own glyph — the same shapes the
+/// live painter renders. [label] optionally shown beneath.
+void _lgMolecule(Canvas canvas, Offset center, _MolDef def,
+    {double scale = 1.0, bool showLabel = true}) {
+  final c = def.color;
+  final rad = _kMolRadius * scale;
+  if (rad <= 0) return;
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  canvas.scale(scale);
+
+  // Soft glow halo.
+  canvas.drawCircle(
+      Offset.zero,
+      _kMolRadius + 4,
+      Paint()
+        ..color = c.withValues(alpha: 0.22)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7));
+
+  switch (def.glyph) {
+    case _Glyph.gasPair:
+      _lgOrb(canvas, const Offset(-6, 0), 7, c);
+      _lgOrb(canvas, const Offset(6, 0), 7, c);
+      break;
+    case _Glyph.gasTriple:
+      _lgOrb(canvas, const Offset(-9, 0), 5.5, c.withValues(alpha: 0.9));
+      _lgOrb(canvas, Offset.zero, 7, c);
+      _lgOrb(canvas, const Offset(9, 0), 5.5, c.withValues(alpha: 0.9));
+      break;
+    case _Glyph.water:
+      _lgOrb(canvas, const Offset(0, -1), 8, c);
+      _lgOrb(canvas, const Offset(-8, 6), 4.5, c.withValues(alpha: 0.85));
+      _lgOrb(canvas, const Offset(8, 6), 4.5, c.withValues(alpha: 0.85));
+      break;
+    case _Glyph.ion:
+      _lgOrb(canvas, Offset.zero, _kMolRadius - 4, c);
+      _lgGlyphText(canvas, def.label, 11, Potatuhs.ink);
+      break;
+    case _Glyph.hexagon:
+      _lgPolygon(canvas, 6, _kMolRadius - 3, c, 0.4);
+      break;
+    case _Glyph.amino:
+      _lgPolygon(canvas, 4, _kMolRadius - 4, c, math.pi / 4);
+      _lgGlyphText(canvas, 'AA', 9, Potatuhs.ink);
+      break;
+    case _Glyph.spiky:
+      _lgStar(canvas, 7, _kMolRadius, _kMolRadius - 8, c);
+      break;
+    case _Glyph.virus:
+      _lgOrb(canvas, Offset.zero, _kMolRadius - 7, c);
+      final spike = Paint()
+        ..color = c.withValues(alpha: 0.9)
+        ..strokeWidth = 2.2
+        ..strokeCap = StrokeCap.round;
+      for (var i = 0; i < 8; i++) {
+        final a = i / 8 * math.pi * 2;
+        final d = Offset(math.cos(a), math.sin(a));
+        canvas.drawLine(d * (_kMolRadius - 7.0), d * (_kMolRadius + 1.0), spike);
+        canvas.drawCircle(d * (_kMolRadius + 2.0), 1.8, spike);
+      }
+      break;
+    case _Glyph.rod:
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromCenter(
+                  center: Offset.zero, width: _kMolRadius * 2.0, height: 13),
+              const Radius.circular(6.5)),
+          Paint()..color = c);
+      break;
+    case _Glyph.metal:
+      _lgPolygon(canvas, 6, _kMolRadius - 4, c, 0);
+      _lgOrb(canvas, Offset.zero, 4, const Color(0xFFFF5252));
+      break;
+    case _Glyph.blob:
+      _lgPolygon(canvas, 9, _kMolRadius - 5, c, 0.7, wobble: 0.18);
+      break;
+  }
+  canvas.restore();
+
+  if (showLabel) {
+    GameFx.text(canvas, def.label,
+        center.translate(0, (_kMolRadius + 10) * scale), 8.5 * scale,
+        c.withValues(alpha: 0.9));
+  }
+}
+
+/// Draws a horizontal slice of the phospholipid bilayer across [y], with the
+/// three embedded channel proteins — the same heads/tails/pores the game paints.
+void _lgMembrane(Canvas canvas, Size size, double y, {bool channels = true}) {
+  const headR = 4.6;
+  const gap = 13.0;
+  final headPaint = Paint()..color = Potatuhs.orange.withValues(alpha: 0.85);
+  final tailPaint = Paint()
+    ..color = Potatuhs.sienna.withValues(alpha: 0.5)
+    ..strokeWidth = 1.4
+    ..strokeCap = StrokeCap.round;
+  final topY = y - 9;
+  final botY = y + 9;
+  for (double x = gap; x < size.width; x += gap) {
+    canvas.drawLine(Offset(x, topY + headR), Offset(x, y - 1), tailPaint);
+    canvas.drawLine(Offset(x, botY - headR), Offset(x, y + 1), tailPaint);
+    canvas.drawCircle(Offset(x, topY), headR, headPaint);
+    canvas.drawCircle(Offset(x, botY), headR, headPaint);
+  }
+  if (!channels) return;
+  const labels = ['aquaporin', 'glucose', 'ion channel'];
+  const cols = [Color(0xFF4DD0E1), Color(0xFFFFD54F), Color(0xFFAED581)];
+  const slots = [0.25, 0.5, 0.75];
+  for (var i = 0; i < slots.length; i++) {
+    final cx = size.width * slots[i];
+    final col = cols[i];
+    final r = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: Offset(cx, y), width: 22, height: 30),
+        const Radius.circular(8));
+    canvas.drawRRect(
+        r,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              col.withValues(alpha: 0.55),
+              col.withValues(alpha: 0.28),
+            ],
+          ).createShader(r.outerRect));
+    canvas.drawLine(
+        Offset(cx, y - 11),
+        Offset(cx, y + 11),
+        Paint()
+          ..color = Potatuhs.inkDeep.withValues(alpha: 0.8)
+          ..strokeWidth = 4
+          ..strokeCap = StrokeCap.round);
+    GameFx.text(canvas, labels[i], Offset(cx, y + 26), 8.5,
+        col.withValues(alpha: 0.85));
+  }
+}
+
+/// A dashed tap-ring cue drawn around a molecule (the "act here" verb).
+void _lgTapRing(Canvas canvas, Offset c, double r, Color col) {
+  if (r <= 0) return;
+  final p = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..color = col;
+  const seg = 0.5;
+  for (double a = 0; a < math.pi * 2; a += seg * 2) {
+    canvas.drawArc(Rect.fromCircle(center: c, radius: r), a, seg, false, p);
+  }
+  // Finger dot.
+  canvas.drawCircle(c.translate(r * 0.7, r * 0.7), 5,
+      Paint()..color = col.withValues(alpha: 0.9));
+}
+
+// Frame 1 — the core setup + the verb: tap wanted molecules to import them.
+void _legendGate(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mY = size.height * 0.74;
+  _lgMembrane(canvas, size, mY);
+  // A few wanted molecules drifting toward the membrane.
+  _lgMolecule(canvas, Offset(size.width * 0.26, size.height * 0.30),
+      _defFor('O₂'));
+  _lgMolecule(canvas, Offset(size.width * 0.72, size.height * 0.24),
+      _defFor('H₂O'));
+  final target = Offset(size.width * 0.5, size.height * 0.44);
+  _lgMolecule(canvas, target, _defFor('Glucose'), scale: 1.15);
+  _lgTapRing(canvas, target, _kMolRadius * 1.15 + 8, _kAccent);
+}
+
+// Frame 2 — how to score: a wanted molecule lights its channel, +10 × streak.
+void _legendImport(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mY = size.height * 0.70;
+  _lgMembrane(canvas, size, mY);
+  final na = _defFor('Na⁺');
+  final at = Offset(size.width * 0.5, size.height * 0.34);
+  _lgMolecule(canvas, at, na, scale: 1.15, showLabel: false);
+  // Downward slurp arrow into the lit ion channel.
+  final arrow = Paint()
+    ..color = na.color
+    ..strokeWidth = 3
+    ..strokeCap = StrokeCap.round
+    ..style = PaintingStyle.stroke;
+  final ax = size.width * 0.5;
+  canvas.drawLine(Offset(ax, size.height * 0.44), Offset(ax, mY - 14), arrow);
+  canvas.drawLine(
+      Offset(ax - 7, mY - 22), Offset(ax, mY - 14), arrow);
+  canvas.drawLine(
+      Offset(ax + 7, mY - 22), Offset(ax, mY - 14), arrow);
+  // Glow on the ion-channel slot (x = 0.75 in-game; centre it under the arrow).
+  final glowR = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(ax, mY), width: 22, height: 30),
+      const Radius.circular(8));
+  canvas.drawRRect(
+      glowR,
+      Paint()
+        ..color = na.color.withValues(alpha: 0.5)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10));
+  GameFx.text(canvas, '+10 × STREAK', Offset(size.width * 0.5, size.height * 0.14),
+      16, Potatuhs.gold, weight: FontWeight.w800);
+}
+
+// Frame 3 — the danger: never tap toxins; a tapped toxin costs −8.
+void _legendToxin(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mY = size.height * 0.74;
+  _lgMembrane(canvas, size, mY, channels: false);
+  final xs = [size.width * 0.28, size.width * 0.72];
+  _lgMolecule(canvas, Offset(xs[0], size.height * 0.30), _defFor('Virus'));
+  final toxin = _defFor('Toxin');
+  final tp = Offset(xs[1], size.height * 0.30);
+  _lgMolecule(canvas, tp, toxin);
+  // Red "no" ring over the toxin — do not tap.
+  final noPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 3
+    ..color = const Color(0xFFFF5252);
+  canvas.drawCircle(tp, _kMolRadius + 7, noPaint);
+  canvas.drawLine(
+      tp.translate(-11, -11), tp.translate(11, 11), noPaint..strokeCap = StrokeCap.round);
+  GameFx.text(canvas, 'Tap a toxin = −8', Offset(size.width * 0.5, size.height * 0.54),
+      15, const Color(0xFFFF5252), weight: FontWeight.w800);
+  GameFx.text(canvas, 'Let intruders bounce off the membrane',
+      Offset(size.width * 0.5, mY + 34), 11, _kAccent.withValues(alpha: 0.9));
+}
+
+// Frame 4 — escalation: faster arrivals + more mimic intruders crowd the field.
+void _legendRamp(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final mY = size.height * 0.80;
+  _lgMembrane(canvas, size, mY, channels: false);
+  // A dense, mixed field — good and bad packed close, small & fast.
+  final field = <List<dynamic>>[
+    ['O₂', 0.18, 0.20],
+    ['Toxin', 0.42, 0.16],
+    ['K⁺', 0.66, 0.22],
+    ['Waste', 0.84, 0.18],
+    ['Amino', 0.30, 0.40],
+    ['Heavy metal', 0.55, 0.44],
+    ['CO₂', 0.78, 0.46],
+    ['Bacterium', 0.20, 0.60],
+    ['Glucose', 0.48, 0.62],
+    ['Virus', 0.74, 0.60],
+  ];
+  for (final m in field) {
+    _lgMolecule(canvas, Offset(size.width * (m[1] as double), size.height * (m[2] as double)),
+        _defFor(m[0] as String), scale: 0.72, showLabel: false);
+  }
+  // Speed streaks to convey the ramp.
+  final streak = Paint()
+    ..color = _kAccent.withValues(alpha: 0.4)
+    ..strokeWidth = 1.6
+    ..strokeCap = StrokeCap.round;
+  for (final m in field) {
+    final c = Offset(size.width * (m[1] as double), size.height * (m[2] as double));
+    canvas.drawLine(c.translate(0, -14), c.translate(0, -22), streak);
+  }
+  GameFx.text(canvas, 'Faster arrivals, more mimics',
+      Offset(size.width * 0.5, size.height * 0.10), 14, Potatuhs.textSecondary,
+      weight: FontWeight.w700);
+}
+
+/// The visual manual for Membrane Gate — wired into the registry spec.
+final List<LegendFrame> membraneGateLegendFrames = [
+  const LegendFrame(
+      caption: 'Tap the molecules the cell NEEDS to import them',
+      paint: _legendGate),
+  const LegendFrame(
+      caption: 'Each import lights its channel: +10 × your streak',
+      paint: _legendImport),
+  const LegendFrame(
+      caption: 'Never tap toxins — let intruders bounce off',
+      paint: _legendToxin),
+  const LegendFrame(
+      caption: 'It speeds up and mimics crowd in — pick fast',
+      paint: _legendRamp),
+];
