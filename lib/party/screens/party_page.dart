@@ -2265,11 +2265,65 @@ class _BoardView extends StatelessWidget {
             // The mischief crew rides above the player tokens so a loot-carrying
             // op is easy to spot and chase.
             for (final op in controller.ops) _opToken(geo, op),
+            // The landing beat's number pop — floats the resource delta over
+            // the tile the moment its effect resolves.
+            if (controller.lastLanding != null)
+              _landingPop(geo, controller.lastLanding!),
               ],
               ),
             ),
         );
       },
+    );
+  }
+
+  /// Floating "+5 💎" / "−5 💎" over the landed tile — the number pop that
+  /// makes a landing's consequence readable at the moment it resolves. A
+  /// one-shot rise-and-fade, restarted by the seq key on each fresh landing;
+  /// the text subtree is hoisted into `child:` so only the transform/opacity
+  /// rebuild per frame.
+  Widget _landingPop(_BoardGeometry geo, LandingEffect fx) {
+    final center = geo.nodeCenter(fx.position);
+    final parts = <String>[
+      if (fx.diamonds != 0) '${fx.diamonds > 0 ? '+' : ''}${fx.diamonds} 💎',
+      if (fx.potatoes != 0) '${fx.potatoes > 0 ? '+' : ''}${fx.potatoes} 🥔',
+    ];
+    final gain = fx.diamonds > 0 || fx.potatoes > 0;
+    return Positioned(
+      key: ValueKey('landing_${fx.seq}'),
+      left: center.dx - 60,
+      top: center.dy - geo.nodeRadius * 2.2,
+      child: IgnorePointer(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0, end: 1),
+          duration: const Duration(milliseconds: 1100),
+          curve: Curves.easeOut,
+          builder: (context, t, child) => Opacity(
+            opacity: t < 0.65 ? 1.0 : ((1 - t) / 0.35).clamp(0.0, 1.0),
+            child: Transform.translate(
+              offset: Offset(0, -geo.nodeRadius * 1.6 * t),
+              child: child,
+            ),
+          ),
+          child: SizedBox(
+            width: 120,
+            child: Text(
+              parts.join('  '),
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: geo.nodeRadius * 1.15,
+                fontWeight: FontWeight.w900,
+                color: gain ? _kAccent : const Color(0xFFE5484D),
+                shadows: const [
+                  Shadow(color: Colors.black, blurRadius: 6),
+                  Shadow(color: Colors.black, blurRadius: 12),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 

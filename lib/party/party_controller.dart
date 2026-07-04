@@ -99,6 +99,25 @@ class TurnResult {
   });
 }
 
+/// A landing's numeric consequence (signed resource deltas), stamped with a
+/// sequence number so the board UI can float a "+5 💎"-style pop exactly once
+/// per fresh landing.
+class LandingEffect {
+  final int seq;
+  final int playerIndex;
+  final int position; // board index the pop renders over
+  final int diamonds; // signed delta
+  final int potatoes; // signed delta
+
+  const LandingEffect({
+    required this.seq,
+    required this.playerIndex,
+    required this.position,
+    required this.diamonds,
+    required this.potatoes,
+  });
+}
+
 class MiniGameStanding {
   final PartyPlayer player;
   final int score;
@@ -273,6 +292,13 @@ class PartyController extends ChangeNotifier {
   int round = 1;
   int currentPlayerIndex = 0;
   TurnResult? lastTurn;
+
+  /// The most recent landing's numeric consequence — the board's floating
+  /// delta pop reads this. [LandingEffect.seq] increments on every landing
+  /// that moves a total, so the UI detects a fresh effect even across
+  /// lockstep replays. Derived purely from applied inputs: deterministic.
+  LandingEffect? lastLanding;
+  int _landingSeq = 0;
 
   /// The card currently drawn on a cardCommon/cardWild tile — held while a
   /// decision card waits for the player's A/B choice, and shown on the reveal.
@@ -520,7 +546,19 @@ class PartyController extends ChangeNotifier {
             : '${p.name} slipped back to ${to}.');
         p.position = to;
       }
+      final beforeDiamonds = p.diamonds, beforePotatoes = p.potatoes;
       _resolveSpace(p, board[p.position], turnLog);
+      final dDiamonds = p.diamonds - beforeDiamonds;
+      final dPotatoes = p.potatoes - beforePotatoes;
+      if (dDiamonds != 0 || dPotatoes != 0) {
+        lastLanding = LandingEffect(
+          seq: ++_landingSeq,
+          playerIndex: currentPlayerIndex,
+          position: p.position,
+          diamonds: dDiamonds,
+          potatoes: dPotatoes,
+        );
+      }
       // A decision card pauses for the player's choice; otherwise the space is
       // resolved. _resolveSpace leaves the phase at [moving] unless it set a
       // pause (cardDecision), so only advance when it didn't.
