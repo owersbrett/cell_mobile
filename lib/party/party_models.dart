@@ -31,16 +31,6 @@ extension PartyModeInfo on PartyMode {
     }
   }
 
-  /// Compact form for tight UI (the lobby's five-across pill row).
-  String get shortLabel {
-    switch (this) {
-      case PartyMode.solo:
-        return 'SOLO';
-      default:
-        return '${playerCount}P';
-    }
-  }
-
   int get playerCount {
     switch (this) {
       case PartyMode.solo:

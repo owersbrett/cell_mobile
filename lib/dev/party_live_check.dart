@@ -11,15 +11,15 @@ import '../party/net/party_net.dart';
 import '../party/party_controller.dart';
 import '../party/party_models.dart';
 
-/// LIVE 5-player lockstep check against the REAL hot-potato-games RTDB.
+/// LIVE 4-player lockstep check against the REAL hot-potato-games RTDB.
 ///
 /// Not part of the app. Run explicitly:
 ///
 ///   flutter run -d chrome -t lib/dev/party_live_check.dart
 ///
-/// Spins up one host + four joiners (synthetic uids, one anonymous auth — the
+/// Spins up one host + three joiners (synthetic uids, one anonymous auth — the
 /// cell_games rules grant any authed user write access to a room), plays a
-/// full 1-round ffa5 match through the real transport, and prints
+/// full 1-round ffa4 match through the real transport, and prints
 /// `PARTY-LIVE-RESULT: PASS/FAIL` to the console. This verifies what the
 /// in-memory tests can't: anonymous auth, RTDB rules, real async listener
 /// ordering, and lockstep convergence over the production pipe.
@@ -47,7 +47,7 @@ Future<void> _run() async {
     debugPrint('PARTY-LIVE: authed anonymously');
 
     code = _roomCode();
-    final uids = List.generate(5, (i) => 'live-check-$code-u$i');
+    final uids = List.generate(4, (i) => 'live-check-$code-u$i');
     debugPrint('PARTY-LIVE: room $code');
 
     hostNet = await PartyNet.host(
@@ -55,11 +55,11 @@ Future<void> _run() async {
       gameId: code,
       uid: uids[0],
       name: 'Host',
-      mode: PartyMode.ffa5,
+      mode: PartyMode.ffa4,
       rounds: 1,
     );
     final nets = <PartyNet>[hostNet];
-    for (var i = 1; i < 5; i++) {
+    for (var i = 1; i < 4; i++) {
       nets.add(await PartyNet.join(
         transport: FirebasePartyTransport(),
         gameId: code,
@@ -68,9 +68,9 @@ Future<void> _run() async {
       ));
     }
 
-    await _until(() => nets.every((n) => n.players.length == 5),
-        'roster 5/5 on every client');
-    debugPrint('PARTY-LIVE: roster 5/5 on all 5 clients');
+    await _until(() => nets.every((n) => n.players.length == 4),
+        'roster 4/4 on every client');
+    debugPrint('PARTY-LIVE: roster 4/4 on all 4 clients');
 
     await nets.first.startGame();
     await _until(() => nets.every((n) => n.controller != null),
@@ -105,10 +105,10 @@ Future<void> _run() async {
         case PartyPhase.minigamePlaying:
         case PartyPhase.passPhone:
           var s = 0;
-          while (s < 5 && c.hasSubmittedMiniScore(s)) {
+          while (s < 4 && c.hasSubmittedMiniScore(s)) {
             s++;
           }
-          if (s >= 5) break; // scored round settling
+          if (s >= 4) break; // scored round settling
           nets[s].act(PartyInputKind.miniScore, value: 100 + 10 * s);
           break;
         default:
@@ -142,7 +142,7 @@ Future<void> _run() async {
     final ranking = host.finalPlayerRanking;
     debugPrint('PARTY-LIVE: winner ${ranking.first.name} '
         '(🥔${ranking.first.potatoes} 💎${ranking.first.diamonds})');
-    debugPrint('PARTY-LIVE-RESULT: PASS — 5-player online match completed and '
+    debugPrint('PARTY-LIVE-RESULT: PASS — 4-player online match completed and '
         'converged on all clients (room $code)');
   } catch (e, st) {
     debugPrint('PARTY-LIVE-RESULT: FAIL — $e');

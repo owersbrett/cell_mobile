@@ -67,8 +67,9 @@ renderer per shape (spiral/grid/ribbon). None of this is built yet.
 
 ## Session resilience (implemented)
 
-- **5-player FFA online** (`PartyMode.ffa5`) is surfaced in the lobby — 1 host
-  + 4 joiners.
+- **Online cap is 4 players** (1 host + 3 joiners, the ffa4 pill). The engine
+  also supports `PartyMode.ffa5`/`ffa8` (index-stable, protocol-tested) but
+  they are deliberately NOT surfaced in the lobby — Brett's call 2026-07-04.
 - **Lobby onDisconnect guards** (`FirebasePartyTransport`): a joiner that drops
   in the lobby is removed from the roster; a host that drops pre-start deletes
   the room. Guards cancel at `status == 'playing'` — mid-game roster removal
@@ -84,7 +85,7 @@ renderer per shape (spiral/grid/ribbon). None of this is built yet.
 ## Live-RTDB automated check (no hardware needed)
 
 `lib/dev/party_live_check.dart` — a dev-only entrypoint that plays a full
-1-round ffa5 match (1 host + 4 joiners, synthetic uids over one anonymous
+1-round ffa4 match (1 host + 3 joiners, synthetic uids over one anonymous
 auth) against the REAL hot-potato-games RTDB and prints
 `PARTY-LIVE-RESULT: PASS/FAIL` to the console. Verifies what the in-memory
 tests can't: anonymous auth, RTDB rules, real async listener ordering, and
@@ -97,19 +98,19 @@ flutter run -d chrome -t lib/dev/party_live_check.dart
 This does NOT replace the hardware checklist below (it can't see UI, real
 network variance, or five separate devices) — it's the fast regression check.
 
-## 5-device verification checklist (run on real hardware)
+## 4-device verification checklist (run on real hardware)
 
-1. Host on device A: PARTY → name → HOST with mode **5P**, any map/length.
-2. Join from devices B–E with the code. Room shows PLAYERS (5/5), five distinct
-   names, five distinct characters; taken characters dim in the picker.
-3. Kill device C's app while still in the lobby → roster drops to 4/5 and START
-   disables again; rejoin → 5/5.
-4. START on A → all five land on the board; only the current player can act.
-5. Play a full WEEK (7 rounds): every mini-game round fires for all five
+1. Host on device A: PARTY → name → HOST with mode **1v1v1v1**, any map/length.
+2. Join from devices B–D with the code. Room shows PLAYERS (4/4), four distinct
+   names, four distinct characters; taken characters dim in the picker.
+3. Kill device C's app while still in the lobby → roster drops to 3/4 and START
+   disables again; rejoin → 4/4.
+4. START on A → all four land on the board; only the current player can act.
+5. Play a full WEEK (7 rounds): every mini-game round fires for all four
    simultaneously; scores award diamonds by rank.
 6. Mid-mini-game, kill device C → after game length + ~30s the round resolves
-   with C at 0; the other four continue.
-7. Final round ends → all four remaining devices show the same podium winner.
+   with C at 0; the other three continue.
+7. Final round ends → all three remaining devices show the same podium winner.
 8. EXIT / PLAY AGAIN on the host returns cleanly to a fresh lobby (session S).
 
 ## Online multiplayer — known gaps
