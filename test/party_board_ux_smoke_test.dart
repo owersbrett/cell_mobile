@@ -31,10 +31,15 @@ void main() {
     for (final names in [
       const ['A', 'B'],
       const ['A', 'B', 'C', 'D'],
+      const ['A', 'B', 'C', 'D', 'E'],
     ]) {
       for (var seed = 0; seed < 10; seed++) {
         final c = PartyController(
-          mode: names.length == 2 ? PartyMode.duel : PartyMode.ffa4,
+          mode: switch (names.length) {
+            2 => PartyMode.duel,
+            4 => PartyMode.ffa4,
+            _ => PartyMode.ffa5,
+          },
           totalRounds: 1,
           playerNames: names,
           seed: seed,
