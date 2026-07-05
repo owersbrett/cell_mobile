@@ -79,6 +79,14 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
     });
   }
 
+  void _manual() {
+    // "What IS this game?" — remount the current game fresh with the bot off:
+    // a non-autoplay host opens on its INTRO screen (the rules + visual-manual
+    // carousel), and START begins a real round. RESUME still returns to the
+    // bot walk afterwards.
+    setState(() => _mountToken++);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_games.isEmpty) {
@@ -181,6 +189,8 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
                 const Expanded(
                   child: Text(
                     'AUTOPLAY PAUSED — the round is yours',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                         fontFamily: 'Avenir',
                         fontSize: 12,
@@ -192,6 +202,11 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
                 TextButton(
                   onPressed: () => Navigator.of(context).maybePop(),
                   child: const Text('EXIT'),
+                ),
+                TextButton.icon(
+                  onPressed: _manual,
+                  icon: const Icon(Icons.menu_book, size: 16),
+                  label: const Text('MANUAL'),
                 ),
                 const SizedBox(width: 4),
                 FilledButton.icon(
