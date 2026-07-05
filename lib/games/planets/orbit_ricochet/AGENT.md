@@ -14,7 +14,7 @@
 - **Do NOT touch:** any other game (including the base `planets/orbit_catch/`), the registry
   (`mini_game_registry.dart`), the catalog (`game_catalog.dart`), the host, `mini_game_page.dart`, or
   anything outside this folder. Wiring this game into the registry is the orchestrator's job, not yours.
-- **Do NOT import another game's code.** This is a self-contained variant — the gravity-aim core is
+- **Do NOT import another game's code.** This is a self-contained variant — the direct-aim core is
   re-implemented here on purpose (the EXTRACTION_RECIPE dependency rule). If you need a shared helper,
   inline a private copy.
 
@@ -48,19 +48,32 @@
 
 ## Architecture (how the loop runs — match this if you extend it)
 
-- **One `AnimationController`** (`_ctrl`, vsync, infinite duration) drives `_tick` at ~60fps. All
-  simulation (gravity integration, reflection, catch/fizzle detection) and all FX live on this single
+- **One `Ticker`** (elapsed-dt, clamped ≤0.04s) drives `_onTick` at ~60fps. All simulation
+  (straight-line flight, reflection, catch/fizzle detection, scoring) and all FX live on this single
   ticker. There is exactly ONE `setState` per tick.
 - **One `CustomPainter`** (`_RicochetPainter`, `shouldRepaint => true`) draws everything: atmosphere,
-  walls, bodies, catcher, cannon, aim, preview, projectile, FX. No per-frame setState over a big tree.
-- **Physics:** `_advanceProjectile` runs 10 sub-steps/frame. Per sub-step: apply gravity from all
-  bodies → integrate position → reflect off bodies (mirror about normal × restitution, then push the
-  projectile clear of the surface) → reflect off the four walls → check catch → check fizzle.
-- **Preview:** `_buildPreview` mirrors that physics with its own dt and returns `(pts, firstBounce)`.
-  The painter draws it bright up to `firstBounce`, faint after, and rings the first-bounce point.
+  walls, bodies, catcher, cannon, aim, cue preview, projectile, FX. No per-frame setState over a big tree.
+- **Physics is PURE BILLIARDS — no mid-flight gravity.** The well-ring visuals are dressing; `mass`
+  only sizes them. `_advanceProjectile` runs 10 sub-steps/frame (anti-tunneling only). Per sub-step:
+  integrate straight-line position → reflect off bodies (mirror about normal × restitution, push clear
+  of the surface, score +30 via `_registerBodyBounce`) → reflect off the four walls (ONE contact even
+  in a corner, −15 clamped via `_registerWallBounce`) → check catch → check fizzle. Do NOT reintroduce
+  gravity: the straight flight is what makes the cue preview exactly truthful, and it is the deliberate
+  differentiation from Orbit Catch (the gravity sibling).
+- **Scoring by surface:** bodies pay (+30 live, `bodyBounces` counts toward the +55/bank at the catch);
+  walls cost (−15 live, clamped against `session.score` so the total never drops below 0; never credit
+  a bank). A catch scores `100 + bodyBounces×55 + spares×25 + level/loop step`.
+- **Cue preview:** `_buildCue` ray-casts the aim ray (`_castRay`: exact line-vs-circle / line-vs-wall)
+  and returns `(impact, stubEnd, body, catcher)`. The painter draws a straight line cannon→impact, a
+  pulsing ring at the contact, and a reflected-direction stub. Gold = pot/body; warning orange = wall.
+  Because flight is straight, this preview is exact — keep it that way.
+- **Autopilot:** `_autoStep` → `_autoAimDir`: direct pot if the line is clear, else sweep ±60° for a
+  one-carom BODY-bank route via the same ray-cast, else fire at the blocker.
 - **Layouts:** data-driven `_kLevelLadder` of `_LevelBlueprint`s. Each `generate(rng, diff, hint)`
-  emits a seeded `_Layout`. The seed is `(level, attempt, loop)` so preview and live shot agree and
-  variations rotate. **To add/retune a level, edit the ladder — no other code changes.**
+  emits a seeded `_Layout`. The seed is `(level, attempt, loop)` so variations rotate deterministically.
+  Intended solutions route off BODIES (a blocker sits on the direct line; the graze is the paying
+  solve); walls stay reflective but costed. **To add/retune a level, edit the ladder — no other code
+  changes.**
 
 PERFORMANCE is a real bug-class here (black screen / jitter from build overload). Keep the
 single-ticker + single-painter discipline. Do NOT add per-particle widgets or nested setState.
@@ -71,18 +84,20 @@ single-ticker + single-painter discipline. Do NOT add per-particle widgets or ne
 
 | Constant | Value | What to tune it for |
 |---|---|---|
-| `_kGravityConstant` | 205000 | Curve strength. Raise for more dramatic bends; lower for straighter banks. |
 | `_kBodyRestitution` | 0.90 | Bounce energy off planets/asteroids. Lower = banks die faster. |
 | `_kWallRestitution` | 0.94 | Bounce energy off walls. |
 | `_kMaxBounces` | 16 | Hard cap so a shot can't pinball forever. Lower to end shots sooner. |
 | `_kBaseFlightTime` | 7.2 | Easy-difficulty flight budget (shrinks via `_flightTime`). |
 | `_kMinFlightSpeed` | 70 | Crawl-speed fizzle threshold. |
-| `_kBankBonus` | 55 | Bonus per bounce on the catch. Raise to make banking dominate scoring. |
+| `_kBodyBounceScore` | 30 | Live points per body carom. Raise to make caroms themselves the game. |
+| `_kWallPenalty` | 15 | Live deduction per wall carom (clamped so score floors at 0). |
+| `_kBankBonus` | 55 | Bonus per BODY carom on the catch. Raise to make banking dominate scoring. |
 | `_kPointsPerHit` | 100 | Base catch score. |
 | `_kBonusPerExtraShot` | 25 | Bonus per spare shot at clear. |
 | `_kShotsPerLevel` | 4 | Shots before a level rerolls (no demotion). |
+| `_kCueStubLen` | 64 | px length of the reflected-direction preview stub. |
 | `_kMaxLaunchSpeed` / `_kMinLaunchSpeed` | 720 / 240 | Power range from drag length. |
-| `_kLoopMassGain` / `_kLoopShrink` | 0.16 / 0.10 | Loop escalation (mass up, catcher down). |
+| `_kLoopMassGain` / `_kLoopShrink` | 0.16 / 0.10 | Loop escalation (body heft up, catcher down). |
 
 `_flightTime` derives from difficulty: `(7.2 − difficulty·0.7).clamp(3.6, 7.2)` — the "faster decay".
 
@@ -90,13 +105,14 @@ single-ticker + single-painter discipline. Do NOT add per-particle widgets or ne
 
 ## Known bugs / TODOs (priority order)
 
-1. **[MED] Preview drift on long multi-bank shots.** Preview uses its own dt; after several bounces it
-   diverges slightly from the live sub-stepped shot. The first bounce (rendered bright + ringed) is
-   accurate. If you want full-path fidelity, share one integrator between preview and live sim.
+1. **[MED] A shot that misses everything bleeds.** It caroms the walls until its flight budget dies,
+   −15 per hit. Intentional (walls cost), but playtest the worst case; tune `_kWallPenalty` /
+   `_kBaseFlightTime` if misses feel too punishing.
 2. **[LOW] No SFX.** Bounce/catch feedback is visual only. Add audio if the framework grows a sound kit.
 3. **[LOW] No in-session restart.** Host owns replay — do not add one here.
-4. **[INFO] Asteroids carry tiny mass (0.05), not zero.** Negligible pull, intentional, so they read as
-   reflectors but still belong to the same body list/physics path. Don't special-case them to zero.
+4. **[INFO] Body `mass` is visual heft only.** It sizes the well-ring dressing and labels; it never
+   pulls the shot. Asteroids carry tiny mass (0.05) so they draw ringless. Don't reintroduce physics
+   through it.
 
 ---
 

@@ -1,16 +1,27 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // OrbitRicochetGame — "Ricochet"
 // A bank-shot variant of Orbit Catch. Same DIRECT-AIM launch (drag TOWARD the
-// target; the drag vector IS the launch direction) and the same strong, legible
-// gravity wells that bend every shot — PLUS reflection. Shots RICOCHET: they
-// bounce off planet surfaces, asteroids, and the four arena walls. Angle of
-// incidence = angle of reflection, layered on top of gravity curving. Targets
-// tuck into corners and behind bodies so the path to them is a BANK SHOT.
+// target; the drag vector IS the launch direction), but flight is PURE
+// BILLIARDS: the planetlet travels STRAIGHT between bounces — no mid-flight
+// gravity (that is Orbit Catch's game). Shots RICOCHET off planet surfaces,
+// asteroids, and the four arena walls: angle of incidence = angle of
+// reflection. The planets' gravity-well rings remain as ambient dressing only;
+// they never pull the shot. Targets tuck into corners and behind bodies so the
+// path to them is a BANK SHOT.
 //
-// Multi-bounce catches pay off: a catch after 1+ bounces is a "BANK", and bonus
-// points scale with the bounce count ("2-BANK", "3-BANK"…). Difficulty ramps a
-// 10-level ladder — more obstacles/walls in play, tighter/moving catchers, and
-// FASTER ENERGY DECAY (each shot fizzles sooner) — then loops harder.
+// SCORING BY SURFACE: caroms off BODIES (planets/asteroids) PAY (+30 live,
+// and each body bounce banks +55 more on the catching shot); caroms off WALLS
+// COST (−15 live, never credited at the catch). Walls stay fully reflective —
+// they're the lazy/risky route, not a forbidden one. The session score never
+// drops below 0 on a deduction.
+//
+// AIM is a CUE-STYLE preview: a straight line from the cannon to the first
+// surface the ray hits, a ring at the impact point, and a short stub showing
+// the reflected direction. Because flight is straight, the preview is exactly
+// truthful up to that first contact.
+//
+// Difficulty ramps a 10-level ladder — more obstacles, tighter/moving
+// catchers, and FASTER ENERGY DECAY (each shot fizzles sooner) — then loops.
 //
 // HOST CONTRACT: the MiniGameHost owns intro/countdown/score-HUD/timer/results.
 // This widget only runs while widget.session.isRunning, reports points via
@@ -45,10 +56,8 @@ const double _kDragToSpeedScale = 2.4; // drag px → speed
 const double _kMaxDragPx = 220.0; // drag length that maps to full power
 const double _kProjectileRadius = 7.0; // visual + hit radius of the planetlet
 
-// Gravity — STRONG and legible. a = G*mass / r^2 (per sub-step, integrated).
-// A touch softer than Orbit Catch because bounces already add chaos.
-const double _kGravityConstant = 205000.0;
-const double _kMinGravDist = 22.0; // softening radius (px) to avoid singularity
+// Flight is PURE BILLIARDS — straight lines between bounces, NO mid-flight
+// gravity. (Gravity is Orbit Catch's game; here the well rings are dressing.)
 
 // Reflection (the whole point of this variant)
 const double _kWallRestitution = 0.94; // energy kept on a wall bounce
@@ -57,18 +66,19 @@ const int _kMaxBounces = 16; // hard cap so a shot can't pinball forever
 const double _kBaseFlightTime = 7.2; // seconds a shot lives before it fizzles
 const double _kMinFlightSpeed = 70.0; // below this (after settling) → fizzle
 
-// Trajectory preview — long enough to read the first bounce and beyond.
-const int _kPreviewSteps = 210;
-const double _kPreviewDt = 0.018;
+// Cue-style aim preview: straight ray to the first surface + reflected stub.
+const double _kCueStubLen = 64.0; // px length of the reflected-direction stub
 
 // Catcher (target)
 const double _kTargetBaseRadius = 25.0; // hit zone on the easiest levels
 const double _kTargetMinRadius = 12.0; // floor at the hardest levels
 const double _kTargetMoveSpeed = 56.0; // px/s lateral oscillation (moving levels)
 
-// Scoring
+// Scoring — BODIES PAY, WALLS COST. All first-pass tunables.
 const int _kPointsPerHit = 100; // base score per clear
-const int _kBankBonus = 55; // bonus per bounce on the catching shot
+const int _kBodyBounceScore = 30; // live points per planet/asteroid carom
+const int _kWallPenalty = 15; // live deduction per wall carom (floors at 0)
+const int _kBankBonus = 55; // bonus per BODY bounce on the catching shot
 const int _kBonusPerExtraShot = 25; // bonus per spare shot left at clear
 const int _kLevelStepBonus = 12; // extra base points × level index
 const int _kShotsPerLevel = 4; // shots before a level rerolls a step
@@ -77,14 +87,14 @@ const int _kShotsPerLevel = 4; // shots before a level rerolls a step
 const Offset _kCannonFrac = Offset(0.13, 0.86);
 
 // Loop escalation: once the 10-level ladder is cleared, difficulty multiplies.
-const double _kLoopMassGain = 0.16; // +16% body mass per completed loop
+const double _kLoopMassGain = 0.16; // +16% body heft per loop (size/clutter)
 const double _kLoopShrink = 0.10; // catcher shrinks 10% per loop
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One body in a layout. Every body is BOTH a gravity well (∝ [mass]) AND a
-/// solid reflector — you can bank off its surface. Asteroids are just very
-/// low-mass bodies (negligible pull, pure deflectors). [pos] is a canvas
-/// fraction [0..1]; [radius] is the visual + collision size.
+/// One body in a layout. Every body is a SOLID REFLECTOR — you bank off its
+/// surface for points. [mass] is visual heft only (well-ring dressing); it
+/// never pulls the shot. [pos] is a canvas fraction [0..1]; [radius] is the
+/// visual + collision size.
 class _Body {
   final Offset pos;
   final double mass;
@@ -132,17 +142,21 @@ class _LevelBlueprint {
   });
 }
 
-/// Live planetlet in flight. Tracks [bounces] so a catch can be scored as a bank.
+/// Live planetlet in flight. Tracks [bounces] (all surfaces, for the fizzle
+/// cap) and [bodyBounces] (planets/asteroids only — the ones that PAY and
+/// count toward the bank bonus at the catch).
 class _Projectile {
   double x, y; // px
   double vx, vy; // px/s
   bool alive;
-  int bounces;
+  int bounces; // every carom (bodies + walls) — fizzle cap
+  int bodyBounces; // planet/asteroid caroms only — the paying banks
   double age; // seconds in flight
   final List<Offset> trail;
   _Projectile({required this.x, required this.y, required this.vx, required this.vy})
       : alive = true,
         bounces = 0,
+        bodyBounces = 0,
         age = 0.0,
         trail = [];
 }
@@ -176,7 +190,8 @@ Color _pickColor(Random r, List<Color> c) => c[r.nextInt(c.length)];
 
 _Body _giant(Random r, Offset pos, double diff,
     {double base = 3.2, String label = 'GIANT'}) {
-  // Bigger + heavier on higher difficulty so curves bite and banks fly faster.
+  // Bigger on higher difficulty: more surface to bank off, less room to miss.
+  // Mass only drives the well-ring dressing — it never pulls the shot.
   final mass = (base + diff * 0.8) * _pick(r, 0.92, 1.12);
   final radius = (42.0 + diff * 5.0) * _pick(r, 0.94, 1.10);
   return _Body(
@@ -190,9 +205,9 @@ _Body _mid(Random r, Offset pos, double diff, {String label = 'MID'}) {
       pos: pos, mass: mass, radius: radius, color: _pickColor(r, _kMidColors), label: label);
 }
 
-/// An asteroid — negligible gravity, pure reflector. The bank-shot surface.
+/// An asteroid — a small pure reflector. The precision bank-shot surface.
 _Body _rock(Random r, Offset pos, double diff, {String label = 'ROCK'}) {
-  final mass = 0.05 * _pick(r, 0.8, 1.2); // basically no pull
+  final mass = 0.05 * _pick(r, 0.8, 1.2); // no well-ring dressing
   final radius = (15.0 + diff * 1.4) * _pick(r, 0.85, 1.18);
   return _Body(
       pos: pos,
@@ -205,20 +220,25 @@ _Body _rock(Random r, Offset pos, double diff, {String label = 'ROCK'}) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE LADDER — 10 blueprints, easiest → hardest. Each generates many variations.
-// Targets are tucked into corners / behind bodies so the path is a BANK SHOT;
-// the four arena walls are reflective, so a wall carom is always on the table.
+// BODIES PAY, WALLS COST: every intended route banks off a planet or asteroid.
+// A body is parked on (or near) the straight cannon→catcher line so the direct
+// shot is blocked and the paying graze is the natural solve. The four walls
+// stay fully reflective — the lazy carom always physically works, it just
+// bleeds points.
 // ─────────────────────────────────────────────────────────────────────────────
 
 final List<_LevelBlueprint> _kLevelLadder = [
-  // ── Lv 1 — FIRST BANK. Easy wall carom into a roomy corner catcher. ───────
+  // ── Lv 1 — FIRST CONTACT. A roomy giant squats on the direct line; clip
+  //    its edge (+30) to swing into the corner pocket. ──────────────────────
   _LevelBlueprint(
-    name: 'First Bank',
-    hints: ['BANK OFF THE WALL', 'CAROM INTO THE CORNER', 'ONE BOUNCE IN'],
+    name: 'First Contact',
+    hints: ['CLIP THE GIANT — BODIES PAY', 'GRAZE THE EDGE, +30', 'BANK OFF THE PLANET'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
-          _giant(r, Offset(_pick(r, 0.44, 0.52), _pick(r, 0.52, 0.6)), diff, base: 2.8),
-          _rock(r, Offset(_pick(r, 0.64, 0.74), _pick(r, 0.5, 0.6)), diff),
+          // Parked square on the cannon→catcher line: the blocker IS the bank.
+          _giant(r, Offset(_pick(r, 0.46, 0.54), _pick(r, 0.48, 0.56)), diff, base: 3.2),
+          _rock(r, Offset(_pick(r, 0.68, 0.76), _pick(r, 0.3, 0.38)), diff),
         ],
         targetPos: Offset(_pick(r, 0.82, 0.92), _pick(r, 0.16, 0.26)),
         hint: hint,
@@ -226,15 +246,17 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 2 — OFF THE GLASS. A giant blocks the direct line; bank past it. ───
+  // ── Lv 2 — OFF THE GIANT. A mid blocks the left lane; the paying route is
+  //    a carom off the central giant's flank into the top-left pocket. ──────
   _LevelBlueprint(
-    name: 'Off the Glass',
-    hints: ['BANK PAST THE GIANT', 'USE THE TOP WALL', 'REFLECT IT OVER'],
+    name: 'Off the Giant',
+    hints: ["BANK OFF THE GIANT'S FLANK", 'THE PLANET PAYS +30', 'AROUND, NOT OVER'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
-          _giant(r, Offset(_pick(r, 0.5, 0.58), _pick(r, 0.4, 0.5)), diff, base: 3.2),
-          _mid(r, Offset(_pick(r, 0.28, 0.36), _pick(r, 0.56, 0.66)), diff),
+          _giant(r, Offset(_pick(r, 0.44, 0.52), _pick(r, 0.4, 0.48)), diff, base: 3.2),
+          // Blocks the straight shot up the left edge.
+          _mid(r, Offset(_pick(r, 0.14, 0.24), _pick(r, 0.5, 0.6)), diff),
         ],
         targetPos: Offset(_pick(r, 0.12, 0.22), _pick(r, 0.16, 0.28)),
         hint: hint,
@@ -242,15 +264,17 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 3 — ASTEROID CAROM. Deflect off a rock to swing the angle. ─────────
+  // ── Lv 3 — ASTEROID CAROM. Kiss a small rock to swing the angle — the
+  //    precision version of the body bank. ──────────────────────────────────
   _LevelBlueprint(
     name: 'Asteroid Carom',
-    hints: ['CAROM OFF THE ROCK', 'DEFLECT THE ANGLE', 'KISS THE ASTEROID'],
+    hints: ['CAROM OFF THE ROCK', 'KISS THE ASTEROID', 'ROCKS PAY, WALLS COST'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
-          _giant(r, Offset(_pick(r, 0.36, 0.44), _pick(r, 0.36, 0.44)), diff),
-          _rock(r, Offset(_pick(r, 0.6, 0.68), _pick(r, 0.52, 0.62)), diff),
+          // Giant guards the direct lane to the right-middle pocket.
+          _giant(r, Offset(_pick(r, 0.44, 0.52), _pick(r, 0.56, 0.64)), diff),
+          _rock(r, Offset(_pick(r, 0.6, 0.68), _pick(r, 0.44, 0.54)), diff),
           _rock(r, Offset(_pick(r, 0.74, 0.82), _pick(r, 0.32, 0.42)), diff),
         ],
         targetPos: Offset(_pick(r, 0.82, 0.92), _pick(r, 0.6, 0.72)),
@@ -259,15 +283,17 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 4 — MOVING POCKET. Lead a drifting catcher; bank to reach it. ──────
+  // ── Lv 4 — MOVING POCKET. Lead a drifting catcher off the mid parked in
+  //    its lane; time the body bank so the carom meets the drift. ───────────
   _LevelBlueprint(
     name: 'Moving Pocket',
-    hints: ['LEAD THE DRIFT, THEN BANK', 'TIME THE BOUNCE', 'AIM AHEAD OF IT'],
+    hints: ['LEAD IT OFF THE MID', 'TIME THE BODY BANK', 'AIM AHEAD OF IT'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
-          _giant(r, Offset(_pick(r, 0.48, 0.56), _pick(r, 0.4, 0.48)), diff),
-          _mid(r, Offset(_pick(r, 0.72, 0.8), _pick(r, 0.54, 0.62)), diff),
+          _giant(r, Offset(_pick(r, 0.48, 0.56), _pick(r, 0.44, 0.52)), diff),
+          // The paying bank surface under the catcher's drift lane.
+          _mid(r, Offset(_pick(r, 0.7, 0.78), _pick(r, 0.38, 0.46)), diff),
           _rock(r, Offset(_pick(r, 0.28, 0.36), _pick(r, 0.28, 0.36)), diff),
         ],
         targetPos: Offset(_pick(r, 0.78, 0.88), _pick(r, 0.16, 0.26)),
@@ -277,16 +303,18 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 5 — DOUBLE BANK. Two walls in one shot for an S of reflections. ────
+  // ── Lv 5 — DOUBLE KISS. Two bodies in one shot: chain a pair of paying
+  //    caroms down into the bottom-right pocket. ────────────────────────────
   _LevelBlueprint(
-    name: 'Double Bank',
-    hints: ['TWO WALLS, ONE SHOT', 'BANK THEN BANK AGAIN', 'CHAIN THE CAROMS'],
+    name: 'Double Kiss',
+    hints: ['TWO BODIES, ONE SHOT', 'KISS THEN KISS AGAIN', 'CHAIN THE CAROMS'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
           _giant(r, Offset(_pick(r, 0.34, 0.42), _pick(r, 0.42, 0.5)), diff),
-          _mid(r, Offset(_pick(r, 0.58, 0.66), _pick(r, 0.28, 0.36)), diff),
-          _rock(r, Offset(_pick(r, 0.72, 0.8), _pick(r, 0.58, 0.66)), diff),
+          _mid(r, Offset(_pick(r, 0.58, 0.66), _pick(r, 0.34, 0.42)), diff),
+          // Guards the floor lane to the bottom-right pocket.
+          _rock(r, Offset(_pick(r, 0.54, 0.62), _pick(r, 0.7, 0.78)), diff),
         ],
         targetPos: Offset(_pick(r, 0.84, 0.92), _pick(r, 0.78, 0.9)),
         hint: hint,
@@ -294,10 +322,11 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 6 — TIGHT CORRIDOR. Two giants form a lane; carom down it. ─────────
+  // ── Lv 6 — TIGHT CORRIDOR. Two giants form a lane; graze a flank (+30)
+  //    to thread the carom out the top of the corridor. ─────────────────────
   _LevelBlueprint(
     name: 'Corridor',
-    hints: ['THREAD AND BANK THE CORRIDOR', 'MIND BOTH GIANTS', 'HOLD THE CAROM'],
+    hints: ['GRAZE THE CORRIDOR GIANTS', 'THE LANE PAYS +30', 'THREAD AND BANK'],
     generate: (r, diff, hint) {
       final cy = _pick(r, 0.34, 0.42);
       return _Layout(
@@ -313,10 +342,11 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 7 — PINBALL. Moving catcher behind a heavy well + rock deflectors. ─
+  // ── Lv 7 — PINBALL. Moving catcher behind a big giant + rock bumpers —
+  //    multi-body caroms stack +30s on the way in. ──────────────────────────
   _LevelBlueprint(
     name: 'Pinball',
-    hints: ['PINBALL OFF THE ROCKS', 'DEFLECT INTO THE POCKET', 'MULTI-BANK IT'],
+    hints: ['PINBALL OFF THE ROCKS', 'DEFLECT INTO THE POCKET', 'MULTI-BANK THE BODIES'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
@@ -332,10 +362,11 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 8 — GAUNTLET. Dense field, narrow banks, small catcher. ───────────
+  // ── Lv 8 — GAUNTLET. Dense field, narrow body banks, small catcher.
+  //    Walls tempt everywhere — and bleed points everywhere. ────────────────
   _LevelBlueprint(
     name: 'Gauntlet',
-    hints: ['RUN THE GAUNTLET', 'EVERY SURFACE COUNTS', 'PRECISION BANKS'],
+    hints: ['RUN THE GAUNTLET', 'BODIES PAY, WALLS COST', 'PRECISION BANKS'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
@@ -350,10 +381,10 @@ final List<_LevelBlueprint> _kLevelLadder = [
     },
   ),
 
-  // ── Lv 9 — DOUBLE DRIFT. Moving catcher + heavy field of banks. ──────────
+  // ── Lv 9 — DOUBLE DRIFT. Moving catcher + heavy field of paying banks. ───
   _LevelBlueprint(
     name: 'Double Drift',
-    hints: ['CATCH THE DRIFT WITH A BANK', 'HEAVY FIELD — LEAD IT', 'READ THE CAROM'],
+    hints: ['CATCH THE DRIFT OFF A BANK', 'LEAD IT — BANK A BODY', 'READ THE CAROM'],
     generate: (r, diff, hint) {
       return _Layout(
         bodies: [
@@ -448,12 +479,12 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
 
   // ── ATTRACT autopilot ───────────────────────────────────────────────────
   /// One hands-free move per host tick (~250ms). Plays Ricochet *competently*,
-  /// not randomly: it acts ONLY when the arena is idle (no shot in flight),
-  /// then fires a full-power DIRECT-AIM launch from the cannon straight at the
-  /// current catcher — reading its OWN state ([_cannonPx], [_targetPx]) and
-  /// firing through the game's own launch path ([_onDragEnd]/[_launchVector]).
-  /// Gravity wells and banks bend the shot on the way in — competent, not
-  /// perfect. The host owns the clock/HUD; the bot just banks real points.
+  /// not randomly: it acts ONLY when the arena is idle (no shot in flight).
+  /// Because flight is pure billiards (straight between bounces), the bot can
+  /// PLAN exactly: it fires direct when the line to the catcher is clear, and
+  /// otherwise sweeps for a one-carom BODY-bank route (bodies pay; walls
+  /// cost) using the same ray-cast the aim preview uses. It fires through the
+  /// game's own launch path ([_launchVector]) at full power.
   void _autoStep() {
     if (!widget.session.isRunning) return;
     if (_canvasSize == Size.zero) return;
@@ -461,21 +492,17 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
     // same guard the input handlers enforce).
     if (_projectile != null && _projectile!.alive) return;
 
-    // Direct aim: the drag vector points FROM the cannon TOWARD the catcher,
-    // at a length that maps to full launch power (see [_launchVector]).
     final cannon = _cannonPx(_canvasSize);
     final target = _targetPx(_canvasSize);
-    final dx = target.dx - cannon.dx;
-    final dy = target.dy - cannon.dy;
-    final len = sqrt(dx * dx + dy * dy);
-    if (len < 0.001) return;
+    final dir = _autoAimDir(cannon, target, _canvasSize);
+    if (dir == null) return;
 
-    // Stage a drag whose vector points cannon→catcher at full power, then fire
+    // Stage a drag along the chosen direction at full power, then fire
     // through the game's own aim helper — the identical launch [_onDragEnd]
     // performs (which ignores its gesture argument), minus the throwaway
     // DragEndDetails object.
     _dragStart = cannon;
-    _dragCurrent = cannon + Offset(dx / len, dy / len) * _kMaxDragPx;
+    _dragCurrent = cannon + dir * _kMaxDragPx;
     final launch = _launchVector(_canvasSize);
     setState(() {
       _projectile =
@@ -483,6 +510,44 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
       _dragStart = null;
       _dragCurrent = null;
     });
+  }
+
+  /// Bot aim: (1) direct line if it reaches the catcher untouched, else
+  /// (2) sweep ±60° around the direct line for a single BODY carom whose
+  /// reflected ray reaches the catcher cleanly, else (3) fall back to direct
+  /// (banks off the blocker — which at least pays +30).
+  Offset? _autoAimDir(Offset cannon, Offset target, Size size) {
+    final toTarget = target - cannon;
+    final dist = toTarget.distance;
+    if (dist < 0.001) return null;
+    final direct = toTarget / dist;
+
+    final directHit = _castRay(cannon, direct, size);
+    final directCatch = _rayCatcherT(cannon, direct, target);
+    if (directCatch != null && (directHit == null || directCatch < directHit.t)) {
+      return direct; // clean pot on the straight line
+    }
+
+    // Sweep alternating left/right of the direct line for a paying body bank.
+    final baseAngle = atan2(direct.dy, direct.dx);
+    for (int i = 1; i <= 32; i++) {
+      final offset = (i + 1) ~/ 2 * (pi / 48) * (i.isOdd ? 1 : -1);
+      final a = baseAngle + offset;
+      final d = Offset(cos(a), sin(a));
+      final hit = _castRay(cannon, d, size);
+      if (hit == null || !hit.body) continue;
+      final p = cannon + d * hit.t;
+      final n = hit.normal;
+      final vDotN = d.dx * n.dx + d.dy * n.dy;
+      final refl = Offset(d.dx - 2 * vDotN * n.dx, d.dy - 2 * vDotN * n.dy);
+      // Nudge off the surface, then check the carom reaches the catcher clean.
+      final o2 = p + n * 1.0;
+      final tCatch = _rayCatcherT(o2, refl, target);
+      if (tCatch == null) continue;
+      final block = _castRay(o2, refl, size);
+      if (block == null || tCatch < block.t) return d;
+    }
+    return direct; // no clean route found — bounce off whatever blocks
   }
 
   // ── layout generation ──────────────────────────────────────────────────────
@@ -573,34 +638,24 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
     });
   }
 
-  // ── physics — strong G + reflection, 10 sub-steps for accurate curves ─────
+  // ── physics — PURE BILLIARDS: straight flight + reflection. Sub-steps only
+  //    guard against tunneling through small rocks at full launch speed. ─────
   void _advanceProjectile(_Projectile proj, double dt) {
     if (_canvasSize == Size.zero) return;
     final size = _canvasSize;
     const subSteps = 10;
     final subDt = dt / subSteps;
-    const minSq = _kMinGravDist * _kMinGravDist;
 
     for (int s = 0; s < subSteps; s++) {
       proj.age += subDt;
 
-      // Gravity from every body (asteroids barely pull; giants dominate).
-      for (final body in _layout.bodies) {
-        final bx = body.pos.dx * size.width;
-        final by = body.pos.dy * size.height;
-        final dx = bx - proj.x;
-        final dy = by - proj.y;
-        final distSq = (dx * dx + dy * dy).clamp(minSq, 1e9);
-        final dist = sqrt(distSq);
-        final force = _kGravityConstant * body.mass / distSq;
-        proj.vx += (dx / dist) * force * subDt;
-        proj.vy += (dy / dist) * force * subDt;
-      }
-
+      // No gravity — the well rings are dressing. Straight line to the next
+      // contact keeps the cue-style aim preview exactly truthful.
       proj.x += proj.vx * subDt;
       proj.y += proj.vy * subDt;
 
-      // ── Reflect off body surfaces (angle in = angle out, − restitution). ──
+      // ── Reflect off body surfaces (angle in = angle out, − restitution).
+      //    Bodies PAY: each carom scores live and counts toward the bank. ────
       for (final body in _layout.bodies) {
         final bx = body.pos.dx * size.width;
         final by = body.pos.dy * size.height;
@@ -616,7 +671,7 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
             // reflect velocity about the normal, then bleed energy
             proj.vx = (proj.vx - 2 * vDotN * nx) * _kBodyRestitution;
             proj.vy = (proj.vy - 2 * vDotN * ny) * _kBodyRestitution;
-            _registerBounce(proj, Offset(proj.x, proj.y), body.color);
+            _registerBodyBounce(proj, Offset(proj.x, proj.y), body.color);
           }
           // push outside the surface so we don't re-trigger next sub-step
           proj.x = bx + nx * (rsum + 0.5);
@@ -625,29 +680,34 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
         }
       }
 
-      // ── Reflect off the four arena walls. ─────────────────────────────────
-      const wallColor = Potatuhs.glaucous;
+      // ── Reflect off the four arena walls. Walls COST. A corner hit flips
+      //    both axes but registers as ONE contact (one deduction). ───────────
+      var wallHit = false;
       if (proj.x < _kProjectileRadius) {
         proj.x = _kProjectileRadius;
         proj.vx = -proj.vx * _kWallRestitution;
         proj.vy *= _kWallRestitution;
-        _registerBounce(proj, Offset(0, proj.y), wallColor);
+        wallHit = true;
       } else if (proj.x > size.width - _kProjectileRadius) {
         proj.x = size.width - _kProjectileRadius;
         proj.vx = -proj.vx * _kWallRestitution;
         proj.vy *= _kWallRestitution;
-        _registerBounce(proj, Offset(size.width, proj.y), wallColor);
+        wallHit = true;
       }
       if (proj.y < _kProjectileRadius) {
         proj.y = _kProjectileRadius;
         proj.vy = -proj.vy * _kWallRestitution;
         proj.vx *= _kWallRestitution;
-        _registerBounce(proj, Offset(proj.x, 0), wallColor);
+        wallHit = true;
       } else if (proj.y > size.height - _kProjectileRadius) {
         proj.y = size.height - _kProjectileRadius;
         proj.vy = -proj.vy * _kWallRestitution;
         proj.vx *= _kWallRestitution;
-        _registerBounce(proj, Offset(proj.x, size.height), wallColor);
+        wallHit = true;
+      }
+      if (wallHit) {
+        // Post-clamp position sits on the wall inset — the contact point.
+        _registerWallBounce(proj, Offset(proj.x, proj.y));
       }
       if (!proj.alive) return;
 
@@ -660,7 +720,7 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
       final tdy = proj.y - tpx.dy;
       if (sqrt(tdx * tdx + tdy * tdy) < _targetRadius + _kProjectileRadius) {
         proj.alive = false;
-        _onHit(tpx, proj.bounces);
+        _onHit(tpx, proj.bodyBounces);
         return;
       }
 
@@ -676,16 +736,42 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
     }
   }
 
-  void _registerBounce(_Projectile proj, Offset at, Color color) {
+  /// A carom off a planet/asteroid: PAYS [_kBodyBounceScore] live and counts
+  /// toward the bank bonus at the catch. Fires once per contact (guarded by
+  /// the vDotN < 0 check at the call site).
+  void _registerBodyBounce(_Projectile proj, Offset at, Color color) {
     proj.bounces++;
-    _spawnBurst(at, color, 6);
+    proj.bodyBounces++;
+    widget.session.addScore(_kBodyBounceScore);
+    _spawnBurst(at, color, 8);
+    _pops.add(FxPop(at, '+$_kBodyBounceScore', Potatuhs.gold));
     if (proj.bounces > _kMaxBounces) {
       proj.alive = false;
     }
   }
 
-  void _onHit(Offset tpx, int bounces) {
-    final bankBonus = bounces * _kBankBonus;
+  /// A carom off an arena wall: COSTS [_kWallPenalty] live. The deduction is
+  /// clamped against the session's current score so the total never goes
+  /// below 0 (MiniGameSession.score is readable; its addScore also floors).
+  /// Wall caroms never count toward the bank bonus.
+  void _registerWallBounce(_Projectile proj, Offset at) {
+    proj.bounces++;
+    _spawnBurst(at, Potatuhs.glaucous, 5);
+    final deduct = min(_kWallPenalty, widget.session.score);
+    if (deduct > 0) {
+      widget.session.addScore(-deduct);
+      _pops.add(FxPop(at, '-$deduct', Potatuhs.orange));
+    } else {
+      _pops.add(FxPop(at, 'WALL', Potatuhs.orange));
+    }
+    if (proj.bounces > _kMaxBounces) {
+      proj.alive = false;
+    }
+  }
+
+  void _onHit(Offset tpx, int bodyBounces) {
+    // The bank counts BODY caroms only — walls never credit a bank.
+    final bankBonus = bodyBounces * _kBankBonus;
     final shotBonus = _shotsLeft * _kBonusPerExtraShot;
     final levelBonus = _level * _kLevelStepBonus + _loop * 60;
     final pts = _kPointsPerHit + bankBonus + shotBonus + levelBonus;
@@ -697,10 +783,10 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
     _spawnBurst(tpx, Potatuhs.gold, 26);
     _spawnBurst(tpx, Potatuhs.airForce, 16);
     _pops.add(FxPop(tpx, '+$pts', Potatuhs.gold));
-    if (bounces >= 1) {
-      _pops.add(FxPop(tpx.translate(0, -26), '$bounces-BANK!', Potatuhs.orange));
+    if (bodyBounces >= 1) {
+      _pops.add(FxPop(tpx.translate(0, -26), '$bodyBounces-BANK!', Potatuhs.sienna));
     } else if (_streak >= 2) {
-      _pops.add(FxPop(tpx.translate(0, -26), '${_streak}x', Potatuhs.orange));
+      _pops.add(FxPop(tpx.translate(0, -26), '${_streak}x', Potatuhs.sienna));
     }
     _flash = 1.0;
 
@@ -771,85 +857,111 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
     return Offset(dx / len * speed, dy / len * speed);
   }
 
-  // ── trajectory preview — same gravity + reflection sim ────────────────────
-  // Returns the predicted path and the index of the FIRST bounce, so the
-  // painter can show the first carom faintly and mark where it lands.
-  ({List<Offset> pts, int firstBounce}) _buildPreview(Size size) {
-    if (!_isDragging || !widget.session.isRunning) {
-      return (pts: const <Offset>[], firstBounce: -1);
+  // ── cue-style aim preview — exact ray-cast (flight is straight, so this is
+  //    the truth, not a forecast) ─────────────────────────────────────────────
+  //
+  // Casts the aim ray from the cannon to the FIRST surface it meets (body,
+  // wall, or the catcher itself) and returns: the impact point, a short stub
+  // showing the reflected direction, and what was hit (body pays, wall costs,
+  // catcher = a clean pot).
+
+  /// First intersection of the ray `o + t·d` (d normalized) with any body or
+  /// wall, using the same collision radii as the live sim. Returns null only
+  /// in degenerate cases (zero-size canvas). [t] is the distance in px;
+  /// [normal] is the surface normal at contact; [body] is true for
+  /// planet/asteroid hits.
+  ({double t, Offset normal, bool body})? _castRay(Offset o, Offset d, Size size) {
+    if (size.width <= 0 || size.height <= 0) return null;
+    var bestT = double.infinity;
+    var bestN = Offset.zero;
+    var hitBody = false;
+    const eps = 1e-6;
+
+    // Walls (at the projectile-radius inset, matching the live clamp).
+    void wall(double t, Offset n) {
+      if (t > eps && t < bestT) {
+        bestT = t;
+        bestN = n;
+        hitBody = false;
+      }
     }
-    final c = _cannonPx(size);
+
+    if (d.dx < -eps) wall((_kProjectileRadius - o.dx) / d.dx, const Offset(1, 0));
+    if (d.dx > eps) {
+      wall((size.width - _kProjectileRadius - o.dx) / d.dx, const Offset(-1, 0));
+    }
+    if (d.dy < -eps) wall((_kProjectileRadius - o.dy) / d.dy, const Offset(0, 1));
+    if (d.dy > eps) {
+      wall((size.height - _kProjectileRadius - o.dy) / d.dy, const Offset(0, -1));
+    }
+
+    // Bodies — ray/circle intersection against radius + projectile radius.
+    for (final body in _layout.bodies) {
+      final c = Offset(body.pos.dx * size.width, body.pos.dy * size.height);
+      final rsum = body.radius + _kProjectileRadius;
+      final oc = o - c;
+      final b = 2 * (d.dx * oc.dx + d.dy * oc.dy);
+      final cc = oc.dx * oc.dx + oc.dy * oc.dy - rsum * rsum;
+      if (cc < 0) continue; // origin inside the body — skip (can't happen in play)
+      final disc = b * b - 4 * cc;
+      if (disc <= 0) continue;
+      final t = (-b - sqrt(disc)) / 2;
+      if (t > eps && t < bestT) {
+        bestT = t;
+        final p = o + d * t;
+        final n = p - c;
+        final nLen = n.distance;
+        bestN = nLen > eps ? n / nLen : const Offset(0, -1);
+        hitBody = true;
+      }
+    }
+
+    if (!bestT.isFinite) return null;
+    return (t: bestT, normal: bestN, body: hitBody);
+  }
+
+  /// Distance along the ray at which it enters the catcher, or null if the
+  /// ray misses it. Used to show a clean-pot preview and by the autopilot.
+  double? _rayCatcherT(Offset o, Offset d, Offset target) {
+    final rsum = _targetRadius + _kProjectileRadius;
+    final oc = o - target;
+    final b = 2 * (d.dx * oc.dx + d.dy * oc.dy);
+    final cc = oc.dx * oc.dx + oc.dy * oc.dy - rsum * rsum;
+    final disc = b * b - 4 * cc;
+    if (disc <= 0) return null;
+    final t = (-b - sqrt(disc)) / 2;
+    return t > 1e-6 ? t : null;
+  }
+
+  ({Offset impact, Offset stubEnd, bool body, bool catcher})? _buildCue(Size size) {
+    if (!_isDragging || !widget.session.isRunning) return null;
+    if (size.width <= 0 || size.height <= 0) return null;
+    final o = _cannonPx(size);
     final v = _launchVector(size);
-    double px = c.dx, py = c.dy, vx = v.dx, vy = v.dy;
-    final pts = <Offset>[];
-    int firstBounce = -1;
-    int bounces = 0;
-    const minSq = _kMinGravDist * _kMinGravDist;
+    final speed = v.distance;
+    if (speed < 1e-6) return null;
+    final d = v / speed;
 
-    for (int i = 0; i < _kPreviewSteps; i++) {
-      for (final body in _layout.bodies) {
-        final bx = body.pos.dx * size.width;
-        final by = body.pos.dy * size.height;
-        final ddx = bx - px;
-        final ddy = by - py;
-        final distSq = (ddx * ddx + ddy * ddy).clamp(minSq, 1e9);
-        final dist = sqrt(distSq);
-        final force = _kGravityConstant * body.mass / distSq;
-        vx += (ddx / dist) * force * _kPreviewDt;
-        vy += (ddy / dist) * force * _kPreviewDt;
-      }
+    final hit = _castRay(o, d, size);
+    if (hit == null) return null;
 
-      px += vx * _kPreviewDt;
-      py += vy * _kPreviewDt;
-
-      // body reflection
-      for (final body in _layout.bodies) {
-        final bx = body.pos.dx * size.width;
-        final by = body.pos.dy * size.height;
-        final dx = px - bx, dy = py - by;
-        final rsum = body.radius + _kProjectileRadius;
-        if (dx * dx + dy * dy < rsum * rsum) {
-          final dist = sqrt((dx * dx + dy * dy).clamp(0.0001, 1e12));
-          final nx = dx / dist, ny = dy / dist;
-          final vDotN = vx * nx + vy * ny;
-          if (vDotN < 0) {
-            vx = (vx - 2 * vDotN * nx) * _kBodyRestitution;
-            vy = (vy - 2 * vDotN * ny) * _kBodyRestitution;
-            if (firstBounce < 0) firstBounce = pts.length;
-            bounces++;
-          }
-          px = bx + nx * (rsum + 0.5);
-          py = by + ny * (rsum + 0.5);
-        }
-      }
-      // wall reflection
-      if (px < _kProjectileRadius) {
-        px = _kProjectileRadius;
-        vx = -vx * _kWallRestitution;
-        if (firstBounce < 0) firstBounce = pts.length;
-        bounces++;
-      } else if (px > size.width - _kProjectileRadius) {
-        px = size.width - _kProjectileRadius;
-        vx = -vx * _kWallRestitution;
-        if (firstBounce < 0) firstBounce = pts.length;
-        bounces++;
-      }
-      if (py < _kProjectileRadius) {
-        py = _kProjectileRadius;
-        vy = -vy * _kWallRestitution;
-        if (firstBounce < 0) firstBounce = pts.length;
-        bounces++;
-      } else if (py > size.height - _kProjectileRadius) {
-        py = size.height - _kProjectileRadius;
-        vy = -vy * _kWallRestitution;
-        if (firstBounce < 0) firstBounce = pts.length;
-        bounces++;
-      }
-
-      pts.add(Offset(px, py));
-      if (bounces > _kMaxBounces) break;
+    // Clean pot: the ray reaches the catcher before any obstacle.
+    final tCatch = _rayCatcherT(o, d, _targetPx(size));
+    if (tCatch != null && tCatch < hit.t) {
+      final p = o + d * tCatch;
+      return (impact: p, stubEnd: p, body: false, catcher: true);
     }
-    return (pts: pts, firstBounce: firstBounce);
+
+    final p = o + d * hit.t;
+    final n = hit.normal;
+    final vDotN = d.dx * n.dx + d.dy * n.dy;
+    final refl = Offset(d.dx - 2 * vDotN * n.dx, d.dy - 2 * vDotN * n.dy);
+    return (
+      impact: p,
+      stubEnd: p + refl * _kCueStubLen,
+      body: hit.body,
+      catcher: false,
+    );
   }
 
   void _spawnBurst(Offset at, Color color, int count) {
@@ -862,7 +974,7 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       _canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
-      final preview = _buildPreview(_canvasSize);
+      final cue = _buildCue(_canvasSize);
       return GestureDetector(
         onPanStart: _onDragStart,
         onPanUpdate: _onDragUpdate,
@@ -877,8 +989,10 @@ class _OrbitRicochetGameState extends State<OrbitRicochetGame>
             projectile: _projectile,
             fxParticles: _fxParticles,
             pops: _pops,
-            preview: preview.pts,
-            firstBounce: preview.firstBounce,
+            cueImpact: cue?.impact,
+            cueStubEnd: cue?.stubEnd,
+            cueHitsBody: cue?.body ?? false,
+            cueHitsCatcher: cue?.catcher ?? false,
             dragStart: _dragStart,
             dragCurrent: _dragCurrent,
             launchVector: _isDragging && _canvasSize != Size.zero
@@ -972,8 +1086,11 @@ class _RicochetPainter extends CustomPainter {
   final _Projectile? projectile;
   final List<FxParticle> fxParticles;
   final List<FxPop> pops;
-  final List<Offset> preview;
-  final int firstBounce; // index into preview where the first carom happens
+  // Cue-style aim preview: straight ray → impact ring → reflected stub.
+  final Offset? cueImpact; // first surface the aim ray hits (null = not aiming)
+  final Offset? cueStubEnd; // end of the reflected-direction stub
+  final bool cueHitsBody; // impact is a paying body (vs a costing wall)
+  final bool cueHitsCatcher; // the ray pots the catcher clean
   final Offset? dragStart;
   final Offset? dragCurrent;
   final Offset? launchVector; // direct-aim velocity while dragging
@@ -989,8 +1106,10 @@ class _RicochetPainter extends CustomPainter {
     required this.projectile,
     required this.fxParticles,
     required this.pops,
-    required this.preview,
-    required this.firstBounce,
+    required this.cueImpact,
+    required this.cueStubEnd,
+    required this.cueHitsBody,
+    required this.cueHitsCatcher,
     required this.dragStart,
     required this.dragCurrent,
     required this.launchVector,
@@ -1019,7 +1138,7 @@ class _RicochetPainter extends CustomPainter {
     _paintCatcher(canvas);
     _paintCannon(canvas);
     _paintAim(canvas);
-    _paintPreview(canvas);
+    _paintCue(canvas);
     _paintProjectile(canvas);
 
     FxBurst.paint(canvas, fxParticles);
@@ -1257,32 +1376,68 @@ class _RicochetPainter extends CustomPainter {
     );
   }
 
-  // Predicted path. The segment up to the first carom is bright; everything
-  // AFTER the first bounce is faint (it's a forecast of a forecast). A pulsing
-  // ring marks the predicted first-bounce point.
-  void _paintPreview(Canvas canvas) {
-    if (preview.isEmpty) return;
-    for (int i = 0; i < preview.length; i++) {
-      final frac = i / preview.length;
-      final afterBounce = firstBounce >= 0 && i >= firstBounce;
-      final baseAlpha = afterBounce ? 0.26 : 0.62;
-      final alpha = (1.0 - frac) * baseAlpha;
-      final r = (3.0 - frac * 2.0).clamp(0.6, 3.0);
-      final col = Color.lerp(Potatuhs.airForce, Potatuhs.gold, frac)!;
-      canvas.drawCircle(
-          preview[i], r, Paint()..color = col.withValues(alpha: alpha));
-    }
-    if (firstBounce >= 0 && firstBounce < preview.length) {
-      final p = preview[firstBounce];
-      final pulse = 0.5 + 0.5 * sin(t * 6);
-      canvas.drawCircle(
-        p,
-        6 + pulse * 2,
+  // Cue-style aim preview. Flight is pure billiards, so this is EXACT up to
+  // the first contact: a straight line from the cannon to the impact point,
+  // a pulsing ring there, and a short stub showing the reflected direction.
+  // Color tells the score story: gold = paying body (or a clean pot into the
+  // catcher), warning orange = costing wall.
+  void _paintCue(Canvas canvas) {
+    final impact = cueImpact;
+    final stubEnd = cueStubEnd;
+    if (impact == null || stubEnd == null) return;
+    final col = cueHitsCatcher || cueHitsBody ? Potatuhs.gold : Potatuhs.orange;
+
+    // The straight cue line, cannon → first contact.
+    canvas.drawLine(
+      cannonPx,
+      impact,
+      Paint()
+        ..color = col.withValues(alpha: 0.18)
+        ..strokeWidth = 5
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+    canvas.drawLine(
+      cannonPx,
+      impact,
+      Paint()
+        ..color = col.withValues(alpha: 0.7)
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round,
+    );
+
+    // Impact ring at the contact point.
+    final pulse = 0.5 + 0.5 * sin(t * 6);
+    canvas.drawCircle(
+      impact,
+      7 + pulse * 2.5,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.8
+        ..color = col.withValues(alpha: 0.85),
+    );
+    canvas.drawCircle(
+        impact, 2.2, Paint()..color = col.withValues(alpha: 0.9));
+
+    // Reflected-direction stub (skipped on a clean pot — nothing reflects).
+    if (!cueHitsCatcher && (stubEnd - impact).distance > 1.0) {
+      canvas.drawLine(
+        impact,
+        stubEnd,
         Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.6
-          ..color = Potatuhs.gold.withValues(alpha: 0.7),
+          ..color = col.withValues(alpha: 0.4)
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round,
       );
+      // Tiny arrowhead so the next-ricochet direction reads instantly.
+      final d = (stubEnd - impact) / (stubEnd - impact).distance;
+      final perp = Offset(-d.dy, d.dx);
+      final ah = Paint()
+        ..color = col.withValues(alpha: 0.45)
+        ..strokeWidth = 2.0
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(stubEnd, stubEnd - d * 8 + perp * 5, ah);
+      canvas.drawLine(stubEnd, stubEnd - d * 8 - perp * 5, ah);
     }
   }
 
@@ -1330,9 +1485,10 @@ class _RicochetPainter extends CustomPainter {
       final mPos = Offset(projectile!.x, projectile!.y);
       GameFx.orb(canvas, mPos, _kProjectileRadius, Potatuhs.glaucous,
           glow: 1.9, rim: Colors.white, specular: true);
-      // bounce counter halo — a tick ring per carom so the bank reads live
-      if (projectile!.bounces > 0) {
-        for (int b = 0; b < projectile!.bounces.clamp(0, 6); b++) {
+      // bank counter halo — a tick ring per PAYING body carom (walls don't
+      // credit a bank, so they don't earn a ring)
+      if (projectile!.bodyBounces > 0) {
+        for (int b = 0; b < projectile!.bodyBounces.clamp(0, 6); b++) {
           canvas.drawCircle(
             mPos,
             _kProjectileRadius + 4 + b * 2.5,
@@ -1525,66 +1681,76 @@ class RicochetArt {
   }
 }
 
-// Quadratic-bezier sampler for the manual's dotted paths.
-List<Offset> _bezier(Offset p0, Offset ctrl, Offset p1, int steps) {
+// Straight-segment sampler for the manual's dotted paths — flight is pure
+// billiards, so the legend paths are straight lines too.
+List<Offset> _line(Offset p0, Offset p1, int steps) {
   final out = <Offset>[];
   for (int i = 0; i <= steps; i++) {
-    final t = i / steps, u = 1 - t;
+    final t = i / steps;
     out.add(Offset(
-      u * u * p0.dx + 2 * u * t * ctrl.dx + t * t * p1.dx,
-      u * u * p0.dy + 2 * u * t * ctrl.dy + t * t * p1.dy,
+      p0.dx + (p1.dx - p0.dx) * t,
+      p0.dy + (p1.dy - p0.dy) * t,
     ));
   }
   return out;
 }
 
-// ── Legend frame 1 — LAUNCH: drag toward the catcher; gravity bends the shot ──
+// ── Legend frame 1 — LAUNCH: drag to aim; the shot flies dead straight ───────
 void _legendLaunch(Canvas canvas, Size size) {
   if (size.width < 24 || size.height < 24) return;
   final w = size.width, h = size.height;
   final cannon = Offset(w * 0.15, h * 0.82);
   final target = Offset(w * 0.82, h * 0.24);
-  final well = Offset(w * 0.5, h * 0.62);
+  final well = Offset(w * 0.38, h * 0.32);
 
-  RicochetArt.well(canvas, well, w * 0.11, Potatuhs.airForce);
-  // Curved path bending around the well into the catcher.
-  final ctrl = Offset(w * 0.42, h * 0.20);
-  RicochetArt.path(canvas, _bezier(cannon, ctrl, target, 26));
+  // The well is dressing — it never bends the shot.
+  RicochetArt.well(canvas, well, w * 0.10, Potatuhs.airForce);
+  RicochetArt.path(canvas, _line(cannon, target, 26));
   RicochetArt.catcher(canvas, target, 22);
-  RicochetArt.cannon(canvas, cannon, atan2(ctrl.dy - cannon.dy, ctrl.dx - cannon.dx));
+  RicochetArt.cannon(
+      canvas, cannon, atan2(target.dy - cannon.dy, target.dx - cannon.dx));
 }
 
-// ── Legend frame 2 — BANK: bounce off walls & asteroids; each bounce pays ────
+// ── Legend frame 2 — BANK: carom off planets & rocks; every body pays ────────
 void _legendBank(Canvas canvas, Size size) {
   if (size.width < 24 || size.height < 24) return;
   final w = size.width, h = size.height;
   RicochetArt.walls(canvas, size);
   final cannon = Offset(w * 0.14, h * 0.80);
-  final wall = Offset(w * 0.92, h * 0.42); // carom point on the right wall
-  final target = Offset(w * 0.30, h * 0.20);
-  final rock = Offset(w * 0.60, h * 0.60);
+  final rock = Offset(w * 0.62, h * 0.56); // the paying bank surface
+  final carom = Offset(w * 0.56, h * 0.48); // contact on the rock's upper-left
+  final target = Offset(w * 0.28, h * 0.18);
 
   RicochetArt.asteroid(canvas, rock, w * 0.075, Potatuhs.copper);
-  // Path: cannon → right wall → up-left into the catcher (a 1-bank).
-  final up = _bezier(cannon, Offset(w * 0.75, h * 0.72), wall, 16);
-  final back = _bezier(wall, Offset(w * 0.62, h * 0.24), target, 16);
-  RicochetArt.path(canvas, [...up, ...back]);
-  // Bounce burst at the carom.
-  RicochetArt.planetlet(canvas, wall, bounces: 2);
+  // Path: cannon → rock (straight) → up-left into the catcher (a 1-bank).
+  RicochetArt.path(
+      canvas, [..._line(cannon, carom, 14), ..._line(carom, target, 14)]);
+  RicochetArt.planetlet(canvas, carom, bounces: 1);
+  // The +30 the carom just paid.
+  GameFx.text(canvas, '+30', carom.translate(14, -16), 12, Potatuhs.gold,
+      glow: 0.5);
   RicochetArt.catcher(canvas, target, 22);
-  RicochetArt.cannon(canvas, cannon,
-      atan2(h * 0.72 - cannon.dy, w * 0.75 - cannon.dx));
+  RicochetArt.cannon(
+      canvas, cannon, atan2(carom.dy - cannon.dy, carom.dx - cannon.dx));
 }
 
-// ── Legend frame 3 — BODIES: giants pull, asteroids only deflect ─────────────
-void _legendBodies(Canvas canvas, Size size) {
+// ── Legend frame 3 — WALLS: they bounce too, but every wall hit costs ────────
+void _legendWalls(Canvas canvas, Size size) {
   if (size.width < 24 || size.height < 24) return;
   final w = size.width, h = size.height;
-  RicochetArt.well(canvas, Offset(w * 0.30, h * 0.46), w * 0.13,
-      Potatuhs.sienna, giant: true, label: 'GIANT');
-  RicochetArt.asteroid(canvas, Offset(w * 0.74, h * 0.42), w * 0.07,
-      Potatuhs.copper, label: 'ROCK');
-  RicochetArt.planetlet(canvas, Offset(w * 0.52, h * 0.78), bounces: 1);
+  RicochetArt.walls(canvas, size);
+  final cannon = Offset(w * 0.16, h * 0.80);
+  final wallPt = Offset(w * 0.92, h * 0.44); // carom point on the right wall
+  final onward = Offset(w * 0.62, h * 0.16);
+
+  RicochetArt.path(
+      canvas, [..._line(cannon, wallPt, 16), ..._line(wallPt, onward, 12)]);
+  RicochetArt.planetlet(canvas, wallPt);
+  // The −15 the wall just charged.
+  GameFx.text(canvas, '-15', wallPt.translate(-20, -14), 12, Potatuhs.orange,
+      glow: 0.5);
+  RicochetArt.cannon(
+      canvas, cannon, atan2(wallPt.dy - cannon.dy, wallPt.dx - cannon.dx));
 }
 
 // ── Legend frame 4 — FIZZLE: a stalled shot dies; decay speeds up late ───────
@@ -1592,9 +1758,9 @@ void _legendFizzle(Canvas canvas, Size size) {
   if (size.width < 24 || size.height < 24) return;
   final w = size.width, h = size.height;
   final target = Offset(w * 0.80, h * 0.28);
-  // A dwindling comet arc that peters out short of the catcher.
-  final arc = _bezier(Offset(w * 0.16, h * 0.72), Offset(w * 0.42, h * 0.40),
-      Offset(w * 0.55, h * 0.52), 22);
+  // A dwindling straight comet that peters out short of the catcher.
+  final arc =
+      _line(Offset(w * 0.16, h * 0.72), Offset(w * 0.55, h * 0.46), 22);
   for (int i = 0; i < arc.length; i++) {
     final frac = i / arc.length;
     canvas.drawCircle(
@@ -1622,14 +1788,14 @@ void _legendFizzle(Canvas canvas, Size size) {
 /// The visual manual for Ricochet — wired into the registry spec.
 final List<LegendFrame> orbitRicochetLegendFrames = [
   const LegendFrame(
-      caption: 'Drag toward the catcher — gravity bends the shot',
+      caption: 'Drag to aim — the shot flies dead straight',
       paint: _legendLaunch),
   const LegendFrame(
-      caption: 'Bank off walls & asteroids: each bounce adds +55',
+      caption: 'Bank off planets & rocks: +30 each, +55 more at the catch',
       paint: _legendBank),
   const LegendFrame(
-      caption: 'Giants pull your shot; asteroids only deflect it',
-      paint: _legendBodies),
+      caption: 'Walls bounce too — but every wall hit costs −15',
+      paint: _legendWalls),
   const LegendFrame(
       caption: 'Land the bank fast — stalled shots fizzle out',
       paint: _legendFizzle),

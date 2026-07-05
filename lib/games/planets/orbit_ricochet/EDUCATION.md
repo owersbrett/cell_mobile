@@ -1,8 +1,10 @@
 # EDUCATION.md — Ricochet (the E in GAMES)
 
-> The educational component for the planets-scale bank-shot game. Topic: **reflection (angle of
-> incidence = angle of reflection) layered on gravitational path bending** — i.e. bank shots and
-> gravity assists. Every claim below is something the *mechanics themselves* demonstrate; the player
+> The educational component for the planets-scale bank-shot game. Topic: **specular reflection —
+> angle of incidence = angle of reflection — on flat and convex surfaces**, plus **restitution as an
+> energy budget**. Flight in this game is pure billiards (straight lines between bounces); the
+> gravity-well visuals are dressing. Gravitational path bending is deliberately its sibling's lesson
+> (Orbit Catch). Every claim below is something the *mechanics themselves* demonstrate; the player
 > learns it by feel before they could name it.
 
 ---
@@ -10,10 +12,10 @@
 ## 1. The one-sentence takeaway
 
 **A moving object that hits a surface leaves at the same angle it arrived — measured from the line
-perpendicular to the surface — and gravity keeps curving its path the whole time in between.**
+perpendicular to the surface — and between bounces it travels in a straight line.**
 
-Master those two facts together and you can put a ball anywhere on the field, even places you can't
-see a straight line to. That is a bank shot.
+Master that one law on flat walls and curved bodies and you can put a ball anywhere on the field,
+even places you can't see a straight line to. That is a bank shot.
 
 ---
 
@@ -46,7 +48,25 @@ the perpendicular component and leaves the parallel component untouched — whic
 
 ---
 
-## 3. Restitution — why a bounce loses energy
+## 3. The cue preview — why the game can promise you the truth
+
+While you aim, Ricochet draws a **straight line to the first surface your shot will hit, a ring at
+the exact impact point, and a short stub showing the reflected direction**. That preview isn't a
+simulation or an estimate — it's a **ray cast**, the same geometry a pool player does by eye.
+
+It can only be exactly truthful because the physics is pure billiards: with no force acting
+mid-flight, the path between bounces IS a straight line, so predicting the first contact is solving
+one line-vs-circle (or line-vs-wall) intersection. The stub after the impact is the law of
+reflection applied once. This is the same reason light-ray diagrams in optics use straight lines and
+one reflection rule — reflection is *local*: everything about the bounce is decided at the contact
+point.
+
+(Compare Orbit Catch, this game's sibling: there gravity curves the flight continuously, so no
+straight-line preview could ever be honest. One force, and the whole geometry changes.)
+
+---
+
+## 4. Restitution — why a bounce loses energy
 
 Real collisions aren't perfect mirrors; some energy goes into heat and deformation. We model that with
 a **coefficient of restitution** (here `0.90` off bodies, `0.94` off walls): the outgoing speed is the
@@ -56,45 +76,32 @@ not just geometry.
 
 ---
 
-## 4. Gravity bending the path between bounces
+## 5. Flat vs convex — why bodies pay more and cost more
 
-Reflection handles the instant of contact. **Gravity handles everything in between.** Each gravity
-well pulls the planetlet with a force that grows as you get closer (`a = G·mass / r²` — the inverse
-square law). So between two bounces the path is never a straight line; it's a **curve**. A real bank
-shot in this game is therefore *two* skills stacked:
+The game prices its surfaces: **bodies pay (+30 per carom), walls cost (−15)**. That's not
+arbitrary — it mirrors the geometry:
 
-1. Pick a launch direction whose **curved** path arrives at a surface at the right contact point.
-2. Trust that the **reflected** path, itself curved again by the next well, drops into the catcher.
+- A **flat wall** is the forgiving surface. The normal is the same everywhere along it, so a small
+  aiming error stays a small error after the bounce. Easy, reliable — and therefore cheap. The game
+  charges you for taking the easy rail.
+- A **convex body** amplifies error. Shift the contact point a few pixels and the normal swings,
+  so the outgoing direction swings *more*. Precision on a curved surface is genuinely harder — this
+  is **sensitivity to initial conditions**, the same effect that makes convex mirrors "wide-angle"
+  and makes pinball chaotic. Harder skill, bigger reward.
 
-This is genuinely how trajectory design works in the real world — you never get to think about
-straight lines.
-
----
-
-## 5. The gravity assist (the "slingshot")
-
-When a spacecraft flies close past a planet, the planet's gravity bends its path and — because the
-planet is itself moving — the craft can leave with **more speed**, stolen from the planet's orbital
-motion, and pointed in a new direction. Voyager, Cassini, and every outer-planets mission used this.
-
-In Ricochet you feel the directional half of a gravity assist on every shot: aim *near* a giant and it
-whips your planetlet around onto a new heading you could never have launched directly. Combine that
-bend with a wall or asteroid carom and you've built, by hand, the exact maneuver mission planners spend
-months optimizing.
+So the scoring is the lesson wearing a costume: the game pays you in proportion to the difficulty of
+the reflection geometry you just executed.
 
 ---
 
 ## 6. Why this is hard (and worth practicing)
 
-- A round surface turns a **small aiming error into a large direction error** after the bounce —
-  sensitivity to initial conditions. Precision matters most on convex surfaces.
-- Energy decays, so a 3-bank plan must be *efficient*; you can't dawdle.
-- Gravity is strongest exactly where you most want to skim (close to a body), so the curve fights your
-  intuition near every well.
-
-The trajectory preview teaches this honestly: it shows your predicted path **bright up to the first
-carom** and **faint afterward**, because every additional bounce compounds uncertainty. Aim with the
-bright part; treat the faint part as a hint, not a promise.
+- A round surface turns a **small aiming error into a large direction error** after the bounce.
+  Precision matters most on convex surfaces.
+- Energy decays, so a multi-bank plan must be *efficient*; you can't dawdle.
+- The preview tells you the truth only up to the **first** contact — after that, every additional
+  bounce compounds your aiming error. Plan the first carom exactly; hold the rest in your head, like
+  a pool player calling a two-rail shot.
 
 ---
 
@@ -105,17 +112,19 @@ bright part; treat the faint part as a hint, not a promise.
 | **Normal** | The line perpendicular to a surface at the contact point; the axis a bounce mirrors across. |
 | **Angle of incidence** | Angle between the incoming path and the normal. |
 | **Angle of reflection** | Angle between the outgoing path and the normal — equal to incidence. |
+| **Specular reflection** | Mirror-like reflection: one incoming direction → one outgoing direction. |
+| **Ray cast** | Finding the first surface a straight ray hits — the aim preview, and how a pool player reads a shot. |
 | **Restitution** | Fraction of speed kept after a bounce (0.90–0.94 here). |
-| **Inverse-square gravity** | Pull strength ∝ 1/distance²; doubling the distance quarters the pull. |
-| **Gravity assist / slingshot** | Using a body's gravity (and motion) to redirect and speed up a passing object. |
+| **Convex surface** | Curves away from you (planets, asteroids); amplifies aiming error after the bounce. |
 | **Bank shot** | A shot aimed at a surface so its reflection — not its direct path — reaches the goal. |
 
 ---
 
 ## 8. One thing to try
 
-Pick a level where the catcher sits in a corner behind a giant. Don't aim at the catcher — aim at the
-**wall** beside it, a touch above the line you think you need, and let the giant's pull tighten the
-incoming angle. Watch the bright preview hit the wall, then read the faint forecast curl into the
-pocket. When it drops in after the bounce, you just did angle-of-reflection + gravity assist in one
-motion. That's the whole lesson, and it scores a "1-BANK."
+Pick a level where the catcher hides behind a giant. Aim at the giant's **edge**, not its center, and
+watch the cue preview: as you sweep your aim across the face of the planet, the reflected stub swings
+wildly — that's the changing normal of a convex surface, live. Find the aim where the stub points at
+the pocket and fire. The straight line, the ring, the stub — you just solved angle-of-incidence =
+angle-of-reflection on a curved mirror, and it paid you +30 for the contact and a "1-BANK" at the
+catch. Then notice what the wall route would have cost you.
