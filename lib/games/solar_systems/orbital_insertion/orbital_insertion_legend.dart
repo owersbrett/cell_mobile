@@ -39,6 +39,24 @@ void _ring(Canvas canvas, Offset c, double r) {
   }
 }
 
+/// The glaucous dashed DEEP-SPACE containment boundary — the hard edge of
+/// playable space in the live game; anything crossing it is lost.
+void _boundary(Canvas canvas, Offset c, double r) {
+  if (r <= 0) return;
+  final paint = Paint()
+    ..color = Potatuhs.glaucous.withValues(alpha: 0.28)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 1.3;
+  const dashes = 56;
+  for (int i = 0; i < dashes; i++) {
+    if (i.isOdd) continue;
+    final a0 = i / dashes * 2 * pi;
+    final a1 = (i + 1) / dashes * 2 * pi;
+    canvas.drawArc(
+        Rect.fromCircle(center: c, radius: r), a0, a1 - a0, false, paint);
+  }
+}
+
 /// The planet — gravity-well glow, faint pull rings, and the glossy orb.
 void _planet(Canvas canvas, Offset c, double r, Color color,
     {bool drift = false}) {
@@ -241,15 +259,20 @@ void _legendScore(Canvas canvas, Size size) {
       display: true, glow: 0.7);
 }
 
-/// FRAME 3 — the danger: too slow CRASHES, too fast ESCAPES.
+/// FRAME 3 — the danger: too slow CRASHES, too fast is LOST past the dashed
+/// deep-space boundary (the containment edge of the live arena).
 void _legendMiss(Canvas canvas, Size size) {
   if (size.width < 8 || size.height < 8) return;
   final w = size.width, h = size.height;
-  final pc = Offset(w * 0.5, h * 0.42);
+  final pc = Offset(w * 0.5, h * 0.46);
   final r = (min(w, h) * 0.12).clamp(16.0, 36.0);
+  // Launcher sits at 0.40h from the planet — always INSIDE the 0.44h boundary,
+  // like the live arena (stable ring < containment radius) at any card aspect.
+  final boundR = h * 0.44;
+  final launcher = Offset(w * 0.5, h * 0.86);
 
+  _boundary(canvas, pc, boundR);
   _planet(canvas, pc, r, Potatuhs.airForce);
-  final launcher = Offset(w * 0.5, h * 0.9);
 
   // CRASH — too slow, falls into the surface (orange).
   final crashCtrl = pc + Offset(-r * 2.6, r * 3.4);
@@ -259,11 +282,12 @@ void _legendMiss(Canvas canvas, Size size) {
       Potatuhs.orange,
       display: true, glow: 0.6);
 
-  // ESCAPE — too fast, flies off past the edge (glaucous).
+  // LOST — too fast, flung across the deep-space boundary (glaucous).
+  final escEnd = pc + Offset(cos(-1.0) * boundR * 1.12, sin(-1.0) * boundR * 1.12);
   final escCtrl = pc + Offset(r * 2.4, r * 0.4);
-  final escape = _bezier(launcher, escCtrl, Offset(w * 1.02, h * 0.06), 24);
+  final escape = _bezier(launcher, escCtrl, escEnd, 24);
   _trajectory(canvas, escape, Potatuhs.glaucous);
-  GameFx.text(canvas, 'ESCAPE', escape[escape.length * 3 ~/ 5].translate(0, -14),
+  GameFx.text(canvas, 'LOST', escape[escape.length * 3 ~/ 5].translate(0, -14),
       11, Potatuhs.glaucous,
       display: true, glow: 0.6);
 
@@ -302,7 +326,7 @@ final List<LegendFrame> orbitalInsertionLegendFrames = [
     paint: _legendScore,
   ),
   const LegendFrame(
-    caption: 'Too slow crashes; too fast escapes',
+    caption: 'Too slow crashes; too fast is lost to deep space',
     paint: _legendMiss,
   ),
   const LegendFrame(

@@ -34,7 +34,7 @@
 
 ## Architecture (one ticker → painter)
 
-- Single `AnimationController` (`_ctrl`) drives `_tick()` at ~60 fps → `setState` → `_OrbitPainter`.
+- Single `Ticker` (`_ticker`) drives `_onTick()` with real elapsed-dt → `setState` → `_OrbitPainter`.
   The child tree is just a `CustomPaint` + a tiny HUD `Stack`, so the per-frame `setState` is cheap.
 - **Two kinds of moon:**
   - `_Orbiter` — a CAPTURE. Analytic Kepler ellipse, advanced by `dν/dt = h/r²`. Drift-free and
@@ -62,6 +62,16 @@
 | `_kCapturesPerPlanet` | `3` | Captures before a new (harder) planet. |
 | `_kMaxOrbiters` | `6` | Perf cap on simultaneous orbiters. |
 | `_kMinGravDist` | `16` | Softening floor for the numeric integrator (never hit by a valid orbit). |
+| `_kContainFactor` | `1.4` | Deep-space boundary = this × stable-ring radius. Max survivable apoapsis; also sets how far the per-planet zoom pulls back. Raise → more forgiving fast shots but a smaller-looking world. |
+| `_kViewPadFrac` | `0.08` | Viewport padding around the containment circle when fitting the zoom. |
+| `_kMinZoom` / `_kMaxZoom` | `0.22` / `1.0` | Zoom clamp (guard for extreme aspects; never zoom in past 1:1). |
+| `_kMaxVisualBoost` | `2.8` | Cap on the `1/zoom` boost applied to cosmetic sizes (moons, strokes, labels) inside the world transform. |
+
+**Camera/containment invariants:** all world-space drawing goes through the single
+`canvas.save/translate/scale` transform in `_OrbitPainter.paint`; screen-space overlays (bursts,
+pops, banner, drag guide) draw after `restore`. `_judge()` sits on top of `_classify()` and is
+used by BOTH the aim preview and `_launch` — never let them diverge. Fliers are culled radially
+at `_containRadius` (no rectangular off-screen checks).
 
 Difficulty ramp lives in `_rollPlanet()`: planet radius shrink, mu jitter, drift onset (round 4),
 hazard onset (round 6). Adjust thresholds there.
@@ -70,9 +80,10 @@ hazard onset (round 6). Adjust thresholds there.
 
 ## Known TODOs / ideas (priority order)
 
-1. **[MED] Capture confirm vs near-escape.** A barely-bound, highly eccentric capture sweeps to a
-   distant apoapsis slowly, so `_kConfirmSweep` can take a while. Acceptable, but consider confirming
-   on "passed first periapsis" as an alternative gate if it ever feels laggy.
+1. **[LOW — mostly solved by containment] Capture confirm vs near-escape.** Captures are now
+   bounded at apoapsis ≤ `_kContainFactor` × ring, so the pathological slow-sweep ellipse can't
+   occur. If `_kContainFactor` is ever raised a lot, revisit confirming on "passed first
+   periapsis" instead of `_kConfirmSweep`.
 2. **[LOW] Hazard vs orbiters.** The debris hazard only collides with the incoming `_Flier`;
    confirmed orbiters ignore it (two-body purity). Fine because the hazard sits on the approach lane,
    but if an orbit visibly clips it, nudge `_hazardFrac` further from typical orbit radii in

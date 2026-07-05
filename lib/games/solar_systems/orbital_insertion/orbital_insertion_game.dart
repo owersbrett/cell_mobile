@@ -28,6 +28,18 @@
 // "stable orbit" is genuinely stable. Crash/escape moons are integrated numeric-
 // ally so you watch them fall in or fly away.
 //
+// CONTAINMENT + CAMERA (the "orbit goes off screen" fix): the world is drawn
+// through a uniform world→screen zoom (canvas.save/translate/scale), STATIC per
+// planet, chosen so the CONTAINMENT CIRCLE — max apoapsis = _kContainFactor ×
+// the stable-ring radius — fits the viewport with padding. Any shot whose orbit
+// would poke past that circle is judged an ESCAPE ("LOST TO DEEP SPACE") and is
+// visibly flung across the dashed deep-space boundary, never invisible-but-alive.
+// Physics stays in world units; only the view scales. Cosmetic sizes (moons,
+// strokes, labels) are boosted by a clamped 1/zoom so nothing goes hairline-thin.
+// Drag input is positionless (the drag is a direction+power VECTOR, not a world
+// point), so aiming needs no screen→world inverse; screen-space overlays (drag
+// guide, bursts, score pops, banner) are drawn outside the world transform.
+//
 // HOST CONTRACT: MiniGameHost owns intro / 3·2·1 countdown / score-HUD / timer /
 // results. This widget renders ONLY the play area, runs only while
 // widget.session.isRunning, reports points via session.addScore() and streaks
@@ -88,6 +100,17 @@ const int _kLapCircular = 26; // × (1 − eccentricity), each lap
 // Progression.
 const int _kCapturesPerPlanet = 3; // captures before a new planet arrives
 const int _kMaxOrbiters = 6; // hard perf cap on simultaneous orbiters
+
+// Containment + camera. The containment circle (centre = planet, radius =
+// _kContainFactor × the stable-ring radius) is the hard edge of playable space:
+// bound orbits whose apoapsis exceeds it are LOST TO DEEP SPACE. The per-planet
+// static zoom is chosen so this circle (plus drift amplitude) fits the viewport
+// with _kViewPadFrac padding — so every survivable orbit is always fully visible.
+const double _kContainFactor = 1.4; // max apoapsis, in stable-ring radii
+const double _kViewPadFrac = 0.08; // viewport padding around the containment circle
+const double _kMinZoom = 0.22; // guard for extreme aspect ratios
+const double _kMaxZoom = 1.0; // never zoom IN past 1:1
+const double _kMaxVisualBoost = 2.8; // cap on the 1/zoom cosmetic-size boost
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MODEL
@@ -306,7 +329,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
   double _t = 0.0;
   double _flash = 0.0; // capture-confirm flash, decays
   int _streak = 0;
-  String _banner = ''; // brief outcome callout (CAPTURED / ESCAPED / CRASH)
+  String _banner = ''; // outcome callout (CAPTURED / CRASHED / LOST TO DEEP SPACE)
   double _bannerAge = 0.0;
   Color _bannerColor = Potatuhs.gold;
 
@@ -402,7 +425,8 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     // Graduate the constellation with a flourish, then a fresh, harder planet.
     final size = _canvasSize;
     for (final o in _orbiters) {
-      _fx.addAll(FxBurst.spawn(o.pos, o.color, count: 10, speed: 150, size: 3));
+      _fx.addAll(FxBurst.spawn(_toScreen(o.pos), o.color,
+          count: 10, speed: 150, size: 3));
     }
     _orbiters.clear();
     _systemIndex++;
@@ -443,6 +467,58 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
   /// launcher, so the round-orbit goal is the circle of that radius.)
   double _targetRingR(Size s) =>
       (_launcherPx(s) - _planetCenter(s)).distance.clamp(60.0, 1e9);
+
+  // ── containment + camera ───────────────────────────────────────────────────
+  /// Planet centre WITHOUT drift — the static anchor for containment sizing and
+  /// the camera, so the view never sways with a drifting planet.
+  Offset _planetBase(Size s) =>
+      Offset(_planetFrac.dx * s.width, _planetFrac.dy * s.height);
+
+  /// The stable-ring radius measured against the static base centre (drift-free,
+  /// so zoom + containment stay constant for the whole planet).
+  double _baseRingR(Size s) =>
+      (_launcherPx(s) - _planetBase(s)).distance.clamp(60.0, 1e9);
+
+  /// Hard edge of playable space (world units, radial from the LIVE planet
+  /// centre): the maximum survivable apoapsis. Cross it and the moon is lost.
+  double _containRadius(Size s) => _baseRingR(s) * _kContainFactor;
+
+  /// STATIC per-planet zoom: fit the containment circle (widened by the drift
+  /// amplitude) inside the viewport with padding. Deterministic — recomputed
+  /// from level state + size each frame, but constant within a planet.
+  double _zoomFor(Size s) {
+    if (s.width < 8 || s.height < 8) return 1.0;
+    final contain = _containRadius(s);
+    final ampPx = _moveAmp * s.width; // horizontal drift widens the fit box
+    final zw = (s.width / 2 - s.width * _kViewPadFrac) / (contain + ampPx);
+    final zh = (s.height / 2 - s.height * _kViewPadFrac) / contain;
+    return min(zw, zh).clamp(_kMinZoom, _kMaxZoom);
+  }
+
+  /// Screen point the camera anchor (planet base centre) maps to — slightly
+  /// above centre so the bottom hint banner keeps clear air.
+  Offset _viewCenter(Size s) => Offset(s.width / 2, s.height * 0.47);
+
+  /// World → screen (for screen-space fx spawned at world positions).
+  Offset _toScreen(Offset world) {
+    final s = _canvasSize;
+    if (s == Size.zero) return world;
+    return _viewCenter(s) + (world - _planetBase(s)) * _zoomFor(s);
+  }
+
+  /// Containment verdict on top of the raw Kepler classification. A bound orbit
+  /// whose apoapsis pokes past the containment circle is only allowed to CRASH
+  /// if it is diving inward (it hits the surface before deep space); otherwise
+  /// it will cross the boundary — LOST TO DEEP SPACE, judged an escape. Used by
+  /// both the aim preview and the live launch, so the preview never lies.
+  _Outcome _judge(_Elements el, double containR) {
+    if (el.outcome == _Outcome.escape) return _Outcome.escape;
+    if (el.apoapsis <= containR) return el.outcome; // fully contained
+    if (el.outcome == _Outcome.crash && sin(el.nu0) < 0) {
+      return _Outcome.crash; // moving inward: periapsis (and the surface) first
+    }
+    return _Outcome.escape;
+  }
 
   // ── main tick ──────────────────────────────────────────────────────────────
   void _onTick(Duration elapsed) {
@@ -493,7 +569,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
       final circ = (1 - o.e).clamp(0.0, 1.0);
       final pts = _kLapBase + (circ * _kLapCircular).round();
       widget.session.addScore(pts);
-      _pops.add(FxPop(o.pos, '+$pts', o.color));
+      _pops.add(FxPop(_toScreen(o.pos), '+$pts', o.color));
     }
   }
 
@@ -503,6 +579,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     final sdt = dt / sub;
     const minSq = _kMinGravDist * _kMinGravDist;
     final size = _canvasSize;
+    final containR = _containRadius(size);
 
     for (int s = 0; s < sub; s++) {
       final pc = _planetCenter(size);
@@ -538,12 +615,13 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
           return;
         }
       }
-      // Escape the field.
-      if (f.x < -160 ||
-          f.x > size.width + 160 ||
-          f.y < -160 ||
-          f.y > size.height + 160) {
+      // Cross the containment boundary — LOST TO DEEP SPACE. Radial (matches
+      // the drawn boundary + the zoomed view), replacing the old rectangular
+      // off-screen cull, so the failure is visible right at the ring, exactly
+      // once, never invisible-but-alive.
+      if (d > containR) {
         f.alive = false;
+        _spawnBurst(Offset(f.x, f.y), Potatuhs.glaucous, 16);
         _onLost(_Outcome.escape);
         return;
       }
@@ -553,7 +631,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
   void _onLost(_Outcome why) {
     _flier = null;
     _streak = 0;
-    _banner = why == _Outcome.crash ? 'CRASHED' : 'ESCAPED';
+    _banner = why == _Outcome.crash ? 'CRASHED' : 'LOST TO DEEP SPACE';
     _bannerColor = why == _Outcome.crash ? Potatuhs.orange : Potatuhs.glaucous;
     _bannerAge = 1.1;
   }
@@ -578,11 +656,12 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     _flash = 1.0;
     _spawnBurst(o.pos, Potatuhs.gold, 22);
     _spawnBurst(o.pos, o.color, 12);
-    _pops.add(FxPop(o.pos, '+$pts', Potatuhs.gold));
+    final popAt = _toScreen(o.pos);
+    _pops.add(FxPop(popAt, '+$pts', Potatuhs.gold));
     if (hugsRing) {
-      _pops.add(FxPop(o.pos.translate(0, -26), 'STABLE!', Potatuhs.gold));
+      _pops.add(FxPop(popAt.translate(0, -26), 'STABLE!', Potatuhs.gold));
     } else if (_streak >= 2) {
-      _pops.add(FxPop(o.pos.translate(0, -26), '${_streak}x', Potatuhs.orange));
+      _pops.add(FxPop(popAt.translate(0, -26), '${_streak}x', Potatuhs.orange));
     }
     _banner = o.e < 0.12 ? 'CIRCULAR ORBIT' : 'CAPTURED';
     _bannerColor = Potatuhs.gold;
@@ -597,8 +676,11 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     }
   }
 
+  /// [at] is a WORLD position; bursts live in screen space (drawn outside the
+  /// world transform so particles stay full-size at any zoom).
   void _spawnBurst(Offset at, Color color, int count) {
-    _fx.addAll(FxBurst.spawn(at, color, count: count, speed: 170, size: 4));
+    _fx.addAll(
+        FxBurst.spawn(_toScreen(at), color, count: count, speed: 170, size: 4));
   }
 
   // ── direct-aim input ───────────────────────────────────────────────────────
@@ -654,9 +736,12 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     final rel = origin - pc;
     final relVel = launchVel - _planetVel(size); // velocity in the planet frame
     final el = _classify(rel, relVel, _mu, _planetR + _kMoonRadius);
+    final fate = _judge(el, _containRadius(size));
 
     setState(() {
-      if (el.outcome == _Outcome.capture) {
+      if (fate == _Outcome.capture) {
+        // _judge guarantees apoapsis ≤ containment radius, so a capture can
+        // never leave the visible arena.
         _pending = _Orbiter(el, _moonTint());
       } else {
         _flier = _Flier(
@@ -664,7 +749,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
           origin.dy,
           launchVel.dx,
           launchVel.dy,
-          el.outcome,
+          fate,
         );
       }
     });
@@ -677,9 +762,11 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     final origin = _launcherPx(size);
     final pc = _planetCenter(size);
     final v = _launchVector(_dragStart!, _dragCurrent!);
-    return _classify(origin - pc, v - _planetVel(size), _mu,
-            _planetR + _kMoonRadius)
-        .outcome;
+    // Same classify → judge pipeline as _launch, so the label never lies about
+    // containment: a bound orbit that would cross into deep space reads ESCAPE.
+    final el = _classify(
+        origin - pc, v - _planetVel(size), _mu, _planetR + _kMoonRadius);
+    return _judge(el, _containRadius(size));
   }
 
   List<Offset> _buildPreview(Size size) {
@@ -693,6 +780,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     const minSq = _kMinGravDist * _kMinGravDist;
     const subDt = _kPreviewDt / _kPreviewSub;
     final hz = _hazardPx(size);
+    final containR = _containRadius(size);
 
     for (int i = 0; i < _kPreviewSteps; i++) {
       for (int s = 0; s < _kPreviewSub; s++) {
@@ -714,12 +802,12 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
           pts.add(Offset(px, py));
           return pts; // stops at the debris hazard
         }
+        if (d > containR) {
+          pts.add(Offset(px, py));
+          return pts; // stops at the deep-space boundary (matches the cull)
+        }
       }
       pts.add(Offset(px, py));
-      if (px < -200 || px > size.width + 200 || py < -200 ||
-          py > size.height + 200) {
-        break;
-      }
     }
     return pts;
   }
@@ -743,6 +831,10 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
         child: CustomPaint(
           painter: _OrbitPainter(
             t: _t,
+            zoom: _zoomFor(size),
+            anchor: _planetBase(size),
+            view: _viewCenter(size),
+            containR: _containRadius(size),
             launcher: _launcherPx(size),
             planetCenter: _planetCenter(size),
             planetR: _planetR,
@@ -872,6 +964,10 @@ const List<Color> _kMoonColors = [
 
 class _OrbitPainter extends CustomPainter {
   final double t;
+  final double zoom; // world → screen scale (static per planet)
+  final Offset anchor; // world point (planet base centre) the camera locks to
+  final Offset view; // screen point the anchor maps to
+  final double containR; // deep-space boundary radius (world units)
   final Offset launcher;
   final Offset planetCenter;
   final double planetR;
@@ -896,8 +992,18 @@ class _OrbitPainter extends CustomPainter {
   final Color bannerColor;
   final double bannerAlpha;
 
+  /// Clamped 1/zoom — multiply COSMETIC sizes (moon radii, stroke widths, label
+  /// fonts) by this inside the world transform so they keep a readable on-screen
+  /// size instead of shrinking with the world. Physical sizes (planet, hazard,
+  /// ring radii) stay in true world units.
+  double get vs => (1.0 / zoom).clamp(1.0, _kMaxVisualBoost);
+
   _OrbitPainter({
     required this.t,
+    required this.zoom,
+    required this.anchor,
+    required this.view,
+    required this.containR,
     required this.launcher,
     required this.planetCenter,
     required this.planetR,
@@ -925,8 +1031,18 @@ class _OrbitPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (size.width < 8 || size.height < 8) return;
+    // Screen-space backdrop (atmosphere fills the real viewport, not the world).
     GameFx.atmosphere(canvas, size, planetColor, t, motes: 48);
 
+    // ── world pass: one uniform world→screen transform for EVERYTHING that
+    // lives in world coordinates (planet, rings, moons, trails, aim preview).
+    canvas.save();
+    canvas.translate(view.dx, view.dy);
+    canvas.scale(zoom);
+    canvas.translate(-anchor.dx, -anchor.dy);
+
+    _paintBoundary(canvas);
     _paintStableRing(canvas);
     _paintPlanet(canvas);
     if (hazard != null) _paintHazard(canvas);
@@ -944,6 +1060,10 @@ class _OrbitPainter extends CustomPainter {
     _paintAim(canvas);
     _paintFlier(canvas);
 
+    canvas.restore();
+
+    // ── screen pass: overlays that live in screen coordinates.
+    _paintDragGuide(canvas);
     FxBurst.paint(canvas, fx);
     for (final p in pops) {
       p.paint(canvas);
@@ -952,12 +1072,44 @@ class _OrbitPainter extends CustomPainter {
     _paintBanner(canvas, size);
   }
 
+  // The deep-space containment boundary — the hard edge of playable space.
+  // Anything crossing it is lost; drawn dashed + faint so escapes read as a
+  // rule, not a glitch. Centred on the LIVE planet centre (physics matches).
+  void _paintBoundary(Canvas canvas) {
+    final paint = Paint()
+      ..color = Potatuhs.glaucous.withValues(alpha: 0.16)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3 * vs;
+    const dashes = 72;
+    for (int i = 0; i < dashes; i++) {
+      if (i.isOdd) continue;
+      final a0 = i / dashes * 2 * pi - t * 0.03;
+      final a1 = (i + 1) / dashes * 2 * pi - t * 0.03;
+      canvas.drawArc(
+        Rect.fromCircle(center: planetCenter, radius: containR),
+        a0,
+        a1 - a0,
+        false,
+        paint,
+      );
+    }
+    GameFx.text(
+      canvas,
+      'DEEP SPACE',
+      planetCenter.translate(0, -containR + 16 * vs),
+      9 * vs,
+      Potatuhs.glaucous.withValues(alpha: 0.55),
+      display: true,
+      glow: 0.3,
+    );
+  }
+
   // Dashed target ring: a circular orbit through the launch point.
   void _paintStableRing(Canvas canvas) {
     final paint = Paint()
-      ..color = Potatuhs.gold.withValues(alpha: 0.18)
+      ..color = Potatuhs.gold.withValues(alpha: 0.22)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
+      ..strokeWidth = 1.2 * vs;
     const dashes = 64;
     for (int i = 0; i < dashes; i++) {
       if (i.isOdd) continue;
@@ -997,7 +1149,7 @@ class _OrbitPainter extends CustomPainter {
         Paint()
           ..color = planetColor.withValues(alpha: 0.05 + 0.03 * pulse)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.9,
+          ..strokeWidth = 0.9 * vs,
       );
     }
     GameFx.orb(canvas, planetCenter, planetR, planetColor,
@@ -1018,7 +1170,7 @@ class _OrbitPainter extends CustomPainter {
       // Drift arrow hint.
       final ax = Paint()
         ..color = planetColor.withValues(alpha: 0.45)
-        ..strokeWidth = 2
+        ..strokeWidth = 2 * vs
         ..strokeCap = StrokeCap.round;
       canvas.drawLine(planetCenter.translate(-planetR - 18, 0),
           planetCenter.translate(planetR + 18, 0), ax);
@@ -1032,7 +1184,7 @@ class _OrbitPainter extends CustomPainter {
       hazardR + 8,
       Paint()
         ..color = Potatuhs.copper.withValues(alpha: 0.2)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 * vs),
     );
     // Clustered debris dots.
     final rng = Random(hz.dx.round() * 31 + hz.dy.round());
@@ -1041,7 +1193,7 @@ class _OrbitPainter extends CustomPainter {
       final rr = hazardR * (0.3 + rng.nextDouble() * 0.7);
       canvas.drawCircle(
         hz + Offset(cos(a) * rr, sin(a) * rr),
-        1.6 + rng.nextDouble() * 1.8,
+        (1.6 + rng.nextDouble() * 1.8) * vs,
         Paint()..color = Potatuhs.copper.withValues(alpha: 0.85),
       );
     }
@@ -1051,7 +1203,7 @@ class _OrbitPainter extends CustomPainter {
       Paint()
         ..color = Potatuhs.copper.withValues(alpha: 0.3)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.0,
+        ..strokeWidth = 1.0 * vs,
     );
   }
 
@@ -1069,12 +1221,12 @@ class _OrbitPainter extends CustomPainter {
         tr[i],
         Paint()
           ..color = o.color.withValues(alpha: frac * 0.4)
-          ..strokeWidth = 3
+          ..strokeWidth = 3 * vs
           ..strokeCap = StrokeCap.round,
       );
     }
     final glow = full ? 1.6 : 1.2 + 0.6 * (0.5 + 0.5 * sin(t * 6));
-    GameFx.orb(canvas, o.pos, _kMoonRadius, o.color,
+    GameFx.orb(canvas, o.pos, _kMoonRadius * vs, o.color,
         glow: glow, rim: Colors.white, specular: true);
   }
 
@@ -1102,7 +1254,7 @@ class _OrbitPainter extends CustomPainter {
       Paint()
         ..color = o.color.withValues(alpha: 0.10 + 0.16 * circ)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2,
+        ..strokeWidth = 1.2 * vs,
     );
   }
 
@@ -1110,7 +1262,7 @@ class _OrbitPainter extends CustomPainter {
     // A gentle demo moon circling the ring while we wait to start.
     final a = t * 0.6;
     final pos = planetCenter + Offset(cos(a) * ringR, sin(a) * ringR);
-    GameFx.orb(canvas, pos, _kMoonRadius, Potatuhs.gold,
+    GameFx.orb(canvas, pos, _kMoonRadius * vs, Potatuhs.gold,
         glow: 1.4, rim: Colors.white, specular: true);
   }
 
@@ -1121,14 +1273,15 @@ class _OrbitPainter extends CustomPainter {
     } else if (flier != null) {
       angle = atan2(flier!.vy, flier!.vx);
     }
-    const len = 26.0;
+    final len = 26.0 * vs;
     final tip = launcher + Offset(cos(angle) * len, sin(angle) * len);
     GameFx.glowLine(canvas, launcher, tip, Potatuhs.gold,
-        width: 4, progress: 1.0);
-    GameFx.orb(canvas, launcher, 14, Potatuhs.inkPanel,
+        width: 4 * vs, progress: 1.0);
+    GameFx.orb(canvas, launcher, 14 * vs, Potatuhs.inkPanel,
         glow: 0.6, rim: Potatuhs.gold, specular: false);
     // The moon waiting in the chamber.
-    GameFx.orb(canvas, launcher, _kMoonRadius * 0.8, Potatuhs.textSecondary,
+    GameFx.orb(canvas, launcher, _kMoonRadius * 0.8 * vs,
+        Potatuhs.textSecondary,
         glow: 0.8, specular: true);
   }
 
@@ -1142,7 +1295,7 @@ class _OrbitPainter extends CustomPainter {
     for (int i = 0; i < preview.length; i++) {
       final frac = i / preview.length;
       final alpha = (1.0 - frac * 0.7) * 0.7;
-      final r = (2.6 - frac * 1.6).clamp(0.7, 2.6);
+      final r = (2.6 - frac * 1.6).clamp(0.7, 2.6) * vs;
       canvas.drawCircle(
           preview[i], r, Paint()..color = col.withValues(alpha: alpha));
     }
@@ -1153,10 +1306,17 @@ class _OrbitPainter extends CustomPainter {
       _Outcome.capture => 'ORBIT',
     };
     final end = preview[(preview.length * 0.55).floor().clamp(0, preview.length - 1)];
-    GameFx.text(canvas, label, end.translate(0, -14), 12, col,
+    GameFx.text(canvas, label, end.translate(0, -14 * vs), 12 * vs, col,
         display: true, glow: 0.7);
   }
 
+  Color get _aimColor => previewOutcome == _Outcome.capture
+      ? Potatuhs.gold
+      : (previewOutcome == _Outcome.escape
+          ? Potatuhs.glaucous
+          : Potatuhs.orange);
+
+  // World-space aim feedback at the launcher (arrow + power ring).
   void _paintAim(Canvas canvas) {
     if (dragStart == null || dragCurrent == null || launchVector == null) {
       return;
@@ -1165,42 +1325,45 @@ class _OrbitPainter extends CustomPainter {
     final powerFrac =
         ((speed - _kMinLaunchSpeed) / (_kMaxLaunchSpeed - _kMinLaunchSpeed))
             .clamp(0.0, 1.0);
-    final col = previewOutcome == _Outcome.capture
-        ? Potatuhs.gold
-        : (previewOutcome == _Outcome.escape
-            ? Potatuhs.glaucous
-            : Potatuhs.orange);
+    final col = _aimColor;
 
-    // Faint guide from drag start to finger.
-    canvas.drawLine(
-      dragStart!,
-      dragCurrent!,
-      Paint()
-        ..color = col.withValues(alpha: 0.2)
-        ..strokeWidth = 1.4,
-    );
     // Aim arrow from the launcher.
     final dir = launchVector! / (speed == 0 ? 1 : speed);
-    final tip = launcher + dir * (30 + powerFrac * 44);
+    final tip = launcher + dir * (30 + powerFrac * 44) * vs;
     final ap = Paint()
       ..color = col.withValues(alpha: 0.9)
-      ..strokeWidth = 3
+      ..strokeWidth = 3 * vs
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(launcher, tip, ap);
     final perp = Offset(-dir.dy, dir.dx);
-    canvas.drawLine(tip, tip - dir * 10 + perp * 6, ap);
-    canvas.drawLine(tip, tip - dir * 10 - perp * 6, ap);
+    canvas.drawLine(tip, tip - dir * 10 * vs + perp * 6 * vs, ap);
+    canvas.drawLine(tip, tip - dir * 10 * vs - perp * 6 * vs, ap);
     // Power ring.
     canvas.drawArc(
-      Rect.fromCircle(center: launcher, radius: 22),
+      Rect.fromCircle(center: launcher, radius: 22 * vs),
       -pi / 2,
       2 * pi * powerFrac,
       false,
       Paint()
         ..color = col.withValues(alpha: 0.8)
-        ..strokeWidth = 3
+        ..strokeWidth = 3 * vs
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round,
+    );
+  }
+
+  // Screen-space faint guide from drag start to finger — the drag is a raw
+  // gesture on the glass (direction + power), so it stays untransformed.
+  void _paintDragGuide(Canvas canvas) {
+    if (dragStart == null || dragCurrent == null || launchVector == null) {
+      return;
+    }
+    canvas.drawLine(
+      dragStart!,
+      dragCurrent!,
+      Paint()
+        ..color = _aimColor.withValues(alpha: 0.2)
+        ..strokeWidth = 1.4,
     );
   }
 
@@ -1231,24 +1394,25 @@ class _OrbitPainter extends CustomPainter {
           Paint()
             ..style = PaintingStyle.stroke
             ..color = fateColor.withValues(alpha: 0.5 * frac)
-            ..strokeWidth = 4
+            ..strokeWidth = 4 * vs
             ..strokeCap = StrokeCap.round
             ..strokeJoin = StrokeJoin.round
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3 * vs),
         );
         canvas.drawPath(
           path,
           Paint()
             ..style = PaintingStyle.stroke
             ..color = Colors.white.withValues(alpha: 0.7 * frac)
-            ..strokeWidth = 1.8
+            ..strokeWidth = 1.8 * vs
             ..strokeCap = StrokeCap.round
             ..strokeJoin = StrokeJoin.round,
         );
       }
     }
     if (f.alive) {
-      GameFx.orb(canvas, Offset(f.x, f.y), _kMoonRadius, Potatuhs.textSecondary,
+      GameFx.orb(canvas, Offset(f.x, f.y), _kMoonRadius * vs,
+          Potatuhs.textSecondary,
           glow: 1.6, rim: Colors.white, specular: true);
     }
   }

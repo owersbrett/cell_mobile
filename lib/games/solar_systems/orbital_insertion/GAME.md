@@ -24,7 +24,9 @@ clean circular orbit.
    direction, drag length = power). A live preview integrates the real gravity and classifies it.
 3. Release to fling:
    - **Too slow / aimed into the planet → CRASH** (periapsis dips below the surface). Lost; streak resets.
-   - **Too fast → ESCAPE** (unbound hyperbolic energy). Lost; streak resets.
+   - **Too fast → ESCAPE.** Unbound (hyperbolic) energy — **or any bound orbit whose apoapsis
+     would cross the dashed DEEP-SPACE boundary** (the containment rule, below). The moon is
+     visibly flung across the boundary and bursts: **"LOST TO DEEP SPACE"**. Lost; streak resets.
    - **Just right → CAPTURE.** The moon swings into a bound ellipse; once it sweeps past ~half an
      orbit the capture **confirms** and scores.
 4. A confirmed moon **keeps orbiting forever** and trickles points every completed lap. Captures
@@ -37,6 +39,27 @@ Computed analytically from the launch state relative to the planet (mu = G·M):
   periapsis `a(1−e)`. **Periapsis ≤ planet radius ⇒ CRASH**, else **CAPTURE**.
 - A confirmed capture is animated along its true ellipse via `dν/dt = h/r²` — drift-free, so a
   "stable orbit" really is stable.
+
+## Containment + camera (every survivable orbit is always fully visible)
+- **Containment rule (hard physics):** playable space is a radial circle around the planet — the
+  **deep-space boundary**, drawn as a faint glaucous dashed ring at
+  `max apoapsis = 1.4 × the stable-ring radius` (`_kContainFactor`). Any bound orbit whose
+  apoapsis exceeds it is judged an **ESCAPE** at launch (and by the live preview — the label
+  never lies); the flung moon is culled the moment it crosses the boundary with a burst and the
+  **LOST TO DEEP SPACE** banner, exactly once — never invisible-but-alive. Exception: a bound
+  overshooting orbit that is *diving inward* hits the surface before deep space, so it stays a
+  CRASH. The old rectangular off-screen cull is gone; containment is radial and visible.
+- **Camera (view only, physics untouched):** the world renders through a uniform world→screen
+  zoom (`canvas` translate/scale), **static per planet**, sized so the containment circle (plus
+  the planet's drift amplitude) fits the viewport with ~8% padding. Chosen static (not a chasing
+  auto-zoom) so the arena is readable and the camera never moves mid-shot; it only re-fits when
+  a new world rolls in. Cosmetic sizes (moons, stroke widths, preview dots, labels) are boosted
+  by a clamped `1/zoom` so nothing goes hairline-thin; physical sizes (planet, hazard, ring
+  radii) stay true. Bursts/score pops/banner/drag guide draw in screen space. Drag input is a
+  pure direction+power vector (no world-point hit-testing), so aiming needs no inverse transform.
+- **Consequence for play:** the "too fast" side of the capture band is tighter than the crash
+  side (near-escape ellipses are huge), which pushes players toward the round, high-scoring
+  orbits — the preview's CRASH / ORBIT / ESCAPE label is the honest guide.
 
 ## Scoring (`scoreUnit: "points"`)
 - **Capture:** `90` base `+ round((1 − e) × 170)` circularity `+ systemIndex × 16`.
