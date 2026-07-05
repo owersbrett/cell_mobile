@@ -55,6 +55,23 @@ instead be a pure volatility spike if you prefer chaos over direction.)
 Each button shows a **cooldown ring/timer**; strength/duration tuned so a well-timed event meaningfully
 swings a trade but doesn't trivialize the game.
 
+## Feature 4 — HUSTLE (the comeback)
+A gold **HUSTLE** button pinned in the bottom trade row. **Every tap earns $1 of free cash** —
+fires on pointer-DOWN, no cooldown, no throttle: each pound of the thumb pays, that IS the hustle.
+It exists so a player who busts (no cash, no shares, no orders) or gets priced out can grind back
+into the market instead of dead-ending.
+
+- **Hustled dollars are CASH, not P&L.** They flow into AVAILABLE (spendable on market buys and
+  order reserves) and never into realized P&L — **tapping alone can never move the score**. Hustle
+  is the floor, not a strategy; a skilled trader out-earns a tap-spammer by an order of magnitude.
+- **Bust legibility:** when the player is effectively locked out (free cash below the cheapest
+  possible action — 1 share at the deepest limit discount — AND no shares AND no open orders), the
+  HUSTLE button gets a gentle gold pulse/glow and the position row shows one line:
+  *"Hustle back in — $1 a tap."* No modal, no interruption. Open orders block the bust state —
+  reserved cash is still working capital.
+- **The lesson:** labor income vs capital gains — hustle gets you a stake; the market is where it
+  compounds. Only trades score.
+
 ## UI layout (top → bottom)
 - **Wallet bar:** AVAILABLE · RESERVED · POSITION (shares) · P&L — always visible.
 - **Live price** + delta + average-cost readout.
@@ -63,7 +80,7 @@ swings a trade but doesn't trivialize the game.
 - **SIZE control** (stepper + 1/5/25/MAX + LIMIT slider).
 - **Order row** (PLACE LIMIT BUY w/ reserve cost · CANCEL ALL w/ fee) + open-order chips (tap to cancel).
 - **Event buttons** (6, with cooldown rings).
-- **Trade row pinned at the bottom:** BUY `lot` (market) · SELL `lot` · SELL ALL.
+- **Trade row pinned at the bottom:** HUSTLE (+$1/tap) · BUY `lot` (market) · SELL `lot` · SELL ALL.
 
 > Note: the old Credit/Debt mechanic is **removed**. Reserves-via-limit-orders is the new agency/capital
 > mechanic and reads far more clearly than a debt meter.
@@ -78,7 +95,8 @@ impulse source can later come from any player. (See online-play roadmap.)
 Score = **cumulative realized P&L**, reported to the host session via `session.addScore` on every sell
 (and reduced by cancel fees). The session clamps the score at ≥ 0, so net losses/fees can't drive it
 negative. Open (unrealized) positions don't count — you must close to bank the gain. Highest realized
-P&L at the buzzer wins.
+P&L at the buzzer wins. **Hustled cash is excluded by construction** — it only ever enters
+`_available`, never `_realized`, so the score can only come from trading.
 
 ## Implementation
 - Self-contained in `FinancialTradingGame` (`market_trader/market_trader.dart`). Constructor is
@@ -90,6 +108,13 @@ P&L at the buzzer wins.
   and calls `_syncScore`, which pushes the delta to `session.addScore` so the session score tracks the
   running realized total. (Cancel/sell are guarded on `session.isRunning`; reserved cash is clamped at
   ≥ 0 so float drift can't leak a phantom reserve.)
+- **Hustle:** `_hustle()` adds `_kMtHustlePerTap` ($1) to `_available` per pointer-down on the HUSTLE
+  button (a `Listener`, rapid-fire friendly). Deliberately no per-tap `setState` — the AVAILABLE
+  readout refreshes on the 20 Hz render tick, the "+$1" pop lives on the FX canvas (pop count capped
+  at `_kMtMaxHustlePops`; earnings never capped), and the press squash runs on its own tiny
+  `AnimationController` — so tap-spam can't force full-tree rebuilds past the throttle. Bust
+  detection is `_isBusted` (`!_inPosition && _orders.isEmpty && _available < price × (1 −
+  _kMtLimitOffsetMax)`). The ATTRACT autopilot hustles a few taps per tick if it ever busts.
 - **Registry:** `mini_game_registry.dart` imports this file (`financial/market_trader/market_trader.dart`)
   and builds it via `FinancialTradingGame(session: session)`. This is the shipped Financial-scale game.
 - **Render budget:** the sim steps every frame, but the widget tree only rebuilds at `_kMtRenderHz`

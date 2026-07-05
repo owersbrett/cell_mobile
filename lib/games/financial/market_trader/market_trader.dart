@@ -48,6 +48,15 @@ const double _kMtEventImpulse   = 22.0;
 const double _kMtEventDuration  = 2.5;
 const double _kMtEventCooldown  = 14.0;
 
+// --- Hustle (comeback) tuning -------------------------------------------------
+// Each pound of the HUSTLE button earns this much FREE CASH. Labor income: it
+// builds a stake but NEVER touches realized P&L — only trading moves the score.
+// No cooldown, no throttle: every tap pays. The floor, not a strategy.
+const double _kMtHustlePerTap = 1.0;
+// Cap on simultaneous floating "+$1" pops so tap-spam can't flood the FX
+// canvas. The VISUALS are capped; the earnings never are.
+const int _kMtMaxHustlePops = 12;
+
 // --- Render cadence ---------------------------------------------------------
 // The simulation steps every animation frame (~60 Hz), but the WIDGET TREE only
 // rebuilds at this rate. The smooth visuals (chart, particles, atmosphere) are
@@ -124,6 +133,10 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   // Repaint driver for the smooth painters (background atmosphere + FX) — NOT
   // the sim clock. The painters listen to it and read its lastElapsedDuration.
   late AnimationController _ctrl;
+  // Press-squash feedback for the HUSTLE button. Its own tiny controller so a
+  // tap-spam animates the button WITHOUT forcing full-tree rebuilds — the
+  // AnimatedBuilder wraps only the button, with the static subtree hoisted.
+  late AnimationController _hustlePress;
   // The sim clock: a Ticker delivering real wall-clock elapsed time.
   late final Ticker _ticker;
   Duration _lastElapsed = Duration.zero;
@@ -205,6 +218,15 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       _lotSize > 0 && _available >= _orderCost - 1e-6;
   bool   get _canMarketBuy =>
       _lotSize > 0 && _available >= _lotSize * _price - 1e-6;
+  // Effectively locked out of the market: free cash can't afford even the
+  // CHEAPEST possible action (1 share resting at the deepest limit discount),
+  // nothing held, nothing resting. Open orders block bust — reserved cash is
+  // still working capital (it will fill into shares or is cancellable), so this
+  // can't false-positive while an order is on the book.
+  bool   get _isBusted =>
+      !_inPosition &&
+      _orders.isEmpty &&
+      _available < _price * (1.0 - _kMtLimitOffsetMax);
 
   @override
   void initState() {
@@ -215,6 +237,8 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     _ctrl = AnimationController(
         vsync: this, duration: const Duration(hours: 1))
       ..forward();
+    _hustlePress = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 130));
     _ticker = createTicker(_onTick)..start();
     // ATTRACT autopilot: this desk knows how to trade itself. Registered always
     // (harmless in normal play — the host only calls it in autoplay). See
@@ -226,6 +250,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   void dispose() {
     if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
     _ticker.dispose();
+    _hustlePress.dispose();
     _ctrl.dispose();
     _chartRev.dispose();
     super.dispose();
@@ -243,6 +268,17 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   ///   • Nothing attractive → hold.
   void _autoStep() {
     if (!widget.session.isRunning) return;
+
+    // Busted — no cash for even the cheapest entry, nothing held, nothing
+    // resting. Do what a player would: pound HUSTLE a few times to rebuild a
+    // stake, then get back to trading. (Rare in practice — the bot only ever
+    // deploys a slice of its cash — but the comeback must work hands-free too.)
+    if (_isBusted) {
+      for (int i = 0; i < 4; i++) {
+        _hustle();
+      }
+      return;
+    }
 
     // Sell the held position once it clears the average cost by a small margin.
     if (_inPosition) {
@@ -526,6 +562,28 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     widget.session.addScore(target - current);
   }
 
+  // ─── HUSTLE (the comeback) ────────────────────────────────────────────────
+  /// One pound of the HUSTLE button: +$1 of FREE CASH. Labor income — it flows
+  /// into [_available] (spendable on market buys AND order reserves) and NEVER
+  /// into [_realized], so tapping alone can never move the session score. No
+  /// cooldown, no throttle: each tap pays, that IS the hustle.
+  ///
+  /// Deliberately no setState here: the AVAILABLE readout refreshes on the
+  /// 20 Hz render tick, the "+$1" pop lives on the FX canvas, and the press
+  /// squash runs on [_hustlePress] — so tap-spam can't force full-tree
+  /// rebuilds past the throttle.
+  void _hustle() {
+    if (!widget.session.isRunning) return;
+    _available += _kMtHustlePerTap;
+    _hustlePress.forward(from: 0);
+    // Visual pop, capped — earnings are never capped.
+    if (_pops.length < _kMtMaxHustlePops) {
+      final x = 44.0 + (_rng.nextDouble() * 28 - 14);
+      final y = _screen == Size.zero ? 400.0 : _screen.height - 104.0;
+      _pops.add(_MtPop(Offset(x, y), '+\$1', Potatuhs.gold));
+    }
+  }
+
   // ─── Player market events ─────────────────────────────────────────────────
   void _triggerEvent(int idx) {
     if (!widget.session.isRunning) return;
@@ -794,11 +852,18 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   // ─── Position summary ─────────────────────────────────────────────────────
   Widget _buildPositionRow() {
     if (!_inPosition) {
+      // Busted (can't afford the cheapest action, nothing resting): swap the
+      // idle hint for the comeback line. One line, no modal, no interruption.
+      final busted = _isBusted;
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
         child: Text(
-          'No shares held — set a size, then BUY or place a LIMIT order',
-          style: Potatuhs.label(size: 10, color: Potatuhs.textFaint),
+          busted
+              ? 'Hustle back in — \$1 a tap'
+              : 'No shares held — set a size, then BUY or place a LIMIT order',
+          style: Potatuhs.label(
+              size: 10,
+              color: busted ? Potatuhs.gold : Potatuhs.textFaint),
           textAlign: TextAlign.center,
         ),
       );
@@ -1139,13 +1204,15 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     );
   }
 
-  // ─── BUY (market) / SELL row ──────────────────────────────────────────────
+  // ─── HUSTLE / BUY (market) / SELL row ─────────────────────────────────────
   Widget _buildTradeButtons() {
     final buyReady  = _canMarketBuy && widget.session.isRunning;
     final sellReady = _inPosition && widget.session.isRunning;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       child: Row(children: [
+        _buildHustleButton(),
+        const SizedBox(width: 8),
         Expanded(
           child: _bigBtn(
             top: 'BUY $_lotSize',
@@ -1157,7 +1224,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
             onTap: _marketBuy,
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         Expanded(
           child: _bigBtn(
             top: 'SELL $_lotSize',
@@ -1169,12 +1236,12 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
             onTap: _sellLot,
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         GestureDetector(
           onTap: sellReady ? _sellAll : null,
           child: Container(
             height: 58,
-            width: 64,
+            width: 58,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: sellReady
@@ -1198,6 +1265,67 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           ),
         ),
       ]),
+    );
+  }
+
+  // ─── HUSTLE button (the comeback) ─────────────────────────────────────────
+  // Rapid-fire friendly: a Listener firing on pointer-DOWN, so every pound of
+  // the thumb (any finger, any cadence) pays $1 — no tap-up gesture arena, no
+  // cooldown. When the player is busted (see [_isBusted]) the button gets a
+  // gentle attention pulse; the glow alpha is computed from the sim clock and
+  // picked up by the 20 Hz refresh — plenty smooth for a slow pulse, and no
+  // extra per-frame widget animation.
+  Widget _buildHustleButton() {
+    final busted = _isBusted;
+    final t = _lastElapsed.inMicroseconds / 1e6;
+    final pulse = busted ? 0.5 + 0.5 * sin(t * 2 * pi / 1.4) : 0.0;
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (_) => _hustle(),
+      child: AnimatedBuilder(
+        animation: _hustlePress,
+        builder: (context, child) {
+          final squash = 1.0 - 0.10 * sin(_hustlePress.value * pi);
+          return Transform.scale(scale: squash, child: child);
+        },
+        child: Container(
+          height: 58,
+          width: 58,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Potatuhs.sienna.withValues(alpha: 0.55),
+                Potatuhs.gold.withValues(alpha: 0.30 + 0.15 * pulse),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: Potatuhs.gold.withValues(alpha: 0.65 + 0.35 * pulse),
+              width: 1.5,
+            ),
+            boxShadow: busted
+                ? [
+                    BoxShadow(
+                      color: Potatuhs.gold.withValues(alpha: 0.2 + 0.3 * pulse),
+                      blurRadius: 16,
+                    ),
+                  ]
+                : null,
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('HUSTLE',
+                  style: Potatuhs.label(size: 9, color: Potatuhs.gold)),
+              Text('+\$1',
+                  style: Potatuhs.display(size: 15, color: Potatuhs.gold)),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1237,10 +1365,18 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(top,
-                style: Potatuhs.display(
-                    size: 18,
-                    color: enabled ? accent : Potatuhs.textFaint)),
+            // Scale-down (never ellipsize) so the lot count always reads even
+            // on narrow screens now that HUSTLE shares the row.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(top,
+                    style: Potatuhs.display(
+                        size: 18,
+                        color: enabled ? accent : Potatuhs.textFaint)),
+              ),
+            ),
             Text(sub,
                 style: Potatuhs.label(
                     size: 8,
@@ -1899,6 +2035,41 @@ void _legendLimit(Canvas canvas, Size size) {
       _kMtDown);
 }
 
+// ── Frame 5: the comeback — HUSTLE taps rebuild a stake; trades make score ───
+void _legendHustle(Canvas canvas, Size size) {
+  if (_mtLegendBad(size)) return;
+  final w = size.width, h = size.height;
+  // The bust state: an empty wallet.
+  GameFx.text(canvas, 'AVAILABLE \$0', Offset(w * 0.5, h * 0.10), h * 0.055,
+      _kMtDown,
+      weight: FontWeight.w800, glow: 0.5);
+  // The gold HUSTLE button, drawn like the live one.
+  _mtLegendBtn(
+      canvas,
+      Rect.fromLTWH(w * 0.30, h * 0.34, w * 0.40, h * 0.22),
+      'HUSTLE',
+      '+\$1 a tap',
+      Potatuhs.sienna,
+      Potatuhs.copper,
+      Potatuhs.gold);
+  // The "+$1" pops streaming up under rapid taps.
+  GameFx.text(canvas, '+\$1', Offset(w * 0.24, h * 0.30), h * 0.05,
+      Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.7);
+  GameFx.text(canvas, '+\$1', Offset(w * 0.76, h * 0.24), h * 0.05,
+      Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.7);
+  GameFx.text(canvas, '+\$1', Offset(w * 0.62, h * 0.16), h * 0.05,
+      Potatuhs.gold,
+      weight: FontWeight.w800, glow: 0.7);
+  // Labor buys the stake; the market is where it compounds.
+  GameFx.text(canvas, 'taps buy a stake', Offset(w * 0.5, h * 0.68),
+      h * 0.045, Potatuhs.textSecondary);
+  GameFx.text(canvas, 'only TRADES score', Offset(w * 0.5, h * 0.80),
+      h * 0.055, _kMtUp,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
 /// The visual manual for Market Trader — wired into the registry spec.
 final List<LegendFrame> marketTraderLegendFrames = [
   const LegendFrame(
@@ -1913,4 +2084,7 @@ final List<LegendFrame> marketTraderLegendFrames = [
   const LegendFrame(
       caption: 'Rest LIMIT BUYs below market — cash is reserved',
       paint: _legendLimit),
+  const LegendFrame(
+      caption: 'Busted? HUSTLE — \$1 a tap buys back in',
+      paint: _legendHustle),
 ];
