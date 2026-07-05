@@ -1543,7 +1543,9 @@ class _MRPainter extends CustomPainter {
 
       const headLen = 12.0;
       const headSpread = 0.4;
-      final backAngle = angle + pi * sign;
+      // Wings sweep back toward the center so BOTH heads point outward —
+      // a bidirectional stretch cue (↕), matching the tutorial legend.
+      final backAngle = sign > 0 ? angle + pi : angle;
       final a1 = backAngle + headSpread;
       final a2 = backAngle - headSpread;
       canvas.drawLine(
