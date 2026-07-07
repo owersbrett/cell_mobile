@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:cell_mobile/feedback/feedback_prompt.dart';
 import 'package:cell_mobile/party/party_actions.dart';
 import 'package:cell_mobile/party/party_controller.dart';
 import 'package:cell_mobile/party/party_models.dart';
@@ -26,12 +27,17 @@ class RoundCeremonyScreen extends StatefulWidget {
   /// Online host: auto-confirm a few seconds after the reveal completes.
   final bool autoAdvance;
 
+  /// Show the one-tap "did you like that game?" prompt once the reveal has
+  /// played (PARTY_CINEMATIC_SPEC §7). Off in attract mode.
+  final bool showFeedback;
+
   const RoundCeremonyScreen({
     super.key,
     required this.controller,
     required this.actions,
     required this.interactive,
     this.autoAdvance = false,
+    this.showFeedback = true,
   });
 
   @override
@@ -54,6 +60,8 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
   /// Fx-clock ms at the moment the winner banner first appeared — confetti
   /// time zero, so the burst fires with the banner, not at screen open.
   int? _confettiT0;
+
+  bool _feedbackDone = false;
 
   @override
   void initState() {
@@ -203,6 +211,19 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                       _winnerBanner(t),
                       Expanded(child: _podium(podium, spec.scoreUnit, t)),
                       if (extras.isNotEmpty) _extrasList(extras, t),
+                      if (widget.showFeedback &&
+                          !_feedbackDone &&
+                          t >= _footerInterval.begin)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+                          child: FeedbackPrompt(
+                            gameId: spec.id,
+                            gameName: spec.name,
+                            source: 'party',
+                            onDone: () =>
+                                setState(() => _feedbackDone = true),
+                          ),
+                        ),
                       const SizedBox(height: 12),
                       footer!,
                       const SizedBox(height: 8),

@@ -20,6 +20,7 @@ import '../net/party_net.dart';
 import '../net/party_session.dart';
 import 'party_setup_page.dart';
 import 'round_ceremony.dart';
+import 'round_flair.dart';
 import 'wheel_screen.dart';
 
 const _kFont = Potatuhs.bodyFont; // Outfit — body/UI
@@ -62,9 +63,10 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   /// Non-null when this session is an ONLINE match (set once at initState).
   PartyNet? _net;
 
-  // ── Wheel payoff hold (presentation-only, see _buildPhaseScreen) ─────────
+  // ── Wheel payoff hold + round flair (presentation-only) ──────────────────
   PartyController? _payoffController;
   int _wheelPayoffDone = 0;
+  int _flairDoneRound = 1; // rounds 2+ get a flair beat before the board
 
   // ── Attract autopilot ─────────────────────────────────────────────────────
   static const _kAutoRounds = 5;
@@ -417,6 +419,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
     if (_payoffController != c) {
       _payoffController = c;
       _wheelPayoffDone = 0;
+      _flairDoneRound = 1;
     }
     final wheelResult = c.lastWheelResult;
     if (c.phase != PartyPhase.wheelSpin &&
@@ -430,6 +433,28 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
         isOnline: isOnline,
         outroSeq: wheelResult.seq,
         onOutroDone: () => setState(() => _wheelPayoffDone = wheelResult.seq),
+      );
+    }
+
+    // Round flair (SPEC §5): after the ceremony + wheel resolve into a new
+    // round, one short cutscene beat plays before the board comes back —
+    // round 2 is the ghost debut. Deterministic content, local pacing.
+    final onBoard = switch (c.phase) {
+      PartyPhase.turnStart ||
+      PartyPhase.rollResult ||
+      PartyPhase.moving ||
+      PartyPhase.chooseBranch ||
+      PartyPhase.shopOffer ||
+      PartyPhase.cardDecision ||
+      PartyPhase.spaceResolved =>
+        true,
+      _ => false,
+    };
+    if (onBoard && c.wheels && c.round > 1 && _flairDoneRound < c.round) {
+      return RoundFlairScreen(
+        key: ValueKey('flair_${c.round}'),
+        controller: c,
+        onDone: () => setState(() => _flairDoneRound = c.round),
       );
     }
 
@@ -524,6 +549,8 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           actions: actions,
           interactive: !isOnline || net.isHost,
           autoAdvance: isOnline && net.isHost,
+          // The feedback prompt is for humans — attract's bots don't rate.
+          showFeedback: !widget.autoPilot,
         );
       case PartyPhase.gameOver:
         if (isOnline) PartySession.clear();
@@ -2312,6 +2339,7 @@ class _BoardView extends StatelessWidget {
             // The mischief crew rides above the player tokens so a loot-carrying
             // op is easy to spot and chase.
             for (final op in controller.ops) _opToken(geo, op),
+            for (final g in controller.ghosts) _ghostToken(geo, g),
             // The landing beat's number pop — floats the resource delta over
             // the tile the moment its effect resolves.
             if (controller.lastLanding != null)
@@ -2375,6 +2403,28 @@ class _BoardView extends StatelessWidget {
   }
 
   /// A roaming op token (the Peeler / the Masher). Sits just above its tile;
+  /// A Potato Shack ghost drifting on the board — procedural (no sprite), a
+  /// translucent spirit perched on its haunted tile. Landing there costs
+  /// diamonds, so visibility IS the gameplay.
+  Widget _ghostToken(_BoardGeometry geo, GhostToken g) {
+    final center = geo.nodeCenter(g.position);
+    final r = geo.nodeRadius * 0.62;
+    return AnimatedPositioned(
+      key: ValueKey('ghost_${controller.ghosts.indexOf(g)}'),
+      duration: const Duration(milliseconds: 600),
+      curve: Curves.easeInOut,
+      left: center.dx - r,
+      // Hover just above the tile, opposite side from the ops' perch.
+      top: center.dy - geo.nodeRadius * 1.7 - r,
+      child: IgnorePointer(
+        child: CustomPaint(
+          size: Size(r * 2, r * 2.3),
+          painter: _GhostPainter(),
+        ),
+      ),
+    );
+  }
+
   /// when carrying stolen loot it pulses red with a 💎/🥔 badge so players know
   /// who to chase.
   Widget _opToken(_BoardGeometry geo, OpToken op) {
@@ -3571,4 +3621,52 @@ class _PodiumScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+
+/// The Potato Shack ghost: pale translucent body, wavy hem, hollow eyes.
+/// Deliberately simple — it reads at tile scale and repaints only on move.
+class _GhostPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final w = size.width, h = size.height;
+    final body = Paint()..color = const Color(0xCCDCE8F2);
+    final path = Path()
+      ..moveTo(w * 0.5, 0)
+      ..quadraticBezierTo(w, 0, w, h * 0.45)
+      ..lineTo(w, h * 0.82)
+      // Wavy hem: three scallops.
+      ..quadraticBezierTo(w * 0.83, h * 0.68, w * 0.66, h * 0.86)
+      ..quadraticBezierTo(w * 0.5, h * 1.0, w * 0.34, h * 0.86)
+      ..quadraticBezierTo(w * 0.17, h * 0.68, 0, h * 0.82)
+      ..lineTo(0, h * 0.45)
+      ..quadraticBezierTo(0, 0, w * 0.5, 0)
+      ..close();
+    canvas.drawShadow(path, const Color(0xFF9FB7CE), 4, true);
+    canvas.drawPath(path, body);
+    // Hollow eyes + a small "oh" mouth.
+    final ink = Paint()..color = const Color(0xE6222633);
+    canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(w * 0.36, h * 0.34),
+            width: w * 0.14,
+            height: w * 0.2),
+        ink);
+    canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(w * 0.64, h * 0.34),
+            width: w * 0.14,
+            height: w * 0.2),
+        ink);
+    canvas.drawOval(
+        Rect.fromCenter(
+            center: Offset(w * 0.5, h * 0.52),
+            width: w * 0.12,
+            height: w * 0.14),
+        ink);
+  }
+
+  @override
+  bool shouldRepaint(_GhostPainter old) => false;
 }

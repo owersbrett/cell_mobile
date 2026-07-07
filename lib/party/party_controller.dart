@@ -175,6 +175,15 @@ class OpToken {
   bool get hasLoot => diamonds > 0 || potatoes > 0;
 }
 
+/// A Potato Shack ghost — released after round 1, haunting the board for the
+/// rest of the game (PARTY_CINEMATIC_SPEC §5). Ghosts drift strangely between
+/// rounds and shake diamonds out of players who land on them; what they take
+/// goes back to the Shack (gone for good), unlike the ops' reclaimable loot.
+class GhostToken {
+  int position;
+  GhostToken(this.position);
+}
+
 /// Pass-and-play board game loop. Each round every player rolls and walks
 /// the path (choosing directions at forks, buying potatoes at the market),
 /// then everyone plays the same randomly chosen mini-game and diamonds is
@@ -329,6 +338,12 @@ class PartyController extends ChangeNotifier {
   /// legacy loop; present on every [GameMap]. They rob the leader each round
   /// and players chase them down to recover the loot.
   final List<OpToken> ops = [];
+
+  /// The Potato Shack ghosts. Empty until they're released after round 1;
+  /// only on cinematic (wheels) games so v1 replays stay aligned.
+  final List<GhostToken> ghosts = [];
+
+  bool get ghostsLoose => ghosts.isNotEmpty;
 
   /// Map-aware section lookup — the new maps carry their own 8–10 sections, the
   /// legacy board uses the fixed [kBoardSections].
@@ -621,6 +636,9 @@ class PartyController extends ChangeNotifier {
         p.position = to;
       }
       final beforeDiamonds = p.diamonds, beforePotatoes = p.potatoes;
+      // Landing on a ghost's space costs diamonds before the space resolves
+      // (folded into the same landing pop via the delta below).
+      _hauntCheck(p, p.position, turnLog);
       _resolveSpace(p, board[p.position], turnLog);
       final dDiamonds = p.diamonds - beforeDiamonds;
       final dPotatoes = p.potatoes - beforePotatoes;
@@ -902,6 +920,59 @@ class PartyController extends ChangeNotifier {
             '${p.name} wrenched ${t.potatoes} potato back from ${t.op.name}!');
         t.potatoes = 0;
       }
+    }
+  }
+
+  // ---------------------------------------------------------------- ghosts
+
+  static const int _kGhostCount = 2;
+  static const int _kGhostBite = 6; // diamonds a haunting costs (max)
+
+  /// Round boundary: release the ghosts after round 1 (cinematic games only),
+  /// then let them drift strangely — a few spaces of drift, with the odd
+  /// clean teleport. Every position comes off the tape for lockstep.
+  void _runGhosts(List<String> log) {
+    if (!wheels) return;
+    if (ghosts.isEmpty) {
+      if (round == 2) {
+        for (var i = 0; i < _kGhostCount; i++) {
+          ghosts.add(GhostToken(_tape.next(board.length)));
+        }
+        log.add('uhhh… did you hear that? THE GHOSTS FROM THE POTATO '
+            'SHACK ARE ON THE LOOSE!');
+      }
+      return;
+    }
+    for (final g in ghosts) {
+      if (_tape.next(5) == 0) {
+        g.position = _tape.next(board.length); // phase through the void
+      } else {
+        g.position = (g.position + _tape.next(7) + 2) % board.length;
+      }
+    }
+    log.add('The ghosts drift across the board…');
+  }
+
+  /// Landing on a ghost's space costs diamonds (VOID SHIELD blocks it); the
+  /// spooked ghost immediately phases elsewhere.
+  void _hauntCheck(PartyPlayer p, int tile, List<String> log) {
+    for (final g in ghosts) {
+      if (g.position != tile) continue;
+      if (p.voidShield) {
+        p.voidShield = false;
+        log.add("${p.name}'s VOID SHIELD glowed — the ghost fled!");
+      } else {
+        final take = min(p.diamonds, _kGhostBite);
+        if (take > 0) {
+          p.diamonds -= take;
+          p.stolenFromCount++;
+          log.add('A GHOST got ${p.name} — $take diamonds haunted back '
+              'to the Shack!');
+        } else {
+          log.add('A ghost passed straight through ${p.name}. Chilling.');
+        }
+      }
+      g.position = _tape.next(board.length);
     }
   }
 
@@ -1266,6 +1337,7 @@ class PartyController extends ChangeNotifier {
       round++;
       turnLog.clear();
       _runOps(turnLog); // the crew robs the leader and scatters the loot
+      _runGhosts(turnLog);
       currentPlayerIndex = 0;
       if (wheels && _mapHasWinnerSpins && winners.isNotEmpty) {
         _startWheel(WheelTier.winner, winners);
