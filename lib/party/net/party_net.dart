@@ -386,6 +386,23 @@ class PartyNet extends ChangeNotifier {
           return true;
         }
         return false;
+      case PartyInputKind.wheelStop:
+        // Only the seat whose wheel is up may stop it.
+        if (c.phase == PartyPhase.wheelSpin &&
+            slot == c.wheel?.currentSpinner) {
+          c.wheelStop();
+          return true;
+        }
+        return false;
+      case PartyInputKind.useItemOn:
+        if (c.phase == PartyPhase.turnStart && slot == cur) {
+          final item = PowerUp.values[r.value ~/ 16];
+          if (c.currentPlayer.items.contains(item)) {
+            c.useItemOn(item, r.value % 16);
+            return true;
+          }
+        }
+        return false;
     }
   }
 

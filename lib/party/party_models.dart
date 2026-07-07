@@ -85,6 +85,8 @@ enum PowerUp {
   // APPENDED (index-stable): new buyable/grantable items. The input log
   // serializes useItem by PowerUp.index, so new values go at the END.
   loadedDice, // your next roll counts DOUBLE
+  freezeRay, // TARGETED: the chosen player's next turn is skipped
+  swapper, // TARGETED: swap board positions with the chosen player
 }
 
 extension PowerUpInfo on PowerUp {
@@ -104,6 +106,10 @@ extension PowerUpInfo on PowerUp {
         return 'MITOCHONDRIA';
       case PowerUp.loadedDice:
         return 'LOADED DICE';
+      case PowerUp.freezeRay:
+        return 'FREEZE RAY';
+      case PowerUp.swapper:
+        return 'SWAPPER';
     }
   }
 
@@ -123,6 +129,10 @@ extension PowerUpInfo on PowerUp {
         return '+3 on your next roll';
       case PowerUp.loadedDice:
         return 'Your next roll counts double';
+      case PowerUp.freezeRay:
+        return "Freeze a player — they lose their next turn";
+      case PowerUp.swapper:
+        return 'Swap board positions with a player';
     }
   }
 
@@ -142,6 +152,10 @@ extension PowerUpInfo on PowerUp {
         return Icons.battery_charging_full;
       case PowerUp.loadedDice:
         return Icons.casino_outlined;
+      case PowerUp.freezeRay:
+        return Icons.ac_unit;
+      case PowerUp.swapper:
+        return Icons.swap_horiz;
     }
   }
 }
@@ -157,6 +171,8 @@ const List<PowerUp> kItemShop = [
   PowerUp.voidShield,
   PowerUp.strongBond,
   PowerUp.catalyst,
+  PowerUp.freezeRay,
+  PowerUp.swapper,
 ];
 
 /// Diamond price per buyable item.
@@ -168,6 +184,8 @@ const Map<PowerUp, int> kItemPrices = {
   PowerUp.loadedDice: 12,
   PowerUp.accelerator: 14,
   PowerUp.catalyst: 14,
+  PowerUp.freezeRay: 16,
+  PowerUp.swapper: 16,
 };
 
 /// Cheapest thing on a market shelf — the threshold for the shop to open as you
@@ -471,6 +489,10 @@ class PartyPlayer {
   /// [kMaxItems].
   final List<PowerUp> items = [];
 
+  /// Turns this player must sit out (FREEZE RAY). Decremented as each frozen
+  /// turn is skipped.
+  int frozenTurns = 0;
+
   // Armed power-up effects: set when an item is USED, auto-fired at the next
   // relevant moment.
   bool voidShield = false;
@@ -500,3 +522,117 @@ class PartyPlayer {
 
 const List<Color> kTeamColors = [Color(0xFF29B6F6), Color(0xFFFF7043)];
 const List<String> kTeamNames = ['TEAM BLUE', 'TEAM ORANGE'];
+
+// ───────────────────────────── THE WHEEL ─────────────────────────────
+// PARTY_CINEMATIC_SPEC §2. Segment tables are the SSOT for both the draw
+// weights (controller, via the random tape) and the wheel's painted face
+// (wheel screen) — one list, two consumers, no drift.
+
+/// When a wheel session fires and which prize table it uses.
+enum WheelTier {
+  opening, // game start, every player: items only
+  checkpoint, // every 4 rounds (5, 9, …), every player: the middle table
+  winner, // after a round ceremony, round winner(s) only (Hole/Aether maps)
+  finale, // game end, every player: the high-stakes table
+}
+
+extension WheelTierInfo on WheelTier {
+  String get title {
+    switch (this) {
+      case WheelTier.opening:
+        return 'OPENING SPIN';
+      case WheelTier.checkpoint:
+        return 'CHECKPOINT SPIN';
+      case WheelTier.winner:
+        return "WINNER'S SPIN";
+      case WheelTier.finale:
+        return 'FINAL SPIN';
+    }
+  }
+}
+
+enum WheelPrizeKind {
+  item, // a specific PowerUp
+  randomItem, // extra tape draw over kWheelItemPool
+  diamonds, // +amount
+  loseDiamonds, // −amount (never below zero)
+  atp, // +amount
+  potatoes, // +amount (the Mario-Party-star equivalent)
+  dropItem, // lose your first held item (−3 diamonds if pack is empty)
+}
+
+class WheelSegment {
+  final String label;
+  final int weight;
+  final WheelPrizeKind kind;
+  final int amount;
+  final PowerUp? item;
+  const WheelSegment(this.label, this.weight, this.kind,
+      {this.amount = 0, this.item});
+}
+
+/// Items the opening wheel (and randomItem draws) can hand out.
+const List<PowerUp> kWheelItemPool = [
+  PowerUp.loadedDice, // the 2× die: 2·4·6·8·10·12
+  PowerUp.accelerator, // twin dice: 2d6
+  PowerUp.freezeRay,
+  PowerUp.swapper,
+  PowerUp.strongBond, // protects from hostile items
+  PowerUp.voidShield,
+  PowerUp.catalyst,
+  PowerUp.mitochondria,
+];
+
+/// Opening: items only — everyone leaves minute one holding a plan.
+const List<WheelSegment> kWheelOpening = [
+  WheelSegment('LOADED DICE', 1, WheelPrizeKind.item,
+      item: PowerUp.loadedDice),
+  WheelSegment('ACCELERATOR', 1, WheelPrizeKind.item,
+      item: PowerUp.accelerator),
+  WheelSegment('FREEZE RAY', 1, WheelPrizeKind.item, item: PowerUp.freezeRay),
+  WheelSegment('SWAPPER', 1, WheelPrizeKind.item, item: PowerUp.swapper),
+  WheelSegment('STRONG BOND', 1, WheelPrizeKind.item,
+      item: PowerUp.strongBond),
+  WheelSegment('VOID SHIELD', 1, WheelPrizeKind.item,
+      item: PowerUp.voidShield),
+  WheelSegment('CATALYST', 1, WheelPrizeKind.item, item: PowerUp.catalyst),
+  WheelSegment('MITOCHONDRIA', 1, WheelPrizeKind.item,
+      item: PowerUp.mitochondria),
+];
+
+/// Checkpoint + winner spins: mostly small money, sometimes an item,
+/// sometimes a sting, rarely a whole potato.
+const List<WheelSegment> kWheelMiddle = [
+  WheelSegment('+5 💎', 5, WheelPrizeKind.diamonds, amount: 5),
+  WheelSegment('+10 💎', 3, WheelPrizeKind.diamonds, amount: 10),
+  WheelSegment('+10 ATP', 3, WheelPrizeKind.atp, amount: 10),
+  WheelSegment('MYSTERY ITEM', 4, WheelPrizeKind.randomItem),
+  WheelSegment('−5 💎', 3, WheelPrizeKind.loseDiamonds, amount: 5),
+  WheelSegment('DROP AN ITEM', 2, WheelPrizeKind.dropItem),
+  WheelSegment('A POTATO!', 1, WheelPrizeKind.potatoes, amount: 1),
+];
+
+/// Final spin: the big swing before the awards.
+const List<WheelSegment> kWheelFinale = [
+  WheelSegment('A POTATO!', 7, WheelPrizeKind.potatoes, amount: 1),
+  WheelSegment('TWO POTATOES!!', 2, WheelPrizeKind.potatoes, amount: 2),
+  WheelSegment('+20 💎', 6, WheelPrizeKind.diamonds, amount: 20),
+  WheelSegment('−10 💎', 4, WheelPrizeKind.loseDiamonds, amount: 10),
+  WheelSegment('STRONG BOND', 3, WheelPrizeKind.item,
+      item: PowerUp.strongBond),
+];
+
+List<WheelSegment> wheelTableFor(WheelTier tier) {
+  switch (tier) {
+    case WheelTier.opening:
+      return kWheelOpening;
+    case WheelTier.checkpoint:
+    case WheelTier.winner:
+      return kWheelMiddle;
+    case WheelTier.finale:
+      return kWheelFinale;
+  }
+}
+
+/// Checkpoint cadence: the wheel comes back every 4 rounds (5, 9, 13 …).
+const int kWheelCheckpointEvery = 4;

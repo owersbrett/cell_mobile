@@ -20,6 +20,7 @@ import '../net/party_net.dart';
 import '../net/party_session.dart';
 import 'party_setup_page.dart';
 import 'round_ceremony.dart';
+import 'wheel_screen.dart';
 
 const _kFont = Potatuhs.bodyFont; // Outfit — body/UI
 const _kDisplay = Potatuhs.displayFont; // Bowlby One SC — hero titles
@@ -60,6 +61,10 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
 
   /// Non-null when this session is an ONLINE match (set once at initState).
   PartyNet? _net;
+
+  // ── Wheel payoff hold (presentation-only, see _buildPhaseScreen) ─────────
+  PartyController? _payoffController;
+  int _wheelPayoffDone = 0;
 
   // ── Attract autopilot ─────────────────────────────────────────────────────
   static const _kAutoRounds = 5;
@@ -157,6 +162,8 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       case PartyPhase.minigameResults:
         // Long enough for the full ceremony reveal to play in attract b-roll.
         return const Duration(milliseconds: 7000);
+      case PartyPhase.wheelSpin:
+        return const Duration(milliseconds: 1600);
       case PartyPhase.gameOver:
         return const Duration(milliseconds: 4000);
       case PartyPhase.moving:
@@ -225,6 +232,9 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
         break;
       case PartyPhase.minigameResults:
         a.confirmMiniGameResults();
+        break;
+      case PartyPhase.wheelSpin:
+        a.wheelStop();
         break;
       case PartyPhase.gameOver:
         setState(_startAutoGame); // endless: restart the board
@@ -400,6 +410,29 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   }) {
     final isOnline = net != null;
 
+    // Wheel payoff hold: the LAST stop of a session (and every single-spinner
+    // winner spin) exits wheelSpin the instant it lands, which would cut the
+    // payoff. Keep the wheel up in outro mode until its deceleration + result
+    // moment has played (or been tapped through). Presentation-only.
+    if (_payoffController != c) {
+      _payoffController = c;
+      _wheelPayoffDone = 0;
+    }
+    final wheelResult = c.lastWheelResult;
+    if (c.phase != PartyPhase.wheelSpin &&
+        wheelResult != null &&
+        wheelResult.seq > _wheelPayoffDone) {
+      return WheelScreen(
+        key: ValueKey('wheel_outro_${wheelResult.seq}'),
+        controller: c,
+        actions: actions,
+        mySlot: mySlot,
+        isOnline: isOnline,
+        outroSeq: wheelResult.seq,
+        onOutroDone: () => setState(() => _wheelPayoffDone = wheelResult.seq),
+      );
+    }
+
     // Turn-gating: who can tap buttons right now.
     bool boardInteractive() {
       if (!isOnline) return true;
@@ -498,6 +531,13 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           controller: c,
           onPlayAgain: isOnline ? widget.onExit : _backToSetup,
           onExit: widget.onExit,
+        );
+      case PartyPhase.wheelSpin:
+        return WheelScreen(
+          controller: c,
+          actions: actions,
+          mySlot: mySlot,
+          isOnline: isOnline,
         );
     }
   }
@@ -993,6 +1033,8 @@ class _BoardScreenState extends State<_BoardScreen>
     switch (c.phase) {
       case PartyPhase.turnStart:
         return "Uhhh… $who, you're up. Give the dice a rip.";
+      case PartyPhase.wheelSpin:
+        return last ?? 'The wheel is up. Someone hit STOP.';
       case PartyPhase.rollResult:
         return last ?? "$who lets it fly!";
       case PartyPhase.moving:

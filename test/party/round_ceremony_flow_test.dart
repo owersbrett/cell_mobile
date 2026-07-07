@@ -43,6 +43,9 @@ void main() {
           // Distinct scores: seat 0 wins, last seat takes the L.
           c.recordMiniScore(100 - 10 * c.miniPlayerIndex);
           break;
+        case PartyPhase.wheelSpin:
+          c.wheelStop();
+          break;
         case PartyPhase.minigameResults:
         case PartyPhase.gameOver:
           break;
@@ -68,6 +71,11 @@ void main() {
     // Winner/loser declared in the persistent tallies.
     c.confirmMiniGameResults();
     expect(c.round, 2);
+    // The winner's spin fires next (legacy board runs winner spins).
+    expect(c.phase, PartyPhase.wheelSpin);
+    expect(c.wheel!.tier, WheelTier.winner);
+    expect(c.wheel!.currentSpinner, 0, reason: 'seat 0 won the round');
+    c.wheelStop();
     expect(c.phase, PartyPhase.turnStart);
     expect(c.players[0].roundWins, 1);
     expect(c.players[0].roundLosses, 0);

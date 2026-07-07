@@ -47,6 +47,9 @@ void _playToCompletion(PartyController c, {int maxSteps = 200000}) {
       case PartyPhase.minigameResults:
         c.confirmMiniGameResults();
         break;
+      case PartyPhase.wheelSpin:
+        c.wheelStop();
+        break;
       case PartyPhase.gameOver:
         break;
     }

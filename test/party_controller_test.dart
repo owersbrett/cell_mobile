@@ -18,6 +18,9 @@ PartyController makeController({
     playerNames:
         List.generate(mode.playerCount, (i) => kCharacters[i].name),
     random: random ?? Random(seed),
+    // Fine-grained turn-mechanics tests start at turnStart; the wheel flow
+    // has its own coverage (wheel_flow_test.dart + the replay soaks).
+    wheels: false,
   );
 }
 
@@ -94,7 +97,21 @@ void playLegalGame(PartyController c, Random choices) {
         // exercises useItem/useAtp in the input log so replay reproduces them.
         final cur = c.currentPlayer;
         if (cur.items.isNotEmpty && choices.nextBool()) {
-          c.useItem(cur.items.first);
+          final it = cur.items.first;
+          if (it == PowerUp.freezeRay || it == PowerUp.swapper) {
+            // Targeted items go through useItemOn — pick any other seat.
+            final others = [
+              for (var i = 0; i < c.players.length; i++)
+                if (i != c.currentPlayerIndex) i
+            ];
+            if (others.isEmpty) {
+              c.roll();
+            } else {
+              c.useItemOn(it, others[choices.nextInt(others.length)]);
+            }
+          } else {
+            c.useItem(it);
+          }
         } else {
           if (cur.atp >= kAtpPlus2Cost && choices.nextInt(4) == 0) {
             c.useAtp(choices.nextBool() ? 2 : 3);
@@ -152,6 +169,9 @@ void playLegalGame(PartyController c, Random choices) {
         break;
       case PartyPhase.minigameResults:
         c.confirmMiniGameResults();
+        break;
+      case PartyPhase.wheelSpin:
+        c.wheelStop();
         break;
       case PartyPhase.gameOver:
         break;
@@ -250,6 +270,7 @@ void main() {
             totalRounds: 3,
             playerNames: List.generate(4, (i) => kCharacters[i].name),
             seed: 999,
+            wheels: false,
           );
       final a = fresh()..roll();
       final b = fresh()..roll();
@@ -376,6 +397,7 @@ void main() {
         totalRounds: 3,
         playerNames: List.generate(4, (i) => kCharacters[i].name),
         seed: 42,
+        wheels: false,
       );
       playBoardPhase(c);
       c.beginMiniGameRound();

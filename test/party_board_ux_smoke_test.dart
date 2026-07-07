@@ -16,6 +16,16 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(home: PartyFlowPage(onExit: () {})));
     await tester.tap(find.text('START GAME'));
+    await tester.pump(const Duration(milliseconds: 400));
+    // Drive through the opening ceremony + every player's opening spin.
+    await tester.tap(find.text('SKIP'));
+    await tester.pump();
+    for (var i = 0; i < 4; i++) {
+      await tester.tap(find.text('STOP'));
+      await tester.pump(); // the stop lands; the payoff animation starts
+      await tester.pump(const Duration(milliseconds: 2200)); // payoff plays
+      await tester.pump(const Duration(milliseconds: 60)); // rebuild
+    }
     await tester.pump(const Duration(milliseconds: 500)); // settles framing
 
     expect(find.text('ROLL'), findsOneWidget);
@@ -43,6 +53,9 @@ void main() {
           totalRounds: 1,
           playerNames: names,
           seed: seed,
+          // This test pins the COMPLETE TURN gate; the wheel flow has its
+          // own coverage.
+          wheels: false,
         );
         final gated = <int>{};
         var guard = 0;

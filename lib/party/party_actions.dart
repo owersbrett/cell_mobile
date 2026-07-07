@@ -18,7 +18,9 @@ abstract class PartyActions {
   void skipPotato();
   void chooseCardOption(int option);
   void useItem(PowerUp item);
+  void useItemOn(PowerUp item, int target);
   void useAtp(int plus);
+  void wheelStop();
   void recordMiniScore(int score);
   void confirmSpace();
   void beginMiniGameRound();
@@ -52,7 +54,11 @@ class LocalActions implements PartyActions {
   @override
   void useItem(PowerUp item) => c.useItem(item);
   @override
+  void useItemOn(PowerUp item, int target) => c.useItemOn(item, target);
+  @override
   void useAtp(int plus) => c.useAtp(plus);
+  @override
+  void wheelStop() => c.wheelStop();
   @override
   void recordMiniScore(int score) => c.recordMiniScore(score);
   @override
@@ -96,7 +102,12 @@ class OnlineActions implements PartyActions {
   void useItem(PowerUp item) =>
       net.act(PartyInputKind.useItem, value: item.index);
   @override
+  void useItemOn(PowerUp item, int target) =>
+      net.act(PartyInputKind.useItemOn, value: item.index * 16 + target);
+  @override
   void useAtp(int plus) => net.act(PartyInputKind.useAtp, value: plus);
+  @override
+  void wheelStop() => net.act(PartyInputKind.wheelStop);
   @override
   void recordMiniScore(int score) =>
       net.act(PartyInputKind.miniScore, value: score);

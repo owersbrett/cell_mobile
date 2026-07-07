@@ -96,6 +96,10 @@ Future<List<PartyNet>> _playNetworkedGame({
         // The round ceremony holds until the host confirms.
         nets[0].act(PartyInputKind.confirmResults);
         break;
+      case PartyPhase.wheelSpin:
+        // Only the seat whose wheel is up may stop it.
+        nets[c.wheel!.currentSpinner].act(PartyInputKind.wheelStop);
+        break;
       default:
         fail('host settled on a non-decision phase: ${c.phase}');
     }
@@ -232,6 +236,9 @@ void main() {
             // The round ceremony holds until the host confirms.
             nets[0].act(PartyInputKind.confirmResults);
             break;
+          case PartyPhase.wheelSpin:
+            nets[c.wheel!.currentSpinner].act(PartyInputKind.wheelStop);
+            break;
           default:
             fail('host settled on a non-decision phase: ${c.phase}');
         }
@@ -363,18 +370,27 @@ void main() {
       await host.startGame();
 
       final c = host.controller!;
+      // The opening wheel is up first: seat 0 spins. A stop from the wrong
+      // seat must be rejected, exactly like an out-of-turn roll.
+      expect(c.phase, PartyPhase.wheelSpin);
+      p2.act(PartyInputKind.wheelStop);
+      expect(c.wheel!.currentSpinner, 0, reason: 'out-of-seat stop ignored');
+      expect(c.inputLog, isEmpty);
+      host.act(PartyInputKind.wheelStop);
+      p2.act(PartyInputKind.wheelStop);
       expect(c.phase, PartyPhase.turnStart);
       expect(c.currentPlayerIndex, 0);
+      final wheelInputs = c.inputLog.length; // the two legal stops
 
       // Player 2 tries to roll on player 1's turn — must be rejected.
       p2.act(PartyInputKind.roll);
       expect(c.phase, PartyPhase.turnStart, reason: 'out-of-turn roll ignored');
-      expect(c.inputLog, isEmpty);
+      expect(c.inputLog.length, wheelInputs);
 
       // The rightful player rolls — accepted.
       host.act(PartyInputKind.roll);
       expect(c.phase, PartyPhase.rollResult);
-      expect(c.inputLog.single.kind, PartyInputKind.roll);
+      expect(c.inputLog.last.kind, PartyInputKind.roll);
     });
   });
 }

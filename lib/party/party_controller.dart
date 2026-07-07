@@ -24,6 +24,8 @@ enum PartyInputKind {
   chooseCardOption, // pick option A/B on a decision card (value = option index)
   buyItem, // buy an item at the market (value = PowerUp.index)
   confirmResults, // advance past the round ceremony (local tap / online host)
+  wheelStop, // the current spinner stops the wheel (outcome = tape draw)
+  useItemOn, // targeted item (value = PowerUp.index * 16 + target seat)
 }
 
 /// Where the match's randomness comes from.
@@ -80,6 +82,8 @@ enum PartyPhase {
   minigamePlaying, // MiniGameHost active
   minigameResults, // ranking + diamonds awards
   gameOver,
+  // APPENDED (switch coverage everywhere; phase itself is never serialized).
+  wheelSpin, // the wheel is up: spinners hit STOP in queue order
 }
 
 /// The dice half of a roll; movement itself happens step-by-step through
@@ -127,6 +131,30 @@ class MiniGameStanding {
   MiniGameStanding(this.player, this.score);
 }
 
+/// A live wheel session: who still has to spin and which table is up.
+class WheelSession {
+  final WheelTier tier;
+  final List<int> queue; // seat indices still to spin (head = current)
+  WheelSession(this.tier, this.queue);
+  int get currentSpinner => queue.first;
+}
+
+/// One landed wheel outcome, stamped so the UI can animate it exactly once.
+class WheelResult {
+  final int seq;
+  final WheelTier tier;
+  final int spinner; // seat index
+  final int segmentIndex; // into wheelTableFor(tier)
+  final String summary; // narrator-ready outcome line
+  const WheelResult({
+    required this.seq,
+    required this.tier,
+    required this.spinner,
+    required this.segmentIndex,
+    required this.summary,
+  });
+}
+
 class TeamStanding {
   final int teamIndex;
   final int potatoes;
@@ -162,6 +190,7 @@ class PartyController extends ChangeNotifier {
     this.randomMode = PartyRandomMode.local,
     this.gameMap,
     List<int>? characters,
+    this.wheels = true,
   })  : seed = seed ?? _newSeed(),
         _initialNames = List<String>.unmodifiable(playerNames) {
     _rng = random ?? Random(this.seed);
@@ -188,7 +217,14 @@ class PartyController extends ChangeNotifier {
       ops.add(OpToken(kPeeler, (n * 0.34).floor()));
       ops.add(OpToken(kMasher, (n * 0.67).floor()));
     }
-    _beginTurn(); // first player's energy trickle
+    if (wheels) {
+      // The opening spin: every player lands an item before turn one — the
+      // immediate-interactivity layer (PARTY_CINEMATIC_SPEC §2).
+      _startWheel(WheelTier.opening,
+          [for (var i = 0; i < players.length; i++) i]);
+    } else {
+      _beginTurn(); // first player's energy trickle
+    }
   }
 
   /// Rebuilds a game by replaying a recorded input log against fresh code.
@@ -202,6 +238,7 @@ class PartyController extends ChangeNotifier {
     required int seed,
     required List<PartyInput> inputs,
     GameMap? gameMap,
+    bool wheels = true,
   }) {
     final c = PartyController(
       mode: mode,
@@ -209,6 +246,7 @@ class PartyController extends ChangeNotifier {
       playerNames: playerNames,
       seed: seed,
       gameMap: gameMap,
+      wheels: wheels,
     );
     for (final input in inputs) {
       c._pumpToDecision();
@@ -232,6 +270,7 @@ class PartyController extends ChangeNotifier {
     required List<PartyInput> inputs,
     required List<int> randoms,
     GameMap? gameMap,
+    bool wheels = true,
   }) {
     final c = PartyController(
       mode: mode,
@@ -240,6 +279,7 @@ class PartyController extends ChangeNotifier {
       seed: 0, // unused: the client tape never touches Random
       randomMode: PartyRandomMode.client,
       gameMap: gameMap,
+      wheels: wheels,
     );
     c.feedRandoms(randoms);
     for (final input in inputs) {
@@ -277,6 +317,11 @@ class PartyController extends ChangeNotifier {
   /// otherwise the legacy 52-space loop.
   final GameMap? gameMap;
 
+  /// Whether the wheel system (opening/checkpoint/winner/final spins) runs.
+  /// True for every new game; false only when replaying v1 saves recorded
+  /// before the wheel existed, so their input logs stay aligned.
+  final bool wheels;
+
   final List<PartyPlayer> players = [];
   late final List<BoardSpace> board = gameMap?.spaces ?? buildBoard();
 
@@ -300,6 +345,13 @@ class PartyController extends ChangeNotifier {
   /// lockstep replays. Derived purely from applied inputs: deterministic.
   LandingEffect? lastLanding;
   int _landingSeq = 0;
+
+  /// Live wheel session (non-null exactly while [phase] == wheelSpin).
+  WheelSession? wheel;
+
+  /// Latest landed spin, for the wheel screen's deceleration + result toast.
+  WheelResult? lastWheelResult;
+  int _wheelSeq = 0;
 
   /// The card currently drawn on a cardCommon/cardWild tile — held while a
   /// decision card waits for the player's A/B choice, and shown on the reveal.
@@ -406,7 +458,28 @@ class PartyController extends ChangeNotifier {
   /// Start of a player's turn: reset the pre-roll boost and trickle in energy.
   void _beginTurn() {
     atpRollBonus = 0;
-    currentPlayer.atp += kAtpPerTurn;
+    final p = currentPlayer;
+    if (p.frozenTurns > 0) {
+      // FREEZE RAY: sit this one out. Deterministic (no input), so replay and
+      // lockstep sail through it; the narrator line is the player-facing beat.
+      p.frozenTurns--;
+      turnLog.add('${p.name} is FROZEN SOLID — turn skipped!');
+      _endTurn();
+      return;
+    }
+    p.atp += kAtpPerTurn;
+  }
+
+  /// Hands play to the next seat, or fires the round's mini-game after the
+  /// last one. Shared by [confirmSpace] and the frozen-turn skip.
+  void _endTurn() {
+    if (currentPlayerIndex < players.length - 1) {
+      currentPlayerIndex++;
+      phase = PartyPhase.turnStart;
+      _beginTurn();
+    } else {
+      _startMiniGameRound();
+    }
   }
 
   /// Spend ATP to boost the roll. Before the roll (turnStart): +2 (15) or +3
@@ -573,13 +646,7 @@ class PartyController extends ChangeNotifier {
   /// Advance past the resolution panel: next player, or the mini-game round.
   void confirmSpace() {
     assert(phase == PartyPhase.spaceResolved);
-    if (currentPlayerIndex < players.length - 1) {
-      currentPlayerIndex++;
-      phase = PartyPhase.turnStart;
-      _beginTurn();
-    } else {
-      _startMiniGameRound();
-    }
+    _endTurn();
     notifyListeners();
   }
 
@@ -637,6 +704,8 @@ class PartyController extends ChangeNotifier {
   /// the next relevant event. A logged decision, so replay stays faithful.
   void useItem(PowerUp item) {
     assert(phase == PartyPhase.turnStart);
+    // Targeted items need a victim — they go through [useItemOn].
+    if (item == PowerUp.freezeRay || item == PowerUp.swapper) return;
     final p = currentPlayer;
     if (!p.items.remove(item)) return; // not in the pack
     inputLog.add(PartyInput(PartyInputKind.useItem, item.index));
@@ -662,8 +731,49 @@ class PartyController extends ChangeNotifier {
       case PowerUp.loadedDice:
         p.loadedDice = true;
         break;
+      case PowerUp.freezeRay:
+      case PowerUp.swapper:
+        break; // unreachable: guarded above, targeted use only
     }
     p.itemsUsed++;
+    notifyListeners();
+  }
+
+  /// Spends a TARGETED item (freeze ray / swapper) on [target]'s seat, on the
+  /// current player's turn. STRONG BOND on the target blocks it (and is
+  /// consumed). A logged decision: value = item.index * 16 + target.
+  void useItemOn(PowerUp item, int target) {
+    assert(phase == PartyPhase.turnStart);
+    if (item != PowerUp.freezeRay && item != PowerUp.swapper) return;
+    if (target < 0 || target >= players.length) return;
+    if (target == currentPlayerIndex) return;
+    final p = currentPlayer;
+    if (!p.items.remove(item)) return; // not in the pack
+    inputLog.add(PartyInput(PartyInputKind.useItemOn, item.index * 16 + target));
+    p.itemsUsed++;
+    final t = players[target];
+    if (t.strongBond) {
+      t.strongBond = false;
+      turnLog.add("${t.name}'s STRONG BOND shrugged off ${p.name}'s "
+          '${item.label}!');
+      notifyListeners();
+      return;
+    }
+    t.stolenFromCount++; // aggression economy: feeds Most Stolen-From
+    switch (item) {
+      case PowerUp.freezeRay:
+        t.frozenTurns++;
+        turnLog.add('${p.name} FROZE ${t.name} — they lose a turn!');
+        break;
+      case PowerUp.swapper:
+        final a = p.position;
+        p.position = t.position;
+        t.position = a;
+        turnLog.add('${p.name} SWAPPED places with ${t.name}!');
+        break;
+      default:
+        break;
+    }
     notifyListeners();
   }
 
@@ -1140,17 +1250,156 @@ class PartyController extends ChangeNotifier {
   void confirmMiniGameResults() {
     assert(phase == PartyPhase.minigameResults);
     inputLog.add(const PartyInput(PartyInputKind.confirmResults));
+    // The round's winners, captured before standings clear next round —
+    // they earn the winner spin on the maps that run one.
+    final winners = [
+      for (final s in standings)
+        if (s.rank == 0) s.player.index
+    ];
     if (round >= totalRounds) {
-      phase = PartyPhase.gameOver;
+      if (wheels) {
+        _startWheel(WheelTier.finale, _allSeats);
+      } else {
+        phase = PartyPhase.gameOver;
+      }
     } else {
       round++;
       turnLog.clear();
       _runOps(turnLog); // the crew robs the leader and scatters the loot
       currentPlayerIndex = 0;
-      phase = PartyPhase.turnStart;
-      _beginTurn();
+      if (wheels && _mapHasWinnerSpins && winners.isNotEmpty) {
+        _startWheel(WheelTier.winner, winners);
+      } else if (wheels && _checkpointDue) {
+        _startWheel(WheelTier.checkpoint, _allSeats);
+      } else {
+        phase = PartyPhase.turnStart;
+        _beginTurn();
+      }
     }
     notifyListeners();
+  }
+
+  // ------------------------------------------------------------------ wheel
+
+  List<int> get _allSeats => [for (var i = 0; i < players.length; i++) i];
+
+  /// Checkpoint spins land every [kWheelCheckpointEvery] rounds: 5, 9, 13…
+  bool get _checkpointDue =>
+      round > 1 && (round - 1) % kWheelCheckpointEvery == 0;
+
+  /// Winner spins run on every board except INTO THE VOID (that map wants
+  /// less wheel — PARTY_CINEMATIC_SPEC §2).
+  bool get _mapHasWinnerSpins =>
+      gameMap == null || gameMap!.id != 'into_the_void';
+
+  void _startWheel(WheelTier tier, List<int> spinners) {
+    if (spinners.isEmpty) {
+      _exitWheel(tier);
+      return;
+    }
+    wheel = WheelSession(tier, List.of(spinners));
+    phase = PartyPhase.wheelSpin;
+  }
+
+  /// The current spinner stops the wheel. The stop is the logged input; the
+  /// landed segment comes off the random tape, so every client agrees while
+  /// the tap still feels like the player's own.
+  void wheelStop() {
+    assert(phase == PartyPhase.wheelSpin);
+    final w = wheel!;
+    inputLog.add(const PartyInput(PartyInputKind.wheelStop));
+    final table = wheelTableFor(w.tier);
+    final idx = _drawSegment(table);
+    final p = players[w.currentSpinner];
+    final summary = _applyWheelPrize(p, table[idx]);
+    lastWheelResult = WheelResult(
+      seq: ++_wheelSeq,
+      tier: w.tier,
+      spinner: w.currentSpinner,
+      segmentIndex: idx,
+      summary: summary,
+    );
+    turnLog.add(summary);
+    w.queue.removeAt(0);
+    if (w.queue.isEmpty) {
+      wheel = null;
+      _exitWheel(w.tier);
+    }
+    notifyListeners();
+  }
+
+  void _exitWheel(WheelTier tier) {
+    switch (tier) {
+      case WheelTier.opening:
+      case WheelTier.checkpoint:
+        phase = PartyPhase.turnStart;
+        _beginTurn();
+        break;
+      case WheelTier.winner:
+        if (_checkpointDue) {
+          _startWheel(WheelTier.checkpoint, _allSeats);
+        } else {
+          phase = PartyPhase.turnStart;
+          _beginTurn();
+        }
+        break;
+      case WheelTier.finale:
+        phase = PartyPhase.gameOver;
+        break;
+    }
+  }
+
+  int _drawSegment(List<WheelSegment> table) {
+    var total = 0;
+    for (final s in table) {
+      total += s.weight;
+    }
+    var r = _tape.next(total);
+    for (var i = 0; i < table.length; i++) {
+      r -= table[i].weight;
+      if (r < 0) return i;
+    }
+    return table.length - 1;
+  }
+
+  String _applyWheelPrize(PartyPlayer p, WheelSegment seg) {
+    switch (seg.kind) {
+      case WheelPrizeKind.item:
+        return _wheelGrantItem(p, seg.item!);
+      case WheelPrizeKind.randomItem:
+        final item = kWheelItemPool[_tape.next(kWheelItemPool.length)];
+        return _wheelGrantItem(p, item);
+      case WheelPrizeKind.diamonds:
+        p.diamonds += seg.amount;
+        return '${p.name} spun +${seg.amount} diamonds!';
+      case WheelPrizeKind.loseDiamonds:
+        p.diamonds = max(0, p.diamonds - seg.amount);
+        return '${p.name} spun −${seg.amount} diamonds. Brutal.';
+      case WheelPrizeKind.atp:
+        p.atp += seg.amount;
+        return '${p.name} spun +${seg.amount} ATP!';
+      case WheelPrizeKind.potatoes:
+        p.potatoes += seg.amount;
+        return seg.amount > 1
+            ? '${p.name} spun ${seg.amount} WHOLE POTATOES!!'
+            : '${p.name} spun a WHOLE POTATO!';
+      case WheelPrizeKind.dropItem:
+        if (p.items.isEmpty) {
+          p.diamonds = max(0, p.diamonds - 3);
+          return '${p.name} had no item to drop — −3 diamonds instead.';
+        }
+        final dropped = p.items.removeAt(0);
+        return '${p.name} dropped ${dropped.label}!';
+    }
+  }
+
+  String _wheelGrantItem(PartyPlayer p, PowerUp item) {
+    if (p.items.length >= kMaxItems) {
+      p.diamonds += 5;
+      return "${p.name}'s pack is full — ${item.label} became +5 diamonds.";
+    }
+    p.items.add(item);
+    return '${p.name} won ${item.label} — ${item.description}.';
   }
 
   // ---------------------------------------------------------------- results
@@ -1230,6 +1479,12 @@ class PartyController extends ChangeNotifier {
       case PartyInputKind.confirmResults:
         confirmMiniGameResults();
         break;
+      case PartyInputKind.wheelStop:
+        wheelStop();
+        break;
+      case PartyInputKind.useItemOn:
+        useItemOn(PowerUp.values[input.value ~/ 16], input.value % 16);
+        break;
     }
   }
 
@@ -1263,6 +1518,8 @@ class PartyController extends ChangeNotifier {
         // confirmResults input (local tap, or the online host's tap /
         // auto-dwell) so every client actually sees the results.
         case PartyPhase.minigameResults:
+        // Each spinner's STOP is a genuine input too.
+        case PartyPhase.wheelSpin:
         case PartyPhase.gameOver:
           return;
       }
@@ -1331,6 +1588,9 @@ class PartyController extends ChangeNotifier {
 
   /// The whole match as a tiny, refactor-proof save: seed + setup + decisions.
   Map<String, dynamic> toSaveJson() => {
+        // v2 = played with the wheel system; v1 (or absent, pre-wheel builds)
+        // replays with wheels off so old input logs stay aligned.
+        'v': wheels ? 2 : 1,
         'seed': seed,
         'mode': mode.index,
         'rounds': totalRounds,
@@ -1345,6 +1605,7 @@ class PartyController extends ChangeNotifier {
         totalRounds: json['rounds'] as int,
         playerNames: List<String>.from(json['names'] as List),
         seed: json['seed'] as int,
+        wheels: ((json['v'] as int?) ?? 1) >= 2,
         inputs: [
           for (final e in (json['inputs'] as List))
             PartyInput.fromJson(Map<String, dynamic>.from(e as Map))

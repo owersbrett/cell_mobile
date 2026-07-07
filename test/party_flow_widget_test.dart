@@ -23,6 +23,21 @@ void main() {
     // design (the living-cell interior), so settle would never complete.
     await tester.pump(const Duration(milliseconds: 400));
 
+    // The opening ceremony (Butter) plays over the opening wheel — skip it,
+    // then every player stops their opening spin (landing payoff ~2.1s each;
+    // the final stop pays off through the outro hold).
+    expect(find.text('OPENING SPIN'), findsOneWidget);
+    await tester.tap(find.text('SKIP'));
+    await tester.pump();
+    for (var i = 0; i < 4; i++) {
+      expect(find.text('STOP'), findsOneWidget, reason: 'spinner $i');
+      await tester.tap(find.text('STOP'));
+      await tester.pump(); // the stop lands; the payoff animation starts
+      await tester.pump(const Duration(milliseconds: 2200)); // payoff plays
+      await tester.pump(const Duration(milliseconds: 60)); // rebuild
+    }
+    await tester.pump(const Duration(milliseconds: 400));
+
     // Board screen: round header and the first player's roll panel. The default
     // match length is the first option (WEEK · 7) — track the shared const so
     // this can't go stale when the options change.
