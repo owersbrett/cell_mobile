@@ -4,7 +4,9 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_states.dart';
 import 'package:cell_mobile/data/bio_entity_registry.dart';
+import 'package:cell_mobile/data/scales/scale_meta.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/views/widgets/scroll_fade.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,9 +18,7 @@ import 'package:cell_mobile/views/screens/scale_overview_page/widgets/farm_cycle
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/particles_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/financial_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/supply_chain_animation.dart';
-import 'package:cell_mobile/views/screens/scale_overview_page/widgets/cosmic_web_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/galaxy_animation.dart';
-import 'package:cell_mobile/views/screens/scale_overview_page/widgets/globe_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/planets_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/question_marks_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/solar_system_animation.dart';
@@ -31,7 +31,7 @@ import 'package:cell_mobile/views/screens/scale_overview_page/widgets/companion_
 import 'widgets/scale_indicator.dart';
 
 class ScaleExplorerPage extends StatefulWidget {
-  const ScaleExplorerPage({Key? key}) : super(key: key);
+  const ScaleExplorerPage({super.key});
 
   @override
   State<ScaleExplorerPage> createState() => _ScaleExplorerPageState();
@@ -130,42 +130,16 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
         duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
   }
 
-  static const _scaleColors = <BioScale, Color>{
-    BioScale.somethings: Color(0xFF7E57C2),
-    BioScale.molecular: Color(0xFF00BCD4),
-    BioScale.organelle: Color(0xFF9C27B0),
-    BioScale.cell: Color(0xFF009688),
-    BioScale.tissue: Color(0xFF4CAF50),
-    BioScale.organ: Color(0xFFCDDC39),
-    BioScale.organism: Color(0xFFFFC107),
-    BioScale.ecosystem: Color(0xFFFF9800),
-    BioScale.farmSystem: Color(0xFF8D6E63),
-    BioScale.supplyChain: Color(0xFF78909C),
-    BioScale.financial: Color(0xFFE19816),
-  };
-
-  static const _scaleIcons = <BioScale, IconData>{
-    BioScale.somethings: Icons.auto_awesome,
-    BioScale.molecular: Icons.science,
-    BioScale.organelle: Icons.blur_circular,
-    BioScale.cell: Icons.grid_view,
-    BioScale.tissue: Icons.layers,
-    BioScale.organ: Icons.eco,
-    BioScale.organism: Icons.local_florist,
-    BioScale.ecosystem: Icons.forest,
-    BioScale.farmSystem: Icons.agriculture,
-    BioScale.supplyChain: Icons.local_shipping,
-    BioScale.financial: Icons.trending_up,
-  };
-
   @override
   Widget build(BuildContext context) {
     return BlocBuilder<ScaleExplorerBloc, ScaleExplorerState>(
       builder: (context, state) {
         final entity = state.currentEntity;
         final entities = state.currentScaleEntities;
-        final color = _scaleColors[state.currentScale] ?? Colors.white;
-        final icon = _scaleIcons[state.currentScale] ?? Icons.circle;
+        // SSOT — resolves for all 22 scales, so no scale falls back to white.
+        final meta = scaleMetaFor(state.currentScale);
+        final color = meta.color;
+        final icon = meta.icon;
         final registry = BioEntityRegistry();
 
         return Focus(
@@ -173,7 +147,7 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
           autofocus: true,
           onKeyEvent: _handleKeyEvent,
           child: Scaffold(
-          backgroundColor: Colors.black,
+          backgroundColor: Potatuhs.inkDeep,
           body: SafeArea(
             child: Column(
               children: [
@@ -185,13 +159,17 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
                         .add(NavigateToScreen(AppScreen.scaleOverview));
                   },
                 ),
+                // "WHAT YOU'LL LEARN" framing — the E layer made visible, so the
+                // explorer reads as a lesson, not a static wiki.
+                _buildLearnFraming(meta),
                 Expanded(
                   child: entity == null
                       ? Center(
                           child: Text('No entities at this scale',
-                              style: TextStyle(
-                                  color: Colors.white54,
-                                  fontFamily: 'Avenir')))
+                              style: Potatuhs.body(
+                                  size: 15,
+                                  weight: FontWeight.w500,
+                                  color: Potatuhs.textSecondary)))
                       : GestureDetector(
                           onHorizontalDragEnd: (details) {
                             if (details.primaryVelocity != null) {
@@ -253,6 +231,60 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     );
   }
 
+  /// The per-scale "WHAT YOU'LL LEARN" banner: the teaching promise + the
+  /// order-of-magnitude readout, drawn from the SSOT.
+  Widget _buildLearnFraming(ScaleMeta meta) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: meta.color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: meta.color.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.school_outlined, size: 16, color: meta.color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text("WHAT YOU'LL LEARN",
+                          style: Potatuhs.label(size: 9, color: meta.color)),
+                      const SizedBox(width: 8),
+                      Text('·',
+                          style: Potatuhs.label(
+                              size: 9, color: Potatuhs.textFaint)),
+                      const SizedBox(width: 8),
+                      Text(meta.magnitude,
+                          style: Potatuhs.label(
+                              size: 9, color: Potatuhs.textFaint)),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    meta.learn,
+                    style: Potatuhs.body(
+                      size: 13,
+                      weight: FontWeight.w600,
+                      color: Potatuhs.textPrimary,
+                      height: 1.25,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildEntityCard(BuildContext context, BioEntity entity, Color color,
       IconData icon, ScaleExplorerState state, BioEntityRegistry registry) {
     final isOrganelleScale = state.currentScale == BioScale.organelle;
@@ -289,32 +321,29 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
             // Name
             Text(
               entity.name,
-              style: TextStyle(
-                fontFamily: 'Avenir',
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
+              style: Potatuhs.display(
+                size: 28,
+                color: Potatuhs.textPrimary,
               ),
             ),
             const SizedBox(height: 4),
             // Title
             Text(
               entity.title,
-              style: TextStyle(
-                fontFamily: 'Avenir',
-                fontSize: 18,
+              style: Potatuhs.body(
+                size: 18,
+                weight: FontWeight.w600,
                 color: color,
-                fontWeight: FontWeight.w500,
               ),
             ),
             const SizedBox(height: 12),
             // Short description
             Text(
               entity.shortDescription,
-              style: TextStyle(
-                fontFamily: 'Avenir',
-                fontSize: 15,
-                color: Colors.white70,
+              style: Potatuhs.body(
+                size: 15,
+                weight: FontWeight.w500,
+                color: Potatuhs.textPrimary,
                 height: 1.4,
               ),
             ),
@@ -326,19 +355,18 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
                   context.read<NavigationBloc>().add(
                       NavigateToScreen(AppScreen.cellInteractive));
                 },
-                icon: Icon(Icons.play_circle_outline, size: 20),
+                icon: const Icon(Icons.play_circle_outline, size: 20),
                 label: Text('Interactive Cell',
-                    style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontWeight: FontWeight.w600)),
+                    style: Potatuhs.body(
+                        size: 15, weight: FontWeight.w600)),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Color(0xFF9C27B0).withValues(alpha: 0.3),
-                  foregroundColor: Color(0xFFCE93D8),
-                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+                  backgroundColor: color.withValues(alpha: 0.3),
+                  foregroundColor: Potatuhs.textPrimary,
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 14, horizontal: 20),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(
-                        color: Color(0xFF9C27B0).withValues(alpha: 0.4)),
+                    side: BorderSide(color: color.withValues(alpha: 0.4)),
                   ),
                 ),
               ),
@@ -347,10 +375,10 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
             // Full description
             Text(
               entity.longDescription,
-              style: TextStyle(
-                fontFamily: 'Avenir',
-                fontSize: 15,
-                color: const Color(0xFFDDDDDD),
+              style: Potatuhs.body(
+                size: 15,
+                weight: FontWeight.w400,
+                color: Potatuhs.textSecondary,
                 height: 1.6,
               ),
             ),
@@ -384,15 +412,14 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
       children: [
         Row(
           children: [
-            Icon(titleIcon, color: Colors.white54, size: 16),
+            Icon(titleIcon, color: Potatuhs.textSecondary, size: 16),
             const SizedBox(width: 6),
             Text(
               title,
-              style: TextStyle(
-                fontFamily: 'Avenir',
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: Colors.white54,
+              style: Potatuhs.body(
+                size: 14,
+                weight: FontWeight.w600,
+                color: Potatuhs.textSecondary,
               ),
             ),
           ],
@@ -405,7 +432,7 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
             children: ids.map((id) {
               final related = registry.getById(id);
               if (related == null) return const SizedBox.shrink();
-              final relColor = _scaleColors[related.scale] ?? Colors.white;
+              final relColor = scaleMetaFor(related.scale).color;
               return GestureDetector(
                 onTap: () {
                   context
@@ -422,9 +449,9 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
                   ),
                   child: Text(
                     related.name,
-                    style: TextStyle(
-                      fontFamily: 'Avenir',
-                      fontSize: 12,
+                    style: Potatuhs.body(
+                      size: 12,
+                      weight: FontWeight.w500,
                       color: relColor,
                     ),
                   ),
@@ -583,10 +610,9 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
                 ? Center(
                     child: Text(
                       widget.entities[_hoveredIndex!].name,
-                      style: TextStyle(
-                        fontFamily: 'Avenir',
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                      style: Potatuhs.body(
+                        size: 13,
+                        weight: FontWeight.w600,
                         color: widget.color,
                       ),
                     ),
@@ -648,7 +674,7 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
                       } else if (isCurrent) {
                         dotColor = widget.color;
                       } else {
-                        dotColor = Colors.white24;
+                        dotColor = Potatuhs.textPrimary.withValues(alpha: 0.15);
                       }
 
                       return GestureDetector(
@@ -692,7 +718,8 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.arrow_back_ios, size: 12, color: Colors.white38),
+                    const Icon(Icons.arrow_back_ios,
+                        size: 12, color: Potatuhs.textFaint),
                     const SizedBox(width: 6),
                     // Mini animation preview
                     Container(
@@ -713,10 +740,10 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
                       constraints: const BoxConstraints(maxWidth: 80),
                       child: Text(
                         prevEntity.name,
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 11,
-                          color: Colors.white38,
+                        style: Potatuhs.body(
+                          size: 11,
+                          weight: FontWeight.w500,
+                          color: Potatuhs.textFaint,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -727,10 +754,10 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
               // Position indicator
               Text(
                 '${widget.currentPosition + 1} / ${widget.entities.length}',
-                style: TextStyle(
-                  fontFamily: 'Avenir',
-                  fontSize: 11,
-                  color: Colors.white30,
+                style: Potatuhs.body(
+                  size: 11,
+                  weight: FontWeight.w500,
+                  color: Potatuhs.textFaint,
                 ),
               ),
               // Next
@@ -743,10 +770,10 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
                       constraints: const BoxConstraints(maxWidth: 80),
                       child: Text(
                         nextEntity.name,
-                        style: TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 11,
-                          color: Colors.white38,
+                        style: Potatuhs.body(
+                          size: 11,
+                          weight: FontWeight.w500,
+                          color: Potatuhs.textFaint,
                         ),
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.right,
@@ -768,7 +795,8 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    Icon(Icons.arrow_forward_ios, size: 12, color: Colors.white38),
+                    const Icon(Icons.arrow_forward_ios,
+                        size: 12, color: Potatuhs.textFaint),
                   ],
                 ),
               ),
@@ -784,7 +812,7 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
     if (renderBox == null) return;
     final local = renderBox.globalToLocal(globalPosition);
     final barWidth = renderBox.size.width - 80; // account for horizontal margin
-    final startX = 40.0;
+    const startX = 40.0;
     final relativeX = (local.dx - startX).clamp(0, barWidth);
     final fraction = relativeX / barWidth;
     final index = (fraction * widget.entities.length).floor().clamp(0, widget.entities.length - 1);

@@ -4,7 +4,9 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/data/bio_entity_registry.dart';
 import 'package:cell_mobile/data/organelles.dart';
+import 'package:cell_mobile/data/scales/scale_meta.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,9 +17,7 @@ import 'widgets/dragon_curve_animation.dart';
 import 'widgets/farm_cycle_animation.dart';
 import 'widgets/financial_animation.dart';
 import 'widgets/supply_chain_animation.dart';
-import 'widgets/cosmic_web_animation.dart';
 import 'widgets/galaxy_animation.dart';
-import 'widgets/globe_animation.dart';
 import 'widgets/molecular_animations.dart';
 import 'widgets/particles_animation.dart';
 import 'widgets/planets_animation.dart';
@@ -31,7 +31,7 @@ import 'widgets/potato_mitosis_animation.dart';
 import 'widgets/companion_planting_animation.dart';
 
 class ScaleOverviewPage extends StatefulWidget {
-  const ScaleOverviewPage({Key? key}) : super(key: key);
+  const ScaleOverviewPage({super.key});
 
   @override
   State<ScaleOverviewPage> createState() => _ScaleOverviewPageState();
@@ -44,43 +44,18 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
   late final FocusNode _focusNode;
   late final PageController _pageController;
 
-  static const _scaleInfo = <_ScaleDisplayInfo>[
-    // Left side — from nothingness toward the cell
-    // "Nothing" is the dark bookend of the color ladder (Infinity is the
-    // white one) — deliberately void, but it must read as CHOSEN emptiness:
-    // a violet-leaning charcoal (pointing toward Something) + a subtitle
-    // that names the void, so it can't be mistaken for a failed-to-load tile.
-    _ScaleDisplayInfo(BioScale.nothings, 'Nothing', 'Before the first distinction', Icons.circle_outlined, Color(0xFF565062)),
-    _ScaleDisplayInfo(BioScale.somethings, 'Something', 'The first distinctions', Icons.auto_awesome, Color(0xFF7E57C2)),
-    _ScaleDisplayInfo(BioScale.particles, 'Particles', 'Quarks, electrons & photons', Icons.grain, Color(0xFFAB47BC)),
-    _ScaleDisplayInfo(BioScale.atoms, 'Atoms', 'The elements of everything', Icons.blur_on, Color(0xFF5C6BC0)),
-    _ScaleDisplayInfo(BioScale.molecular, 'Molecules', 'The chemistry of life', Icons.science, Color(0xFF00BCD4)),
-    _ScaleDisplayInfo(BioScale.organelle, 'Organelles', 'Subcellular structures', Icons.blur_circular, Color(0xFF9C27B0), hasInteractive: true),
-    // Center — the cell
-    _ScaleDisplayInfo(BioScale.cell, 'Cells', 'Specialized plant cells', Icons.grid_view, Color(0xFF009688)),
-    // Right side — from the cell toward infinity
-    _ScaleDisplayInfo(BioScale.tissue, 'Tissues', 'Organized cell groups', Icons.layers, Color(0xFF4CAF50)),
-    _ScaleDisplayInfo(BioScale.organ, 'Organs', 'Roots, stems, leaves & flowers', Icons.eco, Color(0xFFCDDC39)),
-    _ScaleDisplayInfo(BioScale.organSystem, 'Organ Systems', 'Integrated functional units', Icons.account_tree, Color(0xFF8BC34A)),
-    _ScaleDisplayInfo(BioScale.organism, 'Organisms', 'Whole plants & life strategies', Icons.local_florist, Color(0xFFFFC107)),
-    _ScaleDisplayInfo(BioScale.ecosystem, 'Ecosystems', 'Living systems & nutrient cycles', Icons.forest, Color(0xFFFF9800)),
-    _ScaleDisplayInfo(BioScale.farmSystem, 'Farm Systems', 'Field-scale management', Icons.agriculture, Color(0xFF8D6E63)),
-    _ScaleDisplayInfo(BioScale.supplyChain, 'Supply Chains', 'Harvest to table', Icons.local_shipping, Color(0xFF78909C)),
-    _ScaleDisplayInfo(BioScale.financial, 'Financials', 'Markets & economics', Icons.trending_up, Color(0xFFE19816)),
-    _ScaleDisplayInfo(BioScale.planets, 'Planets', 'Worlds & their systems', Icons.language, Color(0xFF1E88E5)),
-    _ScaleDisplayInfo(BioScale.solarSystems, 'Solar Systems', 'Stars & their orbits', Icons.wb_sunny, Color(0xFFFDD835)),
-    _ScaleDisplayInfo(BioScale.galactic, 'Galactic', 'Billions of stars', Icons.auto_awesome, Color(0xFFCE93D8)),
-    _ScaleDisplayInfo(BioScale.cosmicStructures, 'Cosmic Structures', 'The cosmic web', Icons.hub, Color(0xFF80DEEA)),
-    _ScaleDisplayInfo(BioScale.multiverseAll, 'Multiverse', 'The mesh of all realities', Icons.device_hub, Color(0xFFB0BEC5)),
-    _ScaleDisplayInfo(BioScale.universeAll, 'Universe', 'The totality of existence', Icons.all_inclusive, Color(0xFFEEEEEE)),
-    _ScaleDisplayInfo(BioScale.infinities, 'Infinity', 'Beyond all bounds', Icons.all_inclusive, Color(0xFFFFFFFF)),
-  ];
+  // The 22-scale journey (nothing → infinity) is the SSOT in scale_meta.dart.
+  // Every LEARN surface reads the same list so all 22 render identically.
+  List<ScaleMeta> get _scaleInfo => kScaleJourney;
+
+  ScaleMeta get _current => _scaleInfo[_selectedIndex];
 
   @override
   void initState() {
     super.initState();
     _focusNode = FocusNode();
-    _pageController = PageController(viewportFraction: 0.75, initialPage: _defaultIndex);
+    _pageController =
+        PageController(viewportFraction: 0.75, initialPage: _defaultIndex);
   }
 
   @override
@@ -109,7 +84,9 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
 
     final key = event.logicalKey;
     final totalItems = _scaleInfo.length;
@@ -228,190 +205,309 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
   @override
   Widget build(BuildContext context) {
     final registry = BioEntityRegistry();
+    final accent = _current.color;
 
     return Focus(
       focusNode: _focusNode,
       autofocus: true,
       onKeyEvent: _handleKeyEvent,
       child: Scaffold(
-        backgroundColor: Colors.black,
-        body: SafeArea(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header: title + party-mode PLAY button
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: const [
-                          Text(
-                            'EXPLORE THE CELL',
-                            style: TextStyle(
-                              fontFamily: 'Avenir',
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 2,
-                              color: Colors.white,
-                            ),
-                          ),
-                          SizedBox(height: 2),
-                          Text(
-                            'From nothing to everything',
-                            style: TextStyle(
-                              fontFamily: 'Avenir',
-                              fontSize: 12,
-                              color: Colors.white54,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    GestureDetector(
-                      onTap: () => context
-                          .read<NavigationBloc>()
-                          .add(NavigateToScreen(AppScreen.home)),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE1C916),
-                          borderRadius: BorderRadius.circular(14),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFFE1C916)
-                                  .withValues(alpha: 0.45),
-                              blurRadius: 14,
-                            ),
-                          ],
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: const [
-                            Icon(Icons.home_rounded,
-                                color: Colors.black, size: 18),
-                            SizedBox(width: 6),
+        backgroundColor: Potatuhs.inkDeep,
+        // Scale-tinted background: the whole page bathes in the current
+        // scale's colour, softly crossfading as you zoom the journey.
+        body: AnimatedContainer(
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: const Alignment(0, -0.35),
+              radius: 1.2,
+              colors: [
+                Color.alphaBlend(
+                    accent.withValues(alpha: 0.22), Potatuhs.inkDeep),
+                Potatuhs.inkDeep,
+              ],
+            ),
+          ),
+          child: SafeArea(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header: title + HOME button
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             Text(
-                              'HOME',
-                              style: TextStyle(
-                                fontFamily: 'Avenir',
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 2,
-                                color: Colors.black,
+                              'EXPLORE THE CELL',
+                              style: Potatuhs.display(
+                                size: 20,
+                                color: Potatuhs.textPrimary,
+                                spacing: 2,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'From nothing to everything',
+                              style: Potatuhs.body(
+                                size: 12,
+                                weight: FontWeight.w500,
+                                color: Potatuhs.textSecondary,
                               ),
                             ),
                           ],
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 20),
-              // Carousel
-              Expanded(
-                child: PageView.builder(
-                  controller: _pageController,
-                  itemCount: _scaleInfo.length,
-                  onPageChanged: (index) {
-                    setState(() => _selectedIndex = index);
-                  },
-                  itemBuilder: (context, index) {
-                    final info = _scaleInfo[index];
-                    final isSelected = _selectedIndex == index;
-                    return AnimatedScale(
-                      scale: isSelected ? 1.0 : 0.9,
-                      duration: const Duration(milliseconds: 250),
-                      child: AnimatedOpacity(
-                        opacity: isSelected ? 1.0 : 0.5,
-                        duration: const Duration(milliseconds: 250),
-                        child: Padding(
+                      GestureDetector(
+                        onTap: () => context
+                            .read<NavigationBloc>()
+                            .add(NavigateToScreen(AppScreen.home)),
+                        child: Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 16),
-                          child: ScaleCard(
-                            scale: info.scale,
-                            label: info.label,
-                            subtitle: info.subtitle,
-                            icon: info.icon,
-                            color: info.color,
-                            entityCount: registry.entityCount(info.scale),
-                            animation: info.hasInteractive
-                                ? _buildInteractiveAnimation()
-                                : _animationForScale(info.scale, info.color),
-                            isSelected: isSelected,
-                            hasInteractive: info.hasInteractive,
-                            onInteractiveTap: info.hasInteractive
-                                ? () {
-                                    context.read<NavigationBloc>().add(
-                                      NavigateToScreen(
-                                          AppScreen.cellInteractive),
-                                    );
-                                  }
-                                : null,
-                            onPlayTap: () {
-                              context
-                                  .read<ScaleExplorerBloc>()
-                                  .add(SelectScale(info.scale));
-                              // LEARN → this scale's Play (compass) opens the
-                              // scale's GAMES LIST (the "CHOOSE A GAME" picker),
-                              // NOT a game directly. Only the GAMES console
-                              // launches a specific game straight away.
-                              context.read<NavigationBloc>().add(
-                                  NavigateToScreen(AppScreen.miniGame));
-                            },
-                            onTap: () {
-                              if (isSelected) {
-                                context
-                                    .read<ScaleExplorerBloc>()
-                                    .add(SelectScale(info.scale));
-                                context.read<NavigationBloc>().add(
-                                    NavigateToScreen(AppScreen.scaleExplorer));
-                              } else {
-                                _pageController.animateToPage(
-                                  index,
-                                  duration: const Duration(milliseconds: 300),
-                                  curve: Curves.easeOut,
-                                );
-                              }
-                            },
+                              horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Potatuhs.gold,
+                            borderRadius: BorderRadius.circular(14),
+                            boxShadow:
+                                Potatuhs.glow(Potatuhs.gold, strength: 0.45, blur: 14),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.home_rounded,
+                                  color: Potatuhs.ink, size: 18),
+                              const SizedBox(width: 6),
+                              Text(
+                                'HOME',
+                                style: Potatuhs.body(
+                                  size: 15,
+                                  weight: FontWeight.w800,
+                                  color: Potatuhs.ink,
+                                  spacing: 2,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
-                    );
-                  },
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                // Journey readout: "SCALE n / 22 · magnitude" + you-are-here ladder.
+                _buildJourneyReadout(accent),
+                const SizedBox(height: 10),
+                // Carousel
+                Expanded(
+                  child: PageView.builder(
+                    controller: _pageController,
+                    itemCount: _scaleInfo.length,
+                    onPageChanged: (index) {
+                      setState(() => _selectedIndex = index);
+                    },
+                    itemBuilder: (context, index) {
+                      final info = _scaleInfo[index];
+                      final isSelected = _selectedIndex == index;
+                      return AnimatedScale(
+                        scale: isSelected ? 1.0 : 0.9,
+                        duration: const Duration(milliseconds: 250),
+                        child: AnimatedOpacity(
+                          opacity: isSelected ? 1.0 : 0.5,
+                          duration: const Duration(milliseconds: 250),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 16),
+                            child: ScaleCard(
+                              scale: info.scale,
+                              label: info.label,
+                              subtitle: info.subtitle,
+                              icon: info.icon,
+                              color: info.color,
+                              magnitude: info.magnitude,
+                              learn: info.learn,
+                              entityCount: registry.entityCount(info.scale),
+                              animation: info.hasInteractive
+                                  ? _buildInteractiveAnimation()
+                                  : _animationForScale(info.scale, info.color),
+                              isSelected: isSelected,
+                              hasInteractive: info.hasInteractive,
+                              onInteractiveTap: info.hasInteractive
+                                  ? () {
+                                      context.read<NavigationBloc>().add(
+                                        NavigateToScreen(
+                                            AppScreen.cellInteractive),
+                                      );
+                                    }
+                                  : null,
+                              onPlayTap: () {
+                                context
+                                    .read<ScaleExplorerBloc>()
+                                    .add(SelectScale(info.scale));
+                                // LEARN → this scale's Play (compass) opens the
+                                // scale's GAMES LIST (the "CHOOSE A GAME"
+                                // picker), NOT a game directly. Only the GAMES
+                                // console launches a specific game straight away.
+                                context.read<NavigationBloc>().add(
+                                    NavigateToScreen(AppScreen.miniGame));
+                              },
+                              onTap: () {
+                                if (isSelected) {
+                                  context
+                                      .read<ScaleExplorerBloc>()
+                                      .add(SelectScale(info.scale));
+                                  context.read<NavigationBloc>().add(
+                                      NavigateToScreen(
+                                          AppScreen.scaleExplorer));
+                                } else {
+                                  _pageController.animateToPage(
+                                    index,
+                                    duration: const Duration(milliseconds: 300),
+                                    curve: Curves.easeOut,
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                // Dot indicators — tap a dot, or DRAG a finger across the strip
+                // to quickly scrub between scales/games. The grid button at the
+                // right opens the full scale index (jump anywhere in one tap) —
+                // the swipe-to-marvel first run stays intact, return users get
+                // a map.
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 20),
+                  child: Row(
+                    children: [
+                      // Balances the index button so the dots stay centered.
+                      const SizedBox(width: 44),
+                      Expanded(child: _buildDotStrip()),
+                      SizedBox(
+                        width: 44,
+                        child: IconButton(
+                          onPressed: _showScaleIndex,
+                          tooltip: 'All scales',
+                          icon: const Icon(Icons.apps,
+                              color: Potatuhs.textSecondary, size: 20),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// "SCALE n / 22 · magnitude" readout + the nothing→infinity position ladder.
+  /// Makes the ~40-orders-of-magnitude journey legible and answers "where am I?"
+  Widget _buildJourneyReadout(Color accent) {
+    final n = _scaleInfo.length;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                'SCALE ${_selectedIndex + 1} / $n',
+                style: Potatuhs.label(size: 11, color: accent),
+              ),
+              const SizedBox(width: 10),
+              Text('·',
+                  style: Potatuhs.label(size: 11, color: Potatuhs.textFaint)),
+              const SizedBox(width: 10),
+              Text(
+                _current.magnitude,
+                style: Potatuhs.body(
+                  size: 13,
+                  weight: FontWeight.w700,
+                  color: Potatuhs.textPrimary,
                 ),
               ),
-              // Dot indicators — tap a dot, or DRAG a finger across the strip
-              // to quickly scrub between scales/games. The grid button at the
-              // right opens the full scale index (jump anywhere in one tap) —
-              // the swipe-to-marvel first run stays intact, return users get
-              // a map.
-              Padding(
-                padding: const EdgeInsets.only(bottom: 20),
-                child: Row(
+              const Spacer(),
+              Text(
+                _selectedIndex < _defaultIndex
+                    ? 'ZOOMING IN'
+                    : _selectedIndex > _defaultIndex
+                        ? 'ZOOMING OUT'
+                        : 'THE CELL',
+                style: Potatuhs.label(size: 9, color: Potatuhs.textFaint),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Position ladder: a gradient bar of all 22 scale colours (nothing =
+          // dark bookend, infinity = white bookend) with a "you are here" pip.
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final width = constraints.maxWidth;
+              final t = n <= 1 ? 0.0 : _selectedIndex / (n - 1);
+              const markerW = 12.0;
+              final markerX =
+                  (t * (width - markerW)).clamp(0.0, width - markerW);
+              return SizedBox(
+                height: 12,
+                child: Stack(
+                  clipBehavior: Clip.none,
                   children: [
-                    // Balances the index button so the dots stay centered.
-                    const SizedBox(width: 44),
-                    Expanded(child: _buildDotStrip()),
-                    SizedBox(
-                      width: 44,
-                      child: IconButton(
-                        onPressed: _showScaleIndex,
-                        tooltip: 'All scales',
-                        icon: const Icon(Icons.apps,
-                            color: Colors.white54, size: 20),
+                    Center(
+                      child: Container(
+                        height: 5,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(3),
+                          gradient: LinearGradient(
+                            colors: [
+                              for (final m in _scaleInfo)
+                                m.color.withValues(alpha: 0.85),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: markerX,
+                      top: 0,
+                      child: Container(
+                        width: markerW,
+                        height: markerW,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: accent,
+                          border: Border.all(
+                              color: Potatuhs.textPrimary, width: 1.5),
+                          boxShadow:
+                              Potatuhs.glow(accent, strength: 0.6, blur: 8),
+                        ),
                       ),
                     ),
                   ],
                 ),
-              ),
+              );
+            },
+          ),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('NOTHING',
+                  style: Potatuhs.label(size: 8, color: Potatuhs.textFaint)),
+              Text('INFINITY',
+                  style: Potatuhs.label(size: 8, color: Potatuhs.textFaint)),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -421,7 +517,7 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
   void _showScaleIndex() {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF14110F),
+      backgroundColor: Potatuhs.inkDeep,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -431,15 +527,9 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
+              Text(
                 'ALL SCALES',
-                style: TextStyle(
-                  fontFamily: 'Avenir',
-                  fontSize: 12,
-                  letterSpacing: 2,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white54,
-                ),
+                style: Potatuhs.label(size: 12, color: Potatuhs.textSecondary),
               ),
               const SizedBox(height: 12),
               Wrap(
@@ -483,11 +573,10 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
             const SizedBox(width: 6),
             Text(
               info.label,
-              style: TextStyle(
-                fontFamily: 'Avenir',
-                fontSize: 12,
-                fontWeight: isCurrent ? FontWeight.bold : FontWeight.w600,
-                color: Colors.white.withValues(alpha: 0.9),
+              style: Potatuhs.body(
+                size: 12,
+                weight: isCurrent ? FontWeight.w800 : FontWeight.w600,
+                color: Potatuhs.textPrimary,
               ),
             ),
           ],
@@ -546,8 +635,9 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                     height: 6,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(3),
-                      color:
-                          isActive ? info.color : Colors.white24,
+                      color: isActive
+                          ? info.color
+                          : Potatuhs.textPrimary.withValues(alpha: 0.15),
                     ),
                   );
                 },
@@ -558,17 +648,4 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
       },
     );
   }
-}
-
-class _ScaleDisplayInfo {
-  final BioScale scale;
-  final String label;
-  final String subtitle;
-  final IconData icon;
-  final Color color;
-  final bool hasInteractive;
-
-  const _ScaleDisplayInfo(
-      this.scale, this.label, this.subtitle, this.icon, this.color,
-      {this.hasInteractive = false});
 }

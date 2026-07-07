@@ -1,4 +1,5 @@
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:flutter/material.dart';
 
 class ScaleCard extends StatelessWidget {
@@ -8,6 +9,13 @@ class ScaleCard extends StatelessWidget {
   final IconData icon;
   final Color color;
   final int entityCount;
+
+  /// Order-of-magnitude readout for this scale (e.g. '10⁻¹⁰ m', '∞', '—').
+  final String magnitude;
+
+  /// One-line teaching promise — what you'll learn at this scale.
+  final String learn;
+
   final VoidCallback onTap;
   final Widget? animation;
   final bool isSelected;
@@ -16,20 +24,22 @@ class ScaleCard extends StatelessWidget {
   final VoidCallback? onPlayTap;
 
   const ScaleCard({
-    Key? key,
+    super.key,
     required this.scale,
     required this.label,
     required this.subtitle,
     required this.icon,
     required this.color,
     required this.entityCount,
+    required this.magnitude,
+    required this.learn,
     required this.onTap,
     this.animation,
     this.isSelected = false,
     this.hasInteractive = false,
     this.onInteractiveTap,
     this.onPlayTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +91,8 @@ class ScaleCard extends StatelessWidget {
                         child: Icon(icon, color: color, size: 22),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
                           color: color.withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(10),
@@ -90,18 +101,36 @@ class ScaleCard extends StatelessWidget {
                           // Labelled so the number can't be misread as a game
                           // count (blocks = this scale's knowledge entries).
                           '$entityCount BLOCKS',
-                          style: TextStyle(
-                            fontFamily: 'Avenir',
-                            fontSize: 10,
-                            letterSpacing: 0.5,
-                            color: color,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          style: Potatuhs.label(size: 10, color: color)
+                              .copyWith(letterSpacing: 0.5),
                         ),
                       ),
                     ],
                   ),
                   const Spacer(),
+                  // Magnitude chip — the awe readout (order of magnitude).
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Potatuhs.ink.withValues(alpha: 0.45),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: color.withValues(alpha: 0.4), width: 1),
+                      ),
+                      child: Text(
+                        magnitude,
+                        style: Potatuhs.body(
+                          size: 12,
+                          weight: FontWeight.w700,
+                          color: Potatuhs.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   // Action buttons row
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
@@ -113,18 +142,27 @@ class ScaleCard extends StatelessWidget {
                           GestureDetector(
                             onTap: onPlayTap,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 8),
                               decoration: BoxDecoration(
-                                color: const Color(0xFFAADD44).withValues(alpha: 0.18),
+                                color: Potatuhs.gold.withValues(alpha: 0.18),
                                 borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: const Color(0xFFAADD44).withValues(alpha: 0.4)),
+                                border: Border.all(
+                                    color:
+                                        Potatuhs.gold.withValues(alpha: 0.5)),
                               ),
-                              child: const Row(
+                              child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.explore, color: Color(0xFFAADD44), size: 18),
-                                  SizedBox(width: 5),
-                                  Text('Play', style: TextStyle(fontFamily: 'Avenir', fontSize: 14, color: Color(0xFFAADD44), fontWeight: FontWeight.w700)),
+                                  const Icon(Icons.explore,
+                                      color: Potatuhs.gold, size: 18),
+                                  const SizedBox(width: 5),
+                                  Text('Play',
+                                      style: Potatuhs.body(
+                                        size: 14,
+                                        weight: FontWeight.w700,
+                                        color: Potatuhs.gold,
+                                      )),
                                 ],
                               ),
                             ),
@@ -135,24 +173,45 @@ class ScaleCard extends StatelessWidget {
                   // Bottom: name + subtitle
                   Text(
                     label,
-                    style: TextStyle(
-                      fontFamily: 'Avenir',
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                    style: Potatuhs.display(
+                      size: 18,
+                      color: Potatuhs.textPrimary,
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: TextStyle(
-                      fontFamily: 'Avenir',
-                      fontSize: 11,
-                      color: Colors.white54,
+                    style: Potatuhs.body(
+                      size: 11,
+                      weight: FontWeight.w500,
+                      color: Potatuhs.textSecondary,
                       height: 1.2,
                     ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 6),
+                  // "What you'll learn" promise — the E layer made visible.
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.school_outlined,
+                          size: 12, color: color.withValues(alpha: 0.9)),
+                      const SizedBox(width: 5),
+                      Expanded(
+                        child: Text(
+                          learn,
+                          style: Potatuhs.body(
+                            size: 11,
+                            weight: FontWeight.w600,
+                            color: Potatuhs.textPrimary.withValues(alpha: 0.85),
+                            height: 1.25,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
