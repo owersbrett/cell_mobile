@@ -378,6 +378,14 @@ class PartyNet extends ChangeNotifier {
           return true;
         }
         return false;
+      case PartyInputKind.confirmResults:
+        // Only the room host paces the ceremony (their device also
+        // auto-confirms after a dwell, so a distracted host can't stall).
+        if (c.phase == PartyPhase.minigameResults && r.uid == myUid) {
+          c.confirmMiniGameResults();
+          return true;
+        }
+        return false;
     }
   }
 

@@ -1,0 +1,593 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:cell_mobile/party/party_actions.dart';
+import 'package:cell_mobile/party/party_controller.dart';
+import 'package:cell_mobile/party/party_models.dart';
+import 'package:cell_mobile/theme/potatuhs.dart';
+import 'package:flutter/material.dart';
+
+/// The post-mini-game ceremony (PARTY_CINEMATIC_SPEC §4) — every round ends
+/// with a shared moment: staged podium reveal (last podium step first), a
+/// declared WINNER with confetti, and the diamond awards, before the board
+/// resumes. All clients see the same ceremony; only [interactive] devices can
+/// advance it (locally: always; online: the host, who also auto-advances after
+/// a dwell so a distracted host can't stall the room).
+///
+/// Presentation is a pure function of controller state + local reveal time —
+/// zero random-tape draws, lockstep-safe.
+class RoundCeremonyScreen extends StatefulWidget {
+  final PartyController controller;
+  final PartyActions actions;
+
+  /// Whether this device may advance past the ceremony.
+  final bool interactive;
+
+  /// Online host: auto-confirm a few seconds after the reveal completes.
+  final bool autoAdvance;
+
+  const RoundCeremonyScreen({
+    super.key,
+    required this.controller,
+    required this.actions,
+    required this.interactive,
+    this.autoAdvance = false,
+  });
+
+  @override
+  State<RoundCeremonyScreen> createState() => _RoundCeremonyScreenState();
+}
+
+class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
+    with TickerProviderStateMixin {
+  static const _revealDuration = Duration(milliseconds: 4200);
+  static const _autoAdvanceDwell = Duration(seconds: 6);
+
+  late final AnimationController _reveal;
+
+  /// Drives confetti + winner-glow pulse; time source for the fx painter.
+  late final AnimationController _fx;
+
+  Timer? _autoTimer;
+  bool _confirmed = false;
+
+  /// Fx-clock ms at the moment the winner banner first appeared — confetti
+  /// time zero, so the burst fires with the banner, not at screen open.
+  int? _confettiT0;
+
+  @override
+  void initState() {
+    super.initState();
+    _reveal = AnimationController(vsync: this, duration: _revealDuration)
+      ..addStatusListener(_onRevealStatus)
+      ..forward();
+    _fx = AnimationController(vsync: this, duration: const Duration(seconds: 6))
+      ..repeat();
+  }
+
+  void _onRevealStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    if (widget.autoAdvance && _autoTimer == null) {
+      _autoTimer = Timer(_autoAdvanceDwell, () {
+        if (mounted) _confirm();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _autoTimer?.cancel();
+    _reveal.dispose();
+    _fx.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    if (_confirmed) return;
+    _confirmed = true;
+    widget.actions.confirmMiniGameResults();
+  }
+
+  /// Tap anywhere mid-reveal fast-forwards to the fully-revealed state.
+  void _skipReveal() {
+    if (_reveal.isAnimating) _reveal.value = 1.0;
+  }
+
+  // ── standings shape ────────────────────────────────────────────────────────
+
+  List<MiniGameStanding> get _sorted {
+    final s = [...widget.controller.standings];
+    s.sort((a, b) {
+      if (a.rank != b.rank) return a.rank.compareTo(b.rank);
+      return b.score.compareTo(a.score);
+    });
+    return s;
+  }
+
+  List<MiniGameStanding> get _winners =>
+      [for (final s in widget.controller.standings) if (s.rank == 0) s];
+
+  String get _winnerLine {
+    final c = widget.controller;
+    final winners = _winners;
+    if (c.mode.isTeams && winners.isNotEmpty) {
+      return '${kTeamNames[winners.first.player.teamIndex].toUpperCase()} '
+          'TAKE THE ROUND!';
+    }
+    if (winners.length > 1) {
+      final names =
+          winners.map((s) => s.player.name.toUpperCase()).join(' & ');
+      return 'DEAD HEAT — $names!';
+    }
+    if (winners.isEmpty) return 'ROUND COMPLETE';
+    return '${winners.first.player.name.toUpperCase()} TAKES THE ROUND!';
+  }
+
+  Color get _winnerColor {
+    final winners = _winners;
+    if (winners.isEmpty) return Potatuhs.gold;
+    final c = widget.controller;
+    return c.mode.isTeams
+        ? kTeamColors[winners.first.player.teamIndex]
+        : winners.first.player.color;
+  }
+
+  // ── intervals: when each element pops during the reveal ──────────────────
+
+  /// Podium steps reveal worst-step-first, winner last.
+  Interval _stepInterval(int podiumPos, int podiumCount) {
+    // podiumPos 0 = winner. Reverse order: last step first.
+    final order = podiumCount - 1 - podiumPos;
+    final starts = [0.14, 0.34, 0.52];
+    final start = starts[math.min(order, starts.length - 1)];
+    final isWinner = podiumPos == 0;
+    // The winner pop is delayed and longer — the headline beat.
+    return isWinner
+        ? const Interval(0.60, 0.80, curve: Curves.elasticOut)
+        : Interval(start, start + 0.14, curve: Curves.easeOutBack);
+  }
+
+  static const _bannerInterval =
+      Interval(0.78, 0.95, curve: Curves.easeOutBack);
+  static const _footerInterval = Interval(0.94, 1.0, curve: Curves.easeOut);
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final spec = c.currentSpec!;
+    final sorted = _sorted;
+    final podium = sorted.take(3).toList();
+    final extras = sorted.skip(3).toList();
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _skipReveal,
+        child: SafeArea(
+          child: AnimatedBuilder(
+            animation: _reveal,
+            builder: (context, footer) {
+              final t = _reveal.value;
+              final fxMs = _fx.lastElapsedDuration?.inMilliseconds ?? 0;
+              if (t >= _bannerInterval.begin) _confettiT0 ??= fxMs;
+              return Stack(
+                children: [
+                  // Confetti fires with the winner banner.
+                  if (_confettiT0 != null)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: AnimatedBuilder(
+                          animation: _fx,
+                          builder: (_, __) => CustomPaint(
+                            painter: _ConfettiPainter(
+                              time: (_fx.lastElapsedDuration?.inMilliseconds ??
+                                      0) -
+                                  _confettiT0!,
+                              colors: [
+                                Potatuhs.gold,
+                                _winnerColor,
+                                for (final s in podium) s.player.color,
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 18),
+                      _header(spec.name, c.round, c.totalRounds, t),
+                      const SizedBox(height: 8),
+                      _winnerBanner(t),
+                      Expanded(child: _podium(podium, spec.scoreUnit, t)),
+                      if (extras.isNotEmpty) _extrasList(extras, t),
+                      const SizedBox(height: 12),
+                      footer!,
+                      const SizedBox(height: 8),
+                    ],
+                  ),
+                ],
+              );
+            },
+            // Static subtree: the footer rebuilds only via its own Opacity.
+            child: _footer(c),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _header(String gameName, int round, int totalRounds, double t) {
+    final a = const Interval(0.0, 0.12, curve: Curves.easeOut).transform(t);
+    return Opacity(
+      opacity: a,
+      child: Column(
+        children: [
+          Text(
+            gameName.toUpperCase(),
+            textAlign: TextAlign.center,
+            style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary)
+                .copyWith(letterSpacing: 3),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'ROUND $round / $totalRounds',
+            textAlign: TextAlign.center,
+            style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _winnerBanner(double t) {
+    final a = _bannerInterval.transform(t);
+    if (a == 0) return const SizedBox(height: 52);
+    final pulse = 1.0 + 0.03 * math.sin(_fx.value * 2 * math.pi * 3);
+    return SizedBox(
+      height: 52,
+      child: Center(
+        child: Transform.scale(
+          scale: (0.6 + 0.4 * a) * pulse,
+          child: Opacity(
+            opacity: a.clamp(0.0, 1.0),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                    color: _winnerColor.withValues(alpha: 0.8), width: 2),
+                boxShadow: Potatuhs.glow(_winnerColor, strength: 0.5, blur: 26),
+                color: _winnerColor.withValues(alpha: 0.12),
+              ),
+              child: Text(
+                _winnerLine,
+                textAlign: TextAlign.center,
+                style: Potatuhs.display(size: 20, color: Potatuhs.textPrimary),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _podium(
+      List<MiniGameStanding> podium, String scoreUnit, double t) {
+    if (podium.isEmpty) return const SizedBox.shrink();
+    // Classic arrangement: 2nd · 1st · 3rd (winner centered, tallest).
+    final arranged = <MiniGameStanding?>[
+      podium.length > 1 ? podium[1] : null,
+      podium[0],
+      podium.length > 2 ? podium[2] : null,
+    ];
+    const stepHeights = [110.0, 160.0, 80.0];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (var i = 0; i < arranged.length; i++)
+            Expanded(
+              child: arranged[i] == null
+                  ? const SizedBox.shrink()
+                  : _podiumColumn(
+                      arranged[i]!,
+                      stepHeights[i],
+                      scoreUnit,
+                      _stepInterval(
+                              arranged[i]!.rank == 0 ? 0 : (i == 0 ? 1 : 2),
+                              podium.length)
+                          .transform(t),
+                      isWinner: arranged[i]!.rank == 0,
+                    ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _podiumColumn(MiniGameStanding s, double stepHeight,
+      String scoreUnit, double a, {required bool isWinner}) {
+    if (a == 0) return const SizedBox.shrink();
+    final color = s.player.color;
+    final ringColor = isWinner ? Potatuhs.gold : color;
+    return Transform.translate(
+      offset: Offset(0, 30 * (1 - a)),
+      child: Opacity(
+        opacity: a.clamp(0.0, 1.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            if (isWinner)
+              const Icon(Icons.emoji_events, color: Potatuhs.gold, size: 30),
+            const SizedBox(height: 4),
+            _portrait(s.player, size: isWinner ? 72 : 56, ring: ringColor),
+            const SizedBox(height: 6),
+            Text(
+              widget.controller.mode.isTeams
+                  ? '${s.player.name} · ${kTeamNames[s.player.teamIndex]}'
+                  : s.player.name,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Potatuhs.body(size: 14, color: Potatuhs.textPrimary)
+                  .copyWith(fontWeight: FontWeight.bold),
+            ),
+            Text(
+              '${s.score} $scoreUnit',
+              style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary),
+            ),
+            const SizedBox(height: 6),
+            Container(
+              height: stepHeight,
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              decoration: BoxDecoration(
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(12)),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    color.withValues(alpha: isWinner ? 0.55 : 0.35),
+                    color.withValues(alpha: 0.08),
+                  ],
+                ),
+                border: Border.all(
+                    color: ringColor.withValues(alpha: 0.6), width: 1.5),
+                boxShadow: isWinner
+                    ? Potatuhs.glow(Potatuhs.gold, strength: 0.35, blur: 20)
+                    : null,
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    '${s.rank + 1}',
+                    style: Potatuhs.display(
+                        size: isWinner ? 34 : 24,
+                        color: Potatuhs.textPrimary),
+                  ),
+                  const SizedBox(height: 2),
+                  _awardChip(s.award),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _extrasList(List<MiniGameStanding> extras, double t) {
+    final a = const Interval(0.50, 0.64, curve: Curves.easeOut).transform(t);
+    if (a == 0) return const SizedBox.shrink();
+    return Opacity(
+      opacity: a,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
+        child: Column(
+          children: [
+            for (final s in extras)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 26,
+                      child: Text(
+                        '${s.rank + 1}.',
+                        style: Potatuhs.body(
+                            size: 14, color: Potatuhs.textSecondary),
+                      ),
+                    ),
+                    _portrait(s.player, size: 26, ring: s.player.color),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        widget.controller.mode.isTeams
+                            ? '${s.player.name} · ${kTeamNames[s.player.teamIndex]}'
+                            : s.player.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Potatuhs.body(
+                            size: 14, color: Potatuhs.textPrimary),
+                      ),
+                    ),
+                    Text(
+                      '${s.score}',
+                      style: Potatuhs.body(
+                          size: 13, color: Potatuhs.textSecondary),
+                    ),
+                    const SizedBox(width: 10),
+                    _awardChip(s.award),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _awardChip(int award) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.savings, size: 13, color: Potatuhs.gold),
+        const SizedBox(width: 3),
+        Text(
+          '+$award',
+          style: Potatuhs.body(size: 14, color: Potatuhs.gold)
+              .copyWith(fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
+  }
+
+  Widget _portrait(PartyPlayer player, {required double size, Color? ring}) {
+    final character = kCharacters[player.character % kCharacters.length];
+    final asset = character.asset;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: player.color.withValues(alpha: 0.25),
+        border: Border.all(
+            color: (ring ?? player.color).withValues(alpha: 0.9),
+            width: size >= 56 ? 2.5 : 1.5),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: asset != null
+          ? Image.asset(asset, fit: BoxFit.cover)
+          : Center(
+              child: Text(
+                player.name.isEmpty ? '?' : player.name[0].toUpperCase(),
+                style: Potatuhs.display(
+                    size: size * 0.45, color: Colors.white),
+              ),
+            ),
+    );
+  }
+
+  Widget _footer(PartyController c) {
+    return AnimatedBuilder(
+      animation: _reveal,
+      builder: (context, _) {
+        final a = _footerInterval.transform(_reveal.value);
+        if (a == 0) return const SizedBox(height: 56);
+        if (!widget.interactive) {
+          return SizedBox(
+            height: 56,
+            child: Center(
+              child: Opacity(
+                opacity: a,
+                child: Text(
+                  'Waiting for host…',
+                  style:
+                      Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
+                ),
+              ),
+            ),
+          );
+        }
+        return Opacity(
+          opacity: a,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: GestureDetector(
+              onTap: _confirm,
+              child: Container(
+                height: 56,
+                decoration: BoxDecoration(
+                  color: Potatuhs.gold,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Potatuhs.gold.withValues(alpha: 0.45),
+                        blurRadius: 18),
+                  ],
+                ),
+                child: Center(
+                  child: Text(
+                    c.round >= c.totalRounds
+                        ? 'FINAL RESULTS'
+                        : 'BACK TO THE BOARD',
+                    style: Potatuhs.body(size: 17, color: Colors.black)
+                        .copyWith(
+                            fontWeight: FontWeight.bold, letterSpacing: 2),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// One-shot confetti burst — every particle's position is a pure function of
+/// elapsed time + its seed params, so the painter holds no mutable state and
+/// allocates nothing per frame beyond the paint objects.
+class _ConfettiPainter extends CustomPainter {
+  final int time; // ms since the fx ticker started
+  final List<Color> colors;
+  _ConfettiPainter({required this.time, required this.colors});
+
+  static const _count = 90;
+  static const _lifeMs = 2600.0;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final t = time.toDouble();
+    final paint = Paint();
+    for (var i = 0; i < _count; i++) {
+      // Deterministic per-particle params from the index.
+      final h = _hash(i);
+      final delay = (h % 700).toDouble();
+      final life = t - delay;
+      if (life < 0 || life > _lifeMs) continue;
+      final u = life / _lifeMs;
+      final startX = size.width * (((h >> 3) % 1000) / 1000.0);
+      final drift = math.sin(u * math.pi * 2 * (1 + (h % 3))) *
+          (20 + (h >> 5) % 40);
+      final fallSpeed = 0.35 + ((h >> 7) % 100) / 220.0;
+      final y = -20 + size.height * u * fallSpeed * 2.2;
+      if (y > size.height + 20) continue;
+      final x = startX + drift;
+      final color = colors[i % colors.length]
+          .withValues(alpha: (1.0 - u).clamp(0.0, 1.0));
+      paint.color = color;
+      final spin = u * math.pi * 4 * (1 + (h % 2));
+      final s = 3.0 + (h >> 9) % 5;
+      canvas.save();
+      canvas.translate(x, y);
+      canvas.rotate(spin);
+      if (h.isEven) {
+        canvas.drawRect(
+            Rect.fromCenter(center: Offset.zero, width: s * 2, height: s),
+            paint);
+      } else {
+        canvas.drawCircle(Offset.zero, s * 0.7, paint);
+      }
+      canvas.restore();
+    }
+  }
+
+  static int _hash(int i) {
+    var x = i * 2654435761;
+    x ^= x >> 13;
+    x = (x * 0x5bd1e995) & 0x7fffffff;
+    return x ^ (x >> 15);
+  }
+
+  @override
+  bool shouldRepaint(_ConfettiPainter old) =>
+      old.time != time || old.colors != colors;
+}

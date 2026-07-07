@@ -100,6 +100,8 @@ class OnlineActions implements PartyActions {
   @override
   void recordMiniScore(int score) =>
       net.act(PartyInputKind.miniScore, value: score);
+  @override
+  void confirmMiniGameResults() => net.act(PartyInputKind.confirmResults);
 
   // Driven by the host's canonical stream, not by local taps.
   @override
@@ -110,8 +112,6 @@ class OnlineActions implements PartyActions {
   void beginMiniGameRound() {}
   @override
   void startMiniGameAttempt() {}
-  @override
-  void confirmMiniGameResults() {}
   @override
   void debugSetSpec(MiniGameSpec spec) {}
 }

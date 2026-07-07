@@ -19,6 +19,7 @@ import '../party_session_store.dart';
 import '../net/party_net.dart';
 import '../net/party_session.dart';
 import 'party_setup_page.dart';
+import 'round_ceremony.dart';
 
 const _kFont = Potatuhs.bodyFont; // Outfit — body/UI
 const _kDisplay = Potatuhs.displayFont; // Bowlby One SC — hero titles
@@ -154,7 +155,8 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       case PartyPhase.passPhone:
         return const Duration(milliseconds: 900);
       case PartyPhase.minigameResults:
-        return const Duration(milliseconds: 2600);
+        // Long enough for the full ceremony reveal to play in attract b-roll.
+        return const Duration(milliseconds: 7000);
       case PartyPhase.gameOver:
         return const Duration(milliseconds: 4000);
       case PartyPhase.moving:
@@ -482,10 +484,13 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           ],
         );
       case PartyPhase.minigameResults:
-        return _MiniRoundResultsScreen(
+        // The round ceremony: everyone watches the same podium reveal; the
+        // host (or the local player) advances it, with an auto-dwell online.
+        return RoundCeremonyScreen(
           controller: c,
           actions: actions,
-          interactive: !isOnline, // host auto-advances online
+          interactive: !isOnline || net.isHost,
+          autoAdvance: isOnline && net.isHost,
         );
       case PartyPhase.gameOver:
         if (isOnline) PartySession.clear();
@@ -3289,166 +3294,6 @@ class _PassPhoneScreen extends StatelessWidget {
                 Center(
                   child: Text(
                     'Waiting for ${p.name}…',
-                    style:
-                        Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniRoundResultsScreen extends StatelessWidget {
-  final PartyController controller;
-  final PartyActions actions;
-  final bool interactive;
-  const _MiniRoundResultsScreen({
-    required this.controller,
-    required this.actions,
-    required this.interactive,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final spec = controller.currentSpec!;
-    final sorted = [...controller.standings]
-      ..sort((a, b) => a.rank.compareTo(b.rank));
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 10),
-              Center(
-                child: Text(
-                  '${spec.name.toUpperCase()} — RESULTS',
-                  style: const TextStyle(
-                      fontFamily: _kFont,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 2,
-                      color: Colors.white),
-                ),
-              ),
-              const SizedBox(height: 18),
-              Expanded(
-                child: ListView.separated(
-                  itemCount: sorted.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 6),
-                  itemBuilder: (context, i) {
-                    final s = sorted[i];
-                    final isFirst = s.rank == 0;
-                    return Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: s.player.color
-                            .withValues(alpha: isFirst ? 0.22 : 0.10),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: isFirst
-                              ? const Color(0xFFFFD54F)
-                              : s.player.color.withValues(alpha: 0.4),
-                          width: isFirst ? 1.5 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          SizedBox(
-                            width: 28,
-                            child: Text(
-                              '${s.rank + 1}.',
-                              style: TextStyle(
-                                  fontFamily: _kFont,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: isFirst
-                                      ? const Color(0xFFFFD54F)
-                                      : Colors.white54),
-                            ),
-                          ),
-                          Expanded(
-                            child: Text(
-                              controller.mode.isTeams
-                                  ? '${s.player.name} · ${kTeamNames[s.player.teamIndex]}'
-                                  : s.player.name,
-                              style: const TextStyle(
-                                  fontFamily: _kFont,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white),
-                            ),
-                          ),
-                          Text(
-                            '${s.score} ${spec.scoreUnit}',
-                            style: const TextStyle(
-                                fontFamily: _kFont,
-                                fontSize: 13,
-                                color: Colors.white70),
-                          ),
-                          const SizedBox(width: 10),
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.savings,
-                                  size: 13, color: _kAccent),
-                              const SizedBox(width: 3),
-                              Text(
-                                '+${s.award}',
-                                style: const TextStyle(
-                                    fontFamily: _kFont,
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.bold,
-                                    color: _kAccent),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 12),
-              if (interactive)
-                GestureDetector(
-                  onTap: actions.confirmMiniGameResults,
-                  child: Container(
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: _kAccent,
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                            color: _kAccent.withValues(alpha: 0.45),
-                            blurRadius: 18)
-                      ],
-                    ),
-                    child: Center(
-                      child: Text(
-                        controller.round >= controller.totalRounds
-                            ? 'FINAL RESULTS'
-                            : 'BACK TO THE BOARD',
-                        style: const TextStyle(
-                            fontFamily: _kFont,
-                            fontSize: 17,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
-                            letterSpacing: 2),
-                      ),
-                    ),
-                  ),
-                )
-              else
-                Center(
-                  child: Text(
-                    'Waiting for host…',
                     style:
                         Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
                   ),

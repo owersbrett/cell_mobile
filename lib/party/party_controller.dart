@@ -23,6 +23,7 @@ enum PartyInputKind {
   // APPENDED (index-stable; toJson serializes by .index): keep at the END.
   chooseCardOption, // pick option A/B on a decision card (value = option index)
   buyItem, // buy an item at the market (value = PowerUp.index)
+  confirmResults, // advance past the round ceremony (local tap / online host)
 }
 
 /// Where the match's randomness comes from.
@@ -1101,6 +1102,17 @@ class PartyController extends ChangeNotifier {
       }
       s.player.diamonds += s.award;
     }
+    // Round win/loss tallies (feed the end-game "Most Round Wins"/"Most L's"
+    // awards and the ceremony's winner declaration). On an all-tie everyone
+    // shares the win and nobody takes an L.
+    var worstRank = 0;
+    for (final s in standings) {
+      if (s.rank > worstRank) worstRank = s.rank;
+    }
+    for (final s in standings) {
+      if (s.rank == 0) s.player.roundWins++;
+      if (worstRank > 0 && s.rank == worstRank) s.player.roundLosses++;
+    }
     if (isBossRound) _applyBossPotatoes();
   }
 
@@ -1122,9 +1134,12 @@ class PartyController extends ChangeNotifier {
     }
   }
 
-  /// Past the results screen: next round, or game over.
+  /// Past the round ceremony: next round, or game over. A real logged input
+  /// since the ceremony became a genuine decision phase (the pump used to
+  /// auto-confirm it, which skipped the results entirely online).
   void confirmMiniGameResults() {
     assert(phase == PartyPhase.minigameResults);
+    inputLog.add(const PartyInput(PartyInputKind.confirmResults));
     if (round >= totalRounds) {
       phase = PartyPhase.gameOver;
     } else {
@@ -1173,6 +1188,14 @@ class PartyController extends ChangeNotifier {
   /// Applies one recorded decision. The controller must already be sitting in
   /// the phase that decision belongs to (see [_pumpToDecision]).
   void _apply(PartyInput input) {
+    // Compat: logs recorded before confirmResults existed relied on the pump
+    // auto-confirming the results phase. When such a log presents any other
+    // input while we're holding on the ceremony, confirm first (this also
+    // re-logs the synthetic confirm identically on every replayer).
+    if (phase == PartyPhase.minigameResults &&
+        input.kind != PartyInputKind.confirmResults) {
+      confirmMiniGameResults();
+    }
     switch (input.kind) {
       case PartyInputKind.roll:
         roll();
@@ -1204,6 +1227,9 @@ class PartyController extends ChangeNotifier {
       case PartyInputKind.buyItem:
         buyItem(PowerUp.values[input.value]);
         break;
+      case PartyInputKind.confirmResults:
+        confirmMiniGameResults();
+        break;
     }
   }
 
@@ -1227,15 +1253,16 @@ class PartyController extends ChangeNotifier {
         case PartyPhase.passPhone:
           startMiniGameAttempt();
           break;
-        case PartyPhase.minigameResults:
-          confirmMiniGameResults();
-          break;
         case PartyPhase.turnStart:
         case PartyPhase.rollResult:
         case PartyPhase.chooseBranch:
         case PartyPhase.shopOffer:
         case PartyPhase.cardDecision:
         case PartyPhase.minigamePlaying:
+        // The round ceremony is a genuine decision phase: it holds until a
+        // confirmResults input (local tap, or the online host's tap /
+        // auto-dwell) so every client actually sees the results.
+        case PartyPhase.minigameResults:
         case PartyPhase.gameOver:
           return;
       }

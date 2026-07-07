@@ -92,6 +92,10 @@ Future<List<PartyNet>> _playNetworkedGame({
         expect(s, lessThan(n), reason: 'someone must still owe a score');
         nets[s].act(PartyInputKind.miniScore, value: rng.nextInt(1000));
         break;
+      case PartyPhase.minigameResults:
+        // The round ceremony holds until the host confirms.
+        nets[0].act(PartyInputKind.confirmResults);
+        break;
       default:
         fail('host settled on a non-decision phase: ${c.phase}');
     }
@@ -223,6 +227,10 @@ void main() {
             }
             expect(s, lessThan(2), reason: 'someone must still owe a score');
             nets[s].act(PartyInputKind.miniScore, value: rng.nextInt(1000));
+            break;
+          case PartyPhase.minigameResults:
+            // The round ceremony holds until the host confirms.
+            nets[0].act(PartyInputKind.confirmResults);
             break;
           default:
             fail('host settled on a non-decision phase: ${c.phase}');
