@@ -260,46 +260,12 @@ class PartyNet extends ChangeNotifier {
       transport.publishCanonical(gameId, c.inputLog, c.recordedRandoms);
       notifyListeners();
     }
-    _armMiniTimeout();
   }
 
-  // Host watchdog: if a player never submits a mini-game score (device
-  // dropped, app closed), bank a 0 for them once the game's duration plus a
-  // grace window has passed — one absent device must not hang the round for
-  // everyone. Re-armed/cancelled on every request pass, so a timer can never
-  // leak across rounds: leaving minigamePlaying requires processing a request,
-  // which cancels it.
-  Timer? _miniTimeout;
-  static const _miniGraceSeconds = 30;
-
-  void _armMiniTimeout() {
-    if (!isHost) return;
-    final c = controller;
-    if (c == null || c.phase != PartyPhase.minigamePlaying) {
-      _miniTimeout?.cancel();
-      _miniTimeout = null;
-      return;
-    }
-    if (_miniTimeout != null) return; // already armed for this round
-    final secs = (c.currentSpec?.durationSeconds ?? 60) + _miniGraceSeconds;
-    _miniTimeout = Timer(Duration(seconds: secs), () {
-      _miniTimeout = null;
-      final cc = controller;
-      if (cc == null || cc.phase != PartyPhase.minigamePlaying) return;
-      var changed = false;
-      for (var i = 0; i < cc.players.length; i++) {
-        if (!cc.hasSubmittedMiniScore(i)) {
-          cc.recordMiniScore(0, player: i);
-          changed = true;
-        }
-      }
-      if (changed) {
-        cc.advanceToDecision();
-        transport.publishCanonical(gameId, cc.inputLog, cc.recordedRandoms);
-        notifyListeners();
-      }
-    });
-  }
+  // NOTE: the old mini-game watchdog (auto-banking a 0 for slow players
+  // after duration + grace) is GONE by design — a player lingering on the
+  // game intro must never lose their attempt to a timer. The escape hatch
+  // for a genuinely stuck round is the players' own VOTE TO SKIP majority.
 
   /// Validates a request against the authoritative controller and applies it.
   /// Returns whether it changed state. The turn-ownership + legal-phase guard
@@ -307,6 +273,11 @@ class PartyNet extends ChangeNotifier {
   bool _applyRequest(PartyController c, NetRequest r) {
     final slot = _slotOf(r.uid);
     if (slot == null) return false;
+    // A player acting implies their (deterministic, locally-paced) walk is
+    // done — fast-forward ours so a legal request never drops mid-walk.
+    while (c.phase == PartyPhase.moving) {
+      c.advanceStep();
+    }
     final cur = c.currentPlayerIndex;
     switch (r.inputKind) {
       case PartyInputKind.roll:
@@ -403,6 +374,29 @@ class PartyNet extends ChangeNotifier {
           }
         }
         return false;
+      case PartyInputKind.confirmSpace:
+        // The walker owns the landing beat.
+        if (c.phase == PartyPhase.spaceResolved && slot == cur) {
+          c.confirmSpace();
+          return true;
+        }
+        return false;
+      case PartyInputKind.beginMiniGame:
+        // The room host paces the game reveal (auto-dwell on their device).
+        if (c.phase == PartyPhase.minigameIntro && r.uid == myUid) {
+          c.beginMiniGameRound();
+          return true;
+        }
+        return false;
+      case PartyInputKind.voteSkip:
+        if ((c.phase == PartyPhase.minigamePlaying ||
+                c.phase == PartyPhase.minigameIntro ||
+                c.phase == PartyPhase.passPhone) &&
+            !c.skipVotes.contains(slot)) {
+          c.voteSkip(player: slot);
+          return true;
+        }
+        return false;
     }
   }
 
@@ -484,7 +478,6 @@ class PartyNet extends ChangeNotifier {
 
   @override
   void dispose() {
-    _miniTimeout?.cancel();
     if (status != 'playing') {
       // Leaving from the lobby: clean up after ourselves so the roster/room
       // can't wedge on a ghost entry.

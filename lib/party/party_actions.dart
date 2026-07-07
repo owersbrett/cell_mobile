@@ -21,6 +21,7 @@ abstract class PartyActions {
   void useItemOn(PowerUp item, int target);
   void useAtp(int plus);
   void wheelStop();
+  void voteSkip();
   void recordMiniScore(int score);
   void confirmSpace();
   void beginMiniGameRound();
@@ -59,6 +60,8 @@ class LocalActions implements PartyActions {
   void useAtp(int plus) => c.useAtp(plus);
   @override
   void wheelStop() => c.wheelStop();
+  @override
+  void voteSkip() => c.voteSkip();
   @override
   void recordMiniScore(int score) => c.recordMiniScore(score);
   @override
@@ -109,18 +112,25 @@ class OnlineActions implements PartyActions {
   @override
   void wheelStop() => net.act(PartyInputKind.wheelStop);
   @override
+  void voteSkip() => net.act(PartyInputKind.voteSkip);
+  @override
   void recordMiniScore(int score) =>
       net.act(PartyInputKind.miniScore, value: score);
   @override
   void confirmMiniGameResults() => net.act(PartyInputKind.confirmResults);
+  @override
+  void confirmSpace() => net.act(PartyInputKind.confirmSpace);
+  @override
+  void beginMiniGameRound() => net.act(PartyInputKind.beginMiniGame);
+
+  // The walk is deterministic — every replica paces its own copy with the
+  // local step ticker; no network round-trip per step.
+  @override
+  void advanceStep() {
+    net.controller?.advanceStep();
+  }
 
   // Driven by the host's canonical stream, not by local taps.
-  @override
-  void advanceStep() {}
-  @override
-  void confirmSpace() {}
-  @override
-  void beginMiniGameRound() {}
   @override
   void startMiniGameAttempt() {}
   @override

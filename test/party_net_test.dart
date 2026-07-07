@@ -54,6 +54,18 @@ Future<List<PartyNet>> _playNetworkedGame({
       case PartyPhase.rollResult:
         nets[cur].act(PartyInputKind.beginWalk);
         break;
+      case PartyPhase.moving:
+        // Deterministic walk: each replica paces its own copy (the UI step
+        // ticker in prod); the host's is driven directly here.
+        c.advanceStep();
+        break;
+      case PartyPhase.spaceResolved:
+        nets[cur].act(PartyInputKind.confirmSpace);
+        break;
+      case PartyPhase.minigameIntro:
+        // The room host paces the game reveal.
+        nets[0].act(PartyInputKind.beginMiniGame);
+        break;
       case PartyPhase.chooseBranch:
         final opts = c.branchOptions;
         nets[cur].act(PartyInputKind.choosePath,
@@ -208,6 +220,15 @@ void main() {
             break;
           case PartyPhase.rollResult:
             nets[cur].act(PartyInputKind.beginWalk);
+            break;
+          case PartyPhase.moving:
+            c.advanceStep();
+            break;
+          case PartyPhase.spaceResolved:
+            nets[cur].act(PartyInputKind.confirmSpace);
+            break;
+          case PartyPhase.minigameIntro:
+            nets[0].act(PartyInputKind.beginMiniGame);
             break;
           case PartyPhase.chooseBranch:
             final opts = c.branchOptions;

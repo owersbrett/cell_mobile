@@ -26,6 +26,9 @@ enum PartyInputKind {
   confirmResults, // advance past the round ceremony (local tap / online host)
   wheelStop, // the current spinner stops the wheel (outcome = tape draw)
   useItemOn, // targeted item (value = PowerUp.index * 16 + target seat)
+  confirmSpace, // walker confirms the landing beat (COMPLETE TURN)
+  beginMiniGame, // leave the round's game-reveal screen (host/local)
+  voteSkip, // vote to skip the round's mini-game (player = voter seat)
 }
 
 /// Where the match's randomness comes from.
@@ -688,6 +691,7 @@ class PartyController extends ChangeNotifier {
   /// Advance past the resolution panel: next player, or the mini-game round.
   void confirmSpace() {
     assert(phase == PartyPhase.spaceResolved);
+    inputLog.add(const PartyInput(PartyInputKind.confirmSpace));
     _endTurn();
     notifyListeners();
   }
@@ -1199,6 +1203,7 @@ class PartyController extends ChangeNotifier {
     currentSpec = _pickSpec();
     _lastSpecId = currentSpec!.id;
     standings.clear();
+    skipVotes.clear();
     // The closing round is the boss showdown when the map fields a boss.
     isBossRound = round >= totalRounds && (gameMap?.bosses.isNotEmpty ?? false);
     phase = PartyPhase.minigameIntro;
@@ -1233,6 +1238,7 @@ class PartyController extends ChangeNotifier {
 
   void beginMiniGameRound() {
     assert(phase == PartyPhase.minigameIntro);
+    inputLog.add(const PartyInput(PartyInputKind.beginMiniGame));
     phase = PartyPhase.passPhone;
     notifyListeners();
   }
@@ -1241,6 +1247,42 @@ class PartyController extends ChangeNotifier {
     assert(phase == PartyPhase.passPhone);
     phase = PartyPhase.minigamePlaying;
     notifyListeners();
+  }
+
+  /// Seats that have voted to skip this round's mini-game. A strict majority
+  /// (votes * 2 > players) skips the round outright — no scores, no awards,
+  /// straight on. This is also the escape hatch for a stalled table now that
+  /// the auto-bank watchdog is gone: the players decide, not a timer.
+  final Set<int> skipVotes = {};
+
+  int get skipVotesNeeded => players.length ~/ 2 + 1;
+
+  /// One vote per seat, cast during the round's mini-game (intro included).
+  /// A logged decision (player = voter seat) so every replica agrees.
+  void voteSkip({int? player}) {
+    assert(phase == PartyPhase.minigamePlaying ||
+        phase == PartyPhase.passPhone ||
+        phase == PartyPhase.minigameIntro);
+    final idx = player ?? miniPlayerIndex;
+    if (idx < 0 || idx >= players.length) return;
+    if (!skipVotes.add(idx)) return; // one vote per seat
+    inputLog.add(PartyInput(PartyInputKind.voteSkip, 0, idx));
+    turnLog.add('${players[idx].name} voted to skip '
+        '(${skipVotes.length}/$skipVotesNeeded needed)');
+    if (skipVotes.length * 2 > players.length) {
+      _skipMiniGameRound();
+    }
+    notifyListeners();
+  }
+
+  /// Majority reached: the table wasn't feeling this one. No scores, no
+  /// awards, no ceremony — the board moves on.
+  void _skipMiniGameRound() {
+    turnLog.add('THE TABLE HAS SPOKEN — '
+        '${currentSpec?.name ?? 'the game'} is skipped!');
+    standings.clear();
+    skipVotes.clear();
+    _advancePastRound(skipped: true);
   }
 
   /// Banks one player's mini-game score. [player] defaults to the local
@@ -1345,12 +1387,22 @@ class PartyController extends ChangeNotifier {
   void confirmMiniGameResults() {
     assert(phase == PartyPhase.minigameResults);
     inputLog.add(const PartyInput(PartyInputKind.confirmResults));
+    _advancePastRound(skipped: false);
+    notifyListeners();
+  }
+
+  /// Shared exit from a mini-game round — the ceremony's confirm and the
+  /// vote-skip both land here. Skipped rounds have no winners, so no winner
+  /// spin; the checkpoint cadence still applies.
+  void _advancePastRound({required bool skipped}) {
     // The round's winners, captured before standings clear next round —
     // they earn the winner spin on the maps that run one.
-    final winners = [
-      for (final s in standings)
-        if (s.rank == 0) s.player.index
-    ];
+    final winners = skipped
+        ? const <int>[]
+        : [
+            for (final s in standings)
+              if (s.rank == 0) s.player.index
+          ];
     if (round >= totalRounds) {
       if (wheels) {
         _startWheel(WheelTier.finale, _allSeats);
@@ -1359,7 +1411,7 @@ class PartyController extends ChangeNotifier {
       }
     } else {
       round++;
-      turnLog.clear();
+      if (!skipped) turnLog.clear();
       _runOps(turnLog); // the crew robs the leader and scatters the loot
       _runGhosts(turnLog);
       currentPlayerIndex = 0;
@@ -1372,7 +1424,6 @@ class PartyController extends ChangeNotifier {
         _beginTurn();
       }
     }
-    notifyListeners();
   }
 
   // ------------------------------------------------------------------ wheel
@@ -1533,10 +1584,24 @@ class PartyController extends ChangeNotifier {
   /// Applies one recorded decision. The controller must already be sitting in
   /// the phase that decision belongs to (see [_pumpToDecision]).
   void _apply(PartyInput input) {
-    // Compat: logs recorded before confirmResults existed relied on the pump
-    // auto-confirming the results phase. When such a log presents any other
-    // input while we're holding on the ceremony, confirm first (this also
-    // re-logs the synthetic confirm identically on every replayer).
+    // A recorded walk replays instantly — pacing is a live-table affair.
+    while (phase == PartyPhase.moving) {
+      advanceStep();
+    }
+    // Compat shims: logs recorded before these phases became held decisions
+    // relied on the pump auto-advancing them. When an older log presents a
+    // later input while we're holding, auto-run the hold first (re-logging
+    // the synthetic input identically on every replayer). Order matters —
+    // each shim can land on the next held phase.
+    if (phase == PartyPhase.spaceResolved &&
+        input.kind != PartyInputKind.confirmSpace) {
+      confirmSpace();
+    }
+    if (phase == PartyPhase.minigameIntro &&
+        input.kind != PartyInputKind.beginMiniGame &&
+        input.kind != PartyInputKind.voteSkip) {
+      beginMiniGameRound();
+    }
     if (phase == PartyPhase.minigameResults &&
         input.kind != PartyInputKind.confirmResults) {
       confirmMiniGameResults();
@@ -1581,6 +1646,15 @@ class PartyController extends ChangeNotifier {
       case PartyInputKind.useItemOn:
         useItemOn(PowerUp.values[input.value ~/ 16], input.value % 16);
         break;
+      case PartyInputKind.confirmSpace:
+        confirmSpace();
+        break;
+      case PartyInputKind.beginMiniGame:
+        beginMiniGameRound();
+        break;
+      case PartyInputKind.voteSkip:
+        voteSkip(player: input.player);
+        break;
     }
   }
 
@@ -1592,18 +1666,18 @@ class PartyController extends ChangeNotifier {
     var guard = 0;
     while (guard++ < 100000) {
       switch (phase) {
-        case PartyPhase.moving:
-          advanceStep();
-          break;
-        case PartyPhase.spaceResolved:
-          confirmSpace();
-          break;
-        case PartyPhase.minigameIntro:
-          beginMiniGameRound();
-          break;
         case PartyPhase.passPhone:
           startMiniGameAttempt();
           break;
+        // Paced beats, held for their moment on every device (the pump used
+        // to fast-forward these online, which teleported the walk and
+        // skipped the landing + game-reveal dialogs entirely):
+        // moving advances on each device's step ticker; spaceResolved waits
+        // for the walker's COMPLETE TURN; minigameIntro for the host/local
+        // reveal tap. Replays fast-forward via _apply.
+        case PartyPhase.moving:
+        case PartyPhase.spaceResolved:
+        case PartyPhase.minigameIntro:
         case PartyPhase.turnStart:
         case PartyPhase.rollResult:
         case PartyPhase.chooseBranch:

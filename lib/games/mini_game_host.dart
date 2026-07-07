@@ -59,6 +59,11 @@ class MiniGameHost extends StatefulWidget {
   /// The strip's label, e.g. `12/126` (current game / total games).
   final String? hopLabel;
 
+  /// Fired once when the player leaves the intro (countdown begins). Lets a
+  /// wrapper (e.g. the party page's vote-to-skip pill) show intro-only chrome
+  /// without reaching into the host's state.
+  final VoidCallback? onStarted;
+
   const MiniGameHost({
     super.key,
     required this.spec,
@@ -71,6 +76,7 @@ class MiniGameHost extends StatefulWidget {
     this.onAutoAdvance,
     this.onHopGame,
     this.hopLabel,
+    this.onStarted,
   });
 
   bool get isParty => onComplete != null;
@@ -327,6 +333,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
   }
 
   void _startCountdown() {
+    widget.onStarted?.call();
     setState(() => _countdown = 3);
     _session.hostSetPhase(MiniGamePhase.countdown);
     _countdownTimer?.cancel();

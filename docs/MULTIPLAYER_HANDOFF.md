@@ -203,3 +203,26 @@ draws at round boundaries. Save format is now `v: 2`; v1 saves replay with
 `wheels: false` (no wheel/ghost draws) plus a confirmResults compat shim in
 `_apply`, so pre-cinematic logs still reconstruct. Convergence coverage:
 `party_net_test.dart` drivers spin wheels + confirm ceremonies over the wire.
+
+## 2026-07-07 (later) — Mario-Party pacing + vote-to-skip
+
+Root cause of "hit MOVE → mini-game launches instantly" online: the lockstep
+pump auto-advanced `moving` / `spaceResolved` / `minigameIntro`, teleporting
+the whole turn server-style. Now:
+- `moving` is HELD by the pump; every replica paces its own walk with the
+  local 240ms step ticker (deterministic — no per-step network traffic).
+  `_apply` fast-forwards any residual walk before applying an input, and the
+  host fast-forwards its own walk before validating a request (a player
+  acting implies their walk finished).
+- `confirmSpace` (walker-only) and `beginMiniGame` (room-host-only, 6s
+  auto-dwell) are APPENDED logged inputs; compat shims in `_apply` replay
+  pre-pacing logs.
+- `voteSkip` (APPENDED, player-attributed, one per seat, legal from the game
+  reveal through play): a strict majority (votes*2 > players) skips the
+  round outright — no scores, no awards, no winner spin. UI: intro-only pill
+  under the game's START (hidden once the countdown begins).
+- The mini-game watchdog (auto-banking 0 after duration+30s) is REMOVED by
+  design — lingering on an intro must never forfeit an attempt. A stuck
+  round's escape hatch is the vote. Known trade-off: a genuinely vanished
+  WALKER mid-board still stalls the room (same class as a vanished roller,
+  pre-existing); presence-based handling is future work.

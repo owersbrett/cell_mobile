@@ -57,10 +57,6 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   /// many non-input notifications fired while a token walks.
   int _savedInputCount = -1;
 
-  /// Backs the temporary "SKIP" button used to race through the games while
-  /// testing the board flow.
-  final Random _debugRng = Random();
-
   /// Non-null when this session is an ONLINE match (set once at initState).
   PartyNet? _net;
 
@@ -68,6 +64,10 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   PartyController? _payoffController;
   int _wheelPayoffDone = 0;
   int _flairDoneRound = 1; // rounds 2+ get a flair beat before the board
+
+  /// Attempt key of the mini-game whose countdown has begun on this device —
+  /// hides the intro-only vote pill during live play.
+  String? _playingAttempt;
 
   // ── Attract autopilot ─────────────────────────────────────────────────────
   static const _kAutoRounds = 5;
@@ -485,11 +485,21 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           onQuit: _confirmQuit,
         );
       case PartyPhase.minigameIntro:
-        return _MiniGameIntroScreen(
+        // Held for its moment (SPEC: a dialog beat before the game): local
+        // taps through; online the room host taps or auto-advances.
+        final intro = _MiniGameIntroScreen(
           controller: c,
           actions: actions,
-          interactive: !isOnline, // host auto-advances online
+          interactive: !isOnline || net.isHost,
         );
+        return isOnline && net.isHost
+            ? _AutoAdvanceAfter(
+                key: ValueKey('mg_intro_${c.round}'),
+                delay: const Duration(seconds: 6),
+                onFire: actions.beginMiniGameRound,
+                child: intro,
+              )
+            : intro;
       case PartyPhase.passPhone:
         return _PassPhoneScreen(
           controller: c,
@@ -517,26 +527,42 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
             ),
           );
         }
+        final attemptKey = 'mg_${c.round}_${player.index}_${spec.id}';
         final host = MiniGameHost(
           // New host per attempt so state never leaks between players.
-          key: ValueKey('mg_${c.round}_${player.index}_${spec.id}'),
+          key: ValueKey(attemptKey),
           spec: spec,
           playerLabel: '${player.name}$teamTag',
           onComplete: actions.recordMiniScore,
           onExit: () => actions.recordMiniScore(0),
           // Attract: the bot plays each player's attempt and auto-submits.
           autoPlay: widget.autoPilot,
+          // Intro-only chrome gate: the vote pill leaves with the countdown
+          // so it can never eat a gameplay tap.
+          onStarted: () => setState(() => _playingAttempt = attemptKey),
         );
         return Stack(
           children: [
             host,
-            Positioned(
-              top: 0,
+            // VOTE TO SKIP — the table's escape hatch (majority skips the
+            // round; replaces both the debug skip and the old auto-bank
+            // watchdog). Sits under the game's own START button and leaves
+            // with it — never over live gameplay.
+            if (_playingAttempt != attemptKey)
+              Positioned(
+              left: 0,
               right: 0,
+              bottom: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 8, right: 12),
-                  child: _buildSkipButton(c, actions),
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Center(
+                    child: _VoteSkipPill(
+                      controller: c,
+                      actions: actions,
+                      mySeat: isOnline ? mySlot : c.miniPlayerIndex,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -570,47 +596,6 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
     }
   }
 
-  /// Score that lands the current player strictly below everyone who has
-  /// already played this round (a random value in `[0, lowest)`), so skipping
-  /// every game still yields a clean reverse-order ranking while testing the
-  /// board flow. The first player gets a mid score to leave room beneath.
-  int _skipScore(PartyController controller) {
-    final scores = controller.standings.map((s) => s.score).toList();
-    if (scores.isEmpty) return 60 + _debugRng.nextInt(60);
-    final lowest = scores.reduce(min);
-    return lowest <= 0 ? 0 : _debugRng.nextInt(lowest);
-  }
-
-  /// Temporary "skip this game" affordance — forfeits the round to last place.
-  Widget _buildSkipButton(PartyController controller, PartyActions actions) {
-    return GestureDetector(
-      onTap: () => actions.recordMiniScore(_skipScore(controller)),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white24),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'SKIP',
-              style: TextStyle(
-                  fontFamily: _kFont,
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 2,
-                  color: Colors.white70),
-            ),
-            SizedBox(width: 6),
-            Icon(Icons.skip_next, color: Colors.white70, size: 18),
-          ],
-        ),
-      ),
-    );
-  }
 
   /// Debug-desktop resume prompt floated over the setup screen when a saved
   /// game is found on launch. Tap to pick up where you left off; ✕ to discard.
@@ -4112,4 +4097,99 @@ class _NodeDecorPainter extends CustomPainter {
   @override
   bool shouldRepaint(_NodeDecorPainter old) =>
       old.type != type || old.radius != radius || old.accent != accent;
+}
+
+
+/// The table's escape hatch: one vote per seat; a strict majority skips the
+/// round's mini-game outright (no scores, no awards). Replaces the debug SKIP
+/// and the old duration+grace auto-bank watchdog.
+class _VoteSkipPill extends StatelessWidget {
+  final PartyController controller;
+  final PartyActions actions;
+  final int mySeat; // -1 = unknown (spectating replica edge)
+  const _VoteSkipPill({
+    required this.controller,
+    required this.actions,
+    required this.mySeat,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final votes = controller.skipVotes.length;
+    final needed = controller.skipVotesNeeded;
+    final voted = mySeat >= 0 && controller.skipVotes.contains(mySeat);
+    final canVote = mySeat >= 0 && !voted;
+    return GestureDetector(
+      onTap: canVote ? actions.voteSkip : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+              color: voted
+                  ? Potatuhs.gold.withValues(alpha: 0.7)
+                  : Colors.white24),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.skip_next,
+                size: 15, color: voted ? Potatuhs.gold : Colors.white54),
+            const SizedBox(width: 6),
+            Text(
+              votes > 0
+                  ? (voted
+                      ? 'VOTED TO SKIP · $votes/$needed'
+                      : 'VOTE TO SKIP · $votes/$needed')
+                  : 'VOTE TO SKIP',
+              style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.5,
+                color: voted ? Potatuhs.gold : Colors.white54,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Fires [onFire] once after [delay] — used by the online host to auto-pace
+/// held dialog beats (game reveal) so a distracted host can't stall the room.
+class _AutoAdvanceAfter extends StatefulWidget {
+  final Duration delay;
+  final VoidCallback onFire;
+  final Widget child;
+  const _AutoAdvanceAfter({
+    super.key,
+    required this.delay,
+    required this.onFire,
+    required this.child,
+  });
+
+  @override
+  State<_AutoAdvanceAfter> createState() => _AutoAdvanceAfterState();
+}
+
+class _AutoAdvanceAfterState extends State<_AutoAdvanceAfter> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(widget.delay, widget.onFire);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
