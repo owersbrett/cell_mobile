@@ -911,6 +911,44 @@ class _BoardScreenState extends State<_BoardScreen>
     actions.advanceStep();
   }
 
+  /// Where the current player can land with the rolled steps — shown after
+  /// the roll so branch picks and the +1 ATP boost are informed decisions.
+  /// BFS over `nexts` covers both fork arms; updates live as stepsRemaining
+  /// changes. Presentation-only.
+  Set<int> _landingPreview() {
+    if (controller.phase != PartyPhase.rollResult) return const {};
+    final steps = controller.stepsRemaining;
+    if (steps <= 0) return const {};
+    final board = controller.board;
+    final onMap = controller.gameMap != null;
+    var frontier = <int>{controller.currentPlayer.position};
+    for (var d = 0; d < steps; d++) {
+      final next = <int>{};
+      for (final i in frontier) {
+        final nexts = board[i].nexts;
+        if (nexts.isEmpty) {
+          // The map anchor is terminal — you stop there. The legacy ring
+          // just wraps.
+          if (onMap) {
+            next.add(i);
+          } else {
+            next.add((i + 1) % board.length);
+          }
+        } else {
+          next.addAll(nexts);
+        }
+      }
+      frontier = next;
+    }
+    // Ladders/snakes relocate on landing — show the true destination too.
+    final out = <int>{...frontier};
+    for (final i in frontier) {
+      final j = board[i].jumpTo;
+      if (j != null) out.add(j);
+    }
+    return out;
+  }
+
   @override
   void dispose() {
     _stepTimer?.cancel();
@@ -947,6 +985,7 @@ class _BoardScreenState extends State<_BoardScreen>
                         onTapSpace: (space, i) =>
                             setState(() => _inspecting = i),
                         inspectedIndex: _inspecting,
+                        landingPreview: _landingPreview(),
                       ),
                     ),
                   ),
@@ -2412,6 +2451,10 @@ class _BoardView extends StatelessWidget {
   /// The space currently being inspected (highlighted on the board), if any.
   final int? inspectedIndex;
 
+  /// Exact spaces the rolled move can land on (empty outside rollResult) —
+  /// ringed so branch picks and the +1 boost are informed.
+  final Set<int> landingPreview;
+
   const _BoardView({
     required this.controller,
     required this.positionOf,
@@ -2421,6 +2464,7 @@ class _BoardView extends StatelessWidget {
     this.onLayout,
     this.onTapSpace,
     this.inspectedIndex,
+    this.landingPreview = const {},
   });
 
   /// How much larger than the viewport the board canvas is. A roomier canvas
@@ -2752,6 +2796,7 @@ class _BoardView extends StatelessWidget {
     }
 
     final isInspected = inspectedIndex == index;
+    final isLanding = landingPreview.contains(index);
     // A bigger invisible hit-target than the dot so crowded tiles stay tappable.
     final hit = max(r * 2, 30.0);
     return Positioned(
@@ -2774,12 +2819,12 @@ class _BoardView extends StatelessWidget {
                 const Color(0xFF0B0B12)),
             shape: BoxShape.circle,
             border: Border.all(
-              color: isInspected
+              color: isInspected || isLanding
                   ? Colors.white
                   : isStart || isShop || isAnchor
                       ? color
                       : color.withValues(alpha: space.isShortcut ? 0.7 : 0.55),
-              width: isInspected
+              width: isInspected || isLanding
                   ? 2.6
                   : isAnchor
                       ? 3.0
@@ -2787,13 +2832,18 @@ class _BoardView extends StatelessWidget {
             ),
             boxShadow: [
               BoxShadow(
-                  color: (isInspected ? Colors.white : color).withValues(
-                      alpha: isInspected
-                          ? 0.6
-                          : isAnchor
-                              ? 0.7
-                              : (isShop ? 0.5 : 0.30)),
-                  blurRadius: isAnchor ? 22 : (isShop ? 14 : 9)),
+                  color: (isInspected || isLanding ? Colors.white : color)
+                      .withValues(
+                          alpha: isInspected || isLanding
+                              ? 0.6
+                              : isAnchor
+                                  ? 0.7
+                                  : (isShop ? 0.5 : 0.30)),
+                  blurRadius: isLanding
+                      ? 16
+                      : isAnchor
+                          ? 22
+                          : (isShop ? 14 : 9)),
             ],
           ),
           child: Icon(icon,
