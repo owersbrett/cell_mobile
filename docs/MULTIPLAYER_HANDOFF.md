@@ -184,3 +184,22 @@ resumes.
 - Mini-game internals = the other track. Board agent owns: maps data/renderer,
   the party/turn system, online sync, the live opponent-score feed contract, and
   reconciling the mode picker with online play.
+
+## 2026-07-07 — Cinematic layer additions (PARTY_CINEMATIC_SPEC.md)
+
+The lockstep protocol gained three APPENDED input kinds (index-stable):
+- `confirmResults` — `minigameResults` is now a genuine decision phase (the
+  pump no longer auto-confirms it, so online players actually see the round
+  ceremony). Only the room host's uid may confirm; the host device also
+  auto-confirms ~6s after the ceremony reveal completes.
+- `wheelStop` — the wheel (opening / checkpoint-every-4-rounds / winner-spin
+  on Hole & Aether / final). Validated against `wheel.currentSpinner`;
+  outcome is a tape draw.
+- `useItemOn` — targeted items (FREEZE RAY, SWAPPER); value =
+  `PowerUp.index * 16 + targetSeat`, turn-owner only.
+
+New phase `wheelSpin` (appended). Ghosts + their drift/steals are pure tape
+draws at round boundaries. Save format is now `v: 2`; v1 saves replay with
+`wheels: false` (no wheel/ghost draws) plus a confirmResults compat shim in
+`_apply`, so pre-cinematic logs still reconstruct. Convergence coverage:
+`party_net_test.dart` drivers spin wheels + confirm ceremonies over the wire.
