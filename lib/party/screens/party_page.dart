@@ -21,6 +21,7 @@ import '../net/party_session.dart';
 import 'party_setup_page.dart';
 import 'round_ceremony.dart';
 import 'round_flair.dart';
+import 'standings_sheet.dart';
 import 'wheel_screen.dart';
 
 const _kFont = Potatuhs.bodyFont; // Outfit — body/UI
@@ -959,6 +960,12 @@ class _BoardScreenState extends State<_BoardScreen>
                 index: _inspecting!,
                 controller: controller,
                 onClose: () => setState(() => _inspecting = null),
+                // Chevron navigation: focus glides node-to-node along the
+                // path, camera following (SPEC §6).
+                onInspect: (i) {
+                  setState(() => _inspecting = i);
+                  _centerOn(i);
+                },
               ),
             // Online non-interactive overlay: the board renders read-only;
             // action buttons in the turn panel are hidden (see _turnPanel), and
@@ -1116,7 +1123,20 @@ class _BoardScreenState extends State<_BoardScreen>
                 color: Colors.white),
           ),
           const Spacer(),
-          const SizedBox(width: 32),
+          // The standings viewer — every player's full state, any time.
+          GestureDetector(
+            onTap: () => showStandingsSheet(context, controller),
+            child: Container(
+              padding: const EdgeInsets.all(7),
+              decoration: BoxDecoration(
+                color: const Color(0x88000000),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: const Icon(Icons.groups,
+                  color: Potatuhs.gold, size: 18),
+            ),
+          ),
         ],
       ),
     );
@@ -2126,23 +2146,42 @@ _SpaceInfo _inspectSpace(PartyController c, BoardSpace space, int index) {
   }
 }
 
-/// Bottom card that explains the tapped tile — "what happens if you land here".
+/// The node viewer (SPEC §6) — explains the focused tile, lists everything
+/// standing on it (players, ops, ghosts), and steps focus node-to-node with
+/// chevrons; forks and jumps expose their targets as tappable chips.
 class _SpaceInspector extends StatelessWidget {
   final BoardSpace space;
   final int index;
   final PartyController controller;
   final VoidCallback onClose;
 
+  /// Move focus to another board index (camera follows).
+  final void Function(int index)? onInspect;
+
   const _SpaceInspector({
     required this.space,
     required this.index,
     required this.controller,
     required this.onClose,
+    this.onInspect,
   });
 
   @override
   Widget build(BuildContext context) {
     final info = _inspectSpace(controller, space, index);
+    final n = controller.board.length;
+    final occupants = [
+      for (final p in controller.players)
+        if (p.position == index) p
+    ];
+    final opsHere = [
+      for (final t in controller.ops)
+        if (t.position == index) t
+    ];
+    final ghostsHere =
+        controller.ghosts.where((g) => g.position == index).length;
+    final prev = (index - 1 + n) % n;
+    final nexts = space.nexts.isEmpty ? <int>[(index + 1) % n] : space.nexts;
     return Positioned(
       left: 12,
       right: 12,
@@ -2150,62 +2189,181 @@ class _SpaceInspector extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         child: Container(
-          padding: const EdgeInsets.fromLTRB(14, 12, 8, 14),
+          padding: const EdgeInsets.fromLTRB(14, 12, 8, 10),
           decoration: BoxDecoration(
             color: const Color(0xF21A1A24),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: info.color.withValues(alpha: 0.6)),
             boxShadow: Potatuhs.glow(info.color, strength: 0.22, blur: 14),
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: info.color.withValues(alpha: 0.18),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: info.color.withValues(alpha: 0.7)),
-                ),
-                child: Icon(info.icon, color: info.color, size: 22),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: info.color.withValues(alpha: 0.18),
+                      shape: BoxShape.circle,
+                      border:
+                          Border.all(color: info.color.withValues(alpha: 0.7)),
+                    ),
+                    child: Icon(info.icon, color: info.color, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (info.region.isNotEmpty)
+                          Text(info.region.toUpperCase(),
+                              style: Potatuhs.label(
+                                  size: 9.5, color: info.color)),
+                        Text(info.title,
+                            style: const TextStyle(
+                                fontFamily: _kFont,
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white)),
+                        const SizedBox(height: 3),
+                        Text(info.effect,
+                            style: const TextStyle(
+                                fontFamily: _kFont,
+                                fontSize: 12.5,
+                                height: 1.3,
+                                color: Colors.white70)),
+                      ],
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: onClose,
+                    child: const Padding(
+                      padding: EdgeInsets.all(6),
+                      child: Icon(Icons.close, color: Colors.white38, size: 18),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
+              // Who/what is standing here — the persistent-element readout.
+              if (occupants.isNotEmpty || opsHere.isNotEmpty || ghostsHere > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            for (final p in occupants)
+                              _chip(p.name, p.color, Icons.person),
+                            for (final t in opsHere)
+                              _chip(
+                                  t.op.name,
+                                  const Color(0xFFE5484D),
+                                  Icons.theater_comedy),
+                            if (ghostsHere > 0)
+                              _chip(
+                                  ghostsHere > 1
+                                      ? 'HAUNTED ×$ghostsHere'
+                                      : 'HAUNTED',
+                                  const Color(0xFF9FB7CE),
+                                  Icons.dark_mode),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              // Chevron navigation + fork/jump targets.
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
                   children: [
-                    if (info.region.isNotEmpty)
-                      Text(info.region.toUpperCase(),
-                          style: Potatuhs.label(
-                              size: 9.5, color: info.color)),
-                    Text(info.title,
-                        style: const TextStyle(
-                            fontFamily: _kFont,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white)),
-                    const SizedBox(height: 3),
-                    Text(info.effect,
-                        style: const TextStyle(
-                            fontFamily: _kFont,
-                            fontSize: 12.5,
-                            height: 1.3,
-                            color: Colors.white70)),
+                    _navButton(Icons.chevron_left, () => onInspect?.call(prev)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 6,
+                        children: [
+                          Text('SPOT ${space.order + 1} / $n',
+                              style: Potatuhs.label(
+                                  size: 10, color: Colors.white54)),
+                          if (space.isFork)
+                            for (final f in nexts)
+                              GestureDetector(
+                                onTap: () => onInspect?.call(f),
+                                child: _chip('FORK → ${f + 1}',
+                                    const Color(0xFFFFB74D), Icons.call_split),
+                              ),
+                          if (space.jumpTo != null)
+                            GestureDetector(
+                              onTap: () => onInspect?.call(space.jumpTo!),
+                              child: _chip(
+                                  space.jumpTo! > index
+                                      ? 'LIFT → ${space.jumpTo! + 1}'
+                                      : 'SLIDE → ${space.jumpTo! + 1}',
+                                  space.jumpTo! > index
+                                      ? const Color(0xFF81C784)
+                                      : const Color(0xFFE57373),
+                                  Icons.moving),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _navButton(Icons.chevron_right,
+                        () => onInspect?.call(nexts.first)),
                   ],
-                ),
-              ),
-              GestureDetector(
-                onTap: onClose,
-                child: const Padding(
-                  padding: EdgeInsets.all(6),
-                  child: Icon(Icons.close, color: Colors.white38, size: 18),
                 ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _chip(String label, Color color, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: color.withValues(alpha: 0.55)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 11, color: color),
+          const SizedBox(width: 4),
+          Text(label,
+              style: TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: color)),
+        ],
+      ),
+    );
+  }
+
+  Widget _navButton(IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Icon(icon, color: Colors.white70, size: 20),
       ),
     );
   }
@@ -2313,7 +2471,9 @@ class _BoardView extends StatelessWidget {
               for (var s = 0; s < _BoardGeometry.sections; s++)
                 _sectionLabel(geo, s),
             Positioned.fill(
-              child: CustomPaint(painter: _BoardPathPainter(geo)),
+              child: CustomPaint(
+                  painter: _BoardPathPainter(geo,
+                      sections: controller.gameMap?.sections)),
             ),
             for (var i = 0; i < controller.board.length; i++)
               _node(geo, i),
@@ -2524,8 +2684,12 @@ class _BoardView extends StatelessWidget {
     final center = geo.nodeCenter(index);
     final isStart = index == 0;
     final isShop = space.type == SpaceType.shop;
+    // The destination anchor is THE landmark: the race target and the one
+    // potato buy point — it must be unmissable (SPEC §6).
+    final isAnchor = geo.useXY && space.order == controller.board.length - 1;
     // Shop is a landmark — draw it larger; shortcut nodes slightly smaller.
-    final r = geo.nodeRadius * (isShop ? 1.35 : space.isShortcut ? 0.85 : 1.0);
+    final r = geo.nodeRadius *
+        (isAnchor ? 1.9 : isShop ? 1.35 : space.isShortcut ? 0.85 : 1.0);
     var color = controller.sectionOf(space).color;
 
     IconData icon;
@@ -2561,6 +2725,11 @@ class _BoardView extends StatelessWidget {
         iconColor = const Color(0xFFCE93D8);
         break;
     }
+    if (isAnchor) {
+      icon = Icons.flag;
+      iconColor = const Color(0xFFFFD54F);
+      color = const Color(0xFFFFD54F);
+    }
 
     final isInspected = inspectedIndex == index;
     // A bigger invisible hit-target than the dot so crowded tiles stay tappable.
@@ -2587,16 +2756,24 @@ class _BoardView extends StatelessWidget {
             border: Border.all(
               color: isInspected
                   ? Colors.white
-                  : isStart || isShop
+                  : isStart || isShop || isAnchor
                       ? color
                       : color.withValues(alpha: space.isShortcut ? 0.7 : 0.55),
-              width: isInspected ? 2.6 : (isStart || isShop ? 1.8 : 1.2),
+              width: isInspected
+                  ? 2.6
+                  : isAnchor
+                      ? 3.0
+                      : (isStart || isShop ? 1.8 : 1.2),
             ),
             boxShadow: [
               BoxShadow(
-                  color: (isInspected ? Colors.white : color)
-                      .withValues(alpha: isInspected ? 0.6 : (isShop ? 0.5 : 0.30)),
-                  blurRadius: isShop ? 14 : 9),
+                  color: (isInspected ? Colors.white : color).withValues(
+                      alpha: isInspected
+                          ? 0.6
+                          : isAnchor
+                              ? 0.7
+                              : (isShop ? 0.5 : 0.30)),
+                  blurRadius: isAnchor ? 22 : (isShop ? 14 : 9)),
             ],
           ),
           child: Icon(icon,
@@ -2798,7 +2975,8 @@ class _BoardGeometry {
 
 class _BoardPathPainter extends CustomPainter {
   final _BoardGeometry geo;
-  _BoardPathPainter(this.geo);
+  final List<BoardSection>? sections;
+  _BoardPathPainter(this.geo, {this.sections});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2880,16 +3058,53 @@ class _BoardPathPainter extends CustomPainter {
   void _paintTopology(Canvas canvas) {
     final spaces = geo.spaces;
     final z = geo.viewScale; // counter-scale strokes to constant on-screen width
+    final secs = sections;
     final link = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3 / z
-      ..strokeCap = StrokeCap.round
-      ..color = Colors.white.withValues(alpha: 0.20);
+      ..strokeCap = StrokeCap.round;
     for (final s in spaces) {
       final from = geo.nodeCenter(s.order);
+      // Region-tinted links so the territories read as territories.
+      final tint = secs != null && s.sectionIndex < secs.length
+          ? secs[s.sectionIndex].color
+          : Colors.white;
+      link.color = Color.alphaBlend(
+          tint.withValues(alpha: 0.30), Colors.white.withValues(alpha: 0.10));
       for (final n in s.nexts) {
         canvas.drawLine(from, geo.nodeCenter(n), link);
       }
+    }
+    // Direction-of-travel chevrons: every third link points the way forward,
+    // so "which way do I go" is answered by the path itself.
+    for (final s in spaces) {
+      if (s.order % 3 != 1 || s.nexts.isEmpty) continue;
+      final from = geo.nodeCenter(s.order);
+      final to = geo.nodeCenter(s.nexts.first);
+      _arrow(canvas, Offset.lerp(from, to, 0.5)!, to - from,
+          Colors.white.withValues(alpha: 0.5), 5 / z);
+    }
+    // Region labels at each territory's centroid.
+    if (secs != null) {
+      final sums = <int, Offset>{};
+      final counts = <int, int>{};
+      for (final s in spaces) {
+        final c = geo.nodeCenter(s.order);
+        sums[s.sectionIndex] = (sums[s.sectionIndex] ?? Offset.zero) + c;
+        counts[s.sectionIndex] = (counts[s.sectionIndex] ?? 0) + 1;
+      }
+      sums.forEach((i, sum) {
+        if (i >= secs.length) return;
+        final c = sum / counts[i]!.toDouble();
+        _label(canvas, secs[i].name.toUpperCase(),
+            secs[i].color.withValues(alpha: 0.55), c, 11 / z);
+      });
+    }
+    // The destination anchor gets a name.
+    if (spaces.isNotEmpty) {
+      final anchor = geo.nodeCenter(spaces.length - 1);
+      _label(canvas, 'DESTINATION', const Color(0xFFFFD54F),
+          anchor + Offset(0, 26 / z), 10 / z);
     }
     for (final s in spaces) {
       final j = s.jumpTo;
@@ -2910,6 +3125,26 @@ class _BoardPathPainter extends CustomPainter {
       );
       _arrow(canvas, Offset.lerp(a, b, 0.85)!, b - a, col, 6 / z);
     }
+  }
+
+  /// Painter-level text, centered on [pos].
+  void _label(
+      Canvas canvas, String text, Color color, Offset pos, double size) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          fontFamily: _kFont,
+          fontSize: size,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 2,
+          color: color,
+          shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, pos - Offset(tp.width / 2, tp.height / 2));
   }
 
   /// A small chevron at [pos] pointing along [dir].
