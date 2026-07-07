@@ -4,7 +4,7 @@
 /// This is intentionally separate from the pubspec `version:` — it exists purely
 /// to prove "the bits I just pushed are the bits now live." The skill increments
 /// [kBuildNumber]; nothing else should edit it by hand.
-const int kBuildNumber = 23;
+const int kBuildNumber = 24;
 
 /// Label rendered on the splash screen, e.g. "build 6".
 const String kBuildLabel = 'build $kBuildNumber';
