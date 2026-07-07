@@ -345,6 +345,18 @@ class PartyController extends ChangeNotifier {
 
   bool get ghostsLoose => ghosts.isNotEmpty;
 
+  /// MAPS_SPEC economy: a diamond sits on every space (except the start);
+  /// you EAT the one on each space you walk through — the whole move, not
+  /// just the landing — so taking the longer route is how you get paid.
+  /// They all respawn when someone completes a traversal (reaches the
+  /// anchor; a lap on the legacy loop). Cinematic (wheels) games only, so
+  /// v1 replays keep their recorded economy.
+  final Set<int> eatenDiamonds = {};
+
+  /// Whether a path diamond is currently sitting on [index].
+  bool diamondOn(int index) =>
+      wheels && index != 0 && !eatenDiamonds.contains(index);
+
   /// Map-aware section lookup — the new maps carry their own 8–10 sections, the
   /// legacy board uses the fixed [kBoardSections].
   BoardSection sectionOf(BoardSpace s) => gameMap?.sectionOf(s) ?? s.section;
@@ -580,6 +592,18 @@ class PartyController extends ChangeNotifier {
     p.position = next;
     p.stepsTaken++;
     stepsRemaining--;
+    // Pac-Man economy: eat the path diamond on every space walked through.
+    if (diamondOn(next)) {
+      eatenDiamonds.add(next);
+      p.diamonds += 1;
+    }
+    // Completing a traversal respawns the whole trail for everyone.
+    if (wheels &&
+        ((gameMap != null && next == board.length - 1) ||
+            (gameMap == null && next == 0))) {
+      eatenDiamonds.clear();
+      turnLog.add('${p.name} completed the traversal — the diamonds respawn!');
+    }
     _catchOps(p, next);
     // Lap bonus only on the legacy loop (the maps are linear, not a ring).
     if (gameMap == null && next == 0) {

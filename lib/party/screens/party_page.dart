@@ -1123,6 +1123,22 @@ class _BoardScreenState extends State<_BoardScreen>
                 color: Colors.white),
           ),
           const Spacer(),
+          // Snap the camera back to the active player (double-tap also works,
+          // but a visible button is discoverable).
+          GestureDetector(
+            onTap: _reframeOnActive,
+            child: Container(
+              padding: const EdgeInsets.all(7),
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(
+                color: const Color(0x88000000),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: const Icon(Icons.my_location,
+                  color: Colors.white54, size: 18),
+            ),
+          ),
           // The standings viewer — every player's full state, any time.
           GestureDetector(
             onTap: () => showStandingsSheet(context, controller),
@@ -2473,7 +2489,11 @@ class _BoardView extends StatelessWidget {
             Positioned.fill(
               child: CustomPaint(
                   painter: _BoardPathPainter(geo,
-                      sections: controller.gameMap?.sections)),
+                      sections: controller.gameMap?.sections,
+                      diamondIndices: [
+                        for (var i = 0; i < controller.board.length; i++)
+                          if (controller.diamondOn(i)) i
+                      ])),
             ),
             for (var i = 0; i < controller.board.length; i++)
               _node(geo, i),
@@ -2799,6 +2819,7 @@ class _BoardView extends StatelessWidget {
       final angle = 2 * pi * j / players.length - pi / 2;
       final off = Offset(cos(angle) * fan, sin(angle) * fan);
       final asset = kCharacters[p.character % kCharacters.length].asset;
+      final frozen = p.frozenTurns > 0;
       widgets.add(AnimatedPositioned(
         key: ValueKey('token_${p.index}'),
         // Matches the per-step walk cadence so the character visibly slides
@@ -2814,25 +2835,44 @@ class _BoardView extends StatelessWidget {
             color: p.color,
             shape: BoxShape.circle,
             border: Border.all(
-                color: isCurrent ? Colors.white : Colors.black,
-                width: isCurrent ? 2.5 : 1.5),
+                // FREEZE RAY victims read as iced until their skipped turn.
+                color: frozen
+                    ? const Color(0xFF9BE7FF)
+                    : isCurrent
+                        ? Colors.white
+                        : Colors.black,
+                width: frozen ? 2.5 : (isCurrent ? 2.5 : 1.5)),
             boxShadow: [
               BoxShadow(
-                  color: p.color.withValues(alpha: 0.85),
-                  blurRadius: isCurrent ? 8 : 4),
+                  color: (frozen ? const Color(0xFF9BE7FF) : p.color)
+                      .withValues(alpha: 0.85),
+                  blurRadius: frozen ? 10 : (isCurrent ? 8 : 4)),
             ],
           ),
           // The character sprite rides the token; falls back to the solid color
           // chip if the asset is missing.
-          child: asset == null
-              ? null
-              : ClipOval(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (asset != null)
+                ClipOval(
                   child: Image.asset(
                     asset,
                     fit: BoxFit.cover,
                     errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                   ),
                 ),
+              if (frozen)
+                Container(
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Color(0x669BE7FF),
+                  ),
+                  child: Icon(Icons.ac_unit,
+                      size: tr * 1.1, color: Colors.white),
+                ),
+            ],
+          ),
         ),
       ));
     }
@@ -2976,7 +3016,12 @@ class _BoardGeometry {
 class _BoardPathPainter extends CustomPainter {
   final _BoardGeometry geo;
   final List<BoardSection>? sections;
-  _BoardPathPainter(this.geo, {this.sections});
+
+  /// Board indices still carrying a path diamond (MAPS_SPEC economy) —
+  /// eaten ones vanish as tokens walk over them.
+  final List<int> diamondIndices;
+  _BoardPathPainter(this.geo,
+      {this.sections, this.diamondIndices = const []});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2984,6 +3029,7 @@ class _BoardPathPainter extends CustomPainter {
     // skip the legacy ring entirely.
     if (geo.useXY) {
       _paintTopology(canvas);
+      _paintDiamonds(canvas);
       return;
     }
     // Soft under-glow + base ring on the whole closed loop.
@@ -3027,6 +3073,8 @@ class _BoardPathPainter extends CustomPainter {
             Colors.white.withValues(alpha: 0.28), 5);
       }
     }
+
+    _paintDiamonds(canvas);
 
     // Branch lanes: dashed chords across the interior. Amber = shortcut,
     // potato-brown = filibuster loop (merges backward past the market).
@@ -3127,6 +3175,30 @@ class _BoardPathPainter extends CustomPainter {
     }
   }
 
+  /// The uneaten path diamonds: a tiny gem on each space's shoulder. Eaten
+  /// ones simply aren't in the list, so they wink out as tokens pass.
+  void _paintDiamonds(Canvas canvas) {
+    if (diamondIndices.isEmpty) return;
+    final s = geo.nodeRadius * 0.34;
+    final fill = Paint()..color = const Color(0xFF9BEBFF);
+    final edge = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = const Color(0xFF2E7A8F);
+    for (final i in diamondIndices) {
+      final c = geo.nodeCenter(i) +
+          Offset(geo.nodeRadius * 0.95, -geo.nodeRadius * 0.95);
+      final gem = Path()
+        ..moveTo(c.dx, c.dy - s)
+        ..lineTo(c.dx + s * 0.7, c.dy)
+        ..lineTo(c.dx, c.dy + s)
+        ..lineTo(c.dx - s * 0.7, c.dy)
+        ..close();
+      canvas.drawPath(gem, fill);
+      canvas.drawPath(gem, edge);
+    }
+  }
+
   /// Painter-level text, centered on [pos].
   void _label(
       Canvas canvas, String text, Color color, Offset pos, double size) {
@@ -3186,7 +3258,8 @@ class _BoardPathPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _BoardPathPainter oldDelegate) =>
-      oldDelegate.geo.size != geo.size;
+      oldDelegate.geo.size != geo.size ||
+      oldDelegate.diamondIndices.length != diamondIndices.length;
 }
 
 // ---------------------------------------------------------------------------

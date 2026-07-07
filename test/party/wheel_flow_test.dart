@@ -177,5 +177,32 @@ void main() {
       expect(restored.players[i].items, original.players[i].items);
       expect(restored.players[i].position, original.players[i].position);
     }
+    expect(restored.eatenDiamonds, original.eatenDiamonds,
+        reason: 'the path-diamond trail replays identically');
+  });
+
+  test('walking eats path diamonds; v1 games leave the trail alone', () {
+    final c = duel();
+    // Through the opening wheel, then player 0 rolls and walks out.
+    c.wheelStop();
+    c.wheelStop();
+    expect(c.phase, PartyPhase.turnStart);
+    expect(c.eatenDiamonds, isEmpty);
+    drive(c, (c) => c.phase == PartyPhase.spaceResolved ||
+        c.phase == PartyPhase.shopOffer);
+    final p0 = c.players[0];
+    expect(p0.stepsTaken, greaterThan(0));
+    expect(c.eatenDiamonds.length, p0.stepsTaken,
+        reason: 'one diamond eaten per space walked through');
+    for (final i in c.eatenDiamonds) {
+      expect(c.diamondOn(i), isFalse);
+    }
+
+    // v1 (wheel-less) games never touch the trail.
+    final old = duel(wheels: false);
+    drive(old, (c) => c.phase == PartyPhase.spaceResolved ||
+        c.phase == PartyPhase.shopOffer);
+    expect(old.eatenDiamonds, isEmpty);
+    expect(old.diamondOn(3), isFalse, reason: 'no diamonds on v1 boards');
   });
 }
