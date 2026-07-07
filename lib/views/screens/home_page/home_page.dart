@@ -4,6 +4,8 @@ import 'package:cell_mobile/blocs/navigation/navigation_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/data/organelles.dart';
+import 'package:cell_mobile/feedback/game_feedback.dart';
+import 'package:cell_mobile/feedback/pending_feedback_sheet.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/user_profile.dart';
@@ -288,6 +290,8 @@ class _AccountButtonState extends State<_AccountButton> {
     super.initState();
     AuthService.current.addListener(_onUser);
     _onUser();
+    // Hydrate the pending-feedback queue so the badge shows on first build.
+    GameFeedback.load();
   }
 
   @override
@@ -318,28 +322,78 @@ class _AccountButtonState extends State<_AccountButton> {
             final hasAvatar =
                 user != null && avatar != null && !avatar.isEmpty;
             if (hasAvatar) {
-              return Padding(
-                padding: const EdgeInsets.all(8),
-                child: GestureDetector(
-                  onTap: () => showAccountSheet(context),
-                  child: VIPotatoAvatar(
-                    config: avatar,
-                    size: 40,
-                    fallbackInitial: user.displayName ?? user.email,
+              return _withFeedbackBadge(
+                context,
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: GestureDetector(
+                    onTap: () => showAccountSheet(context),
+                    child: VIPotatoAvatar(
+                      config: avatar,
+                      size: 40,
+                      fallbackInitial: user.displayName ?? user.email,
+                    ),
                   ),
                 ),
               );
             }
             final signedIn = user != null && !user.isAnonymous;
-            return _CornerIcon(
-              icon: signedIn
-                  ? Icons.account_circle
-                  : Icons.account_circle_outlined,
-              tooltip: signedIn ? 'Account' : 'Sign in',
-              color: signedIn ? Potatuhs.gold : Colors.white70,
-              onTap: () => showAccountSheet(context),
+            return _withFeedbackBadge(
+              context,
+              _CornerIcon(
+                icon: signedIn
+                    ? Icons.account_circle
+                    : Icons.account_circle_outlined,
+                tooltip: signedIn ? 'Account' : 'Sign in',
+                color: signedIn ? Potatuhs.gold : Colors.white70,
+                onTap: () => showAccountSheet(context),
+              ),
             );
           },
+        );
+      },
+    );
+  }
+
+  /// Overlays a small gold pending-feedback count on the account entry.
+  /// Tapping the BADGE opens the pending-feedback sheet; the button
+  /// underneath still opens the account sheet as before.
+  Widget _withFeedbackBadge(BuildContext context, Widget child) {
+    return ValueListenableBuilder<int>(
+      valueListenable: GameFeedback.pendingCount,
+      builder: (context, pending, _) {
+        if (pending <= 0) return child;
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            child,
+            Positioned(
+              top: 0,
+              right: 0,
+              child: GestureDetector(
+                onTap: () => showPendingFeedbackSheet(context),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Potatuhs.gold,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Potatuhs.ink, width: 1.5),
+                    boxShadow:
+                        Potatuhs.glow(Potatuhs.gold, strength: 0.4, blur: 8),
+                  ),
+                  child: Text(
+                    pending > 9 ? '9+' : '$pending',
+                    style: Potatuhs.body(
+                      size: 11,
+                      weight: FontWeight.w800,
+                      color: Potatuhs.ink,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
