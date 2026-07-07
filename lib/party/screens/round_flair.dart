@@ -23,6 +23,20 @@ class RoundFlairScreen extends StatefulWidget {
 
 /// (speaker, line) beats for the current round. Exposed for tests.
 List<(String, String)> flairBeatsFor(PartyController c) {
+  // The boss debut owns the final round on maps that field one.
+  final bosses = c.gameMap?.bosses ?? const [];
+  if (c.round == c.totalRounds && bosses.isNotEmpty) {
+    final boss = bosses.first;
+    return [
+      ('RUSS', "uhhh… why'd it get so quiet?"),
+      (
+        'BUTTER',
+        'FINAL ROUND. ${boss.name} runs this one — win it and take a whole '
+            'POTATO. Lose it, and it takes one of yours. '
+            "We'll be watching. We're always watching."
+      ),
+    ];
+  }
   if (c.round == 2) {
     return const [
       ('RUSS', 'uhhh… did you hear that?'),
@@ -108,8 +122,15 @@ class _RoundFlairScreenState extends State<RoundFlairScreen>
   @override
   Widget build(BuildContext context) {
     final (speaker, line) = _beats[_index];
-    final isGhostDebut = widget.controller.round == 2;
-    final accent = isGhostDebut ? const Color(0xFF9FB7CE) : Potatuhs.gold;
+    final c = widget.controller;
+    final isBossDebut = c.round == c.totalRounds &&
+        (c.gameMap?.bosses.isNotEmpty ?? false);
+    final isGhostDebut = !isBossDebut && c.round == 2;
+    final accent = isBossDebut
+        ? const Color(0xFFE5484D)
+        : isGhostDebut
+            ? const Color(0xFF9FB7CE)
+            : Potatuhs.gold;
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(

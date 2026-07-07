@@ -2808,7 +2808,10 @@ class _BoardView extends StatelessWidget {
         child: SizedBox(
           width: hit,
           height: hit,
-          child: Center(
+          child: CustomPaint(
+            foregroundPainter: _NodeDecorPainter(
+                type: space.type, radius: r, accent: iconColor),
+            child: Center(
         child: Container(
           width: r * 2,
           height: r * 2,
@@ -2850,6 +2853,7 @@ class _BoardView extends StatelessWidget {
               size: r * (isShop ? 1.1 : 0.95),
               color: iconColor.withValues(alpha: 0.9)),
         ),
+            ),
           ),
         ),
       ),
@@ -4027,4 +4031,85 @@ class _GhostPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GhostPainter old) => false;
+}
+
+
+/// Type decor drawn over special nodes so they read as PLACES, not dots:
+/// markets wear a striped awning, event spaces get a live-looking swirl,
+/// wild-card spaces a spark halo. Static per node — repaints never.
+class _NodeDecorPainter extends CustomPainter {
+  final SpaceType type;
+  final double radius;
+  final Color accent;
+  _NodeDecorPainter(
+      {required this.type, required this.radius, required this.accent});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final c = Offset(size.width / 2, size.height / 2);
+    switch (type) {
+      case SpaceType.shop:
+        _awning(canvas, c);
+        break;
+      case SpaceType.event:
+        _swirl(canvas, c);
+        break;
+      case SpaceType.cardWild:
+        _sparks(canvas, c);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /// A striped market awning over the top half of the stall.
+  void _awning(Canvas canvas, Offset c) {
+    const stripes = 5;
+    final rOut = radius * 1.34;
+    final rect = Rect.fromCircle(center: c, radius: rOut);
+    final a = Paint()..color = accent;
+    final b = Paint()..color = const Color(0xFFF4EDE3);
+    const start = pi; // left
+    const sweep = pi / stripes; // across the top half
+    for (var i = 0; i < stripes; i++) {
+      canvas.drawArc(rect, start + i * sweep, sweep, true, i.isEven ? a : b);
+    }
+    // Cut the wedge interior back out so only an awning band remains.
+    canvas.drawCircle(
+        c, radius * 1.02, Paint()..color = const Color(0xFF0B0B12));
+    // Scalloped hem.
+    final hem = Paint()..color = accent;
+    for (var i = 0; i < stripes; i++) {
+      final ang = pi + (i + 0.5) * sweep;
+      final p = c + Offset(cos(ang), sin(ang)) * radius * 1.18;
+      canvas.drawCircle(p, radius * 0.12, hem);
+    }
+  }
+
+  /// A cosmic swirl orbiting the event orb.
+  void _swirl(Canvas canvas, Offset c) {
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = radius * 0.14
+      ..strokeCap = StrokeCap.round
+      ..color = accent.withValues(alpha: 0.75);
+    final rect = Rect.fromCircle(center: c, radius: radius * 1.22);
+    canvas.drawArc(rect, -0.4, 1.9, false, paint);
+    canvas.drawArc(rect, pi - 0.4, 1.9, false, paint);
+  }
+
+  /// Spark halo for the wild (Void) card spaces.
+  void _sparks(Canvas canvas, Offset c) {
+    final paint = Paint()..color = accent.withValues(alpha: 0.85);
+    for (var i = 0; i < 4; i++) {
+      final ang = pi / 4 + i * pi / 2;
+      final p = c + Offset(cos(ang), sin(ang)) * radius * 1.28;
+      canvas.drawCircle(p, radius * 0.11, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_NodeDecorPainter old) =>
+      old.type != type || old.radius != radius || old.accent != accent;
 }

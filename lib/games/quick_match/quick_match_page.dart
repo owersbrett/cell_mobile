@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../auth_profile.dart';
+import '../../feedback/feedback_prompt.dart';
 import '../../party/party_models.dart' show kCharacters;
 import '../../theme/potatuhs.dart';
 import '../mini_game.dart';
@@ -52,6 +53,9 @@ class _QuickMatchPageState extends State<QuickMatchPage> {
 
   QuickMatchNet? _net;
   _Phase _phase = _Phase.setup;
+
+  /// One feedback prompt per round; reset when a rematch starts.
+  bool _fbDone = false;
   int _playedRound = 0;
   bool _busy = false;
   String? _error;
@@ -133,7 +137,10 @@ class _QuickMatchPageState extends State<QuickMatchPage> {
     if (net.status == 'playing' &&
         net.round > _playedRound &&
         _phase != _Phase.playing) {
-      setState(() => _phase = _Phase.playing);
+      setState(() {
+        _phase = _Phase.playing;
+        _fbDone = false; // fresh round, fresh feedback chance
+      });
       return;
     }
     setState(() {});
@@ -383,10 +390,49 @@ class _QuickMatchPageState extends State<QuickMatchPage> {
   Widget _standingsView(QuickMatchNet net) {
     final rows = net.standings;
     final done = net.allScored;
+    // The winner moment: same contract as the party ceremony — a round is
+    // OVER when someone is declared, not when the list fills in.
+    final scored = [for (final r in rows) if (r.score != null) r];
+    final top = scored.isEmpty
+        ? null
+        : scored.map((r) => r.score!).reduce(max);
+    final champs = done && top != null
+        ? [for (final r in scored) if (r.score == top) r.player.name]
+        : const <String>[];
     return ListView(
       children: [
         _header(done ? 'RESULTS' : 'WAITING FOR SCORES…',
             subtitle: '${net.spec.name} · room ${net.code}'),
+        if (champs.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              color: Potatuhs.gold.withValues(alpha: 0.12),
+              border:
+                  Border.all(color: Potatuhs.gold.withValues(alpha: 0.7)),
+              boxShadow: Potatuhs.glow(Potatuhs.gold, strength: 0.3, blur: 18),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.emoji_events,
+                    color: Potatuhs.gold, size: 22),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    champs.length > 1
+                        ? 'DEAD HEAT — ${champs.map((n) => n.toUpperCase()).join(' & ')}!'
+                        : '${champs.first.toUpperCase()} TAKES IT!',
+                    textAlign: TextAlign.center,
+                    style: Potatuhs.display(size: 18, color: Potatuhs.gold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
         for (var i = 0; i < rows.length; i++)
           _playerRow(
@@ -398,6 +444,15 @@ class _QuickMatchPageState extends State<QuickMatchPage> {
                 : Text('${rows[i].score}',
                     style: Potatuhs.display(size: 20, color: Potatuhs.gold)),
           ),
+        if (done && !_fbDone) ...[
+          const SizedBox(height: 14),
+          FeedbackPrompt(
+            gameId: net.spec.id,
+            gameName: net.spec.name,
+            source: 'party',
+            onDone: () => setState(() => _fbDone = true),
+          ),
+        ],
         const SizedBox(height: 28),
         if (net.isHost)
           _bigButton('PLAY AGAIN', onTap: () => net.startRound())

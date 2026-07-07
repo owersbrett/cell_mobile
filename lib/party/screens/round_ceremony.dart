@@ -159,6 +159,21 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
       Interval(0.78, 0.95, curve: Curves.easeOutBack);
   static const _footerInterval = Interval(0.94, 1.0, curve: Curves.easeOut);
 
+  /// Boss-round stakes for a row: +1 potato to the top score, −1 to the
+  /// bottom (mirrors _applyBossPotatoes so the swing is VISIBLE).
+  int _bossDelta(MiniGameStanding s) {
+    final c = widget.controller;
+    if (!c.isBossRound || c.standings.isEmpty) return 0;
+    var top = c.standings.first.score, bottom = c.standings.first.score;
+    for (final x in c.standings) {
+      if (x.score > top) top = x.score;
+      if (x.score < bottom) bottom = x.score;
+    }
+    if (s.score == top) return 1;
+    if (top != bottom && s.score == bottom) return -1;
+    return 0;
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
@@ -242,10 +257,18 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
 
   Widget _header(String gameName, int round, int totalRounds, double t) {
     final a = const Interval(0.0, 0.12, curve: Curves.easeOut).transform(t);
+    final boss = widget.controller.isBossRound;
     return Opacity(
       opacity: a,
       child: Column(
         children: [
+          if (boss)
+            Text(
+              '⚔ BOSS ROUND ⚔',
+              textAlign: TextAlign.center,
+              style: Potatuhs.body(size: 12, color: const Color(0xFFE5484D))
+                  .copyWith(letterSpacing: 4, fontWeight: FontWeight.bold),
+            ),
           Text(
             gameName.toUpperCase(),
             textAlign: TextAlign.center,
@@ -394,6 +417,7 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                   ),
                   const SizedBox(height: 2),
                   _awardChip(s.award),
+                  if (_bossDelta(s) != 0) _potatoChip(_bossDelta(s)),
                 ],
               ),
             ),
@@ -445,12 +469,27 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                     ),
                     const SizedBox(width: 10),
                     _awardChip(s.award),
+                    if (_bossDelta(s) != 0) ...[
+                      const SizedBox(width: 8),
+                      _potatoChip(_bossDelta(s)),
+                    ],
                   ],
                 ),
               ),
           ],
         ),
       ),
+    );
+  }
+
+  /// The boss-round potato swing — the headline stake, shown in-row.
+  Widget _potatoChip(int delta) {
+    final up = delta > 0;
+    return Text(
+      up ? '+$delta 🥔' : '$delta 🥔',
+      style: Potatuhs.body(
+              size: 14, color: up ? Potatuhs.gold : const Color(0xFFE5484D))
+          .copyWith(fontWeight: FontWeight.bold),
     );
   }
 
