@@ -119,6 +119,23 @@ the LEADER'S TERRITORY badge (party_page), the mini-game HUD name row
 centers-until-overflow-then-scrolls). Same class as the PotatuhsButton
 overflow fixed earlier today.
 
+**Checkpoint answers, round 3 — 2026-07-10 — walk close, residual jerk**
+
+Verbatim: "its close, still feels jerky. i tap roll, the character animates
+up a little bit, then back to the circle (not sure whats going on there) i
+hit move, i recenter, then the first move is jerky, hard to explain how -
+then the rest of the movements seem accurate"
+
+**Diagnosis + fix:** the board world was sized off the Expanded area LEFT
+OVER by the turn panel, and the panel changes height on every phase (ROLL
+button → dice panel → walking panel). Each change rescaled the whole 7.2×
+world, re-positioning every node and token; AnimatedPositioned animated the
+shift — the ROLL bounce ("up a little bit, then back") — and the first hop
+rode still-moving geometry while later hops had stable geometry ("rest of
+the movements seem accurate"). Fix: the canvas now derives from
+`MediaQuery.sizeOf` (the screen), which is constant for the whole match;
+panel changes no longer touch board geometry at all.
+
 ## Stage 1 — Ribbon + breathing tiles — NOT STARTED
 
 ## Stage 2 — Strata atmosphere — NOT STARTED
