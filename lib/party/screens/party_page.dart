@@ -2769,6 +2769,14 @@ class _BoardView extends StatelessWidget {
             if (controller.diamondOn(i)) i
         ];
 
+        // World-space node centers — shared by the strata + ambient layers.
+        final nodeCenters = ambientClock != null && controller.gameMap != null
+            ? [
+                for (var i = 0; i < controller.board.length; i++)
+                  geo.nodeCenter(i)
+              ]
+            : const <Offset>[];
+
         final startCenter = geo.nodeCenter(0);
 
         // Pinch to zoom + drag to pan the board; nodes, links and tokens scale
@@ -2793,6 +2801,21 @@ class _BoardView extends StatelessWidget {
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
+            // Strata layer (Stage 2) — the eight bands of the descent,
+            // BELOW everything. Static painter in its own RepaintBoundary:
+            // it re-rasters only when geometry changes, never per tick.
+            if (ambientClock != null && controller.gameMap != null)
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: BoardStrataPainter(
+                      spaces: controller.board,
+                      sections: controller.gameMap!.sections,
+                      centers: nodeCenters,
+                    ),
+                  ),
+                ),
+              ),
             // Board-life ambient layer (Stage 0) — BELOW the path painter so
             // glows come from under the world. RepaintBoundary isolates its
             // per-frame ticks from the 88 node widgets; the painter culls to
@@ -2805,10 +2828,7 @@ class _BoardView extends StatelessWidget {
                       clock: ambientClock!,
                       spaces: controller.board,
                       sections: controller.gameMap!.sections,
-                      centers: [
-                        for (var i = 0; i < controller.board.length; i++)
-                          geo.nodeCenter(i)
-                      ],
+                      centers: nodeCenters,
                       nodeRadius: geo.nodeRadius,
                       transform: transformController,
                       viewport: viewport,
@@ -3579,7 +3599,9 @@ class _BoardPathPainter extends CustomPainter {
       _arrow(canvas, Offset.lerp(from, to, 0.5)!, to - from,
           Colors.white.withValues(alpha: 0.5), 5 / z);
     }
-    // Region labels at each territory's centroid.
+    // Region labels at each territory's centroid — engraved strata markers
+    // (Stage 2): larger, wide-tracked, low-alpha place names rather than
+    // debug text.
     if (secs != null) {
       final sums = <int, Offset>{};
       final counts = <int, int>{};
@@ -3591,8 +3613,13 @@ class _BoardPathPainter extends CustomPainter {
       sums.forEach((i, sum) {
         if (i >= secs.length) return;
         final c = sum / counts[i]!.toDouble();
-        _label(canvas, secs[i].name.toUpperCase(),
-            secs[i].color.withValues(alpha: 0.55), c, 11 / z);
+        _label(
+            canvas,
+            secs[i].name.toUpperCase(),
+            secs[i].color.withValues(alpha: kStrataLabelAlpha),
+            c,
+            kStrataLabelSize / z,
+            tracking: kStrataLabelTracking / z);
       });
     }
     // The destination anchor gets a name.
@@ -3692,8 +3719,8 @@ class _BoardPathPainter extends CustomPainter {
   }
 
   /// Painter-level text, centered on [pos].
-  void _label(
-      Canvas canvas, String text, Color color, Offset pos, double size) {
+  void _label(Canvas canvas, String text, Color color, Offset pos, double size,
+      {double tracking = 2}) {
     final tp = TextPainter(
       text: TextSpan(
         text: text,
@@ -3701,7 +3728,7 @@ class _BoardPathPainter extends CustomPainter {
           fontFamily: _kFont,
           fontSize: size,
           fontWeight: FontWeight.w900,
-          letterSpacing: 2,
+          letterSpacing: tracking,
           color: color,
           shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
         ),

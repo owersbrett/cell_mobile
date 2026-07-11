@@ -23,6 +23,17 @@ void main() {
       for (final s in map.spaces)
         Offset(30 + s.x * (world.width - 60), 30 + s.y * (world.height - 60)),
     ];
+    // Strata layer: bands derive from real node radii; painting must not
+    // throw with the full section set.
+    final strata = BoardStrataPainter(
+      spaces: map.spaces,
+      sections: map.sections,
+      centers: centers,
+    );
+    final strataRec = ui.PictureRecorder();
+    strata.paint(Canvas(strataRec), world);
+    strataRec.endRecording();
+
     for (final zoom in [1 / 7.2, 1.45, 5.0]) {
       final transform = TransformationController(
           Matrix4.identity()..scaleByDouble(zoom, zoom, zoom, 1));

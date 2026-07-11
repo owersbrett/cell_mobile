@@ -82,6 +82,44 @@ const double kAnchorGlowRadiusFactor = 1.7; // extra radius on top of 2.1×
 const double kAnchorRingAlpha = 0.6;
 const double kAnchorRingSpread = 2.2; // ring travels to this × anchor radius
 
+// --- Stage 2: strata — the eight bands of the descent ----------------------
+
+/// Peak alpha of each band's tint (kept atmospheric, ≤0.10 per spec).
+const double kStrataBandAlpha = 0.09;
+
+/// How much band colors sink toward black as depth increases (0 = full
+/// section color everywhere, 1 = the floor is pure black).
+const double kStrataDepthDarken = 0.55;
+
+/// Feathered edge width as a fraction of each band's thickness.
+const double kStrataFeatherFrac = 0.35;
+
+/// The dark pool at the center — the hole itself. The anchor's gold
+/// heartbeat is the only warmth inside it.
+const double kStrataVignetteAlpha = 0.45;
+
+// --- Stage 2: motes — sparse drifting dust per band ------------------------
+
+/// Motes per band (8 bands ⇒ ≤40 total on Down the Hole at 5).
+const int kMotesPerBand = 5;
+
+/// Seconds for one inward pass through a band (born at the outer edge,
+/// fades out at the inner edge — no teleport pop on wrap).
+const double kMoteDriftPeriodSec = 26.0;
+
+/// Seconds for a full slow swirl around the spiral center.
+const double kMoteSwirlPeriodSec = 60.0;
+
+/// Mote dot radius (× node radius) and peak alpha.
+const double kMoteRadiusFactor = 0.16;
+const double kMoteAlpha = 0.35;
+
+// --- Stage 2: engraved strata labels ---------------------------------------
+
+const double kStrataLabelSize = 16.0; // counter-scaled (/z) at draw
+const double kStrataLabelAlpha = 0.32;
+const double kStrataLabelTracking = 6.0;
+
 // --- Stage 1: gem glints ---------------------------------------------------
 
 /// A diamond glints once per period (phase-offset per gem); the glint lasts

@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -51,6 +52,113 @@ class BoardAmbientClock extends ChangeNotifier {
   }
 }
 
+/// One strata band of the descent: a radial annulus derived from the ACTUAL
+/// node positions of a section (never hardcoded radii — the spiral may be
+/// retuned).
+class _StrataBand {
+  final double inner;
+  final double outer;
+  final Color color;
+  _StrataBand(this.inner, this.outer, this.color);
+}
+
+/// The strata layer (Stage 2) — the eight bands of the descent as soft
+/// radial zones behind the spiral, darkening toward the center where the
+/// hole pools black. STATIC: no repaint listenable; it re-rasters only when
+/// geometry changes, so its RepaintBoundary costs nothing per frame.
+class BoardStrataPainter extends CustomPainter {
+  BoardStrataPainter({
+    required this.spaces,
+    required this.sections,
+    required this.centers,
+  }) {
+    if (centers.isEmpty || sections.isEmpty) return;
+    // The spiral's center is the anchor (order 87 sits at dead center).
+    _center = centers.last;
+    // Radial bounds per section from the real node positions.
+    final minR = List<double>.filled(sections.length, double.infinity);
+    final maxR = List<double>.filled(sections.length, 0);
+    for (var i = 0; i < centers.length; i++) {
+      final si = spaces[i].sectionIndex;
+      if (si >= sections.length) continue;
+      final d = (centers[i] - _center).distance;
+      if (d < minR[si]) minR[si] = d;
+      if (d > maxR[si]) maxR[si] = d;
+    }
+    // Depth = mean radius, outermost band brightest. Build one cached
+    // radial-gradient paint per band (constructor-time allocation only).
+    final order = [
+      for (var s = 0; s < sections.length; s++)
+        if (maxR[s] > 0 && minR[s].isFinite) s
+    ]..sort((a, b) => maxR[b].compareTo(maxR[a]));
+    var deepest = 1.0;
+    for (final s in order) {
+      if (maxR[s] > deepest) deepest = maxR[s];
+    }
+    for (final s in order) {
+      final thickness = (maxR[s] - minR[s]).clamp(1.0, double.infinity);
+      final feather = thickness * kStrataFeatherFrac;
+      final rIn = (minR[s] - feather * 0.5).clamp(0.0, double.infinity);
+      final rOut = maxR[s] + feather * 0.5;
+      final depth = 1.0 - ((minR[s] + maxR[s]) / 2) / deepest; // 0 rim → 1 core
+      final tint = Color.lerp(sections[s].color, Colors.black,
+          depth * kStrataDepthDarken)!
+          .withValues(alpha: kStrataBandAlpha);
+      final edge = rOut + feather;
+      _bands.add(Paint()
+        ..shader = ui.Gradient.radial(_center, edge, [
+          Colors.transparent,
+          tint,
+          tint,
+          Colors.transparent,
+        ], [
+          (rIn / edge).clamp(0.0, 1.0),
+          ((rIn + feather) / edge).clamp(0.0, 1.0),
+          (rOut / edge).clamp(0.0, 1.0),
+          1.0,
+        ]));
+      _bandEdges.add(edge);
+      if (minR[s] < _coreRadius) _coreRadius = maxR[s];
+    }
+    // The hole itself: a dark pool over the innermost reaches.
+    if (_coreRadius.isFinite) {
+      _vignette = Paint()
+        ..shader = ui.Gradient.radial(_center, _coreRadius, [
+          Colors.black.withValues(alpha: kStrataVignetteAlpha),
+          Colors.black.withValues(alpha: kStrataVignetteAlpha * 0.7),
+          Colors.transparent,
+        ], const [
+          0.0,
+          0.55,
+          1.0,
+        ]);
+    }
+  }
+
+  final List<BoardSpace> spaces;
+  final List<BoardSection> sections;
+  final List<Offset> centers;
+
+  Offset _center = Offset.zero;
+  final List<Paint> _bands = [];
+  final List<double> _bandEdges = [];
+  double _coreRadius = double.infinity;
+  Paint? _vignette;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (var i = 0; i < _bands.length; i++) {
+      canvas.drawCircle(_center, _bandEdges[i], _bands[i]);
+    }
+    final v = _vignette;
+    if (v != null) canvas.drawCircle(_center, _coreRadius, v);
+  }
+
+  @override
+  bool shouldRepaint(covariant BoardStrataPainter old) =>
+      old.centers != centers || old.sections != sections;
+}
+
 /// The ambient canvas layer — sits in the board Stack directly BELOW
 /// _BoardPathPainter (glows read as coming from under the world), wrapped in
 /// a RepaintBoundary by the caller. Repaints off the clock; per-frame work is
@@ -79,12 +187,32 @@ class BoardAmbientPainter extends CustomPainter {
           ..strokeCap = StrokeCap.round
           ..strokeWidth = nodeRadius * kRibbonPulseWidthFactor,
         _glint = Paint()..strokeCap = StrokeCap.round,
+        _mote = Paint(),
         // Cumulative arc length along the walk-order polyline, for the
         // traveling ribbon pulse. Computed once per painter (rebuilds are
         // rare); index i = distance from START to centers[i].
         _cum = List<double>.filled(centers.length, 0) {
     for (var i = 1; i < centers.length; i++) {
       _cum[i] = _cum[i - 1] + (centers[i] - centers[i - 1]).distance;
+    }
+    // Band radial bounds for the motes (same derivation as the strata layer:
+    // real node positions, anchor = spiral center).
+    if (centers.isNotEmpty && sections.isNotEmpty) {
+      final c = centers.last;
+      final minR = List<double>.filled(sections.length, double.infinity);
+      final maxR = List<double>.filled(sections.length, 0);
+      for (var i = 0; i < centers.length; i++) {
+        final si = spaces[i].sectionIndex;
+        if (si >= sections.length) continue;
+        final d = (centers[i] - c).distance;
+        if (d < minR[si]) minR[si] = d;
+        if (d > maxR[si]) maxR[si] = d;
+      }
+      for (var s = 0; s < sections.length; s++) {
+        if (maxR[s] > 0 && minR[s].isFinite && maxR[s] > minR[s]) {
+          _moteBands.add(_StrataBand(minR[s], maxR[s], sections[s].color));
+        }
+      }
     }
   }
 
@@ -109,7 +237,9 @@ class BoardAmbientPainter extends CustomPainter {
   final Paint _glow;
   final Paint _pulse;
   final Paint _glint;
+  final Paint _mote;
   final List<double> _cum;
+  final List<_StrataBand> _moteBands = [];
 
   /// Same size hierarchy _node() applies (anchor 2.1× / shop 1.6× /
   /// shortcut 0.85×) so glows hug their tiles.
@@ -136,9 +266,41 @@ class BoardAmbientPainter extends CustomPainter {
     final t = _clock.elapsed;
     final cull =
         _worldViewport().inflate(nodeRadius * kAmbientCullPadNodeRadii);
+    _motes(canvas, t, cull);
     _breathe(canvas, t, cull);
     _ribbonPulse(canvas, t, cull);
     _gemGlints(canvas, t, cull);
+  }
+
+  /// Deterministic pseudo-random in [0,1) from a stable index — no stored
+  /// state, safe across resume/replay.
+  double _hash(int k) {
+    final x = sin(k * 127.1 + 311.7) * 43758.5453;
+    return x - x.floorToDouble();
+  }
+
+  /// Sparse dust per band (Stage 2): each mote is a pure function of t and
+  /// its index — born at its band's outer edge, drifting gently INWARD (the
+  /// descent) while swirling slowly around the center, fading out before the
+  /// inner edge so the wrap never pops.
+  void _motes(Canvas canvas, double t, Rect cull) {
+    if (_moteBands.isEmpty) return;
+    final center = centers.last;
+    final total = kMotesPerBand * _moteBands.length;
+    for (var k = 0; k < total; k++) {
+      final band = _moteBands[k % _moteBands.length];
+      final seed = _hash(k);
+      final inFrac = (t / kMoteDriftPeriodSec + seed) % 1.0;
+      final r = band.outer - (band.outer - band.inner) * inFrac;
+      final theta = seed * 2 * pi * 7 + t * 2 * pi / kMoteSwirlPeriodSec;
+      final p = center + Offset(cos(theta) * r, sin(theta) * r);
+      if (!cull.contains(p)) continue;
+      final fade = sin(pi * inFrac);
+      _mote.color = band.color.withValues(alpha: kMoteAlpha * fade);
+      canvas.drawCircle(
+          p, nodeRadius * kMoteRadiusFactor * (0.7 + 0.6 * _hash(k + 97)),
+          _mote);
+    }
   }
 
   /// Phase-offset tile under-glows. Ordinary tiles breathe slowly in their
