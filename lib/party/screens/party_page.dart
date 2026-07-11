@@ -2436,6 +2436,16 @@ class _SpaceInspector extends StatelessWidget {
         controller.ghosts.where((g) => g.position == index).length;
     final prev = (index - 1 + n) % n;
     final nexts = space.nexts.isEmpty ? <int>[(index + 1) % n] : space.nexts;
+    // Incoming connections — the "go back" affordance: every fork arm and
+    // jump that LANDS here gets a tappable chip back to its origin.
+    final inForks = <int>[];
+    final inJumps = <int>[];
+    for (final p in controller.board) {
+      if (p.jumpTo == index) inJumps.add(p.order);
+      if (p.order + 1 != index && p.nexts.contains(index)) {
+        inForks.add(p.order);
+      }
+    }
     return Positioned(
       left: 12,
       right: 12,
@@ -2566,6 +2576,25 @@ class _SpaceInspector extends StatelessWidget {
                                       ? const Color(0xFF81C784)
                                       : const Color(0xFFE57373),
                                   Icons.moving),
+                            ),
+                          // Back-links: navigate to whatever leads HERE.
+                          for (final f in inForks)
+                            GestureDetector(
+                              onTap: () => onInspect?.call(f),
+                              child: _chip('← FORK ${f + 1}',
+                                  const Color(0xFFFFB74D), Icons.undo),
+                            ),
+                          for (final j in inJumps)
+                            GestureDetector(
+                              onTap: () => onInspect?.call(j),
+                              child: _chip(
+                                  index > j
+                                      ? '← LIFT ${j + 1}'
+                                      : '← SLIDE ${j + 1}',
+                                  index > j
+                                      ? const Color(0xFF81C784)
+                                      : const Color(0xFFE57373),
+                                  Icons.undo),
                             ),
                         ],
                       ),

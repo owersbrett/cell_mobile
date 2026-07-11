@@ -46,7 +46,9 @@ class RoundCeremonyScreen extends StatefulWidget {
 
 class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
     with TickerProviderStateMixin {
-  static const _revealDuration = Duration(milliseconds: 4200);
+  // Checkpoint 2026-07-10: the reveal starts sooner and runs tighter — the
+  // first bars rise almost immediately instead of ~600ms of dead air.
+  static const _revealDuration = Duration(milliseconds: 3000);
   static const _autoAdvanceDwell = Duration(seconds: 6);
 
   late final AnimationController _reveal;
@@ -142,22 +144,9 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
 
   // ── intervals: when each element pops during the reveal ──────────────────
 
-  /// Podium steps reveal worst-step-first, winner last.
-  Interval _stepInterval(int podiumPos, int podiumCount) {
-    // podiumPos 0 = winner. Reverse order: last step first.
-    final order = podiumCount - 1 - podiumPos;
-    final starts = [0.14, 0.34, 0.52];
-    final start = starts[math.min(order, starts.length - 1)];
-    final isWinner = podiumPos == 0;
-    // The winner pop is delayed and longer — the headline beat.
-    return isWinner
-        ? const Interval(0.60, 0.80, curve: Curves.elasticOut)
-        : Interval(start, start + 0.14, curve: Curves.easeOutBack);
-  }
-
   static const _bannerInterval =
-      Interval(0.78, 0.95, curve: Curves.easeOutBack);
-  static const _footerInterval = Interval(0.94, 1.0, curve: Curves.easeOut);
+      Interval(0.62, 0.80, curve: Curves.easeOutBack);
+  static const _footerInterval = Interval(0.80, 0.92, curve: Curves.easeOut);
 
   /// Boss-round stakes for a row: +1 potato to the top score, −1 to the
   /// bottom (mirrors _applyBossPotatoes so the swing is VISIBLE).
@@ -179,8 +168,6 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
     final c = widget.controller;
     final spec = c.currentSpec!;
     final sorted = _sorted;
-    final podium = sorted.take(3).toList();
-    final extras = sorted.skip(3).toList();
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -210,7 +197,8 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                               colors: [
                                 Potatuhs.gold,
                                 _winnerColor,
-                                for (final s in podium) s.player.color,
+                                for (final s in sorted.take(3))
+                                  s.player.color,
                               ],
                             ),
                           ),
@@ -224,8 +212,7 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                       _header(spec.name, c.round, c.totalRounds, t),
                       const SizedBox(height: 8),
                       _winnerBanner(t),
-                      Expanded(child: _podium(podium, spec.scoreUnit, t)),
-                      if (extras.isNotEmpty) _extrasList(extras, t),
+                      Expanded(child: _barChart(sorted, spec.scoreUnit, t)),
                       if (widget.showFeedback &&
                           !_feedbackDone &&
                           t >= _footerInterval.begin)
@@ -319,165 +306,121 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
     );
   }
 
-  Widget _podium(
-      List<MiniGameStanding> podium, String scoreUnit, double t) {
-    if (podium.isEmpty) return const SizedBox.shrink();
-    // Classic arrangement: 2nd · 1st · 3rd (winner centered, tallest).
-    final arranged = <MiniGameStanding?>[
-      podium.length > 1 ? podium[1] : null,
-      podium[0],
-      podium.length > 2 ? podium[2] : null,
-    ];
-    const stepHeights = [110.0, 160.0, 80.0];
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          for (var i = 0; i < arranged.length; i++)
-            Expanded(
-              child: arranged[i] == null
-                  ? const SizedBox.shrink()
-                  : _podiumColumn(
-                      arranged[i]!,
-                      stepHeights[i],
-                      scoreUnit,
-                      _stepInterval(
-                              arranged[i]!.rank == 0 ? 0 : (i == 0 ? 1 : 2),
-                              podium.length)
-                          .transform(t),
-                      isWinner: arranged[i]!.rank == 0,
-                    ),
-            ),
-        ],
-      ),
+  /// The results as an animated BAR CHART (checkpoint 2026-07-10): EVERY
+  /// player gets a bar, rank-ordered left → right, bars growing to their
+  /// score (height ∝ score / best score) with a small stagger. The score
+  /// counts up as the bar rises; the winner is crowned when the banner hits.
+  Widget _barChart(List<MiniGameStanding> all, String scoreUnit, double t) {
+    if (all.isEmpty) return const SizedBox.shrink();
+    var maxScore = 0;
+    for (final s in all) {
+      if (s.score > maxScore) maxScore = s.score;
+    }
+    final top = maxScore <= 0 ? 1 : maxScore;
+    return LayoutBuilder(
+      builder: (context, box) {
+        // Room above the bars for crown + portrait + name + score.
+        final barMax = math.max(60.0, box.maxHeight - 132);
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              for (var i = 0; i < all.length; i++)
+                Expanded(
+                    child: _bar(
+                        all[i], i, all.length, barMax, top, scoreUnit, t)),
+            ],
+          ),
+        );
+      },
     );
   }
 
-  Widget _podiumColumn(MiniGameStanding s, double stepHeight,
-      String scoreUnit, double a, {required bool isWinner}) {
+  Widget _bar(MiniGameStanding s, int i, int n, double barMax, int top,
+      String scoreUnit, double t) {
+    // Stagger by rank; compress the step when the field is large so the last
+    // bar still lands before the winner banner.
+    final step = n <= 5 ? 0.08 : 0.40 / n;
+    final a = Interval(0.04 + step * i,
+            (0.34 + step * i).clamp(0.0, 1.0), curve: Curves.easeOutCubic)
+        .transform(t);
     if (a == 0) return const SizedBox.shrink();
+    final isWinner = s.rank == 0;
     final color = s.player.color;
     final ringColor = isWinner ? Potatuhs.gold : color;
-    return Transform.translate(
-      offset: Offset(0, 30 * (1 - a)),
-      child: Opacity(
-        opacity: a.clamp(0.0, 1.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            if (isWinner)
-              const Icon(Icons.emoji_events, color: Potatuhs.gold, size: 30),
-            const SizedBox(height: 4),
-            _portrait(s.player, size: isWinner ? 72 : 56, ring: ringColor),
-            const SizedBox(height: 6),
+    final crowned = isWinner && t >= _bannerInterval.begin;
+    final h = math.max(14.0, barMax * (s.score / top) * a);
+    final shown = (s.score * a).round();
+    return Opacity(
+      opacity: a.clamp(0.0, 1.0),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          if (crowned)
+            const Icon(Icons.emoji_events, color: Potatuhs.gold, size: 26),
+          const SizedBox(height: 2),
+          _portrait(s.player, size: isWinner ? 50 : 40, ring: ringColor),
+          const SizedBox(height: 4),
+          Text(
+            s.player.name,
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Potatuhs.body(size: 11.5, color: Potatuhs.textPrimary)
+                .copyWith(fontWeight: FontWeight.bold),
+          ),
+          if (widget.controller.mode.isTeams)
             Text(
-              widget.controller.mode.isTeams
-                  ? '${s.player.name} · ${kTeamNames[s.player.teamIndex]}'
-                  : s.player.name,
-              textAlign: TextAlign.center,
+              kTeamNames[s.player.teamIndex],
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Potatuhs.body(size: 14, color: Potatuhs.textPrimary)
-                  .copyWith(fontWeight: FontWeight.bold),
+              style: Potatuhs.body(size: 9, color: Potatuhs.textSecondary),
             ),
-            Text(
-              '${s.score} $scoreUnit',
-              style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary),
-            ),
-            const SizedBox(height: 6),
-            Container(
-              height: stepHeight,
-              margin: const EdgeInsets.symmetric(horizontal: 6),
-              decoration: BoxDecoration(
-                borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(12)),
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    color.withValues(alpha: isWinner ? 0.55 : 0.35),
-                    color.withValues(alpha: 0.08),
-                  ],
-                ),
-                border: Border.all(
-                    color: ringColor.withValues(alpha: 0.6), width: 1.5),
-                boxShadow: isWinner
-                    ? Potatuhs.glow(Potatuhs.gold, strength: 0.35, blur: 20)
-                    : null,
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    '${s.rank + 1}',
-                    style: Potatuhs.display(
-                        size: isWinner ? 34 : 24,
-                        color: Potatuhs.textPrimary),
-                  ),
-                  const SizedBox(height: 2),
-                  _awardChip(s.award),
-                  if (_bossDelta(s) != 0) _potatoChip(_bossDelta(s)),
+          Text(
+            '$shown',
+            style: Potatuhs.body(size: 13, color: Potatuhs.textSecondary)
+                .copyWith(fontWeight: FontWeight.bold),
+          ),
+          _awardChip(s.award),
+          if (_bossDelta(s) != 0) _potatoChip(_bossDelta(s)),
+          const SizedBox(height: 4),
+          Container(
+            height: h,
+            margin: const EdgeInsets.symmetric(horizontal: 5),
+            decoration: BoxDecoration(
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(10)),
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  color.withValues(alpha: isWinner ? 0.55 : 0.35),
+                  color.withValues(alpha: 0.08),
                 ],
               ),
+              border: Border.all(
+                  color: ringColor.withValues(alpha: 0.6), width: 1.5),
+              boxShadow: crowned
+                  ? Potatuhs.glow(Potatuhs.gold, strength: 0.35, blur: 20)
+                  : null,
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _extrasList(List<MiniGameStanding> extras, double t) {
-    final a = const Interval(0.50, 0.64, curve: Curves.easeOut).transform(t);
-    if (a == 0) return const SizedBox.shrink();
-    return Opacity(
-      opacity: a,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
-        child: Column(
-          children: [
-            for (final s in extras)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 26,
+            child: h >= 34
+                ? Align(
+                    alignment: Alignment.topCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 6),
                       child: Text(
-                        '${s.rank + 1}.',
-                        style: Potatuhs.body(
-                            size: 14, color: Potatuhs.textSecondary),
+                        '${s.rank + 1}',
+                        style: Potatuhs.display(
+                            size: isWinner ? 26 : 20,
+                            color: Potatuhs.textPrimary),
                       ),
                     ),
-                    _portrait(s.player, size: 26, ring: s.player.color),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        widget.controller.mode.isTeams
-                            ? '${s.player.name} · ${kTeamNames[s.player.teamIndex]}'
-                            : s.player.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Potatuhs.body(
-                            size: 14, color: Potatuhs.textPrimary),
-                      ),
-                    ),
-                    Text(
-                      '${s.score}',
-                      style: Potatuhs.body(
-                          size: 13, color: Potatuhs.textSecondary),
-                    ),
-                    const SizedBox(width: 10),
-                    _awardChip(s.award),
-                    if (_bossDelta(s) != 0) ...[
-                      const SizedBox(width: 8),
-                      _potatoChip(_bossDelta(s)),
-                    ],
-                  ],
-                ),
-              ),
-          ],
-        ),
+                  )
+                : null,
+          ),
+        ],
       ),
     );
   }
