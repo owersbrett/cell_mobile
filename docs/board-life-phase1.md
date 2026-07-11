@@ -144,7 +144,33 @@ it's a lot better now" (walk camera zoom — user tuned kWalkCameraZoom to
 works as designed). Glow passed in round 2 ("massive improvement"). Gate
 closed: ambient spine live and visible, board-game walk confirmed.
 
-## Stage 1 — Ribbon + breathing tiles — IN PROGRESS
+## Stage 1 — Ribbon + breathing tiles (built 2026-07-10, commit 6fa3b6f)
+
+**What was built**
+
+- **The ribbon** (`_BoardPathPainter._paintTopology`): GameMap per-link
+  straight lines replaced by one smoothed road through the walk order
+  (midpoint quadratic smoothing) — a dark groove pass (`0xFF16161F`,
+  0.85×r wide) under per-node glow+core strokes whose linear gradients BLEND
+  section colors across band boundaries (no seams). Fork arms render as thin
+  dashed curved tributaries; ladders/snakes/slides as arcing curves (green/
+  red preserved); chevrons ride the road tangent. Applies to all three
+  GameMaps (shared renderer, per spec); legacy ring untouched.
+- **Traveling pulse** (`BoardAmbientPainter._ribbonPulse`): a three-slice
+  fading comet moving along the walk-order polyline START → DESTINATION
+  (inward on Down the Hole), one lap per `kRibbonPulsePeriodSec` (12 s).
+  Arc-length table precomputed per painter; per-frame cost is a few lerps.
+- **Breathing variants** (`_breathe`): ⚡ power-ups pulse faster/brighter
+  (2.1 s, +35% alpha); the anchor gets a slow deep GOLD heartbeat (sin³
+  thump, 2.9 s) at 2.1×1.35 radius — the destination as gravity well.
+- **Gem glints** (`_gemGlints`): each remaining path diamond flashes a brief
+  white cross-sparkle once per 6.5 s on golden-phase offsets; positions
+  identical to `_paintDiamonds`.
+- All new params in `board_life_tuning.dart` (ribbon widths/alphas, pulse
+  period/window, heartbeat, glint cadence). Ambient content remains gated to
+  `kBoardLifeMaps` (down_the_hole).
+
+**Checkpoint answers (Stage 1)** — PENDING
 
 ## Stage 2 — Strata atmosphere — NOT STARTED
 
