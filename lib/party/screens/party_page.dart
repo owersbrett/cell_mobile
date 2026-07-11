@@ -834,14 +834,16 @@ class _BoardScreenState extends State<_BoardScreen>
   void _reframeOnActive() =>
       _centerOn(controller.currentPlayer.position, animate: true);
 
-  /// Point the camera at board space [index] at [_frameZoom]. No-op until the
-  /// board has laid out at least once (geometry/viewport known). With
-  /// [animate], the camera glides there (step cadence) instead of snapping —
-  /// the walk's per-step camera move MUST use this or the board jumps.
-  void _centerOn(int index, {bool animate = false}) {
+  /// Point the camera at board space [index] — at [_frameZoom] by default, or
+  /// a caller-chosen [zoom] (the walk uses the wider [kWalkCameraZoom]). No-op
+  /// until the board has laid out at least once (geometry/viewport known).
+  /// With [animate], the camera glides there (step cadence) instead of
+  /// snapping — the walk's per-step camera move MUST use this or the board
+  /// jumps.
+  void _centerOn(int index, {bool animate = false, double zoom = _frameZoom}) {
     final geo = _geo;
     if (geo == null || _viewport == null) return;
-    _driveCamera(geo.nodeCenter(index), _frameZoom, animate: animate);
+    _driveCamera(geo.nodeCenter(index), zoom, animate: animate);
   }
 
   /// Step the zoom by [factor] (the +/− buttons), keeping whatever world point
@@ -972,12 +974,13 @@ class _BoardScreenState extends State<_BoardScreen>
       // By the time we're walking the dice have settled (locked face shown).
       if (!_diceCtrl.isCompleted) _diceCtrl.value = 1.0;
       _diceSettled = true;
-      // Bring the camera to the walker BEFORE the first hop, so the walk
-      // starts with the camera settled on the character (PARTY UX LAW: the
-      // player watches a journey, not a chase). The first timer tick lands a
-      // full step period later — the glide has finished by then.
+      // Bring the camera to the walker BEFORE the first hop — pulled out to
+      // the walk zoom so several spaces ahead are visible for the whole move
+      // (PARTY UX LAW: the player watches a journey, not a chase). The first
+      // timer tick lands a full step period later — the glide has finished.
       if (entering) {
-        _centerOn(controller.currentPlayer.position, animate: true);
+        _centerOn(controller.currentPlayer.position,
+            animate: true, zoom: kWalkCameraZoom);
       }
       _stepTimer ??= Timer.periodic(
           const Duration(milliseconds: kWalkStepPeriodMs), _onStepTick);
@@ -1023,8 +1026,10 @@ class _BoardScreenState extends State<_BoardScreen>
     });
     // The camera walks WITH the token, node to node — movement is a tracked
     // journey across the board, not a teleport at the edge of the frame.
-    // Animated: the camera glides in step with the token's slide.
-    _centerOn(controller.currentPlayer.position, animate: true);
+    // Animated: the camera glides in step with the token's slide, at the
+    // wider walk zoom so upcoming spaces are visible.
+    _centerOn(controller.currentPlayer.position,
+        animate: true, zoom: kWalkCameraZoom);
   }
 
   /// Where the current player can land with the rolled steps — shown after

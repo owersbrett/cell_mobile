@@ -57,3 +57,9 @@ const int kWalkHopMs = 240;
 /// is the visible rest on each node that makes movement read as board-game
 /// steps instead of continuous sliding.
 const int kWalkStepPeriodMs = 520;
+
+/// Camera zoom while the character is WALKING — wider than the resting frame
+/// zoom (1.45) so the player sees several spaces ahead during a move
+/// (checkpoint 2026-07-10). The camera glides out to this as the walk begins
+/// and back in on the next re-frame.
+const double kWalkCameraZoom = 1.0;
