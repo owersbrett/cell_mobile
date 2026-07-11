@@ -126,6 +126,32 @@ BoardSection _sec(
 
 double _clamp01(double v) => v < 0 ? 0 : (v > 1 ? 1 : v);
 
+/// Sample [curve] (u in 0..1) at [count] points spaced uniformly by ARC
+/// LENGTH, so consecutive spots sit a constant distance apart no matter how
+/// the underlying parameterization bunches up (the spiral piling its last
+/// spots onto the center, the S-curve slowing at its switchback peaks).
+List<Offset> _equalArcSamples(Offset Function(double u) curve, int count) {
+  const fine = 2048;
+  final pts = List<Offset>.generate(fine + 1, (i) => curve(i / fine));
+  final cum = List<double>.filled(fine + 1, 0);
+  for (var i = 1; i <= fine; i++) {
+    cum[i] = cum[i - 1] + (pts[i] - pts[i - 1]).distance;
+  }
+  final total = cum.last;
+  final out = <Offset>[];
+  var j = 0;
+  for (var k = 0; k < count; k++) {
+    final target = total * k / (count - 1);
+    while (j < fine - 1 && cum[j + 1] < target) {
+      j++;
+    }
+    final seg = cum[j + 1] - cum[j];
+    final t = seg <= 0 ? 0.0 : ((target - cum[j]) / seg).clamp(0.0, 1.0);
+    out.add(Offset.lerp(pts[j], pts[j + 1], t)!);
+  }
+  return out;
+}
+
 List<BoardSpace> _assembleSpaces({
   required int count,
   required int Function(int order) sectionIndexOf,
@@ -192,13 +218,20 @@ GameMap buildDownTheHole() {
         7, 'accelerator'),
   ];
 
-  Offset xy(int order) {
-    final t = order / 87.0;
-    final angle = t * 3.5 * 2 * pi; // ~3.5 turns, outer rim -> center
-    final radius = 1 - t;
+  // Uzumaki spiral, outer rim -> a FLOORED inner radius (never 0): the old
+  // `radius = 1 - t` parameterization at constant angular speed piled the last
+  // ~15 spots onto the center at near-zero spacing. Equal-arc-length sampling
+  // keeps every gap on the descent constant; the anchor (order 87) then sits
+  // ALONE at the dead center as the landmark, one dramatic final hop in.
+  final samples = _equalArcSamples((u) {
+    final angle = u * 3.5 * 2 * pi; // ~3.5 turns, outer rim inward
+    final radius = 1 - u * (1 - 0.24); // floor at 0.24 so the last band breathes
     return Offset(0.5 + radius * cos(angle) * 0.46,
         0.5 + radius * sin(angle) * 0.46);
-  }
+  }, 87);
+
+  Offset xy(int order) =>
+      order >= 87 ? const Offset(0.5, 0.5) : samples[order];
 
   final spaces = _assembleSpaces(
     count: 88,
@@ -334,10 +367,12 @@ GameMap buildThroughTheAether() {
         'everything'),
   ];
 
-  Offset xy(int order) {
-    final t = order / 87.0;
-    return Offset(0.5 + sin(t * 4 * pi) * 0.40, 0.05 + t * 0.90);
-  }
+  // Equal-arc-length sampling: the raw sine parameterization bunched spots at
+  // the switchback peaks (where the curve moves almost purely vertically).
+  final samples = _equalArcSamples(
+      (u) => Offset(0.5 + sin(u * 4 * pi) * 0.40, 0.05 + u * 0.90), 88);
+
+  Offset xy(int order) => samples[order];
 
   // Region-relative lose spots (offsets 3 & 8); precedence drops collisions.
   final loses = <int>{};
