@@ -2607,8 +2607,16 @@ class _BoardView extends StatelessWidget {
         final viewport = Size(constraints.maxWidth, constraints.maxHeight);
         // The board lives on a canvas larger than the viewport so the tiles get
         // real breathing room; you pan/zoom across it.
-        final canvas = Size(
-            viewport.width * kCanvasSpread, viewport.height * kCanvasSpread);
+        //
+        // The canvas derives from the SCREEN, not from [viewport]: the turn
+        // panel below the board changes height on every phase (ROLL → dice →
+        // walking), and a world scaled to the leftover area re-positions every
+        // node and token on each panel change — tokens visibly bounced on ROLL
+        // and the first hop rode still-moving geometry (checkpoint
+        // 2026-07-10). Screen size is stable for the whole match.
+        final screen = MediaQuery.sizeOf(context);
+        final canvas =
+            Size(screen.width * kCanvasSpread, screen.height * kCanvasSpread);
         final geo = _BoardGeometry(
           canvas,
           spaces: controller.board,
