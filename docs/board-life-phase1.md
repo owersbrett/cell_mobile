@@ -213,7 +213,30 @@ to an animated all-player BAR CHART (rank-ordered, height ∝ score, staggered
 rise, count-up, crown at the banner beat) starting almost immediately
 (3.0 s reveal, was 4.2 s with ~600 ms dead air).
 
-## Stage 2 — Strata atmosphere — NOT STARTED
+## Stage 2 — Strata atmosphere (built 2026-07-11, commit 26dfd9c)
+
+**What was built**
+
+- **`BoardStrataPainter`** (board_ambient.dart): the eight bands of the
+  descent as soft radial annuli BEHIND everything — bounds computed from the
+  actual node radii per section (spiral retunes stay safe), feathered
+  gradient edges, ≤0.09 alpha, band colors sinking toward black with depth
+  (`kStrataDepthDarken`), and a dark vignette pool at the center — the hole,
+  with the anchor's gold heartbeat as its only warmth. STATIC painter in its
+  own RepaintBoundary: re-rasters only on geometry change, zero per-frame
+  cost.
+- **Motes** (`BoardAmbientPainter._motes`): ≤40 (5 per band), deterministic —
+  position is a pure function of the clock and a hashed index (lockstep-safe,
+  resume-safe). Born at the band's outer edge, drifting INWARD while slowly
+  swirling around the center, fading out before the inner edge so the wrap
+  never pops. Viewport-culled.
+- **Engraved strata labels**: region names at 16/z with wide tracking at
+  alpha 0.32 (was 11/z at 0.55) — place-markers, not debug text. Tangent
+  alignment skipped per spec option (it fights TextPainter).
+- New tuning block in board_life_tuning.dart (band alpha/darken/feather,
+  vignette, mote counts/periods/size, label size/alpha/tracking).
+
+**Checkpoint answers (Stage 2)** — PENDING
 
 ## Stage 3 — Dwellers — NOT STARTED
 
