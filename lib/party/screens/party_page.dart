@@ -18,6 +18,8 @@ import '../party_models.dart';
 import '../party_session_store.dart';
 import '../net/party_net.dart';
 import '../net/party_session.dart';
+import 'board_ambient.dart';
+import 'board_life_tuning.dart';
 import 'party_setup_page.dart';
 import 'round_ceremony.dart';
 import 'round_flair.dart';
@@ -64,10 +66,6 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   PartyController? _payoffController;
   int _wheelPayoffDone = 0;
   int _flairDoneRound = 1; // rounds 2+ get a flair beat before the board
-
-  /// Attempt key of the mini-game whose countdown has begun on this device —
-  /// hides the intro-only vote pill during live play.
-  String? _playingAttempt;
 
   // ── Attract autopilot ─────────────────────────────────────────────────────
   static const _kAutoRounds = 5;
@@ -237,7 +235,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
         a.confirmMiniGameResults();
         break;
       case PartyPhase.wheelSpin:
-        a.wheelStop();
+        a.wheelStop(-1); // autoplay has no eyes on the wheel: tape draw
         break;
       case PartyPhase.gameOver:
         setState(_startAutoGame); // endless: restart the board
@@ -307,36 +305,79 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   }
 
   Future<void> _confirmQuit() async {
+    // Modal language per potatuhs-design: dark panel, gold accent, display
+    // title, one FILLED primary action (the safe one) and one quiet escape —
+    // not two grey text links fighting for attention.
     final quit = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Potatuhs.inkPanel,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(
-              color: Potatuhs.gold.withValues(alpha: 0.5), width: 1.5),
+      barrierColor: Colors.black.withValues(alpha: 0.72),
+      builder: (context) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(24, 26, 24, 20),
+          decoration: BoxDecoration(
+            color: Potatuhs.inkPanel,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+                color: Potatuhs.gold.withValues(alpha: 0.5), width: 1.5),
+            boxShadow: Potatuhs.glow(Potatuhs.gold, strength: 0.18, blur: 30),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('QUIT GAME?',
+                  textAlign: TextAlign.center,
+                  style: Potatuhs.display(size: 24, color: Potatuhs.gold)),
+              const SizedBox(height: 10),
+              Text('This run ends here — progress will be lost.',
+                  textAlign: TextAlign.center,
+                  style:
+                      Potatuhs.body(size: 15, color: Potatuhs.textSecondary)),
+              const SizedBox(height: 22),
+              GestureDetector(
+                onTap: () => Navigator.pop(context, false),
+                child: Container(
+                  height: 54,
+                  decoration: BoxDecoration(
+                    color: Potatuhs.gold,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: Potatuhs.glow(Potatuhs.gold,
+                        strength: 0.35, blur: 16),
+                  ),
+                  child: Center(
+                    child: Text('KEEP PLAYING',
+                        style: Potatuhs.body(
+                                size: 16,
+                                weight: FontWeight.w900,
+                                color: Colors.black)
+                            .copyWith(letterSpacing: 2)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              GestureDetector(
+                onTap: () => Navigator.pop(context, true),
+                child: Container(
+                  height: 48,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: Center(
+                    child: Text('QUIT',
+                        style: Potatuhs.body(
+                                size: 14,
+                                weight: FontWeight.w700,
+                                color: Potatuhs.textFaint)
+                            .copyWith(letterSpacing: 2)),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
-        title: Text('QUIT GAME?',
-            style: Potatuhs.display(size: 22)),
-        content: Text('Progress will be lost.',
-            style: Potatuhs.body(size: 15, color: Potatuhs.textSecondary)),
-        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text('KEEP PLAYING',
-                style: Potatuhs.body(
-                    size: 14, weight: FontWeight.w700, color: Potatuhs.gold)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('QUIT',
-                style: Potatuhs.body(
-                    size: 14,
-                    weight: FontWeight.w700,
-                    color: Potatuhs.textFaint)),
-          ),
-        ],
       ),
     );
     if (quit == true && mounted) {
@@ -528,7 +569,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           );
         }
         final attemptKey = 'mg_${c.round}_${player.index}_${spec.id}';
-        final host = MiniGameHost(
+        return MiniGameHost(
           // New host per attempt so state never leaks between players.
           key: ValueKey(attemptKey),
           spec: spec,
@@ -537,36 +578,15 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           onExit: () => actions.recordMiniScore(0),
           // Attract: the bot plays each player's attempt and auto-submits.
           autoPlay: widget.autoPilot,
-          // Intro-only chrome gate: the vote pill leaves with the countdown
-          // so it can never eat a gameplay tap.
-          onStarted: () => setState(() => _playingAttempt = attemptKey),
-        );
-        return Stack(
-          children: [
-            host,
-            // VOTE TO SKIP — the table's escape hatch (majority skips the
-            // round; replaces both the debug skip and the old auto-bank
-            // watchdog). Sits under the game's own START button and leaves
-            // with it — never over live gameplay.
-            if (_playingAttempt != attemptKey)
-              Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Center(
-                    child: _VoteSkipPill(
-                      controller: c,
-                      actions: actions,
-                      mySeat: isOnline ? mySlot : c.miniPlayerIndex,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          // VOTE TO SKIP — the table's escape hatch (majority skips the
+          // round; replaces both the debug skip and the old auto-bank
+          // watchdog). Rides the intro's START row and leaves with it —
+          // never over live gameplay.
+          introAction: _VoteSkipButton(
+            controller: c,
+            actions: actions,
+            mySeat: isOnline ? mySlot : c.miniPlayerIndex,
+          ),
         );
       case PartyPhase.minigameResults:
         // The round ceremony: everyone watches the same podium reveal; the
@@ -740,7 +760,7 @@ class _BoardScreen extends StatefulWidget {
 }
 
 class _BoardScreenState extends State<_BoardScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   // The controller now moves tokens one space at a time; this timer just
   // paces the walk and pauses automatically at forks / the market.
   Timer? _stepTimer;
@@ -761,6 +781,21 @@ class _BoardScreenState extends State<_BoardScreen>
   /// board doesn't snap back to 1× every time a token takes a step.
   final TransformationController _boardTransform = TransformationController();
 
+  /// Tweens the camera between nodes during the walk (and on re-frames) with
+  /// the SAME duration/curve as the token's AnimatedPositioned slide, so the
+  /// camera and character travel together. Writing the target transform
+  /// directly made the whole board JUMP a node each step while the token then
+  /// glided to catch up — the "visceral jerk".
+  late final AnimationController _camCtrl;
+  late final Animation<double> _camEase;
+  Matrix4Tween? _camTween;
+
+  /// Last zoom scale [_onZoom] rebuilt for. Board furniture (nodes, links,
+  /// tokens) only counter-scales on SCALE changes — pan/translation is applied
+  /// by the InteractiveViewer itself — so camera tweens and drags must not
+  /// trigger a whole-board rebuild every frame.
+  double _lastZoomScale = 1.0;
+
   /// One-time flag so we frame the board (center + initial zoom) on first
   /// layout, then leave the camera under the player's control.
   bool _framed = false;
@@ -770,8 +805,16 @@ class _BoardScreenState extends State<_BoardScreen>
   /// The board space currently open in the tap-to-inspect sheet, if any.
   int? _inspecting;
 
+  /// The board-life ambient clock (Stage 0 spine) — null on maps without a
+  /// life layer, so the legacy ring and unstyled maps pay zero cost. Ticks
+  /// only while the board is on screen: this State unmounts during
+  /// mini-games/cutscenes (the phase switch swaps screens), and
+  /// [didChangeAppLifecycleState] pauses it while the app is backgrounded.
+  BoardAmbientClock? _ambient;
+
   /// How zoomed-in the board opens / re-frames to. Above 1.0 so the tiles land
-  /// comfortably spaced instead of crammed; the player can pinch out to 0.5×.
+  /// comfortably spaced instead of crammed; the player can pinch out as far as
+  /// a whole-board overview (minScale = 1 / kCanvasSpread).
   static const double _frameZoom = 1.45;
 
   PartyController get controller => widget.controller;
@@ -788,37 +831,73 @@ class _BoardScreenState extends State<_BoardScreen>
   }
 
   /// Re-center the camera on the active player at the framing zoom.
-  void _reframeOnActive() => _centerOn(controller.currentPlayer.position);
+  void _reframeOnActive() =>
+      _centerOn(controller.currentPlayer.position, animate: true);
 
   /// Point the camera at board space [index] at [_frameZoom]. No-op until the
-  /// board has laid out at least once (geometry/viewport known).
-  void _centerOn(int index) {
+  /// board has laid out at least once (geometry/viewport known). With
+  /// [animate], the camera glides there (step cadence) instead of snapping —
+  /// the walk's per-step camera move MUST use this or the board jumps.
+  void _centerOn(int index, {bool animate = false}) {
     final geo = _geo;
+    if (geo == null || _viewport == null) return;
+    _driveCamera(geo.nodeCenter(index), _frameZoom, animate: animate);
+  }
+
+  /// Step the zoom by [factor] (the +/− buttons), keeping whatever world point
+  /// is at the viewport center fixed so the board scales in place instead of
+  /// drifting. Clamped to the same limits the pinch gesture obeys.
+  void _zoomBy(double factor) {
     final viewport = _viewport;
-    if (geo == null || viewport == null) return;
-    final target = geo.nodeCenter(index);
-    const z = _frameZoom;
+    if (_geo == null || viewport == null) return;
+    final m = _boardTransform.value;
+    final z0 = m.getMaxScaleOnAxis();
+    final z = (z0 * factor)
+        .clamp(_BoardView.kMinZoom, _BoardView.kMaxZoom)
+        .toDouble();
+    if ((z - z0).abs() < 0.001) return;
+    final t = m.getTranslation();
+    final focus = Offset(
+        (viewport.width / 2 - t.x) / z0, (viewport.height / 2 - t.y) / z0);
+    _driveCamera(focus, z, animate: true);
+  }
+
+  /// Write the camera transform that puts world point [focus] at the viewport
+  /// center at zoom [z] — the single path every programmatic camera move
+  /// (re-frames, walk steps, zoom buttons) goes through.
+  void _driveCamera(Offset focus, double z, {required bool animate}) {
+    final geo = _geo!;
+    final viewport = _viewport!;
     const margin = _kBoardBoundaryMargin;
 
-    // Translation that would center [target] at zoom [z].
-    double tx = viewport.width / 2 - target.dx * z;
-    double ty = viewport.height / 2 - target.dy * z;
+    // Translation that would center [focus] at zoom [z].
+    double tx = viewport.width / 2 - focus.dx * z;
+    double ty = viewport.height / 2 - focus.dy * z;
 
     // Clamp to the SAME pan boundary the InteractiveViewer enforces (canvas
     // size + boundaryMargin). Otherwise centering an edge tile writes a
     // transform outside the legal region and the player's first drag snaps the
     // camera back — the "fighting the camera" feel. min(lo, hi) guards the
     // clamp bounds in case the canvas is ever smaller than the viewport.
-    const maxTx = margin * z;
-    const maxTy = margin * z;
+    final maxTx = margin * z;
+    final maxTy = margin * z;
     final minTx = viewport.width - (geo.size.width + margin) * z;
     final minTy = viewport.height - (geo.size.height + margin) * z;
     tx = tx.clamp(min(minTx, maxTx), maxTx);
     ty = ty.clamp(min(minTy, maxTy), maxTy);
 
-    _boardTransform.value = Matrix4.identity()
+    final targetMatrix = Matrix4.identity()
       ..translateByDouble(tx, ty, 0, 1)
       ..scaleByDouble(z, z, z, 1);
+    if (!animate) {
+      _camCtrl.stop();
+      _camTween = null;
+      _boardTransform.value = targetMatrix;
+      return;
+    }
+    _camTween =
+        Matrix4Tween(begin: _boardTransform.value.clone(), end: targetMatrix);
+    _camCtrl.forward(from: 0);
   }
 
   @override
@@ -832,14 +911,46 @@ class _BoardScreenState extends State<_BoardScreen>
           setState(() => _diceSettled = true);
         }
       });
+    // Matches the token's AnimatedPositioned slide (230ms easeInOut) so the
+    // camera arrives at the node exactly when the character does.
+    _camCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 230),
+    );
+    _camEase = CurvedAnimation(parent: _camCtrl, curve: Curves.easeInOut);
+    _camCtrl.addListener(() {
+      final tween = _camTween;
+      if (tween != null) _boardTransform.value = tween.evaluate(_camEase);
+    });
     _boardTransform.addListener(_onZoom);
+    final mapId = controller.gameMap?.id;
+    if (mapId != null && kBoardLifeMaps.contains(mapId)) {
+      _ambient = BoardAmbientClock(this)..start();
+      WidgetsBinding.instance.addObserver(this);
+    }
     _syncMovement();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Battery: the ambient clock must not tick while the app is backgrounded.
+    if (state == AppLifecycleState.resumed) {
+      _ambient?.start();
+    } else {
+      _ambient?.stop();
+    }
   }
 
   // Rebuild on zoom so the board furniture (nodes, links, tokens) can
   // counter-scale to a constant on-screen size — zooming spreads the layout
-  // apart while the dots stay the same size, instead of ballooning.
+  // apart while the dots stay the same size, instead of ballooning. Gated to
+  // actual SCALE changes: pans (drags, per-step camera tweens) re-transform
+  // the existing raster via the InteractiveViewer and must not rebuild the
+  // whole board every frame.
   void _onZoom() {
+    final s = _boardTransform.value.getMaxScaleOnAxis();
+    if ((s - _lastZoomScale).abs() < 0.001) return;
+    _lastZoomScale = s;
     if (mounted) setState(() {});
   }
 
@@ -894,6 +1005,10 @@ class _BoardScreenState extends State<_BoardScreen>
     // canonical stream and the phase will leave 'moving' when the replica
     // catches up, which causes _syncMovement to cancel this timer naturally.
     actions.advanceStep();
+    // The camera walks WITH the token, node to node — movement is a tracked
+    // journey across the board, not a teleport at the edge of the frame.
+    // Animated: the camera glides in step with the token's slide.
+    _centerOn(controller.currentPlayer.position, animate: true);
   }
 
   /// Where the current player can land with the rolled steps — shown after
@@ -938,6 +1053,11 @@ class _BoardScreenState extends State<_BoardScreen>
   void dispose() {
     _stepTimer?.cancel();
     _diceCtrl.dispose();
+    _camCtrl.dispose();
+    if (_ambient != null) {
+      WidgetsBinding.instance.removeObserver(this);
+      _ambient!.dispose();
+    }
     _boardTransform.dispose();
     super.dispose();
   }
@@ -953,25 +1073,38 @@ class _BoardScreenState extends State<_BoardScreen>
               children: [
                 _topBar(),
                 _scoreboard(),
-                _narratorBar(),
+                // The narrator does NOT persist during normal turns — hosts
+                // engage the player inside cutscenes (ceremony/flair/wheel);
+                // the board belongs to the board (PARTY UX LAW).
                 const SizedBox(height: 4),
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
-                    child: GestureDetector(
-                      onDoubleTap: _reframeOnActive,
-                      child: _BoardView(
-                        controller: controller,
-                        positionOf: (p) => p.position,
-                        highlightPlayer: controller.currentPlayer.index,
-                        transformController: _boardTransform,
-                        viewScale: _boardTransform.value.getMaxScaleOnAxis(),
-                        onLayout: _onBoardLayout,
-                        onTapSpace: (space, i) =>
-                            setState(() => _inspecting = i),
-                        inspectedIndex: _inspecting,
-                        landingPreview: _landingPreview(),
-                      ),
+                    child: Stack(
+                      children: [
+                        GestureDetector(
+                          onDoubleTap: _reframeOnActive,
+                          child: _BoardView(
+                            controller: controller,
+                            positionOf: (p) => p.position,
+                            highlightPlayer: controller.currentPlayer.index,
+                            ambientClock: _ambient,
+                            transformController: _boardTransform,
+                            viewScale:
+                                _boardTransform.value.getMaxScaleOnAxis(),
+                            onLayout: _onBoardLayout,
+                            onTapSpace: (space, i) =>
+                                setState(() => _inspecting = i),
+                            inspectedIndex: _inspecting,
+                            landingPreview: _landingPreview(),
+                          ),
+                        ),
+                        // Zoom stepper — sits under the top bar's center-me /
+                        // standings buttons so the camera controls read as one
+                        // cluster. Pinch still works; these are the
+                        // discoverable version.
+                        Positioned(top: 6, right: 2, child: _zoomButtons()),
+                      ],
                     ),
                   ),
                 ),
@@ -1021,102 +1154,10 @@ class _BoardScreenState extends State<_BoardScreen>
     );
   }
 
-  // ----------------------------------------------------------- narrator
-
-  /// Hash calls the play-by-play. A persistent strip under the scoreboard that
-  /// narrates each beat of the game in Hash's voice (leaf-green, the company's
-  /// steady grinder).
-  Widget _narratorBar() {
-    const hashGreen = Color(0xFF7CB342);
-    return Container(
-      margin: const EdgeInsets.fromLTRB(10, 4, 10, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFF13200D),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: hashGreen.withValues(alpha: 0.45)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: hashGreen,
-              shape: BoxShape.circle,
-              border: Border.all(color: hashGreen, width: 1.5),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Image.asset(
-              'assets/characters/hash.png',
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => const Center(
-                child: Text('H',
-                    style: TextStyle(
-                        fontFamily: _kFont,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black)),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('HASH · NARRATOR',
-                    style: Potatuhs.label(color: const Color(0xFF9CCC65))),
-                const SizedBox(height: 1),
-                Text(
-                  _hashNarration(),
-                  style:
-                      Potatuhs.body(size: 13, color: Potatuhs.textSecondary),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// One line of Hash commentary for the current game beat. Prefers the live
-  /// turn log (the real effect that just happened); otherwise a phase prompt.
-  String _hashNarration() {
-    final c = controller;
-    final last = c.turnLog.isNotEmpty ? c.turnLog.last : null;
-    final who = c.currentPlayer.name;
-    switch (c.phase) {
-      case PartyPhase.turnStart:
-        return "Uhhh… $who, you're up. Give the dice a rip.";
-      case PartyPhase.wheelSpin:
-        return last ?? 'The wheel is up. Someone hit STOP.';
-      case PartyPhase.rollResult:
-        return last ?? "$who lets it fly!";
-      case PartyPhase.moving:
-        return last ?? "$who is on the move…";
-      case PartyPhase.chooseBranch:
-        return "Fork in the road — $who, climb out or push deeper?";
-      case PartyPhase.shopOffer:
-        return last ?? "The market's open! Spend up, $who?";
-      case PartyPhase.cardDecision:
-        return last ?? "A card! $who, what'll it be?";
-      case PartyPhase.spaceResolved:
-        return last ?? "And $who sticks the landing.";
-      case PartyPhase.minigameIntro:
-        return "Mini-game time — everybody plays for the diamonds!";
-      case PartyPhase.passPhone:
-        return "Pass the phone — $who, you're on deck.";
-      case PartyPhase.minigamePlaying:
-        return "Go go go!";
-      case PartyPhase.minigameResults:
-        return "Let's tally it up…";
-      case PartyPhase.gameOver:
-        return "Uhhh… and that's a wrap. What a game, folks.";
-    }
-  }
+  // Narrator bar REMOVED (Brett, 2026-07-07): the narrator never persists as
+  // a modal over the board — hosts engage the player inside cutscenes
+  // (ceremony, wheel payoffs, round flair) via party_dialogue.dart. It also
+  // violated the voice law (Hash borrowed Russ's "uhhh…").
 
   Widget _topBar() {
     return Padding(
@@ -1182,6 +1223,29 @@ class _BoardScreenState extends State<_BoardScreen>
     );
   }
 
+  /// The +/− zoom stepper, styled to match the top bar's camera buttons.
+  Widget _zoomButtons() {
+    Widget btn(IconData icon, VoidCallback onTap) => GestureDetector(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              color: const Color(0x88000000),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Icon(icon, color: Colors.white54, size: 18),
+          ),
+        );
+    return Column(
+      children: [
+        btn(Icons.zoom_in, () => _zoomBy(1.5)),
+        const SizedBox(height: 8),
+        btn(Icons.zoom_out, () => _zoomBy(1 / 1.5)),
+      ],
+    );
+  }
+
   Widget _scoreboard() {
     final teams = controller.mode.isTeams;
     final ranked = controller.finalPlayerRanking;
@@ -1207,6 +1271,8 @@ class _BoardScreenState extends State<_BoardScreen>
               rank: i,
               color: ranked[i].color,
               name: ranked[i].name,
+              asset: kCharacters[ranked[i].character % kCharacters.length]
+                  .asset,
               potatoes: ranked[i].potatoes,
               diamonds: ranked[i].diamonds,
               atp: ranked[i].atp,
@@ -1219,11 +1285,15 @@ class _BoardScreenState extends State<_BoardScreen>
     );
   }
 
-  /// One ranked entry on the leaderboard strip. Rank 0 is crowned in gold.
+  /// One ranked entry on the leaderboard strip. Identity is the character
+  /// portrait + name; the three stats read left-to-right in fixed order with
+  /// unambiguous icons: 🥔 potatoes (the win), ◆ diamonds (the spend),
+  /// ⚡ ATP (the fuel). No decoration that isn't information.
   Widget _chip({
     required int rank,
     required Color color,
     required String name,
+    String? asset,
     required int potatoes,
     required int diamonds,
     int? atp,
@@ -1233,11 +1303,11 @@ class _BoardScreenState extends State<_BoardScreen>
   }) {
     final isLeader = rank == 0;
     return Container(
-      margin: const EdgeInsets.only(right: 6),
-      padding: const EdgeInsets.fromLTRB(6, 0, 10, 0),
+      margin: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.fromLTRB(6, 4, 12, 4),
       decoration: BoxDecoration(
         color: color.withValues(alpha: highlight ? 0.30 : 0.12),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
             color: isLeader
                 ? Potatuhs.gold
@@ -1248,62 +1318,96 @@ class _BoardScreenState extends State<_BoardScreen>
       ),
       child: Row(
         children: [
-          // Rank badge — crown for the leader, number otherwise.
-          Container(
-            width: 19,
-            height: 19,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: isLeader ? Potatuhs.gold : Colors.white12,
+          // The character IS the identity: portrait in a color ring, with the
+          // leader's crown riding the corner instead of replacing the face.
+          SizedBox(
+            width: 30,
+            height: 30,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: color,
+                    border: Border.all(
+                        color: isLeader ? Potatuhs.gold : Colors.black26,
+                        width: 1.5),
+                  ),
+                  child: asset != null
+                      ? ClipOval(
+                          child: Image.asset(asset,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) =>
+                                  const SizedBox.shrink()),
+                        )
+                      : null,
+                ),
+                Positioned(
+                  right: -4,
+                  bottom: -3,
+                  child: Container(
+                    width: 15,
+                    height: 15,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isLeader ? Potatuhs.gold : Colors.black87,
+                      border: Border.all(
+                          color: isLeader ? Colors.black26 : Colors.white24),
+                    ),
+                    child: isLeader
+                        ? const Icon(Icons.emoji_events,
+                            size: 9, color: Colors.black)
+                        : Text('${rank + 1}',
+                            style: const TextStyle(
+                                fontFamily: _kFont,
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white)),
+                  ),
+                ),
+              ],
             ),
-            child: isLeader
-                ? const Icon(Icons.emoji_events, size: 11, color: Colors.black)
-                : Text('${rank + 1}',
-                    style: const TextStyle(
-                        fontFamily: _kFont,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white70)),
           ),
-          const SizedBox(width: 7),
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
           Text(
             name,
             style: TextStyle(
                 fontFamily: _kFont,
-                fontSize: 12,
+                fontSize: 13,
                 fontWeight: bold || highlight || isLeader
                     ? FontWeight.bold
                     : FontWeight.w600,
                 color: Colors.white),
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
           Text('🥔$potatoes',
-              style: const TextStyle(fontFamily: _kFont, fontSize: 12)),
-          const SizedBox(width: 4),
-          Icon(Icons.savings, size: 11, color: _kAccent),
+              style: const TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold)),
+          const SizedBox(width: 7),
+          const Icon(Icons.diamond, size: 13, color: Color(0xFF7EE8FA)),
           const SizedBox(width: 2),
           Text('$diamonds',
               style: const TextStyle(
                   fontFamily: _kFont,
-                  fontSize: 11,
-                  color: Colors.white70)),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF7EE8FA))),
           if (atp != null) ...[
-            const SizedBox(width: 4),
-            const Icon(Icons.bolt, size: 11, color: Potatuhs.gold),
+            const SizedBox(width: 7),
+            const Icon(Icons.bolt, size: 13, color: Potatuhs.gold),
             Text('$atp',
                 style: const TextStyle(
-                    fontFamily: _kFont, fontSize: 11, color: Potatuhs.gold)),
+                    fontFamily: _kFont, fontSize: 13, color: Potatuhs.gold)),
           ],
           for (final icon in icons) ...[
-            const SizedBox(width: 4),
-            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 5),
+            Icon(icon, size: 13, color: color),
           ],
         ],
       ),
@@ -1805,10 +1909,10 @@ class _BoardScreenState extends State<_BoardScreen>
                 color: const Color(0xFFD7A86E),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: Center(
+              child: const Center(
                 child: Text(
                   'BUY POTATO  ·  $kPotatoPrice 💎',
-                  style: const TextStyle(
+                  style: TextStyle(
                       fontFamily: _kFont,
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -1956,6 +2060,15 @@ class _BoardScreenState extends State<_BoardScreen>
               fontFamily: _kFont, fontSize: 12, color: Colors.white60),
         ),
         const SizedBox(height: 12),
+        // A drawn common card is revealed and WAITS — the player plays it.
+        if (card.options.isEmpty)
+          PotatuhsButton(
+            label: 'PLAY IT',
+            display: true,
+            fill: accent,
+            textColor: Colors.black,
+            onTap: () => actions.chooseCardOption(0),
+          ),
         for (var i = 0; i < card.options.length; i++)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
@@ -2440,12 +2553,17 @@ class _BoardView extends StatelessWidget {
   /// ringed so branch picks and the +1 boost are informed.
   final Set<int> landingPreview;
 
+  /// Board-life clock; non-null only on maps with a life layer
+  /// ([kBoardLifeMaps]). Drives the ambient canvas below the path painter.
+  final BoardAmbientClock? ambientClock;
+
   const _BoardView({
     required this.controller,
     required this.positionOf,
     required this.highlightPlayer,
     required this.transformController,
     required this.viewScale,
+    this.ambientClock,
     this.onLayout,
     this.onTapSpace,
     this.inspectedIndex,
@@ -2454,8 +2572,17 @@ class _BoardView extends StatelessWidget {
 
   /// How much larger than the viewport the board canvas is. A roomier canvas
   /// spreads the tiles apart in absolute terms; you pan/zoom across it rather
-  /// than cramming all 88 spaces into one screen.
-  static const double kCanvasSpread = 1.8;
+  /// than cramming all 88 spaces into one screen. Node size is capped
+  /// (see [_BoardGeometry]) so growing this multiplies the DISTANCE between
+  /// spots, not the spots themselves (Brett, 2026-07-10: the 1.8× board read
+  /// far too congested — spots need ~4× the breathing room).
+  static const double kCanvasSpread = 7.2;
+
+  /// Zoom limits shared by the pinch gesture and the +/− buttons. Min is low
+  /// enough that a full zoom-out fits the whole kCanvasSpread-sized board in
+  /// the viewport for an overview.
+  static const double kMinZoom = 1 / kCanvasSpread;
+  static const double kMaxZoom = 5.0;
 
   @override
   Widget build(BuildContext context) {
@@ -2499,10 +2626,10 @@ class _BoardView extends StatelessWidget {
             // size and the far bottom/right of the board (incl. the boss/anchor)
             // is unreachable by any pan — the "can't scroll to see where I'm
             // going" bug. `constrained: false` lets the child take its natural
-            // 1.8× size so the whole board is pannable.
+            // [kCanvasSpread]× size so the whole board is pannable.
             constrained: false,
-            minScale: 0.5,
-            maxScale: 5.0,
+            minScale: kMinZoom,
+            maxScale: kMaxZoom,
             boundaryMargin: const EdgeInsets.all(_kBoardBoundaryMargin),
             child: SizedBox(
               width: canvas.width,
@@ -2510,6 +2637,29 @@ class _BoardView extends StatelessWidget {
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
+            // Board-life ambient layer (Stage 0) — BELOW the path painter so
+            // glows come from under the world. RepaintBoundary isolates its
+            // per-frame ticks from the 88 node widgets; the painter culls to
+            // the live viewport and never hit-tests.
+            if (ambientClock != null && controller.gameMap != null)
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: BoardAmbientPainter(
+                      clock: ambientClock!,
+                      spaces: controller.board,
+                      sections: controller.gameMap!.sections,
+                      centers: [
+                        for (var i = 0; i < controller.board.length; i++)
+                          geo.nodeCenter(i)
+                      ],
+                      nodeRadius: geo.nodeRadius,
+                      transform: transformController,
+                      viewport: viewport,
+                    ),
+                  ),
+                ),
+              ),
             // Territory watermarks — legacy ring only (the new maps carry
             // their own 8–10 sections and skip the centroid watermark).
             if (controller.gameMap == null)
@@ -2738,7 +2888,7 @@ class _BoardView extends StatelessWidget {
     final isAnchor = geo.useXY && space.order == controller.board.length - 1;
     // Shop is a landmark — draw it larger; shortcut nodes slightly smaller.
     final r = geo.nodeRadius *
-        (isAnchor ? 1.9 : isShop ? 1.35 : space.isShortcut ? 0.85 : 1.0);
+        (isAnchor ? 2.1 : isShop ? 1.6 : space.isShortcut ? 0.85 : 1.0);
     var color = controller.sectionOf(space).color;
 
     IconData icon;
@@ -2852,9 +3002,11 @@ class _BoardView extends StatelessWidget {
     for (var j = 0; j < players.length; j++) {
       final p = players[j];
       final isCurrent = p.index == highlightPlayer;
-      final tr = geo.nodeRadius * (isCurrent ? 0.52 : 0.44);
-      // Lone token sits on the node; groups fan out around its rim.
-      final fan = players.length > 1 ? geo.nodeRadius * 0.75 : 0.0;
+      // A lone player OWNS the node — the avatar fills it so you can see who
+      // is where from across the table. Groups shrink and fan out to share.
+      final solo = players.length == 1;
+      final tr = geo.nodeRadius * (solo ? (isCurrent ? 1.0 : 0.9) : 0.62);
+      final fan = solo ? 0.0 : geo.nodeRadius * 0.85;
       final angle = 2 * pi * j / players.length - pi / 2;
       final off = Offset(cos(angle) * fan, sin(angle) * fan);
       final asset = kCharacters[p.character % kCharacters.length].asset;
@@ -2952,9 +3104,12 @@ class _BoardGeometry {
       ..addRRect(RRect.fromRectAndRadius(rect, Radius.circular(corner)));
     _metric = loop.computeMetrics().first;
     _len = _metric.length;
+    // Sized for legibility at the default frame (Brett, 2026-07-07: the old
+    // board read ~4× too small — spaces and avatars must be identifiable at
+    // a glance, not decoded).
     final base = useXY
-        ? min(15.0, min(rect.width, rect.height) / 18)
-        : min(22.0, _len / kMainLoopLength * 0.42);
+        ? min(24.0, min(rect.width, rect.height) / 11)
+        : min(26.0, _len / kMainLoopLength * 0.46);
     nodeRadius = base / viewScale;
   }
 
@@ -3192,6 +3347,13 @@ class _BoardPathPainter extends CustomPainter {
       final anchor = geo.nodeCenter(spaces.length - 1);
       _label(canvas, 'DESTINATION', const Color(0xFFFFD54F),
           anchor + Offset(0, 26 / z), 10 / z);
+    }
+    // Every market is named too — the potato buy points must be identifiable
+    // at a glance, not decoded from an icon.
+    for (final s in spaces) {
+      if (s.type != SpaceType.shop) continue;
+      _label(canvas, 'MARKET', const Color(0xFFD7A86E),
+          geo.nodeCenter(s.order) + Offset(0, geo.nodeRadius * 2.2), 10 / z);
     }
     for (final s in spaces) {
       final j = s.jumpTo;
@@ -3543,7 +3705,9 @@ class _MiniGameIntroScreen extends StatelessWidget {
   }
 }
 
-/// Debug-only: override the randomly chosen game on the intro screen.
+/// Debug-only: override the randomly chosen game on the intro screen. The
+/// full registry is ~126 chips, so the chip cloud lives inside a fixed-height
+/// scroll box — it must never grow the (non-scrolling) intro column.
 class _DebugGamePicker extends StatelessWidget {
   final PartyController controller;
   final PartyActions actions;
@@ -3554,6 +3718,8 @@ class _DebugGamePicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final specs = [...MiniGameRegistry.enabledSpecs]
+      ..sort((a, b) => a.name.compareTo(b.name));
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
@@ -3563,6 +3729,7 @@ class _DebugGamePicker extends StatelessWidget {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           const Text(
             'DEBUG · FORCE GAME',
@@ -3574,11 +3741,14 @@ class _DebugGamePicker extends StatelessWidget {
                 color: Color(0xFFFF8A65)),
           ),
           const SizedBox(height: 6),
-          Wrap(
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 128),
+            child: SingleChildScrollView(
+              child: Wrap(
             spacing: 6,
             runSpacing: 6,
             children: [
-              for (final s in MiniGameRegistry.enabledSpecs)
+              for (final s in specs)
                 GestureDetector(
                   onTap: () => actions.debugSetSpec(s),
                   child: Container(
@@ -3608,6 +3778,8 @@ class _DebugGamePicker extends StatelessWidget {
                   ),
                 ),
             ],
+              ),
+            ),
           ),
         ],
       ),
@@ -4048,21 +4220,26 @@ class _NodeDecorPainter extends CustomPainter {
     }
   }
 
-  /// A striped market awning over the top half of the stall.
+  /// A striped market awning over the top half of the stall. Each stripe is a
+  /// true annular sector (outer arc -> inner arc), NOT a filled wedge with the
+  /// interior overpainted — this is a foregroundPainter, so any "cut it back
+  /// out" disc would erase the node (icon, fill, ring) underneath and leave
+  /// markets reading as featureless black holes.
   void _awning(Canvas canvas, Offset c) {
     const stripes = 5;
-    final rOut = radius * 1.34;
-    final rect = Rect.fromCircle(center: c, radius: rOut);
+    final outer = Rect.fromCircle(center: c, radius: radius * 1.34);
+    final inner = Rect.fromCircle(center: c, radius: radius * 1.04);
     final a = Paint()..color = accent;
     final b = Paint()..color = const Color(0xFFF4EDE3);
     const start = pi; // left
     const sweep = pi / stripes; // across the top half
     for (var i = 0; i < stripes; i++) {
-      canvas.drawArc(rect, start + i * sweep, sweep, true, i.isEven ? a : b);
+      final band = Path()
+        ..arcTo(outer, start + i * sweep, sweep, true)
+        ..arcTo(inner, start + (i + 1) * sweep, -sweep, false)
+        ..close();
+      canvas.drawPath(band, i.isEven ? a : b);
     }
-    // Cut the wedge interior back out so only an awning band remains.
-    canvas.drawCircle(
-        c, radius * 1.02, Paint()..color = const Color(0xFF0B0B12));
     // Scalloped hem.
     final hem = Paint()..color = accent;
     for (var i = 0; i < stripes; i++) {
@@ -4102,12 +4279,14 @@ class _NodeDecorPainter extends CustomPainter {
 
 /// The table's escape hatch: one vote per seat; a strict majority skips the
 /// round's mini-game outright (no scores, no awards). Replaces the debug SKIP
-/// and the old duration+grace auto-bank watchdog.
-class _VoteSkipPill extends StatelessWidget {
+/// and the old duration+grace auto-bank watchdog. Rendered by MiniGameHost on
+/// the intro's START row (via `introAction`) in the host's secondary-button
+/// style — same height as START, compact width.
+class _VoteSkipButton extends StatelessWidget {
   final PartyController controller;
   final PartyActions actions;
   final int mySeat; // -1 = unknown (spectating replica edge)
-  const _VoteSkipPill({
+  const _VoteSkipButton({
     required this.controller,
     required this.actions,
     required this.mySeat,
@@ -4115,45 +4294,49 @@ class _VoteSkipPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final votes = controller.skipVotes.length;
-    final needed = controller.skipVotesNeeded;
-    final voted = mySeat >= 0 && controller.skipVotes.contains(mySeat);
-    final canVote = mySeat >= 0 && !voted;
-    return GestureDetector(
-      onTap: canVote ? actions.voteSkip : null,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-              color: voted
-                  ? Potatuhs.gold.withValues(alpha: 0.7)
-                  : Colors.white24),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.skip_next,
-                size: 15, color: voted ? Potatuhs.gold : Colors.white54),
-            const SizedBox(width: 6),
-            Text(
-              votes > 0
-                  ? (voted
-                      ? 'VOTED TO SKIP · $votes/$needed'
-                      : 'VOTE TO SKIP · $votes/$needed')
-                  : 'VOTE TO SKIP',
-              style: TextStyle(
-                fontFamily: _kFont,
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.5,
-                color: voted ? Potatuhs.gold : Colors.white54,
-              ),
+    // Listen directly so live vote counts repaint even though the host owns
+    // this subtree's rebuilds.
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final votes = controller.skipVotes.length;
+        final needed = controller.skipVotesNeeded;
+        final voted = mySeat >= 0 && controller.skipVotes.contains(mySeat);
+        final canVote = mySeat >= 0 && !voted;
+        final color = voted ? Potatuhs.gold : Colors.white70;
+        return GestureDetector(
+          onTap: canVote ? actions.voteSkip : null,
+          child: Container(
+            height: 56,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                  color: voted
+                      ? Potatuhs.gold.withValues(alpha: 0.8)
+                      : Colors.white24),
             ),
-          ],
-        ),
-      ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.skip_next, size: 18, color: color),
+                const SizedBox(height: 2),
+                Text(
+                  votes > 0 ? 'SKIP $votes/$needed' : 'SKIP',
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.2,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
