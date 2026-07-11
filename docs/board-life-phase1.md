@@ -170,7 +170,39 @@ closed: ambient spine live and visible, board-game walk confirmed.
   period/window, heartbeat, glint cadence). Ambient content remains gated to
   `kBoardLifeMaps` (down_the_hole).
 
-**Checkpoint answers (Stage 1)** — PENDING
+**Checkpoint answers (Stage 1), round 5 — 2026-07-10**
+
+Ribbon continuous ✓ ("things have improved… oddities and general ui
+improvements later"). Walking smooth ✓. Idle good ✓. No new jank ✓ (notes
+first-animation jank → shader warmup at MVP). Bands fine ✓ ("the board
+should feel a bit chaotic… the ux should just be smooth so the user can be
+confident that there are rules being followed"). Fixed same-day from this
+round: oval board → SQUARE world (circle spiral); zoom-out couldn't fit the
+map → kZoomOutMin 0.05 + counter-scale floor (minimap of dots); fork/jump
+long-distance moves get a 700 ms glide (token + camera, build-time
+detection); comet never seen → 2 comets, wider/brighter; anchor's odd "gold
+arc" was the shop awning (removed — flag + heartbeat is its identity) and
+heartbeat made visible (stronger glow + expanding ring); "floating
+rhombuses" → faceted brilliant-cut gems; ops (Peeler/Masher) at character
+size.
+
+**Backlog captured from round 5 (gameplay/lockstep — NOT view-layer; needs
+controller work + Brett's design sign-off):**
+
+- Fork destinations "link back" — clicking to return through a fork
+  (topology/gameplay; MAPS_SPEC is locked — awaiting clarification).
+- Comet "boof": dawdling on your turn costs ATP/diamonds when the comet
+  passes (needs host-authoritative timing — wall-clock is banned in the
+  controller).
+- Card pile / discard pile players can review; finite deck = counting intel.
+- Market → "Potato Shack" restyle; anchor → "the Hole": throw diamonds in
+  with risk tiers (x = 1 potato guaranteed; 2x = 90% chance of 2; 3x = 2
+  guaranteed + 80% of a third).
+- Landing-on-occupied pushes the occupant back one space (cascading until an
+  empty node).
+- Landing on ANY tile should be more exciting → Stage 4 (landing FX) covers
+  the visual half.
+- Shader warmup pass at MVP for first-animation jank.
 
 ## Stage 2 — Strata atmosphere — NOT STARTED
 
