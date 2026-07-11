@@ -1722,21 +1722,31 @@ class _LegendCarouselState extends State<_LegendCarousel> {
   bool get _hasDemo => widget.spec.demoBuilder != null;
   int get _pageCount => _frames.length + (_hasDemo ? 1 : 0);
 
+  /// Dwell per card. Reading pace, not slideshow pace (checkpoint
+  /// 2026-07-11: 3.2s flipped rules ~4× faster than they could be read).
+  static const _kDwell = Duration(milliseconds: 12800);
+
   @override
   void initState() {
     super.initState();
     if (_hasDemo) _demoSession = MiniGameSession(spec: widget.spec);
-    if (_pageCount > 1) {
-      _auto = Timer.periodic(const Duration(milliseconds: 3200), (_) {
-        if (!mounted || !_controller.hasClients) return;
-        final next = (_page + 1) % _pageCount;
-        _controller.animateToPage(
-          next,
-          duration: const Duration(milliseconds: 450),
-          curve: Curves.easeInOut,
-        );
-      });
-    }
+    _armAuto();
+  }
+
+  /// One-shot advance armed after every page change (auto OR manual swipe),
+  /// so a manual swipe resets the reading clock instead of the carousel
+  /// flipping a card out from under the player.
+  void _armAuto() {
+    _auto?.cancel();
+    if (_pageCount <= 1) return;
+    _auto = Timer(_kDwell, () {
+      if (!mounted || !_controller.hasClients) return;
+      _controller.animateToPage(
+        (_page + 1) % _pageCount,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeInOut,
+      );
+    });
   }
 
   @override
@@ -1774,7 +1784,10 @@ class _LegendCarouselState extends State<_LegendCarousel> {
             height: 168,
             child: PageView.builder(
               controller: _controller,
-              onPageChanged: (i) => setState(() => _page = i),
+              onPageChanged: (i) {
+                setState(() => _page = i);
+                _armAuto();
+              },
               itemCount: _pageCount,
               itemBuilder: (context, i) {
                 if (_hasDemo && i == _pageCount - 1) return _demoCard();
