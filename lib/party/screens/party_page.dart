@@ -66,6 +66,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   PartyController? _payoffController;
   int _wheelPayoffDone = 0;
   int _flairDoneRound = 1; // rounds 2+ get a flair beat before the board
+  bool _boardIntroDone = false; // entry flyover plays once per match
 
   // ── Attract autopilot ─────────────────────────────────────────────────────
   static const _kAutoRounds = 5;
@@ -462,6 +463,7 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       _payoffController = c;
       _wheelPayoffDone = 0;
       _flairDoneRound = 1;
+      _boardIntroDone = false;
     }
     final wheelResult = c.lastWheelResult;
     if (c.phase != PartyPhase.wheelSpin &&
@@ -524,6 +526,8 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           actions: actions,
           interactive: boardInteractive(),
           onQuit: _confirmQuit,
+          introFlyover: !_boardIntroDone,
+          onIntroDone: () => _boardIntroDone = true,
         );
       case PartyPhase.minigameIntro:
         // Held for its moment (SPEC: a dialog beat before the game): local
@@ -748,11 +752,21 @@ class _BoardScreen extends StatefulWidget {
   final PartyActions actions;
   final bool interactive;
   final VoidCallback onQuit;
+
+  /// True on the FIRST board appearance of a match: play the establishing
+  /// flyover (zoomed-out pan across the board, then dive to the player)
+  /// instead of snapping. [onIntroDone] marks it consumed so post-mini-game
+  /// re-entries snap as usual.
+  final bool introFlyover;
+  final VoidCallback? onIntroDone;
+
   const _BoardScreen({
     required this.controller,
     required this.actions,
     required this.interactive,
     required this.onQuit,
+    this.introFlyover = false,
+    this.onIntroDone,
   });
 
   @override
@@ -833,8 +847,34 @@ class _BoardScreenState extends State<_BoardScreen>
     _viewport = viewport;
     if (!_framed) {
       _framed = true;
-      _centerOn(controller.currentPlayer.position);
+      if (widget.introFlyover) {
+        _entryFlyover();
+      } else {
+        _centerOn(controller.currentPlayer.position);
+      }
     }
+  }
+
+  /// The establishing shot, once per match: snap fully zoomed out at the
+  /// board's left edge, pan across to the right edge, then dive down to the
+  /// current player at [kEntrySettleZoom]. Aborts politely if gameplay takes
+  /// the camera first (a roll during the pan).
+  Future<void> _entryFlyover() async {
+    final geo = _geo;
+    final viewport = _viewport;
+    if (geo == null || viewport == null) return;
+    widget.onIntroDone?.call();
+    // Fill the viewport's height with the board — on a portrait screen the
+    // square board overflows horizontally, giving the pan its travel.
+    final fit = max(kZoomOutMin, viewport.height / geo.size.height);
+    final midY = geo.size.height / 2;
+    _driveCamera(Offset(0, midY), fit, animate: false);
+    await _driveCamera(Offset(geo.size.width, midY), fit,
+        animate: true, durationMs: kEntryPanMs);
+    if (!mounted || controller.phase == PartyPhase.moving) return;
+    await _driveCamera(geo.nodeCenter(controller.currentPlayer.position),
+        kEntrySettleZoom,
+        animate: true, durationMs: kEntryDiveMs);
   }
 
   /// Re-center the camera on the active player at the framing zoom.
@@ -877,8 +917,10 @@ class _BoardScreenState extends State<_BoardScreen>
 
   /// Write the camera transform that puts world point [focus] at the viewport
   /// center at zoom [z] — the single path every programmatic camera move
-  /// (re-frames, walk steps, zoom buttons) goes through.
-  void _driveCamera(Offset focus, double z,
+  /// (re-frames, walk steps, zoom buttons, the entry flyover) goes through.
+  /// The returned future completes when the glide finishes — or immediately
+  /// if it's interrupted by a newer camera move (never hangs on cancel).
+  Future<void> _driveCamera(Offset focus, double z,
       {required bool animate, int durationMs = kWalkHopMs}) {
     final geo = _geo!;
     final viewport = _viewport!;
@@ -907,14 +949,17 @@ class _BoardScreenState extends State<_BoardScreen>
       _camCtrl.stop();
       _camTween = null;
       _boardTransform.value = targetMatrix;
-      return;
+      return Future<void>.value();
     }
     _camTween =
         Matrix4Tween(begin: _boardTransform.value.clone(), end: targetMatrix);
     // Long traversals (fork arms, slides) glide over kJumpSlideMs instead of
     // the hop beat — duration is per-move, matching the token's slide.
     _camCtrl.duration = Duration(milliseconds: durationMs);
-    _camCtrl.forward(from: 0);
+    return _camCtrl
+        .forward(from: 0)
+        .orCancel
+        .then<void>((_) {}, onError: (_) {});
   }
 
   @override

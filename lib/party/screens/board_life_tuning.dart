@@ -119,6 +119,18 @@ const int kJumpSlideMs = 700;
 /// ENTIRE square board in the viewport at once.
 const double kZoomOutMin = 0.05;
 
+// --- Entry flyover: the board's establishing shot (once per match) --------
+
+/// Fully-zoomed-out pan across the whole board, left edge → right edge.
+const int kEntryPanMs = 1600;
+
+/// The dive from the pan down to the current player.
+const int kEntryDiveMs = 1000;
+
+/// Zoom the flyover settles on — about half the resting frame zoom (1.45),
+/// so entry ends wider than the usual close frame.
+const double kEntrySettleZoom = 0.72;
+
 /// Below this zoom the furniture stops counter-scaling (node/stroke sizes
 /// freeze in world units), so zooming further out shrinks the board into a
 /// readable minimap of dots instead of 88 overlapping constant-size circles.
