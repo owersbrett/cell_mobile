@@ -489,41 +489,53 @@ class _WheelScreenState extends State<WheelScreen>
         child: Container(
           color: Colors.black.withValues(alpha: 0.92),
           padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'WELCOME TO $mapName',
-                textAlign: TextAlign.center,
-                style: Potatuhs.display(size: 24, color: Potatuhs.gold),
-              ),
-              const SizedBox(height: 14),
-              // The board: every rule, visible the whole time. Characters
-              // talk OVER it — they never have to carry the information.
-              _rulesBoard(mapSub),
-              const SizedBox(height: 16),
-              DialogueStrip(beat: beats[page]),
-              const SizedBox(height: 18),
-              Text(
-                last
-                    ? 'TAP TO SPIN  ·  ${page + 1}/${beats.length}'
-                    : 'TAP TO CONTINUE  ·  ${page + 1}/${beats.length}',
-                textAlign: TextAlign.center,
-                style:
-                    Potatuhs.body(size: 12, color: Potatuhs.textSecondary),
-              ),
-              const SizedBox(height: 8),
-              GestureDetector(
-                onTap: () => setState(() => _ceremonyDismissed = true),
-                child: Text(
-                  'SKIP',
-                  textAlign: TextAlign.center,
-                  style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary)
-                      .copyWith(decoration: TextDecoration.underline),
+          // Center-until-overflow-then-scroll: on short viewports the fixed
+          // content (rules board + dialogue) can exceed the screen by a few
+          // px — scroll instead of overflowing.
+          child: LayoutBuilder(
+            builder: (context, box) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: box.maxHeight),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'WELCOME TO $mapName',
+                      textAlign: TextAlign.center,
+                      style: Potatuhs.display(size: 24, color: Potatuhs.gold),
+                    ),
+                    const SizedBox(height: 14),
+                    // The board: every rule, visible the whole time. Characters
+                    // talk OVER it — they never have to carry the information.
+                    _rulesBoard(mapSub),
+                    const SizedBox(height: 16),
+                    DialogueStrip(beat: beats[page]),
+                    const SizedBox(height: 18),
+                    Text(
+                      last
+                          ? 'TAP TO SPIN  ·  ${page + 1}/${beats.length}'
+                          : 'TAP TO CONTINUE  ·  ${page + 1}/${beats.length}',
+                      textAlign: TextAlign.center,
+                      style: Potatuhs.body(
+                          size: 12, color: Potatuhs.textSecondary),
+                    ),
+                    const SizedBox(height: 8),
+                    GestureDetector(
+                      onTap: () => setState(() => _ceremonyDismissed = true),
+                      child: Text(
+                        'SKIP',
+                        textAlign: TextAlign.center,
+                        style: Potatuhs.body(
+                                size: 12, color: Potatuhs.textSecondary)
+                            .copyWith(decoration: TextDecoration.underline),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ),

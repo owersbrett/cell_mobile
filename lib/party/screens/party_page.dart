@@ -1012,7 +1012,15 @@ class _BoardScreenState extends State<_BoardScreen>
     // In online mode advanceStep() is a no-op; the host drives movement via the
     // canonical stream and the phase will leave 'moving' when the replica
     // catches up, which causes _syncMovement to cancel this timer naturally.
-    actions.advanceStep();
+    //
+    // setState: the token's hop and the camera's glide are driven by this SAME
+    // tick. The board rebuild must not depend on the controller-notify chain —
+    // when it stalls, the camera (which needs no rebuild) marches to the
+    // destination while the character stands still until some foreign rebuild
+    // teleports it (checkpoint 2026-07-10).
+    setState(() {
+      actions.advanceStep();
+    });
     // The camera walks WITH the token, node to node — movement is a tracked
     // journey across the board, not a teleport at the edge of the frame.
     // Animated: the camera glides in step with the token's slide.
@@ -3531,14 +3539,20 @@ class _MiniGameIntroScreen extends StatelessWidget {
                     children: [
                       Icon(section.icon, size: 14, color: section.color),
                       const SizedBox(width: 6),
-                      Text(
-                        "LEADER'S TERRITORY: ${section.name}",
-                        style: TextStyle(
-                            fontFamily: _kFont,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 1,
-                            color: section.color),
+                      // Long section names (ENGINE ROOM, BOBO THE WATCHER)
+                      // overflow phone widths — ellipsize, never overflow.
+                      Flexible(
+                        child: Text(
+                          "LEADER'S TERRITORY: ${section.name}",
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontFamily: _kFont,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1,
+                              color: section.color),
+                        ),
                       ),
                     ],
                   ),

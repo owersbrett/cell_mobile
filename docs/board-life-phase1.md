@@ -92,7 +92,32 @@ phase was even for."
   automated `board_play_test.dart` guard, not a manual check.
 - *Q9:* deferred by user until the phase proves itself.
 
-**Checkpoint answers, round 2** — PENDING
+**Checkpoint answers, round 2 — 2026-07-10 — glow PASSED, walk desync found**
+
+Verbatim: "the glow is actually a massive improvement, feels a lot better. i
+just hit roll though, and then it moves the camera to where i 'will' be
+moving to. then, if i pinch the map, all of the sudden my character goes
+there. i should be navigating to it. otherwise, all the tests pass"
+
+**Diagnosis + fix:** the camera and the token had different drivers. The
+camera is timer-driven (`_centerOn` writes the transform directly — needs no
+widget rebuild); the token's `AnimatedPositioned` retargets only when the
+board REBUILDS, which relied on the controller-notify → AnimatedBuilder
+chain. When that chain stalls, the camera marches node-by-node to the
+destination while the character stands still — until any foreign rebuild
+(the pinch's `_onZoom` setState) snaps it there. Fix: `_onStepTick` now wraps
+`advanceStep()` in its own `setState`, so the SAME tick drives both the hop
+and the glide — they can no longer desync. Regression guard:
+`test/party/walk_visual_test.dart` drives a real autopilot game and asserts
+tokens move through many WORLD positions (measured relative to the
+board-fixed START label so camera motion cancels out — absolute positions
+would mask a frozen token).
+
+The harness also caught three real phone-size overflows (390×844), fixed:
+the LEADER'S TERRITORY badge (party_page), the mini-game HUD name row
+(mini_game_host), and the wheel-ceremony overlay (wheel_screen — now
+centers-until-overflow-then-scrolls). Same class as the PotatuhsButton
+overflow fixed earlier today.
 
 ## Stage 1 — Ribbon + breathing tiles — NOT STARTED
 

@@ -981,29 +981,38 @@ class _GameHud extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (onPause != null) ...[
-                    GestureDetector(
-                      onTap: onPause,
-                      behavior: HitTestBehavior.opaque,
-                      child: const Padding(
-                        padding: EdgeInsets.only(right: 8, top: 2, bottom: 2),
-                        child: Icon(Icons.pause_rounded,
-                            color: Colors.white54, size: 20),
+              // Flexible + ellipsis: long game names must yield to the score
+              // instead of overflowing the HUD on phone widths.
+              Flexible(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (onPause != null) ...[
+                      GestureDetector(
+                        onTap: onPause,
+                        behavior: HitTestBehavior.opaque,
+                        child: const Padding(
+                          padding:
+                              EdgeInsets.only(right: 8, top: 2, bottom: 2),
+                          child: Icon(Icons.pause_rounded,
+                              color: Colors.white54, size: 20),
+                        ),
+                      ),
+                    ],
+                    Flexible(
+                      child: Text(
+                        spec.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white54),
                       ),
                     ),
                   ],
-                  Text(
-                    spec.name,
-                    style: const TextStyle(
-                        fontFamily: _kFont,
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white54),
-                  ),
-                ],
+                ),
               ),
               Text(
                 '${session.score} ${spec.scoreUnit}',
