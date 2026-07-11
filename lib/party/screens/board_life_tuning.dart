@@ -62,4 +62,4 @@ const int kWalkStepPeriodMs = 520;
 /// zoom (1.45) so the player sees several spaces ahead during a move
 /// (checkpoint 2026-07-10). The camera glides out to this as the walk begins
 /// and back in on the next re-frame.
-const double kWalkCameraZoom = 1.0;
+const double kWalkCameraZoom = 0.7;
