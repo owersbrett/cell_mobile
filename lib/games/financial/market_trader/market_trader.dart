@@ -47,6 +47,9 @@ const List<int> _kMtLotPresets  = [1, 5, 25];
 const double _kMtEventImpulse   = 22.0;
 const double _kMtEventDuration  = 2.5;
 const double _kMtEventCooldown  = 14.0;
+// Every event is a PURCHASE: this flat price is deducted from AVAILABLE cash
+// and booked as a realized expense against P&L (exactly like the cancel fee).
+const double _kMtEventCost      = 60.0;
 
 // --- Hustle (comeback) tuning -------------------------------------------------
 // Each pound of the HUSTLE button earns this much FREE CASH. Labor income: it
@@ -588,14 +591,22 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   void _triggerEvent(int idx) {
     if (!widget.session.isRunning) return;
     if (_eventCooldowns[idx] > 0) return;
+    if (_available < _kMtEventCost - 1e-6) return; // events are a PURCHASE
     setState(() {
       final ev = _kMtEvents[idx];
       final impulse = ev.sign * _kMtEventImpulse;
+      // Pay for the event: cash out of AVAILABLE, and the cost is a realized
+      // expense against P&L — same accounting as the cancel fee.
+      _available -= _kMtEventCost;
+      _realized  -= _kMtEventCost;
+      _syncScore();
       _news       = _MtNews(ev.label.toUpperCase(), impulse, _kMtEventDuration);
       _newsTimer  = _kMtEventDuration;
       _trend      = ev.sign * 0.95;
       _trendTimer = _kMtEventDuration;
       _eventCooldowns[idx] = _kMtEventCooldown;
+      _popLabel('-\$${_kMtEventCost.toStringAsFixed(0)}',
+          const Color(0xFFEF5350), yFrac: 0.40);
     });
   }
 
@@ -1146,8 +1157,11 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         children: List.generate(_kMtEvents.length, (i) {
           final ev       = _kMtEvents[i];
           final cd       = _eventCooldowns[i];
-          final ready    = cd <= 0;
-          final progress = ready ? 1.0 : 1.0 - (cd / _kMtEventCooldown);
+          final onCd     = cd > 0;
+          final progress = onCd ? 1.0 - (cd / _kMtEventCooldown) : 1.0;
+          // Events are a purchase: unaffordable renders exactly like
+          // cooldown-disabled and taps do nothing.
+          final ready    = !onCd && _available >= _kMtEventCost - 1e-6;
           final isUp     = ev.sign > 0;
           final accentCol =
               isUp ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
@@ -1184,7 +1198,8 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                         const SizedBox(height: 1),
                         FittedBox(
                           fit: BoxFit.scaleDown,
-                          child: Text(ev.label,
+                          child: Text(
+                              '${ev.label} · \$${_kMtEventCost.toStringAsFixed(0)}',
                               style: Potatuhs.label(
                                 size: 9,
                                 color: ready
@@ -1195,7 +1210,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                       ],
                     ),
                   ),
-                  if (!ready)
+                  if (onCd)
                     SizedBox(
                       width: 52,
                       height: 52,
@@ -1203,7 +1218,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                         painter: _MtCooldownRingPainter(progress, accentCol),
                       ),
                     ),
-                  if (!ready)
+                  if (onCd)
                     Positioned(
                       bottom: 3,
                       right: 4,

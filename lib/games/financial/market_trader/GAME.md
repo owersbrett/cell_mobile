@@ -38,10 +38,26 @@ live lot in their label.
 - **SELL `lot`** market-sells the lot from held shares; **SELL ALL** dumps the whole position.
 - Realized P&L `(price − avgCost) × qty` accumulates and is reported to the session each sell.
 
-## Feature 3 — Market events (the player can move the market)
-Buttons the player taps to shove the price, each on its own **cooldown** (no spamming). They inject a
-strong, sustained price impulse (extend the existing `_news`/impulse system). Timing them with your
-position is the skill.
+## Feature 3 — Market events (the player can move the market — FOR A PRICE)
+Buttons the player taps to shove the price. **Every event is a PURCHASE** (Brett, 2026-07-11): tapping
+one deducts its price from AVAILABLE cash, and the cost is booked as a **realized expense against P&L**
+(exactly like the cancel fee) — the score honestly reflects "spent $60 to make $300 on the pump" versus
+a mistimed event that just burned money.
+
+- **Price:** flat `$60` per event (`_kMtEventCost`, ONE tunable const — ~6% of starting capital; a
+  well-timed event on a sized position clearly out-earns it, a mistimed one clearly hurts).
+- **Affordability gate:** each event button carries its price tag (e.g. `☀️ DROUGHT · $60`) and greys
+  out when AVAILABLE cash can't cover it. Cash never goes negative.
+- **Cooldown stays** (per-event): money buys the event, time gates the rhythm — wealth cannot
+  chain-pump.
+- HUSTLE remains the free-cash floor, now doubling as "grinding toward your next event."
+
+> **Shared-market note:** the sim (price path AND events) is per-player local; rooms only sync scores.
+> A shared live tape (host-published ticks/events, one market per room, your Drought hits everyone) is
+> a designed-but-not-commissioned follow-up.
+
+They inject a strong, sustained price impulse (the existing `_news`/impulse system). Timing them with
+your position — and affording them — is the skill.
 
 **Price-UP events (scarcity / supply shock):**
 - **Drought** · **Flooding** · **Tornado** · **Earthquake** → spike the price up (buy first, then pump, then sell).
