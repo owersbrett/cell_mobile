@@ -58,11 +58,14 @@ const double kRibbonCoreAlpha = 0.75;
 
 /// The traveling pulse: seconds for one full run START → DESTINATION
 /// (direction of play — INWARD on Down the Hole), window length as a
-/// fraction of the whole path, stroke width (× node radius), peak alpha.
+/// fraction of the whole path, stroke width (× node radius), peak alpha,
+/// and how many comets ride the road at once (evenly phase-spread so one is
+/// usually on screen — checkpoint: a single comet was never seen).
 const double kRibbonPulsePeriodSec = 12.0;
-const double kRibbonPulseWindowFrac = 0.035;
-const double kRibbonPulseWidthFactor = 0.26;
+const double kRibbonPulseWindowFrac = 0.05;
+const double kRibbonPulseWidthFactor = 0.36;
 const double kRibbonPulseAlpha = 0.85;
+const int kRibbonPulseCount = 2;
 
 // --- Stage 1: breathing variants ------------------------------------------
 
@@ -71,9 +74,13 @@ const double kPowerPulsePeriodSec = 2.1;
 const double kPowerPulseAlphaBoost = 1.35;
 
 /// The anchor's heartbeat: slow, deep, gold — the gravitational landmark.
+/// A glow thump plus an expanding ring per beat (checkpoint: glow alone was
+/// imperceptible under the anchor node's own shadow).
 const double kAnchorHeartbeatPeriodSec = 2.9;
-const double kAnchorGlowAlphaMax = 0.55;
-const double kAnchorGlowRadiusFactor = 1.35; // extra radius on top of 2.1×
+const double kAnchorGlowAlphaMax = 0.85;
+const double kAnchorGlowRadiusFactor = 1.7; // extra radius on top of 2.1×
+const double kAnchorRingAlpha = 0.6;
+const double kAnchorRingSpread = 2.2; // ring travels to this × anchor radius
 
 // --- Stage 1: gem glints ---------------------------------------------------
 
@@ -102,3 +109,17 @@ const int kWalkStepPeriodMs = 520;
 /// (checkpoint 2026-07-10). The camera glides out to this as the walk begins
 /// and back in on the next re-frame.
 const double kWalkCameraZoom = 0.3;
+
+/// A fork-arm step or a ladder/snake/slide covers MANY node-gaps in one
+/// move — it glides over this longer duration (token AND camera) instead of
+/// the normal hop so the traversal stays readable.
+const int kJumpSlideMs = 700;
+
+/// Hard zoom-out limit — low enough that a pinch-out (or -- button) fits the
+/// ENTIRE square board in the viewport at once.
+const double kZoomOutMin = 0.05;
+
+/// Below this zoom the furniture stops counter-scaling (node/stroke sizes
+/// freeze in world units), so zooming further out shrinks the board into a
+/// readable minimap of dots instead of 88 overlapping constant-size circles.
+const double kCounterScaleFloor = 0.4;

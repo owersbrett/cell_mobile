@@ -805,6 +805,13 @@ class _BoardScreenState extends State<_BoardScreen>
   /// The board space currently open in the tap-to-inspect sheet, if any.
   int? _inspecting;
 
+  /// Last board position each player was BUILT at — a move of more than one
+  /// node between builds (fork arm, ladder/snake/slide) marks that token for
+  /// the long [kJumpSlideMs] glide instead of the hop beat. The flag only
+  /// needs to be true on the build where the value changes:
+  /// AnimatedPositioned latches its duration at that moment.
+  final Map<int, int> _lastShownPos = {};
+
   /// The board-life ambient clock (Stage 0 spine) — null on maps without a
   /// life layer, so the legacy ring and unstyled maps pay zero cost. Ticks
   /// only while the board is on screen: this State unmounts during
@@ -840,10 +847,14 @@ class _BoardScreenState extends State<_BoardScreen>
   /// With [animate], the camera glides there (step cadence) instead of
   /// snapping — the walk's per-step camera move MUST use this or the board
   /// jumps.
-  void _centerOn(int index, {bool animate = false, double zoom = _frameZoom}) {
+  void _centerOn(int index,
+      {bool animate = false,
+      double zoom = _frameZoom,
+      int durationMs = kWalkHopMs}) {
     final geo = _geo;
     if (geo == null || _viewport == null) return;
-    _driveCamera(geo.nodeCenter(index), zoom, animate: animate);
+    _driveCamera(geo.nodeCenter(index), zoom,
+        animate: animate, durationMs: durationMs);
   }
 
   /// Step the zoom by [factor] (the +/− buttons), keeping whatever world point
@@ -867,7 +878,8 @@ class _BoardScreenState extends State<_BoardScreen>
   /// Write the camera transform that puts world point [focus] at the viewport
   /// center at zoom [z] — the single path every programmatic camera move
   /// (re-frames, walk steps, zoom buttons) goes through.
-  void _driveCamera(Offset focus, double z, {required bool animate}) {
+  void _driveCamera(Offset focus, double z,
+      {required bool animate, int durationMs = kWalkHopMs}) {
     final geo = _geo!;
     final viewport = _viewport!;
     const margin = _kBoardBoundaryMargin;
@@ -899,6 +911,9 @@ class _BoardScreenState extends State<_BoardScreen>
     }
     _camTween =
         Matrix4Tween(begin: _boardTransform.value.clone(), end: targetMatrix);
+    // Long traversals (fork arms, slides) glide over kJumpSlideMs instead of
+    // the hop beat — duration is per-move, matching the token's slide.
+    _camCtrl.duration = Duration(milliseconds: durationMs);
     _camCtrl.forward(from: 0);
   }
 
@@ -978,9 +993,11 @@ class _BoardScreenState extends State<_BoardScreen>
       // the walk zoom so several spaces ahead are visible for the whole move
       // (PARTY UX LAW: the player watches a journey, not a chase). The first
       // timer tick lands a full step period later — the glide has finished.
+      // The long glide: the camera may be far from the walker (start of the
+      // walk, or the walker just took a fork arm across the board).
       if (entering) {
         _centerOn(controller.currentPlayer.position,
-            animate: true, zoom: kWalkCameraZoom);
+            animate: true, zoom: kWalkCameraZoom, durationMs: kJumpSlideMs);
       }
       _stepTimer ??= Timer.periodic(
           const Duration(milliseconds: kWalkStepPeriodMs), _onStepTick);
@@ -1021,15 +1038,22 @@ class _BoardScreenState extends State<_BoardScreen>
     // when it stalls, the camera (which needs no rebuild) marches to the
     // destination while the character stands still until some foreign rebuild
     // teleports it (checkpoint 2026-07-10).
+    final mover = controller.currentPlayer;
+    final before = mover.position;
     setState(() {
       actions.advanceStep();
     });
+    // A multi-node traversal (a ladder/snake/slide resolving at walk end)
+    // gets the long glide; an ordinary hop keeps the step beat.
+    final far = (mover.position - before).abs() > 1;
     // The camera walks WITH the token, node to node — movement is a tracked
     // journey across the board, not a teleport at the edge of the frame.
     // Animated: the camera glides in step with the token's slide, at the
     // wider walk zoom so upcoming spaces are visible.
-    _centerOn(controller.currentPlayer.position,
-        animate: true, zoom: kWalkCameraZoom);
+    _centerOn(mover.position,
+        animate: true,
+        zoom: kWalkCameraZoom,
+        durationMs: far ? kJumpSlideMs : kWalkHopMs);
   }
 
   /// Where the current player can land with the rolled steps — shown after
@@ -1085,6 +1109,16 @@ class _BoardScreenState extends State<_BoardScreen>
 
   @override
   Widget build(BuildContext context) {
+    // Multi-node moves since the last build (fork arms, ladders, snakes,
+    // slides) — these tokens glide over kJumpSlideMs instead of hopping.
+    final farPlayers = <int>{};
+    for (final p in controller.players) {
+      final last = _lastShownPos[p.index];
+      if (last != null && (p.position - last).abs() > 1) {
+        farPlayers.add(p.index);
+      }
+      _lastShownPos[p.index] = p.position;
+    }
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
@@ -1110,6 +1144,7 @@ class _BoardScreenState extends State<_BoardScreen>
                             positionOf: (p) => p.position,
                             highlightPlayer: controller.currentPlayer.index,
                             ambientClock: _ambient,
+                            farPlayers: farPlayers,
                             transformController: _boardTransform,
                             viewScale:
                                 _boardTransform.value.getMaxScaleOnAxis(),
@@ -2578,6 +2613,10 @@ class _BoardView extends StatelessWidget {
   /// ([kBoardLifeMaps]). Drives the ambient canvas below the path painter.
   final BoardAmbientClock? ambientClock;
 
+  /// Players whose position just moved by more than one node — their token
+  /// slides over [kJumpSlideMs] (fork arms / ladders / snakes / slides).
+  final Set<int> farPlayers;
+
   const _BoardView({
     required this.controller,
     required this.positionOf,
@@ -2585,6 +2624,7 @@ class _BoardView extends StatelessWidget {
     required this.transformController,
     required this.viewScale,
     this.ambientClock,
+    this.farPlayers = const {},
     this.onLayout,
     this.onTapSpace,
     this.inspectedIndex,
@@ -2600,9 +2640,10 @@ class _BoardView extends StatelessWidget {
   static const double kCanvasSpread = 7.2;
 
   /// Zoom limits shared by the pinch gesture and the +/− buttons. Min is low
-  /// enough that a full zoom-out fits the whole kCanvasSpread-sized board in
-  /// the viewport for an overview.
-  static const double kMinZoom = 1 / kCanvasSpread;
+  /// enough that a full zoom-out fits the ENTIRE square board in the
+  /// viewport at once (below [kCounterScaleFloor] the furniture stops
+  /// counter-scaling, so the far view is a minimap of dots).
+  static const double kMinZoom = kZoomOutMin;
   static const double kMaxZoom = 5.0;
 
   @override
@@ -2619,9 +2660,14 @@ class _BoardView extends StatelessWidget {
         // node and token on each panel change — tokens visibly bounced on ROLL
         // and the first hop rode still-moving geometry (checkpoint
         // 2026-07-10). Screen size is stable for the whole match.
+        //
+        // SQUARE, not screen-aspect: normalized map coords stretched to a
+        // portrait rect turned the spiral into a tall oval (checkpoint —
+        // "an oval with a width shorter than its height"). Equal axes keep
+        // circles circular on every map.
         final screen = MediaQuery.sizeOf(context);
-        final canvas =
-            Size(screen.width * kCanvasSpread, screen.height * kCanvasSpread);
+        final side = max(screen.width, screen.height) * kCanvasSpread;
+        final canvas = Size(side, side);
         final geo = _BoardGeometry(
           canvas,
           spaces: controller.board,
@@ -2822,7 +2868,9 @@ class _BoardView extends StatelessWidget {
   /// who to chase.
   Widget _opToken(_BoardGeometry geo, OpToken op) {
     final center = geo.nodeCenter(op.position);
-    final r = geo.nodeRadius * 0.5;
+    // Character-sized (checkpoint: ops read as minor clutter at half size —
+    // the Peeler and the Masher are ACTORS, same stature as the players).
+    final r = geo.nodeRadius * 0.9;
     const danger = Color(0xFFE5484D);
     final loot = op.hasLoot;
     return AnimatedPositioned(
@@ -2978,8 +3026,12 @@ class _BoardView extends StatelessWidget {
           width: hit,
           height: hit,
           child: CustomPaint(
+            // The anchor is shop-typed for the buy mechanic but is NOT a
+            // market stall — no awning; its identity is the flag + heartbeat.
             foregroundPainter: _NodeDecorPainter(
-                type: space.type, radius: r, accent: iconColor),
+                type: isAnchor ? SpaceType.gain : space.type,
+                radius: r,
+                accent: iconColor),
             child: Center(
         child: Container(
           width: r * 2,
@@ -3049,8 +3101,11 @@ class _BoardView extends StatelessWidget {
         key: ValueKey('token_${p.index}'),
         // One node-to-node HOP per step tick; the step period exceeds this so
         // the character visibly settles on each node before the next hop
-        // (kWalkHopMs / kWalkStepPeriodMs — the board-game walk).
-        duration: const Duration(milliseconds: kWalkHopMs),
+        // (kWalkHopMs / kWalkStepPeriodMs — the board-game walk). Multi-node
+        // traversals (fork arms, slides) glide over kJumpSlideMs instead.
+        duration: Duration(
+            milliseconds:
+                farPlayers.contains(p.index) ? kJumpSlideMs : kWalkHopMs),
         curve: Curves.easeInOut,
         left: center.dx + off.dx - tr,
         top: center.dy + off.dy - tr,
@@ -3132,7 +3187,11 @@ class _BoardGeometry {
 
   _BoardGeometry(this.size,
       {this.spaces = const [], this.useXY = false, double scale = 1.0})
-      : viewScale = scale <= 0 ? 1.0 : scale,
+      // Counter-scale floor: below kCounterScaleFloor the furniture stops
+      // holding constant on-screen size and shrinks with the board instead —
+      // the full zoom-out reads as a minimap, not 88 overlapping circles.
+      : viewScale =
+            scale <= 0 ? 1.0 : max(scale, kCounterScaleFloor),
         rect = _boardRect(size),
         corner = _boardCorner(size) {
     loop = Path()
@@ -3508,25 +3567,53 @@ class _BoardPathPainter extends CustomPainter {
 
   /// The uneaten path diamonds: a tiny gem on each space's shoulder. Eaten
   /// ones simply aren't in the list, so they wink out as tokens pass.
+  /// Faceted treasure gems (checkpoint: flat rhombuses read as UI markers,
+  /// not treasure): a brilliant-cut silhouette — flat table on top, deep
+  /// pavilion below — split into light/dark facets with a specular dot and
+  /// a soft halo. Positions unchanged (the ambient glint targets the same
+  /// spot).
   void _paintDiamonds(Canvas canvas) {
     if (diamondIndices.isEmpty) return;
-    final s = geo.nodeRadius * 0.34;
-    final fill = Paint()..color = const Color(0xFF9BEBFF);
-    final edge = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1
-      ..color = const Color(0xFF2E7A8F);
+    final s = geo.nodeRadius * 0.38;
+    final halo = Paint()
+      ..color = const Color(0xFF9BEBFF).withValues(alpha: 0.35)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * 0.6);
+    final crown = Paint()..color = const Color(0xFFCFF6FF); // top facets
+    final pavilion = Paint()..color = const Color(0xFF56C4E8); // lower body
+    final deep = Paint()..color = const Color(0xFF2E7A8F); // culet shadow
+    final spec = Paint()..color = Colors.white;
     for (final i in diamondIndices) {
       final c = geo.nodeCenter(i) +
           Offset(geo.nodeRadius * 0.95, -geo.nodeRadius * 0.95);
-      final gem = Path()
-        ..moveTo(c.dx, c.dy - s)
-        ..lineTo(c.dx + s * 0.7, c.dy)
-        ..lineTo(c.dx, c.dy + s)
-        ..lineTo(c.dx - s * 0.7, c.dy)
+      final w = s * 0.9; // half-width of the table edge
+      final girdleY = c.dy - s * 0.15;
+      final tableY = c.dy - s * 0.75;
+      final tipY = c.dy + s;
+      canvas.drawCircle(c, s * 1.1, halo);
+      // Crown: flat top edge flaring to the girdle.
+      final crownPath = Path()
+        ..moveTo(c.dx - w * 0.55, tableY)
+        ..lineTo(c.dx + w * 0.55, tableY)
+        ..lineTo(c.dx + w, girdleY)
+        ..lineTo(c.dx - w, girdleY)
         ..close();
-      canvas.drawPath(gem, fill);
-      canvas.drawPath(gem, edge);
+      canvas.drawPath(crownPath, crown);
+      // Pavilion: the deep V down to the tip, split into two facets.
+      final leftFacet = Path()
+        ..moveTo(c.dx - w, girdleY)
+        ..lineTo(c.dx, girdleY)
+        ..lineTo(c.dx, tipY)
+        ..close();
+      final rightFacet = Path()
+        ..moveTo(c.dx + w, girdleY)
+        ..lineTo(c.dx, girdleY)
+        ..lineTo(c.dx, tipY)
+        ..close();
+      canvas.drawPath(rightFacet, pavilion);
+      canvas.drawPath(leftFacet, deep);
+      // Specular sparkle on the crown's left shoulder.
+      canvas.drawCircle(
+          Offset(c.dx - w * 0.35, tableY + s * 0.18), s * 0.13, spec);
     }
   }
 

@@ -153,19 +153,28 @@ class BoardAmbientPainter extends CustomPainter {
       if (!cull.contains(c)) continue;
       final space = spaces[i];
       if (i == last) {
-        // Heartbeat: a sharpened thump (sin³ half-wave) once per period.
+        // Heartbeat: a sharpened glow thump (sin³ half-wave) PLUS an
+        // expanding ring per beat — the glow alone hid under the anchor
+        // node's own shadow.
         final ph = (t / kAnchorHeartbeatPeriodSec) % 1.0;
         final s = sin(ph * pi);
         final thump = s * s * s;
-        _glow.color = const Color(0xFFFFD54F)
-            .withValues(alpha: kAnchorGlowAlphaMax * thump);
+        const gold = Color(0xFFFFD54F);
+        final anchorR = nodeRadius * 2.1;
+        _glow.color =
+            gold.withValues(alpha: kAnchorGlowAlphaMax * thump);
         canvas.drawCircle(
             c,
-            nodeRadius *
-                2.1 *
+            anchorR *
                 kAnchorGlowRadiusFactor *
                 (1.0 + kTilePulseScaleAmp * thump),
             _glow);
+        _pulse
+          ..strokeWidth = nodeRadius * 0.12
+          ..color = gold.withValues(alpha: kAnchorRingAlpha * (1 - ph));
+        canvas.drawCircle(
+            c, anchorR * (1.0 + (kAnchorRingSpread - 1.0) * ph), _pulse);
+        _pulse.strokeWidth = nodeRadius * kRibbonPulseWidthFactor;
         continue;
       }
       final power = space.type == SpaceType.powerUp;
@@ -192,19 +201,24 @@ class BoardAmbientPainter extends CustomPainter {
     final total = _cum.last;
     if (total <= 0) return;
     final window = total * kRibbonPulseWindowFrac;
-    final head = (t / kRibbonPulsePeriodSec * total) % total;
     const slices = 3;
-    for (var s = 0; s < slices; s++) {
-      final a = head - window * (s + 1) / slices;
-      final b = head - window * s / slices;
-      if (b <= 0) continue;
-      final pA = _pointAt(a < 0 ? 0 : a);
-      final pB = _pointAt(b);
-      // Cheap cull: skip a slice whose endpoints are both offscreen.
-      if (!cull.contains(pA) && !cull.contains(pB)) continue;
-      _pulse.color = Colors.white
-          .withValues(alpha: kRibbonPulseAlpha * (slices - s) / slices);
-      canvas.drawLine(pA, pB, _pulse);
+    for (var k = 0; k < kRibbonPulseCount; k++) {
+      // Comets spread evenly along the road so one is usually in view.
+      final head =
+          (t / kRibbonPulsePeriodSec * total + k * total / kRibbonPulseCount) %
+              total;
+      for (var s = 0; s < slices; s++) {
+        final a = head - window * (s + 1) / slices;
+        final b = head - window * s / slices;
+        if (b <= 0) continue;
+        final pA = _pointAt(a < 0 ? 0 : a);
+        final pB = _pointAt(b);
+        // Cheap cull: skip a slice whose endpoints are both offscreen.
+        if (!cull.contains(pA) && !cull.contains(pB)) continue;
+        _pulse.color = Colors.white
+            .withValues(alpha: kRibbonPulseAlpha * (slices - s) / slices);
+        canvas.drawLine(pA, pB, _pulse);
+      }
     }
   }
 
