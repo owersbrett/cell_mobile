@@ -21,10 +21,12 @@ void main() {
     await tester.tap(find.text('SKIP'));
     await tester.pump();
     for (var i = 0; i < 4; i++) {
-      await tester.tap(find.text('STOP'));
-      await tester.pump(); // the stop lands; the payoff animation starts
-      await tester.pump(const Duration(milliseconds: 2200)); // payoff plays
+      await tester.tap(find.text('SPIN'));
+      await tester.pump(); // the stop lands; the deceleration starts
+      await tester.pump(const Duration(milliseconds: 1800)); // wheel settles
       await tester.pump(const Duration(milliseconds: 60)); // rebuild
+      await tester.tap(find.text('CONTINUE')); // the player drives forward
+      await tester.pump();
     }
     await tester.pump(const Duration(milliseconds: 500)); // settles framing
 

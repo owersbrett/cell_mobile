@@ -2,6 +2,7 @@ import 'package:cell_mobile/blocs/navigation/navigation_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/games/game_slug.dart';
 import 'package:cell_mobile/views/app_view_delegate.dart';
+import 'package:cell_mobile/views/screens/cell_loop_page/cell_loop_page.dart';
 import 'package:cell_mobile/views/screens/embed_game_page.dart';
 import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
@@ -32,6 +33,9 @@ class MyApp extends StatelessWidget {
     // on a loop (dashboard b-roll). Null for the normal app / non-web /
     // unknown slug — in which case the flow below is byte-for-byte unchanged.
     final embed = GameSlug.embedTargetFromUrl();
+    // `/loop` — the chromeless marketing loop (title + perpetual cell), for
+    // embedding elsewhere; double-tap enters the real app at home.
+    final isLoop = GameSlug.isLoopRoute();
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -45,9 +49,11 @@ class MyApp extends StatelessWidget {
           BlocProvider(create: (_) => ScaleExplorerBloc()),
         ],
         child: SafeArea(
-          child: embed != null
-              ? EmbedGamePage(specId: embed.specId, attract: embed.attract)
-              : const AppViewDelegate(),
+          child: isLoop
+              ? const CellLoopPage()
+              : embed != null
+                  ? EmbedGamePage(specId: embed.specId, attract: embed.attract)
+                  : const AppViewDelegate(),
         ),
       ),
     );

@@ -5,89 +5,110 @@
 
 - **Scale (cell):** cosmicStructures (`BioScale.cosmicStructures`)
 - **Game id:** lensing
-- **One-line concept:** Place a slab of invisible **dark matter** between a distant
-  galaxy and your telescope and tune its mass so its gravity **bends the galaxy's
-  light** — curving the rays around it to **focus on your detector** (and, with two
-  galaxies, drawing an **Einstein ring**).
+- **One-line concept:** A distant **star** shoots a beam of light; **DRAG the
+  violet dark-matter LENS** with one finger so its gravity **bends that beam onto
+  the glowing TARGET**. Land the bent beam, hold it, bank points, next round.
 - **Role:** solo high-score (also party-mode rotation)
 - **Self-contained:** does NOT import any other game; the light-deflection sim is
-  implemented here. Differentiated on purpose from `planets/orbit_catch` and
-  `galactic/black_hole` (see below).
+  implemented here.
 
 ---
 
-## Concept
+## Concept (why it's legible)
 
-Other gravity games **launch a thing** — a planetlet, a star — and watch one
-object fall. **Lensing never launches anything.** A background galaxy pours a
-steady **beam of light** across the void, and you sculpt the **spacetime between**
-it and your telescope. The control surface is a halo of **dark matter** you cannot
-see — only its effect. Slide it into the light's path, set its **mass**, and the
-rays **curve** around it. Too little mass and the light barely bends and flies
-past the detector; too much and it over-bends and crosses over; the **right mass +
-position** walks the bundle home. This is exactly how astronomers use lensing to
-**map matter they can't see** — and the win state with two sources is a literal
-**Einstein ring**.
+The redesign exists to fix ONE thing Brett called out: *"i dont understand how to
+play."* The old version had **two controls at once** (drag the halo AND a separate
+MASS slider) and an abstract **FOCUS %** goal — nobody knew what to touch or why.
 
-The skill is reading the geometry fast: the bend is shown live as you move, so the
-game is a **speed-and-precision focus puzzle**, not a trajectory-flick.
+The redesign collapses the game to **one finger, one goal**:
+
+- **ONE control — drag the lens.** No slider. The lens has a **fixed, visible bend
+  strength**; *where you place it* is the whole control. Drag it **closer to the
+  beam** and it bends harder (real lensing: the deflection grows as the impact
+  parameter shrinks, `α ∝ 1/b`); drag it away and the bend eases. You steer the
+  beam by moving the lens up/down/across.
+- **ONE goal — the TARGET.** A boldly-labelled gold detector ring. Land the bent
+  beam on it.
+- **ONE bright beam.** A single thick, glowing beam per star (not a faint 7-ray
+  bundle). You watch **the beam** swing as you drag — the cause→effect is direct.
+- **Immediate feedback.** The beam is **blue while it misses, gold when it lands**;
+  an **AIM meter** fills as the landing point nears the target; on target the ring
+  lights up and a **lock ring** charges. Hold ~0.4 s → the reading banks, points
+  pop, a fresh geometry loads.
+
+A brand-new player understands it in under 3 seconds because the first round shows:
+a big banner **"DRAG the lens to bend the starlight onto the TARGET"**, a pulsing
+**"DRAG ME"** tag on the lens, and a labelled **STAR → LENS → TARGET** in a straight
+visual line. There is only one thing to grab and one place to land the beam.
 
 ---
 
 ## Rules (canonical)
 
-1. **Two controls, no launch.** **Drag/tap anywhere** to move the dark-matter halo
-   (its 2D position = the light's impact parameter). **Slide the MASS bar** at the
-   bottom to set how hard it bends light. Light is emitted **continuously** and
-   re-traced every frame, so both controls update the bend **live**.
+1. **One control, no launch, no slider.** **Drag anywhere** to move the
+   dark-matter **LENS** (its position = the light's impact parameter). Light is
+   emitted **continuously** and re-traced every frame, so the bend updates **live**
+   as you drag. There is no aim, no flick, no mass bar.
 
-2. **Light bends toward mass.** Each ray is a constant-speed point whose direction
-   curves toward the halo and is renormalised every step (light keeps its speed and
-   only turns). Total deflection ≈ `2·G·mass / impactParameter` — the real lensing
-   law `α ∝ M / b`, in miniature.
+2. **Position IS mass.** The lens has a fixed bend strength; the deflection a beam
+   feels grows as the lens sits **closer to the beam's path** (`α ∝ mass / b²`, the
+   real lensing law). Drag toward the beam → stronger bend → the beam swings
+   further; drag away → the beam relaxes back toward straight. The per-step turn is
+   **capped** (`_kMaxStepBend`) so a beam deflects cleanly and flies on — it can
+   never spiral into an orbiting hairball.
 
-3. **Focus the detector.** A ray **hits** when its path passes within the
-   detector's radius. The **FOCUS** meter (top-left) is the fraction of all rays
-   currently inside the detector.
+3. **Land the beam on the TARGET.** A beam **hits** when its path passes within the
+   target's radius. The **AIM** meter (top-left) reads how close the (worst) beam's
+   landing is to the target, over an aim band, so "you're getting warmer" is one
+   legible number.
 
-4. **Hold to take the reading.** When focus ≥ `_kLockThreshold` (60%), a **LOCK
-   ring** charges around the detector; hold the focus ~0.4 s and the reading is
-   taken → score, then a **fresh geometry** loads. Drift out of focus and the lock
-   decays.
+4. **Hold to take the reading.** When the beam(s) are **ON target**, a **LOCK ring**
+   charges around the target; hold it ~0.4 s and the reading is taken → score, then
+   a **fresh geometry** loads. Drift off target and the lock decays.
 
 5. **Speed + precision pay.** Each reading scores a base + a **speed bonus** (solve
-   under par) + a **precision bonus** (tighter focus = bigger) + a round-step bonus.
+   under par) + a **precision bonus** (dead-centre landing) + a round-step bonus.
 
-6. **Two galaxies → Einstein ring.** Past the midpoint a **second** background
-   galaxy appears, placed symmetrically about the detector line so **one** halo
-   near the line can bend **both** bundles inward. A tight, high-focus solve on a
-   two-source round banks an **Einstein-ring bonus**.
+6. **Decoy mass (mid game).** A second violet blob (**sienna**, labelled DECOY)
+   ALSO bends the beam. You must place your lens to **overpower or counter** its
+   pull — a two-body positioning puzzle.
 
-7. **Read before you lock.** Rays render live and color-shift **blue → gold** when
-   they land inside the detector, so the over-/under-bend lesson is legible without
-   any text.
+7. **Two stars → Einstein ring (late).** Past the top of the ladder a **second**
+   star appears, placed symmetrically about the target line so **one** lens near
+   the line can bend **both** beams inward. Both beams on the target at once banks
+   an **Einstein-ring bonus**.
+
+8. **Read live.** Beams render live and color-shift **blue → gold** the instant
+   they land on the target, so the over-/under-bend lesson is legible without text.
 
 ---
 
 ## Controls
 
-- **Drag / tap the canvas** — move the dark-matter halo (impact parameter).
-- **Mass bar (bottom strip)** — set the halo's mass (deflection strength).
+- **Drag / tap the canvas** — move the dark-matter LENS. That is the **only**
+  control.
 
 All rendering is `CustomPainter` — no raster assets.
 
 Visual language:
-- **Dark-matter halo** — INVISIBLE mass shown only by its warp: a violet ghost
-  core, faint concentric spacetime rings, and a dashed boundary that brightens with
-  mass. Labelled `DARK MATTER`.
-- **Background galaxy/galaxies** — small tilted spiral discs (blue / violet) on the
-  left, each emitting a thin parallel beam.
-- **Light rays** — glowing curved polylines; **blue** while missing, **gold** when
-  focused on the detector.
-- **Detector** — a gold telescope target with intake rings, a crosshair, a drift
-  arrow on moving rounds, and a **lock ring** that fills as the reading is taken.
-- **HUD** — a `FOCUS %` / `LOCKING %` pill top-left; round/loop label top-right; a
-  one-line hint banner above the mass bar.
+- **Dark-matter LENS** — a violet **convex glass disc** (soft radial body +
+  top-left specular glint + rim) with a faint warp-halo wash for depth and reach.
+  A **glass disc, not nested flat rings** (honors the anti-flat-circle rule).
+  Labelled `LENS`; a pulsing `DRAG ME` tag until first touch.
+- **Decoy mass** — same glass-disc treatment in **sienna**, labelled `DECOY`, so it
+  never confuses with the player's lens.
+- **Unlensed ghost beam** — a faint dashed **straight** line runs from each star
+  clean across the field, sailing *past* the target. This is where the light would
+  go with NO mass; the live bent beam reads as the correction the player sculpts.
+- **Background star(s)** — bright shaded orbs with a soft glow on the left, each
+  emitting one thick beam. Labelled `STAR`.
+- **Light beam** — a single **thick glowing** polyline with a travelling spark;
+  **blue** while missing, **gold** when landed on the target.
+- **Target** — a gold telescope detector with intake rings, crosshair, a drift bar
+  on moving rounds, and a **lock ring** that fills as the reading is taken.
+  Persistently labelled `TARGET`.
+- **HUD** — an `AIM %` / `ON TARGET` pill top-left; round/loop label top-right; a
+  big instruction banner (bottom) on the opening rounds that fades once scoring.
 
 ---
 
@@ -97,12 +118,13 @@ Visual language:
 |---|---|
 | Reading taken (lock complete) | `100` base |
 | Speed bonus | up to `+130` for an instant solve (`(par − elapsed)/par`, par 6.5 s) |
-| Precision bonus | up to `+90` for a dead-centre focus (`1 − avgMinDist/radius`) |
+| Precision bonus | up to `+90` for a dead-centre landing (`1 − avgMinDist/radius`) |
 | Round step | `+10 × round index` `+ 50 × loop` |
-| Einstein ring | `+70` when a two-source round locks tight (`avgMinFrac < 0.45`, focus > 0.85) |
+| Einstein ring | `+70` when a two-star round lands both beams on the target |
 
 `humanMax ≈ 4200` per 60s round (a skilled player taking ~12–14 clean readings).
-`starThresholds ≈ [1400, 2600, 3800]`. First-pass — retune after playtest.
+`starThresholds ≈ [1400, 2600, 3800]`. Unchanged from the prior version — the
+scoring model is identical, only the control surface changed. Retune after playtest.
 
 ---
 
@@ -118,19 +140,22 @@ after each reading and re-enters cleanly (the GAMES "S").
 
 | Dimension | How it ramps |
 |---|---|
-| Detector radius | `30 → 16 px` across the 9-round ladder, ×0.9 per loop |
-| Detector drift | static early; **drifts** laterally past difficulty 0.66 |
-| Sources | **one** galaxy early; a **second** (Einstein-ring) past difficulty 0.5 |
-| Loop escalation | clearing the ladder loops with a shrinking detector — never dead-ends |
+| Target radius | `34 → 18 px` across the 8-round ladder, ×0.9 per loop |
+| Target drift | static early; **drifts** laterally past difficulty 0.5 |
+| Decoy mass | none early; a **decoy** blob appears in the mid game (0.33–0.85) |
+| Sources | **one** star early; a **second** (Einstein-ring) past difficulty 0.85 |
+| Loop escalation | clearing the ladder loops with a shrinking target — never dead-ends |
 
 ---
 
 ## Educational tie
 
 **Strong, structural.** The mechanic *is* the physics: mass curves spacetime and
-bends light (`α ∝ M / b`); too little/too much mass mis-focuses; two background
-sources focused by one halo *is* an Einstein ring; and the whole loop dramatizes how
-lensing is used to **map invisible dark matter**. Full write-up in EDUCATION.md.
+bends light (`α ∝ M / b²`); a lens closer to the beam bends it harder; too far and
+the light sails past; two background stars focused by one lens *is* an Einstein
+ring; a decoy mass dramatizes that ALL mass lenses, not just the one you control;
+and the whole loop dramatizes how astronomers use lensing to **map invisible dark
+matter**. Full write-up in EDUCATION.md.
 
 ---
 
@@ -139,13 +164,22 @@ lensing is used to **map invisible dark matter**. Full write-up in EDUCATION.md.
 Dark matter is the thing that's always there, shaping everything, that you can never
 quite see — pure Hot Potato Games "we've always been here, we always will be"
 energy. You're not throwing a spud at the cosmos; you're bending the light of a
-faraway potato-galaxy home with a lump of the invisible. Don't worry about it.
+faraway potato-star home with a lump of the invisible. Don't worry about it.
 
 ---
 
 ## Session / resume
 
 Host-driven session. State to persist for drop-and-resume: `_level`, `_loop`,
-`_attempt`, `_streak`, the live `_haloFrac` + `_mass`, and the detector drift
-clocks. Traced rays / fx / pops are ephemeral (recomputed each frame). On a fresh
-session the first round generates and the first drag re-enters cleanly.
+`_attempt`, `_streak`, the live `_lensFrac`, and the target drift clocks. Traced
+beams / fx / pops are ephemeral (recomputed each frame). On a fresh session the
+first round generates and the first drag re-enters cleanly.
+
+**ATTRACT autopilot (`_autoStep`)** plays the NEW loop the way a human would,
+legibly: it parks the lens **horizontally in the middle third** (room for the bend
+to develop before the target), then **hill-climbs the lens VERTICALLY** on the
+game's own aim-error (`_avgMinFrac`), reversing the vertical direction whenever a
+step makes the error worse. When the beam reads **on target** (`_onTarget`) it holds
+steady and the lock ring banks the reading; `_nextRound` re-seeds on the fresh
+geometry. Single-axis descent because the game now has a single control — the bot
+visibly drags the lens onto the beam-to-target line and scores; it does not flail.

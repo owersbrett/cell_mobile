@@ -61,6 +61,17 @@ flutter build web           # web build; deploy via the /deploy skill (bumps bui
    refactor them opportunistically. When dispatching per-game work to subagents, the
    orchestrator keeps registry/catalog edits to itself.
 9. **`flutter analyze` clean before done.** Every task ends with a clean analyze.
+10. **PARTY UX LAW — the player drives; the machine never plunges (Brett,
+   2026-07-07).** After EVERY development decision in party mode, reason explicitly
+   about what the player experiences at each state change. No state transition may
+   fire-and-vanish: every roll, card draw, prize, effect, and movement must (a) play
+   its animation visibly — token steps node-to-node with the camera following, cards
+   are revealed before they execute; (b) be explained in the moment (by the host
+   characters in cutscenes — the narrator does not persist as a modal during normal
+   turns); and (c) WAIT for the player to advance (CONTINUE/tap), including after
+   deterministic animations. Auto-executing an effect and leaving the player confused
+   is a bug even when the state machine is correct. Voice law: "uhhh…" is Russ's
+   catchphrase ALONE — Butter is smooth and never hedges.
 
 ## The GAMES rubric — every game carries its docs
 
@@ -132,6 +143,12 @@ changes inside individual games. Entry: group icon in the per-scale picker + gam
 - **`lib/theme/potatuhs.dart`** — palette + typography (Bowlby One SC display, Outfit body).
   Never random hex; never `'Avenir'` in new code. Visual decisions defer to
   `~/Potatuhs/potatuhs-design/DESIGN.md`.
+- **`lib/theme/hpg_kit.dart`** — the HPG component kit (the design system's reserved
+  GameCard/GameList, dark-adapted): `HpgGameCard`, `HpgCard` (Level-4 surface: 16px radius,
+  accent border, hard-offset accent shadow), `HpgRankBadge`, `HpgChip`, `HpgSearchField`,
+  `HpgPlayButton`, `HpgIconButton`, plus the HPG gold accent (#D4A017) and
+  `HpgKit.humanize` for camelCase scale names. List/console screens compose these —
+  don't hand-roll row cards. First consumer: the GAMES console.
 
 ## Directory map
 

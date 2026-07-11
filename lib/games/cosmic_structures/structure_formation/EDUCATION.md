@@ -18,7 +18,8 @@ imperceptible early ripples. That growth is exactly what the game lets you drive
   oldest light in the universe. The CMB's temperature map shows hot and cold spots at the ~1-in-100,000
   level. Those spots are the density fluctuations.
 - **In the game:** the starting field is nearly uniform (mean density 1.0, ±~4% ripples). Each **tap**
-  plants a tiny over-density — your own seed fluctuation — just like a slightly denser CMB spot.
+  plants an over-density — your own seed fluctuation, in **your color** — just like a slightly denser
+  CMB spot. Rival civilizations (AI, or real players online) seed the same universe alongside you.
 
 ## 2. The amplifier: gravity and gravitational instability
 - A region that is even slightly denser than average has slightly **stronger gravity**, so it pulls in
@@ -29,7 +30,9 @@ imperceptible early ripples. That growth is exactly what the game lets you drive
   **cosmic web**. The biggest galaxy clusters sit at those knots.
 - **In the game:** every frame, matter flows from lighter cells into their denser neighbours
   (mass-conserving accretion). Clumps grow, neighbours **merge**, and the ridges between them light up
-  as **filaments** — the same hierarchy, sped up from billions of years to 60 seconds.
+  as **filaments** — the same hierarchy, sped up from billions of years to 45 seconds. Each collapsed
+  region belongs to whichever seed is **nearest** (a Voronoi territory) — so structure is *local and
+  contested*, exactly as real clusters form around the densest seeds in their neighbourhood.
 
 ## 3. The opponent: cosmic expansion
 - Space itself is **expanding**, carrying matter apart. Expansion works *against* gravity: it lowers
@@ -46,17 +49,19 @@ imperceptible early ripples. That growth is exactly what the game lets you drive
   **accelerate** the expansion.
 - Accelerating expansion means the very largest structures are now being pulled apart faster than new
   ones can assemble; cosmic structure growth is winding down.
-- **In the game:** in the final ~14 seconds, **dark energy surges** (a red warning) and actively tears
-  at your web — mirroring the universe's real, accelerating fate.
+- **In the game:** in the final ~12 seconds, **dark energy surges** (a red warning) and actively tears
+  at the thin, contested structure — mirroring the universe's real, accelerating fate.
 
 ## Why the scoring teaches it
-- **Mass collapsed into structure** (points per cell crossing the collapse threshold) rewards exactly
-  what gravity accomplishes: converting smooth matter into bound structure.
-- **Well-formed clusters / web nodes** (bonus for each new high in connected-cluster count) rewards
+- **Your share of the web** (points for mass that collapses in *your* territory) rewards exactly what
+  gravity accomplishes — converting smooth matter into bound structure — while the contest with rivals
+  makes the point vivid: structure is **won locally**, around the densest seeds.
+- **Well-formed clusters / web nodes** (a bonus for each new high in your connected-node count) rewards
   building the **web** — many nodes linked by filaments — not one giant blob, just as the real universe
   is a *network*, not a single lump.
-- **Spread-your-seeds strategy** teaches that structure is **hierarchical and distributed**: you grow a
-  web by seeding many regions, not by over-feeding one.
+- **Spread-your-seeds strategy** teaches that structure is **hierarchical and distributed**: you claim a
+  wide web by seeding many regions, not by over-feeding one — and seeding a rival's border **steals** it
+  by proximity, the way the nearest deep well captures the surrounding matter.
 
 ## Take-home
 > The universe's grandest structures grew from its tiniest imperfections. Gravity spent billions of

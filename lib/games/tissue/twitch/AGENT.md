@@ -5,9 +5,12 @@ You may change anything inside this folder. You may **not** touch other games, t
 registry, the catalog, or the host.
 
 ## Mandate
-Keep Twitch a clean rhythm-timing game where the mechanic *is* the lesson: muscle
-contraction driven by timing a nerve signal, the sliding-filament model made visible,
-and summation/tetanus emerging from rapid stimuli.
+Keep Twitch a **reflex-arc** timing game where the mechanic *is* the lesson: a motor
+impulse travels from a shifting SOURCE (neuron soma) to a shifting TARGET
+(neuromuscular junction); tap the target the instant the impulse lands. Every clean
+reflex is faster/tighter and the source+target JUMP (never a fixed rhythm). Every 10
+reflexes the muscle needs fuel — the **NOW EAT PROTEIN!** rapid-tap burst — then back
+to the arc, harder. (Brett notes #19 + #31.)
 
 ## Architecture (hard constraints)
 - **One `Ticker` → one `CustomPainter`.** No second animation controller, no
@@ -20,14 +23,18 @@ and summation/tetanus emerging from rapid stimuli.
 
 ## Where to tune
 All feel constants are the `_k…` block at the top of `twitch_game.dart`:
-cadence (`_kBasePeriod`/`_kMinPeriod`), window (`_kBaseWindow`/`_kMinWindow`),
-target phase, summation (`_kTwitchAmount`/`_kRelaxRate`), tetanus
-(`_kTetanusThreshold`/`_kTetanusPointsPerSec`), and `_kHitsPerLevel`.
+travel/pace (`_kBaseTravel`/`_kMinTravel`/`_kTravelDecay`), window
+(`_kBaseWindow`/`_kMinWindow`/`_kWindowDecay`), target size
+(`_kBaseTargetR`/`_kMinTargetR`/`_kTargetShrink`), and the protein phase
+(`_kHitsPerProtein`/`_kProteinSeconds`/`_kProteinDishes`/`_kProteinPointsPerDish`).
+Escalation is recomputed per-hit in `_applyDifficulty()`; source/target placement in
+`_placeArc()`.
 
 ## Definition of done
 - `flutter analyze lib/games/tissue/twitch/` → **zero** issues.
 - A session completes and a fresh one re-enters cleanly (the **S**).
-- Mechanic still teaches: filaments visibly slide, twitches summate into tetanus.
+- Mechanic still teaches: impulse travels source→target, the muscle twitches on a
+  clean hit, and the protein phase reads as refuelling recovery.
 
 ## Status board
 Report milestones/blockers to `~/Potatuhs/hpg/_status/cell_mobile.md` per the

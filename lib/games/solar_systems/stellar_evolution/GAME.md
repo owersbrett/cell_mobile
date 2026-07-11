@@ -77,3 +77,21 @@ first star on the first running frame, and shows a calm idle star when not runni
 All rendering is one `CustomPainter` driven by a single `Ticker`. No raster assets. The star,
 nebula, shells, supernova flash, pulsar beams, accretion ring, action UI, HUD, particles and
 floating text are all drawn.
+
+## Legibility / readability (the "what is this doing" contract)
+The player must always be able to read four things without guessing:
+1. **Objective line (persistent, top):** `GUIDE THE STAR — BIRTH → LIFE → DEATH`. Always on.
+2. **Stage label (big, top):** the current stellar stage (`STELLAR NURSERY`, `PROTOSTAR`,
+   `MAIN SEQUENCE`, `GIANT`, `PLANETARY NEBULA`, `SUPERNOVA`, or the endpoint destiny), coloured
+   to the star. Under it: `mass M☉ → predicted destiny`.
+3. **State line (persistent):** a plain-language "what's happening right now" (e.g. "A gas cloud
+   is collapsing…", "Gravity vs fusion — hold it steady…").
+4. **Per-phase timer bar:** a thin bar under the HUD draining with `_phaseTimer / _phaseMax`;
+   turns red in the last 30% — shows the urgency of THIS stage (distinct from the host's 60s clock).
+
+**How-to hint:** a big, pulsing instruction line ("TAP FAST to collapse…") is shown per phase and
+**dims to a quiet reminder the moment the player acts** (`_actedThisPhase`) — teaches without nagging.
+
+**Score-driver feedback:** every phase clear floats a `+N` near the star (green), and endpoints
+float their big destiny payoff — so the player can SEE what scored and learn to chase the dramatic
+deaths.

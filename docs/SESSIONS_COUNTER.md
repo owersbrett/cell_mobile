@@ -83,3 +83,40 @@ Public-read (marquee/panel need no auth), authed-write, monotonic-guarded so the
 counter can be incremented but never reset or decremented by a client. The
 rollup node is admin-only-write (only the Cloud Function touches it).
 See proposed addition to `frontend/database.rules.json`.
+
+## Cross-property session ledger — Firestore `game_sessions` (added 2026-07-07)
+
+The RTDB counter above is cell-only display plumbing. The **season KPI ledger**
+is Firestore, shared by every HPG property:
+
+```
+game_sessions/{property}/games/{gameId}/sessions/{autoId}
+  property: cell_mobile | tater_dash | sod_tori | hotpotatogames | …
+  doc:      { startedAt: serverTimestamp (enforced == request.time),
+              source: string (≤40, e.g. 'mini' | 'board' | 'web'),
+              uid?: must equal auth.uid when present,
+              meta?: map }
+```
+
+Design invariants:
+- **Append-only.** Clients only `create`; no reads, no updates, no counter
+  docs → zero contention at any player count. This is why no write API is
+  needed: "constantly pull then update/set" simply never happens.
+- **Counting is server-side.** `count()` aggregation queries (console/Admin
+  SDK) or a nightly rollup cron folding into `game_sessions/{property}` /
+  `.../games/{gameId}` rollup docs (server-only writes; public reads).
+- **Honest-Sessions gate lives in the rollup**, not the client: docs carrying
+  Brett's uid or bot tags get excluded when the KPI is computed. Clients never
+  self-censor (ATTRACT autoplay is the one client-side exclusion — it never
+  records at all).
+- Rules: `~/Potatuhs/.config/firestore.rules` (SSOT) — shape-validated
+  anonymous-friendly create, immutable thereafter. Deploy via `/deploy-rules`.
+- cell_mobile writer: `lib/telemetry/cell_telemetry.dart` `_recordSession`
+  (board plays land under gameId `party_board`).
+- Other properties integrate by writing the same doc shape under their own
+  `{property}` node — web games can use the Firestore REST endpoint if they
+  don't carry the SDK.
+
+If/when read traffic or fraud-filtering outgrows this, the escalation path is
+a thin ingest API (Cloud Run) that stamps/validates pings server-side — the
+data model does not change.

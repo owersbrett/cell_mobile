@@ -49,6 +49,26 @@ const double _kAccelMul = 2.6;
 /// of its normal points. Modest — clearly tunable.
 const double _kAccelBonusMul = 1.5;
 
+// ── Layout geometry (single source of truth) ─────────────────────────────────
+// The screen is split into non-overlapping vertical bands. Every element anchors
+// to one of these fractions so nothing stacks on top of anything else. The cloud
+// + its metronome ring live in the CLOUD band; text lives above/below it.
+const double _kCloudCY = 0.325; // cloud centre (fraction of height)
+const double _kCloudWF = 0.30; // cloud radius = min(w*this, h*_kCloudHF)
+const double _kCloudHF = 0.125;
+const double _kMetroMax = 1.30; // metronome ring peaks at this × cloud radius
+// Cloud band (incl. peak metronome ring) occupies ~0.16 … ~0.49 of height, so
+// header text stays ABOVE 0.155 and the step-tracker/curve stay BELOW 0.50.
+
+/// Cloud centre + radius for a given canvas [size]. Every cloud-relative element
+/// (cloud, metronome, speed-lines, decay bursts) reads geometry from here so
+/// they never disagree or drift into other bands.
+({Offset center, double r}) _cloudGeom(Size size) {
+  final center = Offset(size.width / 2, size.height * _kCloudCY);
+  final r = math.min(size.width * _kCloudWF, size.height * _kCloudHF);
+  return (center: center, r: r);
+}
+
 // Radioactive isotope palette.
 const Color _kAccent = Color(0xFF7DFB5A);
 const Color _kGood = Color(0xFF69F0AE);
@@ -278,9 +298,7 @@ class _HalfLifeV2GameState extends State<HalfLifeV2Game>
 
     if (pts > 0) {
       widget.session.addScore(pts);
-      final c = _size == Size.zero
-          ? Offset.zero
-          : Offset(_size.width / 2, _size.height * 0.30);
+      final c = _size == Size.zero ? Offset.zero : _cloudGeom(_size).center;
       _pops.add(FxPop(c, '+$pts', perfect ? _kAccent : _kGood));
       _sparks.addAll(FxBurst.spawn(c, perfect ? _kAccent : _kGood,
           count: perfect ? 14 : 8, speed: 110, size: 3));
@@ -297,10 +315,9 @@ class _HalfLifeV2GameState extends State<HalfLifeV2Game>
   }
 
   static Offset _cloudCenter(Size size, int i) {
-    final c = Offset(size.width / 2, size.height * 0.30);
-    final r = math.min(size.width * 0.34, size.height * 0.155);
+    final g = _cloudGeom(size);
     final u = _spiral(_kN)[i];
-    return c + u * r;
+    return g.center + u * g.r;
   }
 
   // Only allow accelerating during live measuring (not pre-start / between
@@ -358,9 +375,12 @@ class _HalfLifeV2GameState extends State<HalfLifeV2Game>
           ),
           // ⏩ FORCE DECAY button — its own hit region (opaque Listener) so a
           // hold here NEVER fires a measurement, and taps elsewhere still do.
+          // Anchored in the bottom-right strip, BELOW the decay curve. The
+          // centred bottom readout is shifted left (see _paintTapHint) so the
+          // two controls never collide on narrow (phone / small-embed) widths.
           Positioned(
-            right: 18,
-            bottom: 20,
+            right: 14,
+            bottom: 16,
             child: _AccelButton(
               enabled: canAccel,
               active: _accelerating,
@@ -496,7 +516,6 @@ class _HalfLifeV2Painter extends CustomPainter {
     }
     _paintFlash(canvas, size);
     _paintTapHint(canvas, size);
-    if (accelerating) _paintAccelCaption(canvas, size);
     if (!started || !running) _paintReady(canvas, size);
   }
 
@@ -560,8 +579,9 @@ class _HalfLifeV2Painter extends CustomPainter {
 
   // ── The fuzzy glow cloud (no countable grid, no integer) ──
   void _paintCloud(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height * 0.30);
-    final r = math.min(size.width * 0.34, size.height * 0.155);
+    final g = _cloudGeom(size);
+    final center = g.center;
+    final r = g.r;
     // Hotter / redder glow while the decay is being forced.
     final cloudCol = accelerating ? Color.lerp(_kAccent, _kWarn, 0.6)! : _kAccent;
     final blob = Paint()..maskFilter = const MaskFilter.blur(BlurStyle.normal, 11);
@@ -601,11 +621,14 @@ class _HalfLifeV2Painter extends CustomPainter {
   // the beat phase (curN mod 1) drives one even pulse per half-life. ──
   void _paintMetronome(Canvas canvas, Size size) {
     if (!started || inter || nextBeat >= _kBeats) return;
-    final center = Offset(size.width / 2, size.height * 0.30);
-    final r = math.min(size.width * 0.34, size.height * 0.155);
+    final g = _cloudGeom(size);
+    final center = g.center;
+    final r = g.r;
     final phase = curN - curN.floorToDouble(); // 0 → 1 between halvings
     final grow = phase; // ring swells as the next beat approaches
-    final ringR = r * (1.15 + 0.45 * grow);
+    // Ring peaks at _kMetroMax × r so it never punches out of the cloud band
+    // into the header above or the flash/tracker below.
+    final ringR = r * (1.05 + (_kMetroMax - 1.05) * grow);
     final col = accelerating ? _kWarn : _kAccent;
     canvas.drawCircle(
       center,
@@ -620,8 +643,9 @@ class _HalfLifeV2Painter extends CustomPainter {
 
   // ── Speed-lines while forcing decay (racing feel). ──
   void _paintSpeedLines(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height * 0.30);
-    final r = math.min(size.width * 0.34, size.height * 0.155);
+    final g = _cloudGeom(size);
+    final center = g.center;
+    final r = g.r;
     final paint = Paint()
       ..color = _kWarn.withValues(alpha: 0.5)
       ..strokeWidth = 2.2
@@ -648,7 +672,7 @@ class _HalfLifeV2Painter extends CustomPainter {
       '100',
       for (var b = 0; b < _kBeats; b++) _fmtPct(_targetFrac(b) * 100),
     ];
-    final y = size.height * 0.475;
+    final y = size.height * 0.525;
     final n = labels.length;
     final spacing = math.min(size.width / (n + 0.2), 74.0);
     final startX = size.width / 2 - spacing * (n - 1) / 2;
@@ -713,27 +737,13 @@ class _HalfLifeV2Painter extends CustomPainter {
     }
   }
 
-  // ── "⏩ ACCELERATING" caption while the button is held. ──
-  void _paintAccelCaption(Canvas canvas, Size size) {
-    final pulse = 0.7 + 0.3 * (0.5 + 0.5 * math.sin(idle * 9));
-    GameFx.text(
-      canvas,
-      '⏩ ACCELERATING',
-      Offset(size.width / 2, size.height * 0.885),
-      14,
-      _kWarn.withValues(alpha: pulse),
-      display: true,
-      glow: 0.5 * pulse,
-    );
-  }
-
   // ── The exponential decay curve + target rings (the teaching surface) ──
   void _paintCurve(Canvas canvas, Size size) {
     if (!started) return;
     final left = size.width * 0.12;
     final right = size.width * 0.88;
-    final top = size.height * 0.52;
-    final bot = size.height * 0.82;
+    final top = size.height * 0.585;
+    final bot = size.height * 0.85;
     const maxN = _kBeats + 0.9;
 
     double xAt(double n) => left + (right - left) * (n / maxN);
@@ -850,10 +860,12 @@ class _HalfLifeV2Painter extends CustomPainter {
     final a = (1 - flashAge / _kFlashTime).clamp(0.0, 1.0);
     final label = flashQ == 2 ? 'PERFECT!' : (flashQ == 1 ? 'CLOSE' : 'OFF');
     final col = flashQ == 2 ? _kAccent : (flashQ == 1 ? _kGood : _kWarn);
+    // The result overlays the cloud centre (reads as "this measurement's grade")
+    // and sits well above the step-tracker band, so it never fights the rail.
     GameFx.text(
       canvas,
       label,
-      Offset(size.width / 2, size.height * 0.42),
+      Offset(size.width / 2, size.height * _kCloudCY),
       flashQ == 2 ? 26 : 20,
       col.withValues(alpha: a),
       display: true,
@@ -863,7 +875,7 @@ class _HalfLifeV2Painter extends CustomPainter {
       GameFx.text(
         canvas,
         '+$flashPts',
-        Offset(size.width / 2, size.height * 0.46),
+        Offset(size.width / 2, size.height * (_kCloudCY + 0.05)),
         14,
         col.withValues(alpha: a),
         weight: FontWeight.w800,
@@ -871,15 +883,32 @@ class _HalfLifeV2Painter extends CustomPainter {
     }
   }
 
-  // ── Tap affordance ──
+  // ── Tap affordance (bottom-centre). Doubles as the ⏩ ACCELERATING readout
+  // while the FORCE DECAY button is held, so the two never stack on one line. ──
   void _paintTapHint(Canvas canvas, Size size) {
     if (!started || !running) return;
     final live = nextBeat < _kBeats && !inter;
+    // Sit left-of-centre: the FORCE DECAY button owns the bottom-right corner.
+    final hintX = size.width * 0.34;
+    final hintY = size.height * 0.955;
+    if (accelerating) {
+      final pulse = 0.7 + 0.3 * (0.5 + 0.5 * math.sin(idle * 9));
+      GameFx.text(
+        canvas,
+        '⏩ ACCELERATING',
+        Offset(hintX, hintY),
+        15,
+        _kWarn.withValues(alpha: pulse),
+        display: true,
+        glow: 0.5 * pulse,
+      );
+      return;
+    }
     final pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(idle * 4));
     GameFx.text(
       canvas,
       'TAP TO MEASURE',
-      Offset(size.width / 2, size.height * 0.93),
+      Offset(hintX, hintY),
       15,
       (live ? _kAccent : Potatuhs.textFaint).withValues(alpha: live ? pulse : 0.4),
       weight: FontWeight.w800,

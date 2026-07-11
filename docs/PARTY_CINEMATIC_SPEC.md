@@ -40,37 +40,48 @@ Every system below is an absolute requirement, not a nice-to-have.
 
 ---
 
-## 1. Opening ceremony
+## 1. Opening ceremony (REVISED 2026-07-07, Brett: yumutsu)
 
-**MC: Butter** (CMO voice — smooth, earnest about the absurd premise, never winks).
-Banter lines may carry the company-wide "uhhh..." tic.
+**VOICE LAW: "uhhh…" belongs to RUSS ALONE.** It is his catchphrase, never a
+company-wide tic. Butter is smooth, earnest, never hedges, never winks. Every line in
+every cutscene is written to the character profiles in
+`~/Potatuhs/info/company/characters/`.
 
-Skippable, tap-through panels over the board (SKIP always visible), ≤ 4 beats:
+**The board carries the rules; the characters carry the personality.** The old
+sequential speech-panel format (rules delivered as monologue pages) is dead. Shape:
 
-1. **Welcome** — map name + journey framing ("Down the Hole", etc.), Butter intro.
-2. **How you win** — most 🥔 at the end. Potatoes are bought **with diamonds at the
-   destination anchor** (order 87) — say it plainly, point at the anchor landmark.
-   Diamonds are eaten Pac-Man-style on every space you travel through.
-3. **How a round works** — everyone rolls & moves; after all have moved, a mini-game
-   fires. **The region you land in picks the game's scale** — steer your route to play
-   the games you want (this is the "tip the scales" promise).
-4. **Your opening spin** — introduces the wheel, flows directly into it (§2).
+1. **A rules board** — one always-visible panel holding ALL the information at once
+   (WIN / ROUNDS / THE WHEEL rows), scannable like a manual page.
+2. **A dialogue strip below it** — real character portraits (`assets/characters/`,
+   the allowed raster exception) with procedural expressions (mood-driven motion +
+   painted badges — `party_dialogue.dart`). Butter MCs; then the characters the
+   players ACTUALLY PICKED banter back and forth, each in their profile voice.
+   Banter is a pure function of the shared roster — identical on every client.
 
-Networking: panels are client-local presentation shown during the opening wheel phase;
-dismissing the ceremony reveals your wheel. No new shared state beyond the wheel phase.
+Skippable, tap-through (SKIP always visible); the last beat flows into the opening
+spin (§2). Networking: client-local presentation during the opening wheel phase.
 
-## 2. The wheel
+## 2. The wheel (REVISED 2026-07-07, Brett: yumutsu — STOP is now SKILL)
 
-One wheel widget (`lib/party/wheel/`), four cadences. **The player hits STOP** — the
-stop is a real lockstep input (`wheelStop`); the outcome is drawn from the random tape
-when the stop lands, and the wheel visibly decelerates onto that segment. Deterministic
-on every client, interactive in the hand.
+One wheel widget, four cadences. **STOP is a real skill input**: the segment under the
+pointer at the moment of the press IS the outcome. The spinner's client passes that
+segment through the lockstep log (`wheelStop`, value = segment + 1; value 0 = legacy
+tape draw for old logs and autoplay), so every client replays the same landing. The
+wheel spins slow enough to read (one revolution / 2.4 s), never reverses on the stop,
+and eases forward ~1–2 revolutions onto the called segment — read it, time it, win it.
+
+**After the settle, nothing auto-advances.** Butter (portrait + expression) explains
+what the landed prize actually does, and the spinner drives the game forward with
+CONTINUE. Results that land while a payoff is being read queue behind it. This is the
+general pacing law: **the state machine never plunges the player into the next state —
+every state change lands, is explained, and waits for the player to move the game
+forward.**
 
 | Spin | When | Who | Table |
 |---|---|---|---|
 | **Opening** | game start (with ceremony) | every player | items only |
 | **Checkpoint** | every 4 rounds — rounds 5, 9, 13… | every player | middle table |
-| **Winner** | after each mini-game ceremony | round winner only — **down_the_hole & through_the_aether only** (into_the_void wants less wheel) | middle table |
+| **Winner** | after each mini-game ceremony | round winner only — **down_the_hole & through_the_aether only** (into_the_void wants less wheel) | winner table — **all-positive; a winner's spin can never deduct** (punishing the round winner disincentivizes winning) |
 | **Final** | game end, before awards | every player | high-stakes table |
 
 **Opening table (items only):** doubleDie · twinDice · freezeRay · swapper ·

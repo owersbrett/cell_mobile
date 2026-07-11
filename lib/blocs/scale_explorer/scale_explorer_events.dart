@@ -7,6 +7,14 @@ class SelectScale extends ScaleExplorerEvent {
   SelectScale(this.scale);
 }
 
+/// Scope the explorer to a single module's entities (Scale → Module → Entity).
+/// [scale] is carried so the state knows both dimensions.
+class SelectModule extends ScaleExplorerEvent {
+  final BioScale scale;
+  final String moduleId;
+  SelectModule(this.scale, this.moduleId);
+}
+
 class NavigateLateral extends ScaleExplorerEvent {
   final int delta; // +1 or -1
   NavigateLateral(this.delta);

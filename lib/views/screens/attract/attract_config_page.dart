@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../games/attract/review_queue.dart';
 import '../../../games/mini_game_registry.dart';
 import '../../../party/maps/game_map.dart';
 import '../../../theme/potatuhs.dart';
@@ -18,6 +19,13 @@ class AttractConfigPage extends StatelessWidget {
     Potatuhs.airForce,
     Potatuhs.gold,
   ];
+
+  /// How many queued ids resolve to a real spec (so the picker shows a truthful
+  /// count and never launches an empty walk).
+  int get _queueCount {
+    final ids = MiniGameRegistry.specs.map((s) => s.id).toSet();
+    return kReviewQueue.where(ids.contains).length;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -55,6 +63,24 @@ class AttractConfigPage extends StatelessWidget {
                       icon: Icons.smart_toy,
                       accent: Potatuhs.gold,
                       onTap: () => _pickStartIndex(context),
+                    ),
+                    const SizedBox(height: 14),
+                    // The chat-configured review queue: only the games Claude
+                    // and Brett are actively fixing right now. Edited from chat;
+                    // see games/attract/review_queue.dart.
+                    _AttractOption(
+                      title: 'QUEUED GAMES',
+                      subtitle: _queueCount == 0
+                          ? 'Nothing queued — ask Claude to queue games'
+                          : 'Review the $_queueCount game${_queueCount == 1 ? '' : 's'} on the fix list',
+                      icon: Icons.playlist_play,
+                      accent: Potatuhs.airForce,
+                      onTap: _queueCount == 0
+                          ? () {}
+                          : () => _push(
+                                context,
+                                const AttractGamesPage(queueIds: kReviewQueue),
+                              ),
                     ),
                     const SizedBox(height: 14),
                     for (var i = 0; i < kGameMaps.length; i++) ...[

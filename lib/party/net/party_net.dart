@@ -358,10 +358,11 @@ class PartyNet extends ChangeNotifier {
         }
         return false;
       case PartyInputKind.wheelStop:
-        // Only the seat whose wheel is up may stop it.
+        // Only the seat whose wheel is up may stop it. value carries the
+        // segment under the spinner's pointer + 1 (0 = legacy tape draw).
         if (c.phase == PartyPhase.wheelSpin &&
             slot == c.wheel?.currentSpinner) {
-          c.wheelStop();
+          c.wheelStop(r.value - 1);
           return true;
         }
         return false;

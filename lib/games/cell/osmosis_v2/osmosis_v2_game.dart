@@ -20,11 +20,20 @@ import '../../../theme/potatuhs.dart';
 //
 // • LEGIBILITY (teardown #2, two-stage indirection): the player no longer
 //   steers an abstract `inject` that integrates into a separate VOLUME gauge.
-//   The knob position IS the net tonicity the cell feels — one value, no hidden
-//   offset. The environment DRIFT shoves that same knob, so "hold the knob in
-//   the green against the push" is the whole loop. The two HUD bars collapse to
-//   ONE thing to track (the knob), with the potato-cell itself as the fused
-//   consequence read-out. Flux is fast (kFlux 0.55) so cause→effect is instant.
+//   The cell feels the NET TONICITY `T = knob − envBalance` — the gap between
+//   your knob and the solution's true balance point — with the potato-cell
+//   itself as the fused consequence read-out. Flux is fast (kFlux 0.55) so
+//   cause→effect is instant.
+//
+// • NO FIXED WINNING SPOT (the anti-exploit overhaul): v1 let you PARK a finger
+//   on the fixed centre green and max score with zero skill — "incredibly dull
+//   and repetitive." Now the environment's balance point `_envBalance` WANDERS
+//   continuously across [−0.7, 0.7] (eased toward a re-rolled target on a
+//   shrinking interval). The green ISOTONIC zone is drawn AT `_envBalance`, so
+//   it visibly SLIDES; "in the green" means `|knob − envBalance| < kIsoTol`.
+//   Because the target moves, a stationary knob is pulled out of band within
+//   ~1–2 s — the only winning strategy is to keep CHASING the sliding green.
+//   Skill = tracking accuracy under drift that accelerates through the round.
 //
 // • FAIR SCORING (teardown #3, runaway): uncapped +6/s + +35 recovery is
 //   replaced with a capped multiplier (1×→3×) over a base rate, so a skilled
@@ -42,7 +51,8 @@ import '../../../theme/potatuhs.dart';
 // KEPT (the education + the best juice): osmosis = water crosses toward higher
 // solute; hypo→swell/lyse, hyper→shrivel/crenate, isotonic = firm turgor; the
 // crenating/swelling membrane tied to volume; the directional "water leaving →"
-// sub-caption; the accelerating drift and fail-and-recover (re-forms at 0.50).
+// sub-caption; the fail-and-recover (re-forms at 0.50); FINAL SURGE climax. Only
+// the CONTROL/TARGET model changed — a fixed centre became a moving balance.
 
 // ── Feel constants ───────────────────────────────────────────────────────────
 
@@ -58,8 +68,9 @@ const double _kFlux = 0.55;
 const double _kLyseAt = 0.97;
 const double _kCrenateAt = 0.03;
 
-/// Half-width of the green ISOTONIC zone on the knob track. Generous so holding
-/// is achievable; outside it, flux begins.
+/// Half-width of the green ISOTONIC zone, in knob units around the moving
+/// `_envBalance`. `|knob − envBalance| < _kIsoTol` ⇒ green ⇒ flux stops.
+/// Generous so chasing is achievable; outside it, flux begins.
 const double _kIsoTol = 0.14;
 
 /// Score: base points per second while the cell is healthy, times the combo
@@ -72,16 +83,21 @@ const double _kMultMax = 3.0;
 /// recover teaching beat) — bounded, not the old uncapped +35.
 const int _kRecoveryBonus = 15;
 
-/// Environment drift, modelled as a velocity that shoves the knob. Both the
-/// magnitude and the re-roll cadence escalate with progress.
-const double _kDriftRangeBase = 0.40; // knob units / sec, early
-const double _kDriftRangeGain = 0.70; // +range at full progress
-const double _kRetargetBase = 2.2; // seconds between re-rolls, early
-const double _kRetargetGain = 1.4; // shrink (faster) at full progress
+/// Environment balance point wander. The green ISOTONIC zone rides on
+/// `_envBalance`, which eases toward a re-rolled target on an interval. Both the
+/// wander amplitude and the re-roll cadence escalate with progress, so "park the
+/// finger" fails harder over the round. `_envBalance` is clamped to ±_kEnvClamp.
+const double _kEnvClamp = 0.70; // furthest the balance point can wander
+const double _kEnvAmpBase = 0.30; // target reach from centre, early
+const double _kEnvAmpGain = 0.40; // +reach at full progress (→ 0.70)
+const double _kEnvRetargetBase = 2.2; // seconds between re-rolls, early
+const double _kEnvRetargetGain = 1.3; // shrink (faster) at full progress (→0.9s)
+const double _kEnvEaseBase = 1.1; // ease rate toward the target, early
+const double _kEnvEaseGain = 1.4; // +ease at full progress (snappier wander)
 
 /// Final-surge window (seconds remaining) and its escalations.
 const double _kSurgeAt = 10.0;
-const double _kSurgeDriftMul = 1.6;
+const double _kSurgeWanderMul = 1.5; // wander amplitude + ease bump in surge
 const double _kSurgeScoreMul = 2.0;
 
 // ── Palette (Potatuhs brand + osmosis cues) ──────────────────────────────────
@@ -196,9 +212,11 @@ void _legendFluxArrows(Canvas canvas, Offset center, double r, bool inward) {
   }
 }
 
-/// The bottom BALANCE DECK as `_paintDeck` draws it — WATER→ISOTONIC→SALT track,
-/// green safe zone, and the big grabbable knob at [tonicity] (-1 water … +1 salt).
-void _legendDeck(Canvas canvas, Size size, double tonicity) {
+/// The bottom BALANCE DECK as `_paintDeck` draws it — WATER→SALT track, the green
+/// ISOTONIC safe zone at [envBalance] (which slides in the live game), and the big
+/// grabbable knob at [knob]. "Green" = knob within `_kIsoTol` of envBalance.
+void _legendDeck(Canvas canvas, Size size, double knob,
+    {double envBalance = 0.0}) {
   final left = size.width * 0.10;
   final w = size.width * 0.80;
   if (w <= 2) return;
@@ -216,25 +234,28 @@ void _legendDeck(Canvas canvas, Size size, double tonicity) {
       ).createShader(rect),
   );
 
-  // Green isotonic safe zone in the centre.
-  final zoneHalf = w * 0.5 * _kIsoTol;
   final cx = left + w / 2;
+  final knobGreen = (knob - envBalance).abs() < _kIsoTol;
+
+  // Green isotonic safe zone — rides on the (possibly off-centre) balance point.
+  final zoneHalf = w * 0.5 * _kIsoTol;
+  final zx = cx + envBalance.clamp(-1.0, 1.0) * (w / 2);
   final zone = RRect.fromRectAndRadius(
-      Rect.fromLTRB(cx - zoneHalf, trackY - 2, cx + zoneHalf,
+      Rect.fromLTRB(zx - zoneHalf, trackY - 2, zx + zoneHalf,
           trackY + trackH + 2),
       const Radius.circular(8));
-  final knobGreen = tonicity.abs() < _kIsoTol;
-  canvas.drawRRect(zone, Paint()..color = _kSafe.withValues(alpha: 0.22));
+  canvas.drawRRect(zone, Paint()..color = _kSafe.withValues(alpha: 0.24));
   canvas.drawRRect(
       zone,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..color = _kSafe.withValues(alpha: knobGreen ? 0.9 : 0.5));
+        ..strokeWidth = 1.6
+        ..color = _kSafe.withValues(alpha: knobGreen ? 0.95 : 0.6));
 
-  // The knob at the current net tonicity.
-  final hx = cx + tonicity.clamp(-1.0, 1.0) * (w / 2);
+  // The knob at its absolute position.
+  final hx = cx + knob.clamp(-1.0, 1.0) * (w / 2);
   final hy = trackY + trackH / 2;
+  final tonicity = knob - envBalance;
   final knobColor =
       knobGreen ? _kSafe : (tonicity < 0 ? _kWater : _kSalt);
   const knobR = 15.0;
@@ -258,11 +279,12 @@ void _legendDeck(Canvas canvas, Size size, double tonicity) {
       weight: FontWeight.w800);
   GameFx.text(canvas, 'SALT ▶', Offset(left + w - 30, trackY - 14), 10, _kSalt,
       weight: FontWeight.w800);
-  GameFx.text(canvas, 'ISOTONIC', Offset(cx, trackY - 14), 9,
+  final isoX = zx.clamp(left + 60.0, left + w - 60.0);
+  GameFx.text(canvas, 'ISOTONIC', Offset(isoX, trackY - 14), 9,
       _kSafe.withValues(alpha: 0.9), weight: FontWeight.w800);
 }
 
-// ── Frame 1 · the verb: hold firm turgor, knob in the green ──────────────────
+// ── Frame 1 · the verb: chase the sliding green to hold firm turgor ──────────
 void _legendFrameHold(Canvas canvas, Size size) {
   if (size.width < 8 || size.height < 8) return;
   final sceneH = size.height * 0.60;
@@ -280,7 +302,9 @@ void _legendFrameHold(Canvas canvas, Size size) {
   _legendCell(canvas, center, r, _kBandCentre);
   GameFx.text(canvas, 'FIRM TURGOR', Offset(center.dx, center.dy + r + 20), 12,
       _kSafe, weight: FontWeight.w800, glow: 0.5);
-  _legendDeck(canvas, size, 0.0);
+  // The green has slid off-centre; the knob is tracking it (both at −0.34) so
+  // the gap T ≈ 0 — the whole "chase the moving target" idea in one still.
+  _legendDeck(canvas, size, -0.34, envBalance: -0.34);
 }
 
 // ── Frame 2 · how to score: stay in the band, combo climbs to ×3 ─────────────
@@ -303,7 +327,8 @@ void _legendFrameScore(Canvas canvas, Size size) {
       _kSafe, display: true, glow: 0.6);
   GameFx.text(canvas, 'HEALTHY', Offset(size.width * 0.80, sceneH * 0.56), 10,
       _kWhite.withValues(alpha: 0.6), weight: FontWeight.w700);
-  _legendDeck(canvas, size, 0.0);
+  // Green slid the other way; knob matched it — combo builds only while tracking.
+  _legendDeck(canvas, size, 0.30, envBalance: 0.30);
 }
 
 // ── Frame 3 · the danger: burst when too dilute, shrivel when too salty ──────
@@ -324,8 +349,8 @@ void _legendFrameDanger(Canvas canvas, Size size) {
   _legendCell(canvas, rc, r * 0.68, 0.10);
   GameFx.text(canvas, 'CRENATES', Offset(rc.dx, sceneH * 0.92), 11, _kSalt,
       weight: FontWeight.w800);
-  // The two knob extremes that cause each.
-  _legendDeck(canvas, size, 0.0);
+  // Knob LAGGING the green: the gap T is what bursts or shrivels the cell.
+  _legendDeck(canvas, size, 0.55, envBalance: -0.15);
 }
 
 // ── Frame 4 · the climax: final 10s surge, drift spikes, points ×2 ───────────
@@ -347,29 +372,30 @@ void _legendFrameSurge(Canvas canvas, Size size) {
   _legendCell(canvas, center, r, 0.62); // straining toward the top of the band
   GameFx.text(canvas, 'FINAL SURGE  ×2', Offset(size.width / 2, sceneH * 0.14),
       18, _kRed, display: true, glow: 0.8);
-  // A knob shoved off-centre by the escalated drift.
-  _legendDeck(canvas, size, 0.55);
+  // The green swings hard and fast; the knob is scrambling to keep up.
+  _legendDeck(canvas, size, 0.25, envBalance: 0.62);
 }
 
 /// The visual manual for Osmosis v2 — wired into the registry spec.
 final List<LegendFrame> osmosisV2LegendFrames = [
   const LegendFrame(
-      caption: 'Drag the knob to green — hold the cell at firm turgor',
+      caption: 'The green ISOTONIC zone SLIDES — chase it with the knob to hold firm turgor',
       paint: _legendFrameHold),
   const LegendFrame(
-      caption: 'Stay in the band: points build a combo up to ×3',
+      caption: 'Keep the knob on the moving green: points build a combo up to ×3',
       paint: _legendFrameScore),
   const LegendFrame(
-      caption: 'Too dilute bursts it (lysis); too salty shrivels it',
+      caption: 'Fall behind the green and the gap bursts it (lysis) or shrivels it (crenation)',
       paint: _legendFrameDanger),
   const LegendFrame(
-      caption: 'Last 10s: FINAL SURGE — drift spikes, points ×2',
+      caption: 'Last 10s: FINAL SURGE — the green swings harder and faster, points ×2',
       paint: _legendFrameSurge),
 ];
 
-/// Osmosis v2 — keep a POTATO cell at firm turgor by holding the surrounding
-/// water at isotonic. Drag the balance knob into the green against an
-/// environment that keeps drifting saltier or more dilute.
+/// Osmosis v2 — keep a POTATO cell at firm turgor by CHASING the isotonic point
+/// as it wanders. The green zone rides on a moving `_envBalance`; the cell feels
+/// the gap `T = knob − _envBalance`. Park the knob and the balance walks away —
+/// only continuous tracking keeps the cell healthy.
 class OsmosisV2Game extends StatefulWidget {
   final MiniGameSession session;
   const OsmosisV2Game({super.key, required this.session});
@@ -387,13 +413,17 @@ class _OsmosisV2GameState extends State<OsmosisV2Game>
   // ── Core state ─────────────────────────────────────────────────────────────
   double _volume = _kBandCentre;
   double _knob = 0.0; // -1 full water (hypotonic) … +1 full salt (hypertonic)
-  double _driftForce = 0.0; // current environment push on the knob (units/sec)
+  double _envBalance = 0.0; // the WANDERING true balance point (green rides here)
+  double _envTarget = 0.0; // where the balance point is currently easing toward
   double _retargetTimer = 0.0;
   bool _touching = false;
   double _target = 0.0; // finger-driven knob target while touching
   bool _everTouched = false; // dismisses the onboarding ghost hand
 
-  double get _tonicity => _knob.clamp(-1.0, 1.0);
+  /// Net tonicity the cell actually feels: the GAP between the knob and the
+  /// moving balance point. This is the whole anti-exploit: a still knob has a
+  /// growing |T| as `_envBalance` walks away.
+  double get _tonicity => (_knob - _envBalance).clamp(-1.0, 1.0);
   bool get _inBand => _volume >= _kBandMin && _volume <= _kBandMax;
   bool get _knobGreen => _tonicity.abs() < _kIsoTol;
 
@@ -437,30 +467,28 @@ class _OsmosisV2GameState extends State<OsmosisV2Game>
   }
 
   // ── ATTRACT autopilot ────────────────────────────────────────────────────────
-  // One competent move per call: hold the potato cell at firm turgor by dragging
-  // the BALANCE KNOB. Volume drifts by -_kFlux * tonicity, so project it a short
-  // horizon ahead under the current (drift-shoved) knob; if that projection is
-  // leaving the healthy band, steer the knob target toward the tonicity that
-  // pushes volume back to centre (positive tonicity sheds water when swollen,
-  // negative draws it in when shriveled). When comfortably centred and already
-  // isotonic, hold the knob green. Deterministic — sets the same field a real
-  // drag sets (`_touching` + `_target`); no randomness, no synthetic taps.
+  // One competent move per call: hold the potato cell at firm turgor by CHASING
+  // the wandering balance point. The cell feels `T = knob − _envBalance`, and
+  // `dVolume/dt = -_kFlux * T`. So the bot's baseline is to keep the knob glued
+  // to `_envBalance` (⇒ T ≈ 0 ⇒ volume holds). It then adds a small volume-
+  // correction offset: if the projected volume is drifting off firm turgor it
+  // biases the knob to the side that pushes volume back (a touch saltier than
+  // balance sheds water when swollen; a touch more dilute draws it in when
+  // shriveled). This makes it competently TRACK the moving green rather than
+  // parking. Deterministic — sets the same fields a real drag sets (`_touching`
+  // + `_target`); no randomness, no synthetic taps.
   void _autoStep() {
     if (!widget.session.isRunning) return;
     _everTouched = true; // dismiss the onboarding ghost hand
-    // Project volume a few ticks ahead assuming the knob stays near where it is.
-    const horizon = 0.35; // seconds
+    // Project volume a short horizon ahead under the current tonicity gap.
+    const horizon = 0.30; // seconds
     final projVol = (_volume - _kFlux * _tonicity * horizon).clamp(0.0, 1.0);
     final err = projVol - _kBandCentre; // >0 too swollen, <0 too shriveled
-    double target;
-    if (err.abs() < 0.02 && _tonicity.abs() < _kIsoTol) {
-      target = 0.0; // centred and green: hold isotonic
-    } else {
-      // Proportional correction; sign(err) == sign(needed tonicity).
-      target = (err * 4.0).clamp(-1.0, 1.0);
-    }
+    // Baseline: track the balance point. Offset: bias by volume error so the
+    // gap T restores volume. sign(err) == sign(desired T (knob − env)).
+    final offset = (err * 3.2).clamp(-0.55, 0.55);
+    _target = (_envBalance + offset).clamp(-1.0, 1.0);
     _touching = true; // held drag: knob eases toward _target each tick
-    _target = target;
   }
 
   double _remainingSec() => widget.session.remaining.inMilliseconds / 1000.0;
@@ -487,20 +515,36 @@ class _OsmosisV2GameState extends State<OsmosisV2Game>
     if (_surge) _surgePulse += dt * 6.0;
 
     if (running) {
-      // ── Environment drift shoves the knob (re-rolls, accelerating) ──────────
+      // ── The environment BALANCE POINT wanders (re-rolls, accelerating) ──────
+      // The green zone rides on `_envBalance`. It eases toward a re-rolled
+      // target; both the reach and the cadence escalate with progress + surge.
       _retargetTimer -= dt;
       if (_retargetTimer <= 0) {
-        var range = _kDriftRangeBase + _kDriftRangeGain * progress;
-        var period = (_kRetargetBase - _kRetargetGain * progress)
-            .clamp(0.7, _kRetargetBase);
+        var amp = _kEnvAmpBase + _kEnvAmpGain * progress;
+        var period = (_kEnvRetargetBase - _kEnvRetargetGain * progress)
+            .clamp(0.9, _kEnvRetargetBase);
         if (_surge) {
-          range *= _kSurgeDriftMul;
-          period *= 0.6;
+          amp *= _kSurgeWanderMul;
+          period *= 0.7;
         }
-        _driftForce = (_rng.nextDouble() * 2 - 1) * range;
+        amp = amp.clamp(0.0, _kEnvClamp);
+        // Re-roll a target; bias away from the current side so it keeps moving
+        // rather than re-settling near itself (no "park" opportunity). The floor
+        // guarantees the target clears the green tolerance so a parked knob
+        // ALWAYS falls out of band within ~1–2s (the anti-exploit contract).
+        const minMag = _kIsoTol + 0.10;
+        final mag = math.max(minMag, (0.55 + 0.45 * _rng.nextDouble()) * amp);
+        final sign = _envBalance > 0
+            ? -1.0
+            : (_envBalance < 0 ? 1.0 : (_rng.nextBool() ? 1.0 : -1.0));
+        _envTarget = (sign * mag).clamp(-_kEnvClamp, _kEnvClamp);
         _retargetTimer = period;
       }
-      _knob += _driftForce * dt;
+      // Ease the balance point toward its target (faster later / in surge).
+      var ease = _kEnvEaseBase + _kEnvEaseGain * progress;
+      if (_surge) ease *= _kSurgeWanderMul;
+      _envBalance += (_envTarget - _envBalance) * (ease * dt).clamp(0.0, 1.0);
+      _envBalance = _envBalance.clamp(-_kEnvClamp, _kEnvClamp);
 
       // ── Player drag eases the knob toward the finger (no edge-slam) ─────────
       if (_touching) {
@@ -549,9 +593,10 @@ class _OsmosisV2GameState extends State<OsmosisV2Game>
       }
       _wasInBand = _inBand;
     } else {
-      // Calm ready / post-round state: settle to isotonic firm turgor.
+      // Calm ready / post-round state: settle balance + knob to centre firm turgor.
+      _envBalance += (0.0 - _envBalance) * (2.2 * dt).clamp(0.0, 1.0);
+      _envTarget = 0.0;
       _knob += (0.0 - _knob) * (2.2 * dt).clamp(0.0, 1.0);
-      _driftForce = 0.0;
       _retargetTimer = 0.0;
       _volume += (_kBandCentre - _volume) * (1.4 * dt).clamp(0.0, 1.0);
       _wasInBand = _inBand;
@@ -643,6 +688,8 @@ class _OsmosisV2GameState extends State<OsmosisV2Game>
               painter: _OsmosisV2Painter(
                 volume: _volume,
                 tonicity: _tonicity,
+                knob: _knob.clamp(-1.0, 1.0),
+                envBalance: _envBalance.clamp(-_kEnvClamp, _kEnvClamp),
                 knobGreen: _knobGreen,
                 inBand: _inBand,
                 touching: _touching,
@@ -676,7 +723,9 @@ class _OsmosisV2GameState extends State<OsmosisV2Game>
 
 class _OsmosisV2Painter extends CustomPainter {
   final double volume;
-  final double tonicity;
+  final double tonicity; // net tonicity gap = knob − envBalance
+  final double knob; // absolute knob position (what the player drags)
+  final double envBalance; // the moving balance point (green rides here)
   final bool knobGreen;
   final bool inBand;
   final bool touching;
@@ -701,6 +750,8 @@ class _OsmosisV2Painter extends CustomPainter {
   _OsmosisV2Painter({
     required this.volume,
     required this.tonicity,
+    required this.knob,
+    required this.envBalance,
     required this.knobGreen,
     required this.inBand,
     required this.touching,
@@ -961,20 +1012,40 @@ class _OsmosisV2Painter extends CustomPainter {
         ).createShader(Rect.fromLTWH(left, trackY, w, _trackH)),
     );
 
-    // Green isotonic safe zone in the centre.
-    final zoneHalf = w * 0.5 * _kIsoTol / 1.0;
     final cx = left + w / 2;
+    // Green ISOTONIC safe zone — rides on the MOVING balance point, so it slides
+    // left/right along the track. Chase it with the knob to stay healthy.
+    final zoneHalf = w * 0.5 * _kIsoTol;
+    final zx = cx + envBalance.clamp(-1.0, 1.0) * (w / 2);
     final zone = RRect.fromRectAndRadius(
-        Rect.fromLTRB(cx - zoneHalf, trackY - 2, cx + zoneHalf,
-            trackY + _trackH + 2),
+        Rect.fromLTRB(zx - zoneHalf, trackY - 3, zx + zoneHalf,
+            trackY + _trackH + 3),
         const Radius.circular(8));
-    canvas.drawRRect(zone, Paint()..color = _kSafe.withValues(alpha: 0.22));
+    canvas.drawRRect(zone, Paint()..color = _kSafe.withValues(alpha: 0.26));
     canvas.drawRRect(
         zone,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.4
-          ..color = _kSafe.withValues(alpha: knobGreen ? 0.9 : 0.5));
+          ..strokeWidth = knobGreen ? 2.4 : 1.6
+          ..color = _kSafe.withValues(alpha: knobGreen ? 0.95 : 0.6));
+    // A soft glow so the sliding target is always locatable at a glance.
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTRB(zx - zoneHalf, trackY - 3, zx + zoneHalf,
+                trackY + _trackH + 3),
+            const Radius.circular(8)),
+        Paint()
+          ..color = _kSafe.withValues(alpha: 0.18)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9));
+    // A downward caret above the green so it reads as "aim here".
+    final caretY = trackY - 6.0;
+    final caret = Path()
+      ..moveTo(zx - 6, caretY - 7)
+      ..lineTo(zx + 6, caretY - 7)
+      ..lineTo(zx, caretY)
+      ..close();
+    canvas.drawPath(
+        caret, Paint()..color = _kSafe.withValues(alpha: knobGreen ? 0.95 : 0.7));
 
     canvas.drawRRect(
         track,
@@ -983,8 +1054,8 @@ class _OsmosisV2Painter extends CustomPainter {
           ..strokeWidth = 1.2
           ..color = _kWhite.withValues(alpha: 0.18));
 
-    // Big grabbable knob at the current net tonicity.
-    final hx = cx + tonicity.clamp(-1.0, 1.0) * (w / 2);
+    // Big grabbable knob at the absolute knob position the player set.
+    final hx = cx + knob.clamp(-1.0, 1.0) * (w / 2);
     final hy = trackY + _trackH / 2;
     final knobColor = knobGreen
         ? _kSafe
@@ -1006,14 +1077,16 @@ class _OsmosisV2Painter extends CustomPainter {
           Paint()..color = Potatuhs.ink.withValues(alpha: 0.7));
     }
 
-    // End labels.
+    // End labels. "ISOTONIC" rides above the sliding green so its meaning stays
+    // pinned to the moving target (kept clear of the deck edges).
     GameFx.text(canvas, '◀ WATER', Offset(left + 40, trackY - 16), 11,
         _kWater, weight: FontWeight.w800);
     GameFx.text(canvas, 'SALT ▶', Offset(left + w - 36, trackY - 16), 11,
         _kSalt, weight: FontWeight.w800);
-    GameFx.text(canvas, 'ISOTONIC', Offset(cx, trackY - 16), 10,
+    final isoLabelX = zx.clamp(left + 74.0, left + w - 74.0);
+    GameFx.text(canvas, 'ISOTONIC', Offset(isoLabelX, trackY - 20), 10,
         _kSafe.withValues(alpha: 0.9), weight: FontWeight.w800);
-    GameFx.text(canvas, 'DRAG TO BALANCE THE CELL',
+    GameFx.text(canvas, 'CHASE THE GREEN — KEEP THE CELL BALANCED',
         Offset(size.width / 2, top + 22), 11,
         _kWhite.withValues(alpha: 0.7), weight: FontWeight.w700);
   }

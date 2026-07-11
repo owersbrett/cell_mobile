@@ -23,18 +23,22 @@ void main() {
     // design (the living-cell interior), so settle would never complete.
     await tester.pump(const Duration(milliseconds: 400));
 
-    // The opening ceremony (Butter) plays over the opening wheel — skip it,
-    // then every player stops their opening spin (landing payoff ~2.1s each;
-    // the final stop pays off through the outro hold).
+    // The opening ceremony plays over the opening wheel — skip it, then every
+    // player stops their opening spin. The payoff HOLDS after the ~1.7s
+    // deceleration (PARTY UX LAW: the player drives) — each spinner must tap
+    // CONTINUE to move the game forward, including the last (outro hold).
     expect(find.text('OPENING SPIN'), findsOneWidget);
     await tester.tap(find.text('SKIP'));
     await tester.pump();
     for (var i = 0; i < 4; i++) {
-      expect(find.text('STOP'), findsOneWidget, reason: 'spinner $i');
-      await tester.tap(find.text('STOP'));
-      await tester.pump(); // the stop lands; the payoff animation starts
-      await tester.pump(const Duration(milliseconds: 2200)); // payoff plays
+      expect(find.text('SPIN'), findsOneWidget, reason: 'spinner $i');
+      await tester.tap(find.text('SPIN'));
+      await tester.pump(); // the stop lands; the deceleration starts
+      await tester.pump(const Duration(milliseconds: 1800)); // wheel settles
       await tester.pump(const Duration(milliseconds: 60)); // rebuild
+      expect(find.text('CONTINUE'), findsOneWidget, reason: 'payoff $i');
+      await tester.tap(find.text('CONTINUE'));
+      await tester.pump();
     }
     await tester.pump(const Duration(milliseconds: 400));
 

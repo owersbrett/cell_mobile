@@ -428,6 +428,7 @@ class _StellarEvolutionGameState extends State<StellarEvolutionGame>
   double _doneAge = 0;
   double _endpointAge = 0;
   double _shake = 0;
+  bool _actedThisPhase = false; // did the player tap this phase yet? (fades the how-to hint)
 
   // Action state (reused per phase as relevant).
   double _progress = 0; // 0..1 generic mash/collapse/expand progress
@@ -482,6 +483,7 @@ class _StellarEvolutionGameState extends State<StellarEvolutionGame>
     if (!_started) return; // _onTick births the first star
     if (_phaseDone) return; // mid-transition — the tick loop is advancing us
 
+    _actedThisPhase = true; // autopilot is "playing"; fade the how-to hint like a human would
     switch (_phase) {
       case _Phase.nebula:
         // Collapse the gas & accrete mass — one competent tap per tick.
@@ -608,6 +610,7 @@ class _StellarEvolutionGameState extends State<StellarEvolutionGame>
     _phaseDone = false;
     _doneAge = 0;
     _endpointAge = 0;
+    _actedThisPhase = false;
     _progress = 0;
     _tapCount = 0;
     _ignited = false;
@@ -760,6 +763,14 @@ class _StellarEvolutionGameState extends State<StellarEvolutionGame>
     widget.session.noteStreak(_combo);
     final total = pts + (_combo > 2 ? (_combo - 2) * 4 : 0);
     widget.session.addScore(total);
+    // Score-driver feedback: a floating +N so the player SEES what scored.
+    _emitScorePop(total, _kGood);
+  }
+
+  /// A floating "+N" near the star — the score-driver signal the spec asks for.
+  void _emitScorePop(int n, Color c) {
+    _texts.add(_FloatText(
+        _size.width / 2, _size.height * 0.42, '+$n', c));
   }
 
   void _advance() {
@@ -815,6 +826,7 @@ class _StellarEvolutionGameState extends State<StellarEvolutionGame>
   // ── Input ──────────────────────────────────────────────────────────────────
   void _onTapDown(TapDownDetails d) {
     if (!widget.session.isRunning || _phaseDone) return;
+    _actedThisPhase = true; // the how-to hint has served its purpose; let it fade
     final p = d.localPosition;
     switch (_phase) {
       case _Phase.nebula:
@@ -1157,44 +1169,71 @@ class _StellarPainter extends CustomPainter {
   }
 
   // ── Action UI per phase ──────────────────────────────────────────────────────
+  // Each phase: (a) a persistent one-word STATE line under the stage name so the
+  // player always reads what's happening, (b) a big HOW-TO hint that fades once
+  // the player acts, (c) the control (meter / track / balance bar).
   void _drawAction(Canvas canvas, Size size, double cx, double cy) {
     final y = size.height * 0.74;
     switch (s._phase) {
       case _Phase.nebula:
-        _prompt(canvas, size, 'TAP fast to collapse the gas & ignite a core',
+        _state(canvas, size, 'A gas cloud is collapsing…', _kNebula);
+        _hint(canvas, size, 'TAP FAST to collapse the gas & ignite a core',
             _kNebula);
         _meter(canvas, size, y, s._progress, _kNebula, 'COLLAPSE');
         break;
       case _Phase.giant:
-        _prompt(canvas, size,
+        _state(canvas, size,
+            s._isHighMass ? 'Core fuel spent — swelling huge…'
+                          : 'Core fuel spent — swelling up…', _kGiant);
+        _hint(canvas, size,
             s._isHighMass ? 'TAP to swell into a SUPERGIANT'
                           : 'TAP to swell into a RED GIANT', _kGiant);
         _meter(canvas, size, y, s._progress, _kGiant, 'EXPAND');
         break;
       case _Phase.shed:
-        _prompt(canvas, size, 'TAP to puff off shells & expose the core',
+        _state(canvas, size, 'Outer layers drifting away…', _kShell);
+        _hint(canvas, size, 'TAP to puff off the shells & expose the core',
             _kShell);
         _meter(canvas, size, y, s._progress, _kShell, 'SHED');
         break;
       case _Phase.protostar:
-        _prompt(canvas, size, 'TAP when the marker hits the ignition zone',
+        _state(canvas, size, 'A young core is about to ignite…', _kProto);
+        _hint(canvas, size, 'TAP when the marker hits the GREEN window',
             _kProto);
         _track(canvas, size, y, _kProtoWindowBase, _kProto);
         break;
       case _Phase.supernova:
-        _prompt(canvas, size, 'TIME the core collapse — tap in the window!',
+        _state(canvas, size, 'The core is collapsing — DETONATION!', _kFlash);
+        _hint(canvas, size, 'TAP in the GREEN window to trigger the supernova',
             _kFlash);
         _track(canvas, size, y, _kSnWindowBase, _kFlash);
         break;
       case _Phase.mainSequence:
-        _prompt(canvas, size,
-            'BALANCE gravity vs fusion — TAP to resist collapse', _kSunLow);
+        _state(canvas, size, 'Gravity vs fusion — hold it steady…', _kSunLow);
+        _hint(canvas, size,
+            'TAP to fire fusion & keep the needle in the GREEN band', _kSunLow);
         _balance(canvas, size, y);
         break;
       case _Phase.endpoint:
       case _Phase.ready:
         break;
     }
+  }
+
+  /// Persistent one-line "what's happening right now" under the stage name.
+  void _state(Canvas canvas, Size size, String t, Color c) {
+    _text(canvas, t, size.width / 2, 92, 12, c.withValues(alpha: 0.72));
+  }
+
+  /// The unmissable HOW-TO hint — big and bright, then fades once the player
+  /// acts this phase (so it teaches without nagging).
+  void _hint(Canvas canvas, Size size, String t, Color c) {
+    // Bright + pulsing until the player acts; then dim to a quiet reminder.
+    final a = s._actedThisPhase
+        ? 0.30
+        : (0.7 + 0.3 * (0.5 + 0.5 * sin(s._anim * 4)));
+    _text(canvas, t, size.width / 2, size.height * 0.63, 15,
+        c.withValues(alpha: a.clamp(0.0, 1.0)), bold: !s._actedThisPhase);
   }
 
   void _meter(Canvas canvas, Size size, double y, double v, Color c,
@@ -1265,16 +1304,20 @@ class _StellarPainter extends CustomPainter {
         Paint()..color = _kGood);
   }
 
-  void _prompt(Canvas canvas, Size size, String t, Color c) {
-    _text(canvas, t, size.width / 2, size.height * 0.64, 14,
-        c.withValues(alpha: 0.92));
-  }
-
   // ── HUD (play-area context only; host owns score/timer) ──────────────────────
   void _drawHud(Canvas canvas, Size size) {
-    final name = _names[s._phase.index];
-    _text(canvas, name, size.width / 2, 14, 16, Colors.white.withValues(alpha: 0.9));
-    // Mass → predicted destiny.
+    // ALWAYS-VISIBLE OBJECTIVE — the one line that says what the whole game is.
+    _text(canvas, 'GUIDE THE STAR — BIRTH → LIFE → DEATH', size.width / 2, 10,
+        12, Colors.white.withValues(alpha: 0.55), bold: true);
+
+    // Current stellar STAGE — big and unmissable so the astronomy reads.
+    final name = s._phase == _Phase.endpoint
+        ? s._destiny
+        : _names[s._phase.index];
+    _text(canvas, name, size.width / 2, 28, 20, s._starColor().withValues(alpha: 0.95),
+        bold: true);
+
+    // Mass → predicted destiny (what this star is becoming).
     final dColor = s._destiny == 'BLACK HOLE'
         ? _kBlackHole
         : (s._destiny == 'NEUTRON STAR' ? _kNeutron : _kWhiteDwarf);
@@ -1282,9 +1325,25 @@ class _StellarPainter extends CustomPainter {
         canvas,
         '${s._mass.toStringAsFixed(1)} M☉  →  ${s._destiny}',
         size.width / 2,
-        38,
+        54,
         12,
         dColor.withValues(alpha: 0.85));
+
+    // Per-phase countdown bar — shows the urgency of THIS stage.
+    if (s._phase != _Phase.ready && s._phase != _Phase.endpoint) {
+      final frac = (s._phaseTimer / s._phaseMax).clamp(0.0, 1.0);
+      final warn = frac < 0.3;
+      final bw = size.width * 0.5, bx = (size.width - bw) / 2;
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(bx, 74, bw, 4), const Radius.circular(2)),
+          Paint()..color = Colors.white.withValues(alpha: 0.08));
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(bx, 74, bw * frac, 4), const Radius.circular(2)),
+          Paint()..color = (warn ? _kBad : s._starColor()).withValues(alpha: 0.85));
+    }
+
     // Star-life count + combo, bottom corners.
     _text(canvas, 'STARS  ${s._starsLived}', 12, size.height - 22, 11,
         Colors.white.withValues(alpha: 0.45), align: TextAlign.left);

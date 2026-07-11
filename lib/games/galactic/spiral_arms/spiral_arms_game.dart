@@ -174,31 +174,53 @@ void _legendGalaxy(
       ]).createShader(Rect.fromCircle(center: center, radius: diskR)),
   );
 
-  // Arm spines glow only while the wave is coherent — the density wave itself.
-  final glow = (coherence - 0.1).clamp(0.0, 1.0);
-  if (glow > 0.01) {
-    for (var arm = 0; arm < arms; arm++) {
-      final path = Path();
-      final armBase = arm * (2 * math.pi / arms);
-      var first = true;
-      for (double r = 0.16; r <= 1.0; r += 0.05) {
-        final ang = patternPhase + armBase - _kWind * r;
-        final p = center + Offset(math.cos(ang), math.sin(ang)) * (diskR * r);
-        if (first) {
-          path.moveTo(p.dx, p.dy);
-          first = false;
-        } else {
-          path.lineTo(p.dx, p.dy);
-        }
+  // Bold, always-visible spiral arm lanes (mirrors the live painter). A faint
+  // ghost is always drawn; the hot lane blazes in proportion to coherence.
+  final glow = coherence.clamp(0.0, 1.0);
+  for (var arm = 0; arm < arms; arm++) {
+    final path = Path();
+    final armBase = arm * (2 * math.pi / arms);
+    var first = true;
+    for (double r = 0.14; r <= 1.0; r += 0.04) {
+      final ang = patternPhase + armBase - _kWind * r;
+      final p = center + Offset(math.cos(ang), math.sin(ang)) * (diskR * r);
+      if (first) {
+        path.moveTo(p.dx, p.dy);
+        first = false;
+      } else {
+        path.lineTo(p.dx, p.dy);
       }
+    }
+    // Dust-lane shadow.
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = diskR * 0.10
+        ..strokeCap = StrokeCap.round
+        ..color = const Color(0xFF1A1230).withValues(alpha: 0.5)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, diskR * 0.05),
+    );
+    // Persistent ghost.
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = diskR * 0.055
+        ..strokeCap = StrokeCap.round
+        ..color = _kArmHot.withValues(alpha: 0.16)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, diskR * 0.03),
+    );
+    // Hot density-wave lane.
+    if (glow > 0.02) {
       canvas.drawPath(
         path,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 12
+          ..strokeWidth = diskR * (0.030 + 0.020 * glow)
           ..strokeCap = StrokeCap.round
-          ..color = _kArmHot.withValues(alpha: 0.12 * glow)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+          ..color = _kArmHot.withValues(alpha: 0.55 * glow)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, diskR * 0.02),
       );
     }
   }
@@ -362,13 +384,13 @@ void _legendLevels(Canvas canvas, Size size) {
 /// The visual manual for Spiral Arms — wired into the registry spec.
 final List<LegendFrame> spiralArmsLegendFrames = [
   const LegendFrame(
-      caption: "Tap on the beat to pulse the galaxy's spiral wave",
+      caption: "This is a spiral galaxy — tap on the beat to pump its arms",
       paint: _legendPulse),
   const LegendFrame(
       caption: 'Crisp arms score every second — chain on-beat pulses',
       paint: _legendScore),
   const LegendFrame(
-      caption: 'Miss the beat and the arms shear into a smear',
+      caption: "Miss the beat and the galaxy's arms wind up into a smear",
       paint: _legendSmear),
   const LegendFrame(
       caption: 'Levels add arms (2 to 4) and tighten the beat',
@@ -405,6 +427,14 @@ class _SpiralArmsGameState extends State<SpiralArmsGame>
   // Beat.
   double _beatPhase = 0.0; // 0→1 each beat; hit point is the wrap boundary.
   bool _beatScored = false; // one scoring tap per beat.
+
+  // Onboarding: the big "TAP ON THE BEAT" hint fades out once the player has
+  // pulsed a couple of times (they've clearly got it). 1 = fully shown.
+  int _pulsesLanded = 0;
+  double _hintFade = 1.0;
+
+  // A rolling estimate of points earned per second (the score-driver readout).
+  double _ppsMeter = 0.0;
 
   // Streak / scoring.
   int _streak = 0;
@@ -568,12 +598,16 @@ class _SpiralArmsGameState extends State<SpiralArmsGame>
       _coherence = (_coherence - _decayRate * dt).clamp(0.0, 1.0);
 
       // Drip points for keeping the arms crisp.
-      _pointAcc += _kPointsPerSec * _coherence * dt;
+      final drip = _kPointsPerSec * _coherence * dt;
+      _pointAcc += drip;
       if (_pointAcc >= 1.0) {
         final whole = _pointAcc.floor();
         widget.session.addScore(whole);
         _pointAcc -= whole;
       }
+      // Smooth the per-second readout toward the current continuous rate.
+      final targetPps = _kPointsPerSec * _coherence;
+      _ppsMeter += (targetPps - _ppsMeter) * math.min(1.0, dt * 3.0);
     } else {
       // Calm ready state: hold the arms nicely crisp and still.
       _coherence = _coherence + (0.85 - _coherence) * math.min(1.0, dt * 2.0);
@@ -586,6 +620,10 @@ class _SpiralArmsGameState extends State<SpiralArmsGame>
       final omega = spin / (_kOmegaSoft + s.r);
       s.orbitAngle = _wrap(s.orbitAngle + omega * dt);
     }
+
+    // Once the player has landed a couple of pulses, retire the big hint.
+    final hintTarget = (running && _pulsesLanded < 2) ? 1.0 : 0.0;
+    _hintFade += (hintTarget - _hintFade) * math.min(1.0, dt * 3.0);
 
     // Decay juice.
     _pulseFlash = math.max(0.0, _pulseFlash - dt * 2.6);
@@ -611,6 +649,9 @@ class _SpiralArmsGameState extends State<SpiralArmsGame>
     _pointAcc = 0.0;
     _beatPhase = 0.0;
     _beatScored = false;
+    _pulsesLanded = 0;
+    _hintFade = 1.0;
+    _ppsMeter = 0.0;
     _sparks.clear();
     _popups.clear();
     if (_armsForLevel != _arms) _buildStars(_armsForLevel);
@@ -634,6 +675,7 @@ class _SpiralArmsGameState extends State<SpiralArmsGame>
       final accuracy = (1.0 - err / window).clamp(0.0, 1.0);
       _coherence = (_coherence + _kCohOnBeatBoost * accuracy).clamp(0.0, 1.0);
       _streak++;
+      _pulsesLanded++;
       widget.session.noteStreak(_streak);
 
       final pts = math.max(1, (_kOnBeatBase * _multiplier * accuracy).round());
@@ -691,6 +733,8 @@ class _SpiralArmsGameState extends State<SpiralArmsGame>
             pulseFlash: _pulseFlash,
             badFlash: _badFlash,
             coreThrob: _coreThrob,
+            hintFade: _hintFade,
+            pps: _ppsMeter,
             sparks: _sparks,
             popups: _popups,
           ),
@@ -763,6 +807,8 @@ class _SpiralPainter extends CustomPainter {
   final double pulseFlash;
   final double badFlash;
   final double coreThrob;
+  final double hintFade;
+  final double pps;
   final List<_Spark> sparks;
   final List<_Popup> popups;
 
@@ -782,6 +828,8 @@ class _SpiralPainter extends CustomPainter {
     required this.pulseFlash,
     required this.badFlash,
     required this.coreThrob,
+    required this.hintFade,
+    required this.pps,
     required this.sparks,
     required this.popups,
   });
@@ -798,6 +846,8 @@ class _SpiralPainter extends CustomPainter {
     _paintBeatRing(canvas, center, diskR);
     _paintSparks(canvas, center);
     _paintFlashes(canvas, size);
+    _paintScoreDriver(canvas, size, center, diskR);
+    _paintHint(canvas, size, center, diskR);
     _paintHud(canvas, size);
     _paintPopups(canvas, size);
   }
@@ -828,46 +878,98 @@ class _SpiralPainter extends CustomPainter {
     }
   }
 
-  // ── Faint disk + the density-wave arm spines ───────────────────────────────
+  // ── The spiral disk + the density-wave arm LANES ───────────────────────────
+  // These are the whole identity of the game: bold, continuously-visible
+  // logarithmic spiral arms that wind out of the core. A faint spiral ghost is
+  // ALWAYS drawn (so the silhouette reads as a spiral galaxy even mid-smear);
+  // on top of it the hot density-wave lanes blaze in proportion to coherence.
   void _paintDisk(Canvas canvas, Offset center, double diskR) {
+    // Warm disk glow — the flat stellar disk the arms ride on.
     canvas.drawCircle(
       center,
       diskR,
       Paint()
         ..shader = RadialGradient(colors: [
+          _kArmHot.withValues(alpha: 0.09),
           _kAccent.withValues(alpha: 0.05),
           _kAccent.withValues(alpha: 0.0),
+        ], stops: const [
+          0.0,
+          0.45,
+          1.0
         ]).createShader(Rect.fromCircle(center: center, radius: diskR)),
     );
 
-    // The arm spines glow only while the wave is coherent — they are the
-    // density wave itself, and they smear away as coherence drops.
-    final glow = (coherence - 0.1).clamp(0.0, 1.0);
-    if (glow <= 0.01) return;
+    final glow = coherence.clamp(0.0, 1.0);
     for (var arm = 0; arm < arms; arm++) {
-      final path = Path();
-      final armBase = arm * (2 * math.pi / arms);
-      bool first = true;
-      for (double r = 0.16; r <= 1.0; r += 0.04) {
-        final ang = patternPhase + armBase - wind * r;
-        final p = center + Offset(math.cos(ang), math.sin(ang)) * (diskR * r);
-        if (first) {
-          path.moveTo(p.dx, p.dy);
-          first = false;
-        } else {
-          path.lineTo(p.dx, p.dy);
-        }
-      }
+      final path = _armPath(center, diskR, arm);
+
+      // 1) Dark dust-lane shadow on the trailing edge — reads as a real arm,
+      //    not a glowing wire. Always present, faint.
       canvas.drawPath(
         path,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 14
+          ..strokeWidth = diskR * 0.10
           ..strokeCap = StrokeCap.round
-          ..color = _kArmHot.withValues(alpha: 0.10 * glow)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+          ..color = const Color(0xFF1A1230).withValues(alpha: 0.55)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, diskR * 0.05),
       );
+
+      // 2) The persistent spiral GHOST — always visible so it always reads as a
+      //    spiral galaxy, even when coherence has bled away.
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = diskR * 0.055
+          ..strokeCap = StrokeCap.round
+          ..color = _kArmHot.withValues(alpha: 0.14)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, diskR * 0.03),
+      );
+
+      // 3) The hot density-wave lane — the compressed, star-forming ridge. Its
+      //    brightness IS the coherence: crisp arms glow, a smearing disk fades.
+      if (glow > 0.02) {
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = diskR * (0.030 + 0.020 * glow)
+            ..strokeCap = StrokeCap.round
+            ..color = _kArmHot.withValues(alpha: 0.55 * glow)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, diskR * 0.02),
+        );
+        // Bright core of the lane — a thin hot spine.
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = diskR * 0.010
+            ..strokeCap = StrokeCap.round
+            ..color = Color.lerp(_kArmHot, _kWhite, 0.4)!
+                .withValues(alpha: 0.65 * glow),
+        );
+      }
     }
+  }
+
+  /// A smooth trailing logarithmic spiral for one arm, from the core outward.
+  Path _armPath(Offset center, double diskR, int arm) {
+    final path = Path();
+    final armBase = arm * (2 * math.pi / arms);
+    var first = true;
+    for (double r = 0.14; r <= 1.0; r += 0.03) {
+      final ang = patternPhase + armBase - wind * r;
+      final p = center + Offset(math.cos(ang), math.sin(ang)) * (diskR * r);
+      if (first) {
+        path.moveTo(p.dx, p.dy);
+        first = false;
+      } else {
+        path.lineTo(p.dx, p.dy);
+      }
+    }
+    return path;
   }
 
   // ── Stars: display position lerps between the SHEARED orbital position and
@@ -974,10 +1076,6 @@ class _SpiralPainter extends CustomPainter {
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
       );
     }
-
-    _text(canvas, 'PULSE ON THE BEAT',
-        Offset(center.dx, center.dy + diskR * 1.55),
-        size: 10, color: _kAccent.withValues(alpha: 0.7), bold: true);
   }
 
   void _paintSparks(Canvas canvas, Offset center) {
@@ -996,11 +1094,25 @@ class _SpiralPainter extends CustomPainter {
     }
   }
 
-  // ── HUD: coherence bar, level, streak/multiplier ──────────────────────────
+  // ── HUD: identity title, arm-definition bar, level, streak/multiplier ──────
   void _paintHud(Canvas canvas, Size size) {
-    // Coherence bar across the top.
     const pad = 18.0;
-    const top = 14.0;
+
+    // Always-visible identity + objective — so the player instantly knows this
+    // is a SPIRAL GALAXY and what they do with it. This is the anti-confusion
+    // line (it must never read as a generic "coherence" / "merge" puzzle).
+    _text(canvas, 'SPIRAL GALAXY', const Offset(pad + 2, 12),
+        size: 12, color: _kArmHot, bold: true, leftAlign: true,
+        glow: _kArmHot.withValues(alpha: 0.5));
+    _text(canvas, 'PULSE THE BEAT · KEEP THE ARMS WOUND',
+        const Offset(pad + 2, 27),
+        size: 9,
+        color: _kWhite.withValues(alpha: 0.6),
+        bold: true,
+        leftAlign: true);
+
+    // Arm-definition bar (was "coherence"): how crisp the spiral arms read.
+    const top = 40.0;
     final w = size.width - pad * 2;
     const h = 12.0;
     final track = RRect.fromRectAndRadius(
@@ -1018,19 +1130,18 @@ class _SpiralPainter extends CustomPainter {
         Paint()..color = fillColor.withValues(alpha: 0.9),
       );
     }
-    _text(canvas, 'ARM COHERENCE', Offset(pad + 2, top + h + 11),
+    _text(canvas, 'ARM DEFINITION', const Offset(pad + 2, top + h + 11),
         size: 9,
         color: _kWhite.withValues(alpha: 0.55),
         bold: true,
         leftAlign: true);
 
-    final state = crisp ? 'CRISP' : (mid ? 'SHEARING' : 'SMEARING');
+    final state = crisp ? 'ARMS CRISP' : (mid ? 'WINDING UP' : 'SMEARED');
     _text(canvas, state, Offset(size.width - pad - 2, top + h + 11),
         size: 9, color: fillColor, bold: true, rightAlign: true);
 
-    // Level + streak/multiplier badge — top corners below the bar handled in
-    // canvas to avoid widget rebuilds.
-    _text(canvas, 'LV $level', Offset(pad + 2, top + h + 30),
+    // Level + streak/multiplier badge.
+    _text(canvas, 'LV $level · $arms ARMS', const Offset(pad + 2, top + h + 30),
         size: 11, color: _kAccent, bold: true, leftAlign: true);
 
     if (streak > 1) {
@@ -1038,6 +1149,47 @@ class _SpiralPainter extends CustomPainter {
           Offset(size.width - pad - 2, top + h + 30),
           size: 11, color: _kGood, bold: true, rightAlign: true);
     }
+  }
+
+  // ── The live score-driver readout: shows crisp arms are paying, right now.
+  void _paintScoreDriver(Canvas canvas, Size size, Offset center, double diskR) {
+    if (!running || pps < 0.5) return;
+    final t = (pps / _kPointsPerSec).clamp(0.0, 1.0);
+    final col = Color.lerp(_kAccent, _kGood, t)!;
+    _text(
+      canvas,
+      '+${pps.round()}/s',
+      Offset(center.dx, center.dy - diskR * 1.42),
+      size: 15,
+      color: col.withValues(alpha: 0.45 + 0.5 * t),
+      bold: true,
+      glow: col.withValues(alpha: 0.5 * t),
+    );
+  }
+
+  // ── The unmissable onboarding hint — big centered call to action that fades
+  // out once the player has pulsed a couple of times. ────────────────────────
+  void _paintHint(Canvas canvas, Size size, Offset center, double diskR) {
+    if (!running || hintFade <= 0.02) return;
+    final a = hintFade;
+    // Pulsing "aim here" chevron toward the target ring + big instruction.
+    _text(
+      canvas,
+      'TAP ON THE BEAT',
+      Offset(center.dx, center.dy + diskR * 1.85),
+      size: 20,
+      color: _kWhite.withValues(alpha: 0.92 * a),
+      bold: true,
+      glow: _kArmHot.withValues(alpha: 0.6 * a),
+    );
+    _text(
+      canvas,
+      'when the ring lands on the circle → arms snap crisp',
+      Offset(center.dx, center.dy + diskR * 2.12),
+      size: 10,
+      color: _kAccent.withValues(alpha: 0.8 * a),
+      bold: true,
+    );
   }
 
   void _paintPopups(Canvas canvas, Size size) {

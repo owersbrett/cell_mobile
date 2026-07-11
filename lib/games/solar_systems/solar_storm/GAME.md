@@ -39,6 +39,23 @@ producing **simultaneous threats** near the end.
 Most points when the 60s runs out. Quell sunspots early to prevent CMEs, and deflect every storm high —
 chain a streak through solar maximum without letting the grid take a hit.
 
+## Comprehension aids (legibility layer)
+The visuals are the asset; these make the goal unmissable without dulling them.
+- **Always-visible objective banner** (top of the play area, running only):
+  `TAP SPOTS & STORMS — CATCH THEM EARLY FOR MORE POINTS`. Static, cached TextPainter.
+- **Tap reticles** — every live sunspot AND every incoming storm wears a rotating dashed
+  ring that says "this is tappable". The ring is colour-coded to the score signal:
+  **green** = still early / catch it now for the big bonus, shifting toward **red** as the
+  spot nears eruption / the storm nears the belt. The player learns "green ring = points"
+  by watching, not by reading.
+- **In-context HOW-TO hint** — a bright callout under the banner naming both target types
+  (dark spots on the Sun · glowing storms falling toward Earth) and the ring colour meaning.
+  It holds until the player's first successful action (or a ~6s grace), then eases out.
+- **First-catch tell + EARLY! pops** — the first successful quell/deflect fires a one-time
+  `NICE! CATCH EARLY = MORE`; any catch taken while the target is still high/dim adds an
+  `EARLY!` pop above the `+N`, teaching the timing that maximises score.
+- The pre-start ready state names the two verbs: `Tap dark sunspots · tap incoming storms · catch them early`.
+
 ## Tuning (`humanMax` / `starThresholds`)
 `humanMax 850`, stars `[300, 550, 800]`. Re-tune by playtest.
 

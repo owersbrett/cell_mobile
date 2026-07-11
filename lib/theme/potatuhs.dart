@@ -206,26 +206,32 @@ class _PotatuhsButtonState extends State<PotatuhsButton>
                     ),
                   ),
                 ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (widget.icon != null) ...[
-                      Icon(widget.icon, color: widget.textColor, size: 22),
-                      const SizedBox(width: 10),
-                    ],
-                    Text(
-                      widget.label,
-                      style: TextStyle(
-                        fontFamily: widget.display
-                            ? Potatuhs.displayFont
-                            : Potatuhs.bodyFont,
-                        fontSize: widget.display ? 18 : 17,
-                        fontWeight: FontWeight.w800,
-                        color: widget.textColor,
-                        letterSpacing: 2,
+                // Half-height side padding so the label clears the pill's
+                // curved ends when the button sits at intrinsic width.
+                Padding(
+                  padding:
+                      EdgeInsets.symmetric(horizontal: widget.height / 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.icon != null) ...[
+                        Icon(widget.icon, color: widget.textColor, size: 22),
+                        const SizedBox(width: 10),
+                      ],
+                      Text(
+                        widget.label,
+                        style: TextStyle(
+                          fontFamily: widget.display
+                              ? Potatuhs.displayFont
+                              : Potatuhs.bodyFont,
+                          fontSize: widget.display ? 18 : 17,
+                          fontWeight: FontWeight.w800,
+                          color: widget.textColor,
+                          letterSpacing: 2,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
             ),

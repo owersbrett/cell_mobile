@@ -20,7 +20,10 @@ abstract class PartyActions {
   void useItem(PowerUp item);
   void useItemOn(PowerUp item, int target);
   void useAtp(int plus);
-  void wheelStop();
+
+  /// [segment] = the wheel segment under the pointer when STOP was pressed
+  /// (the skill input — it IS the outcome). -1 lets the engine tape-draw.
+  void wheelStop(int segment);
   void voteSkip();
   void recordMiniScore(int score);
   void confirmSpace();
@@ -59,7 +62,7 @@ class LocalActions implements PartyActions {
   @override
   void useAtp(int plus) => c.useAtp(plus);
   @override
-  void wheelStop() => c.wheelStop();
+  void wheelStop(int segment) => c.wheelStop(segment);
   @override
   void voteSkip() => c.voteSkip();
   @override
@@ -110,7 +113,8 @@ class OnlineActions implements PartyActions {
   @override
   void useAtp(int plus) => net.act(PartyInputKind.useAtp, value: plus);
   @override
-  void wheelStop() => net.act(PartyInputKind.wheelStop);
+  void wheelStop(int segment) =>
+      net.act(PartyInputKind.wheelStop, value: segment + 1);
   @override
   void voteSkip() => net.act(PartyInputKind.voteSkip);
   @override

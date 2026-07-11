@@ -19,6 +19,9 @@
    the hotel is full.
 2. An **arrival** is announced on the top banner: **1 new guest**, **a bus of ℵ₀ guests**, or
    **ℵ₀ buses, each ℵ₀**.
+   The bottom panel header reads **"TAP THE RULE THAT MAKES ROOM"** with a **`+N pts`** chip
+   showing what a correct pick is worth *right now* (80 / 120 / 170), so the number the host HUD
+   ticks up (points) is legible and the objective is unmistakable in <3 s.
 3. Three or four **rule cards** appear. The player taps the reassignment rule that makes room:
    - **`n → n+1`** — every guest moves up one. Room 1 opens. *(fits one guest)*
    - **`n → 2n`** — every guest moves to double their room. All odd rooms open. *(fits one bus)*
@@ -82,3 +85,10 @@ gently bobbing and input disabled; the first arrival auto-loads when `isRunning`
   never drifts after a doubling/prime-power shift.
 - Tuning constants live at the top of `hilberts_hotel_game.dart` (`_kFeedbackDur`, `_kDecayWindow`,
   `_kFloorFrac`, `_kStreakStep`, `_kShiftRate`, `_kDropDur`, `_kRooms`, layout reserves).
+- **Layout (2026-07 UX pass):** the host stacks its own score/timer HUD ABOVE this widget, so the
+  play area is already below the score. `_kBottomPanel` was trimmed 244 → 214 and `_kBannerTop`
+  58 → 52 so the corridor keeps real height and 4 rule cards + header + footer fit a phone without
+  overflow. The header now carries a `+N pts` objective chip.
+- **Score-unit note:** the registry spec lists `scoreUnit: 'check-ins'`, but `session.score` is
+  weighted POINTS (base × speed × streak). The in-game copy says "pts" for legibility; the registry
+  unit should read `pts` to match (a shared-registry change, outside this folder — flagged to Brett).

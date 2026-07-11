@@ -10,6 +10,9 @@ class ScaleCard extends StatelessWidget {
   final Color color;
   final int entityCount;
 
+  /// How many of this scale's topics the player has already opened.
+  final int viewedCount;
+
   /// Order-of-magnitude readout for this scale (e.g. '10⁻¹⁰ m', '∞', '—').
   final String magnitude;
 
@@ -23,6 +26,9 @@ class ScaleCard extends StatelessWidget {
   final VoidCallback? onInteractiveTap;
   final VoidCallback? onPlayTap;
 
+  /// Opens this scale's lessons — same destination as tapping the card.
+  final VoidCallback? onLearnTap;
+
   const ScaleCard({
     super.key,
     required this.scale,
@@ -31,6 +37,7 @@ class ScaleCard extends StatelessWidget {
     required this.icon,
     required this.color,
     required this.entityCount,
+    this.viewedCount = 0,
     required this.magnitude,
     required this.learn,
     required this.onTap,
@@ -39,6 +46,7 @@ class ScaleCard extends StatelessWidget {
     this.hasInteractive = false,
     this.onInteractiveTap,
     this.onPlayTap,
+    this.onLearnTap,
   });
 
   @override
@@ -63,12 +71,17 @@ class ScaleCard extends StatelessWidget {
         ),
         child: Stack(
           children: [
-            // Animation fills the card background
+            // Animation fills the card background. Backgrounds are decor:
+            // they must never claim pointer events, or they swallow the
+            // card's own tap (only the interactive cell preview keeps them).
             if (animation != null)
               Positioned.fill(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(13),
-                  child: animation!,
+                  child: IgnorePointer(
+                    ignoring: !hasInteractive,
+                    child: animation!,
+                  ),
                 ),
               ),
             // Content overlay
@@ -98,9 +111,9 @@ class ScaleCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: Text(
-                          // Labelled so the number can't be misread as a game
-                          // count (blocks = this scale's knowledge entries).
-                          '$entityCount BLOCKS',
+                          // Viewed / total lesson topics at this scale — the
+                          // same "topics" vocabulary as the module picker.
+                          '$viewedCount/$entityCount TOPICS',
                           style: Potatuhs.label(size: 10, color: color)
                               .copyWith(letterSpacing: 0.5),
                         ),
@@ -136,36 +149,30 @@ class ScaleCard extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Row(
                       children: [
-                        // Explore button (all scales) — solo play of this
-                        // scale's game, outside the party board loop
+                        // PLAY (all scales) — solo play of this scale's game,
+                        // outside the party board loop. Solid gold: the
+                        // primary action on the card.
                         if (onPlayTap != null)
-                          GestureDetector(
-                            onTap: onPlayTap,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: Potatuhs.gold.withValues(alpha: 0.18),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                    color:
-                                        Potatuhs.gold.withValues(alpha: 0.5)),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.explore,
-                                      color: Potatuhs.gold, size: 18),
-                                  const SizedBox(width: 5),
-                                  Text('Play',
-                                      style: Potatuhs.body(
-                                        size: 14,
-                                        weight: FontWeight.w700,
-                                        color: Potatuhs.gold,
-                                      )),
-                                ],
-                              ),
-                            ),
+                          _ActionButton(
+                            label: 'PLAY',
+                            icon: Icons.play_arrow_rounded,
+                            background: Potatuhs.gold,
+                            foreground: Potatuhs.ink,
+                            glow: true,
+                            onTap: onPlayTap!,
+                          ),
+                        if (onPlayTap != null && onLearnTap != null)
+                          const SizedBox(width: 8),
+                        // LEARN — opens the lessons (same route as tapping
+                        // the card itself).
+                        if (onLearnTap != null)
+                          _ActionButton(
+                            label: 'LEARN',
+                            icon: Icons.school_rounded,
+                            background: color.withValues(alpha: 0.22),
+                            foreground: color,
+                            border: color.withValues(alpha: 0.6),
+                            onTap: onLearnTap!,
                           ),
                       ],
                     ),
@@ -216,6 +223,60 @@ class ScaleCard extends StatelessWidget {
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Card action chip (PLAY / LEARN): filled pill with icon + label. Solid
+/// [background] + [glow] for the primary action, translucent + [border] for
+/// secondary.
+class _ActionButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color background;
+  final Color foreground;
+  final Color? border;
+  final bool glow;
+  final VoidCallback onTap;
+
+  const _ActionButton({
+    required this.label,
+    required this.icon,
+    required this.background,
+    required this.foreground,
+    this.border,
+    this.glow = false,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(12),
+          border: border != null ? Border.all(color: border!) : null,
+          boxShadow:
+              glow ? Potatuhs.glow(background, strength: 0.45, blur: 12) : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: foreground, size: 20),
+            const SizedBox(width: 6),
+            Text(label,
+                style: Potatuhs.body(
+                  size: 14,
+                  weight: FontWeight.w800,
+                  color: foreground,
+                  spacing: 1,
+                )),
           ],
         ),
       ),

@@ -1,10 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Galaxy Merger — visual manual (legendFrames)
-// The intro-carousel cards, drawn with the SAME primitives the live game uses:
-// gold host core + glaucous intruder core (GameFx.orb + a tilted elliptical
-// ring), massless stars as dots trailing a motion streak (the tidal-tail look),
-// gold cued tail zones, and the direct-aim launch arrow. Static + cheap: no
-// ticker, no state — they render once in MiniGameHost's intro screen.
+// The intro-carousel cards, drawn with the SAME look the live game uses:
+// spiral galaxies (inclined disc + two winding spiral arms + a white-hot core
+// bulge — NOT planet orbs) in gold (host) and glaucous (intruder), massless
+// stars as dots trailing a motion streak (the tidal-tail look), gold cued tail
+// zones, and the direct-aim launch arrow. Static + cheap: no ticker, no state —
+// they render once in MiniGameHost's intro screen.
 //
 // Palette is the game's own (Potatuhs.gold host, glaucous intruder, gold zones,
 // copper flyby). No new hex. Every painter guards degenerate sizes.
@@ -14,25 +15,85 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
-import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 
 // ── shared legend draw helpers (mirror _GalaxyMergerPainter) ─────────────────
 
-/// A galaxy core: the orb + its tilted elliptical spin ring, exactly as the
-/// game paints host/intruder/remnant cores.
-void _legCore(Canvas canvas, Offset c, double r, Color color, Color rim) {
-  GameFx.orb(canvas, c, r, color, glow: 1.9, rim: rim, specular: true);
-  final ring = Paint()
-    ..style = PaintingStyle.stroke
-    ..strokeWidth = 2.4
-    ..color = color.withValues(alpha: 0.32);
+/// A galaxy: an inclined luminous disc with two winding spiral arms and a
+/// blazing white-hot core bulge — NOT a planet orb. Mirrors the game's
+/// `_paintGalaxyDisc` so the manual reads as galaxies, not planets. [rim] tints
+/// the spiral arms; [elliptical] draws a smooth armless bulge (the remnant).
+void _legCore(Canvas canvas, Offset c, double r, Color color, Color rim,
+    {bool elliptical = false}) {
+  const incline = 0.42;
+  // Halo bloom.
+  canvas.drawCircle(
+    c,
+    r * 3.4,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        color.withValues(alpha: 0.16),
+        color.withValues(alpha: 0.0),
+      ]).createShader(Rect.fromCircle(center: c, radius: r * 3.4)),
+  );
   canvas.save();
   canvas.translate(c.dx, c.dy);
-  canvas.scale(1.0, 0.32);
-  canvas.drawCircle(Offset.zero, r * 1.7, ring);
+  canvas.scale(1.0, incline);
+  // Disc sheet.
+  canvas.drawCircle(
+    Offset.zero,
+    r * 2.4,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        Color.lerp(color, Colors.white, 0.25)!.withValues(alpha: 0.30),
+        color.withValues(alpha: 0.14),
+        color.withValues(alpha: 0.0),
+      ], stops: const [0.0, 0.45, 1.0])
+          .createShader(Rect.fromCircle(center: Offset.zero, radius: r * 2.4)),
+  );
+  // Two spiral arms of dust + star knots.
+  if (!elliptical) {
+    for (var arm = 0; arm < 2; arm++) {
+      final phase = arm * pi;
+      Offset? prev;
+      for (var i = 0; i < 30; i++) {
+        final f = i / 29;
+        final rad = r * (0.55 + f * 2.15);
+        final ang = phase + f * 4.4;
+        final p = Offset(cos(ang) * rad, sin(ang) * rad);
+        final a = (1.0 - f) * 0.7;
+        if (prev != null) {
+          canvas.drawLine(
+            prev,
+            p,
+            Paint()
+              ..strokeCap = StrokeCap.round
+              ..strokeWidth = (3.0 - f * 2.0).clamp(0.8, 3.0)
+              ..color = Color.lerp(color, Colors.white, 0.35)!
+                  .withValues(alpha: 0.42 * a),
+          );
+        }
+        prev = p;
+      }
+    }
+  }
   canvas.restore();
+  // White-hot core bulge (no dark planet shadow).
+  final bulgeR = elliptical ? r * 1.15 : r * 0.9;
+  canvas.drawCircle(
+    c,
+    bulgeR * 1.9,
+    Paint()
+      ..shader = RadialGradient(colors: [
+        Colors.white.withValues(alpha: 0.9),
+        Color.lerp(color, Colors.white, 0.6)!.withValues(alpha: 0.7),
+        color.withValues(alpha: 0.0),
+      ], stops: const [0.0, 0.28, 1.0])
+          .createShader(Rect.fromCircle(center: c, radius: bulgeR * 1.9)),
+  );
+  canvas.drawCircle(
+      c, bulgeR * 0.5, Paint()..color = Colors.white.withValues(alpha: 0.95));
 }
 
 /// A spinning disk of massless tracer stars around [core]: dots with a short
@@ -163,8 +224,9 @@ void _legendMerge(Canvas canvas, Size size) {
   final unit = size.shortestSide;
   final remnant = Offset(w * 0.40, h * 0.40);
 
-  // Fused elliptical remnant (brighter, larger — same look as _paintCores).
-  _legCore(canvas, remnant, unit * 0.075, Potatuhs.gold, Potatuhs.orange);
+  // Fused elliptical remnant (a merged spiral → smooth elliptical galaxy).
+  _legCore(canvas, remnant, unit * 0.075, Potatuhs.gold, Potatuhs.orange,
+      elliptical: true);
 
   // A cued tail zone downstream, with stars streaming through it (scoring).
   final zone = Offset(w * 0.74, h * 0.66);

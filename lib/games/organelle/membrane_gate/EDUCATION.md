@@ -17,24 +17,28 @@ membrane — and the three ways things cross it:
    protein** (for ions) or **carrier protein** (for sugars/amino acids).
 
 And the protective corollary: the membrane **excludes** what would harm the cell
-— toxins, pathogens (viruses, bacteria), heavy metals, and waste.
+— toxins, pathogens (viruses, bacteria), heavy metals, and waste — and can mount
+an **active, histamine-style repel** response to drive them off.
 
 ## How the mechanic teaches it (not tells it)
 
-- The membrane is **impermeable by default.** Nothing crosses unless the player
-  acts — this is the felt meaning of "selective." Toxins that reach it *bounce*;
-  the player sees the barrier work.
-- Importing a wanted molecule **lights its specific route**: tap water and the
-  aquaporin glows; tap glucose and the transporter glows; tap an ion and the ion
-  channel glows; tap a gas and it slips straight through the lipid (no channel).
-  The player links each molecule to its transport mechanism by repetition, not
-  memorization.
+- Transport is **active, not automatic.** A wanted molecule only enters when the
+  player HOLDS its gate and PULLS it there — the felt meaning of facilitated
+  transport is that a specific protein has to do work to bring a specific solute
+  across. Nothing wanted crosses on its own.
+- Holding a gate to pull a molecule in **binds each molecule to its route**: hold
+  the aquaporin to draw water in; hold the carrier for glucose/amino acids; hold
+  the ion channel for Na⁺/K⁺; hold the lipid to draw a gas through the bilayer.
+  Pulling the WRONG molecule into a gate is rejected — the player learns each
+  solute has exactly one door, by repetition, not memorization.
 - A small caption on each correct import names the route ("Aquaporin",
   "Ion channel", "Glucose transporter", "Free diffusion") — reinforcing the term
   at the moment of the action.
-- Letting a toxin in (a mis-tap) costs points and dims the cell — the failure of
-  selectivity has a visible, felt cost (the nucleus glow drops). Keeping toxins
-  out keeps the cell thriving.
+- **Letting go = the immune/repel response.** With no gate held, a histamine-like
+  field pushes intruders back out — modeling that the membrane doesn't just
+  passively block, it can actively expel threats. Repelling an intruder off-screen
+  is rewarded; letting one breach (or pulling a toxin into a gate) costs points and
+  dims the cell — the failure of selectivity has a visible, felt cost.
 
 ## Misconceptions corrected
 

@@ -147,6 +147,20 @@ class _PortfolioGameState extends State<PortfolioGame>
 
   int _survived = 0; // consecutive shocks weathered (streak award)
 
+  // How-to-play coach: a bright, unmissable hint that FADES once the player
+  // makes their first allocation move (taps a row's +/− or a preset). Until
+  // then it pulses so a new player always knows the control. `_acted` latches
+  // on first touch; `_hintAlpha` eases to 0 over ~0.9s after that.
+  bool   _acted = false;
+  double _hintAlpha = 1.0;
+
+  // +N score-driver pops: portfolio value grows in tiny per-tick steps, so we
+  // accumulate the rise and float a single "+N" every ~0.5s of net gain. Makes
+  // the winning behaviour (steady growth) legible without spamming a pop/tick.
+  double _gainAccum = 0.0;
+  double _gainClock = 0.0;
+  double _lastValue = _kStartValue;
+
   Size _hudSize = Size.zero;
 
   // --- Derived -------------------------------------------------------------
@@ -159,7 +173,7 @@ class _PortfolioGameState extends State<PortfolioGame>
       h += a.weight * a.weight;
     }
     const n = 5;
-    final denom = 1.0 - 1.0 / n;
+    const denom = 1.0 - 1.0 / n;
     return ((1.0 - h) / denom).clamp(0.0, 1.0);
   }
 
@@ -178,19 +192,32 @@ class _PortfolioGameState extends State<PortfolioGame>
   }
 
   // ── ATTRACT autopilot ───────────────────────────────────────────────────
-  /// One hands-free move per host tick (~250ms). The lesson of this game is
-  /// DIVERSIFICATION: a concentrated book gets wiped by a sector crash, an even
-  /// book only takes a glancing hit. So the bot plays the textbook line — if the
-  /// allocation has drifted away from an even spread (diversification below the
-  /// threshold), it taps the game's own SPREAD EVENLY control in one call to
-  /// rebalance to 1/N across every asset. Once well spread, it holds. Fully
-  /// deterministic — no randomness, no synthetic taps.
+  double _autoPhase = 0.0; // seconds elapsed in the current demo phase
+  int    _autoStage = 0;   // 0 spread → 1 dangerous concentrate → 2 recover
+
+  /// One hands-free move per host tick (~250ms). A static hold would show
+  /// nothing moving, so the demo VISIBLY teaches the lesson by cycling the
+  /// game's own controls: SPREAD EVENLY (calm), then ALL-IN on one stock (watch
+  /// a concentrated book take a crash on the chin), then SPREAD EVENLY again to
+  /// recover. Deterministic sequencing, no synthetic taps — it calls the same
+  /// methods the player's buttons do.
   void _autoStep() {
     if (!widget.session.isRunning) return;
-    if (_diversification < _kAutoDiversifyFloor) {
-      _spreadEven(); // trim the overweight, refill the underweight — all at once
+    _autoPhase += 0.25; // host cadence ≈ 250ms
+    switch (_autoStage) {
+      case 0: // establish a diversified book, hold ~5s
+        if (_diversification < _kAutoDiversifyFloor) _spreadEven();
+        if (_autoPhase > 5.0) { _autoStage = 1; _autoPhase = 0; }
+        break;
+      case 1: // concentrate into one stock to show the danger, hold ~4s
+        if (_assets[0].weight < 0.98) _allInStock(0);
+        if (_autoPhase > 4.0) { _autoStage = 2; _autoPhase = 0; }
+        break;
+      case 2: // re-diversify to recover, hold ~5s, then loop
+        if (_diversification < _kAutoDiversifyFloor) _spreadEven();
+        if (_autoPhase > 5.0) { _autoStage = 0; _autoPhase = 0; }
+        break;
     }
-    // Otherwise the book is already balanced: hold and let it ride.
   }
 
   void _seedAssets() {
@@ -226,6 +253,15 @@ class _PortfolioGameState extends State<PortfolioGame>
     // Decay transient visuals even while idle so the scene feels alive.
     if (_flashAlpha > 0) _flashAlpha = (_flashAlpha - _kDt * 2.5).clamp(0, 1);
     if (_bannerTtl > 0) _bannerTtl -= _kDt;
+    // Coach hint fades out once the player has acted; while idle it pulses.
+    // Safety: if a passive player never touches a control, auto-dismiss after
+    // ~7s of live play so the hint can never permanently cover the chart.
+    if (!_acted && widget.session.isRunning && (60.0 - _timeLeft) > 7.0) {
+      _acted = true;
+    }
+    if (_acted && _hintAlpha > 0) {
+      _hintAlpha = (_hintAlpha - _kDt / 0.9).clamp(0.0, 1.0);
+    }
     _fx.removeWhere((p) => !p.step(_kDt));
     _pops.removeWhere((p) => !p.step(_kDt));
 
@@ -278,6 +314,24 @@ class _PortfolioGameState extends State<PortfolioGame>
     }
     _value = (_value * (1 + pr)).clamp(0.0, 1e9);
 
+    // Score-driver feedback: bank the net rise and float one "+N" every ~0.5s
+    // it stays positive, so a player sees exactly which behaviour is paying.
+    _gainAccum += _value - _lastValue;
+    _lastValue = _value;
+    _gainClock += _kDt;
+    if (_gainClock >= 0.5) {
+      _gainClock = 0;
+      if (_gainAccum >= 8 && _hudSize != Size.zero) {
+        _pops.add(_Pop(
+          Offset(_hudSize.width * (0.30 + _rng.nextDouble() * 0.16),
+              _hudSize.height * 0.30),
+          '+${_gainAccum.round()}',
+          const Color(0xFF66BB6A),
+        ));
+      }
+      _gainAccum = 0;
+    }
+
     // Reference lines (normalized to the same $1,000 baseline).
     _solo   = _kStartValue * _assets[0].price / 100.0;
     _basket = _kStartValue * etf.price / 100.0;
@@ -294,6 +348,16 @@ class _PortfolioGameState extends State<PortfolioGame>
           if (drawdown < _kSurviveDraw) {
             _survived++;
             widget.session.noteStreak(_survived);
+            // Celebrate the lesson landing: a diversified book shrugged off a
+            // crash. Green pop + burst so weathering it reads as a WIN.
+            if (_hudSize != Size.zero) {
+              _pops.add(_Pop(
+                Offset(_hudSize.width * 0.5, _hudSize.height * 0.24),
+                _survived > 1 ? 'DIVERSIFIED ×$_survived' : 'DIVERSIFIED!',
+                const Color(0xFF66BB6A),
+              ));
+            }
+            _spawnFx(const Color(0xFF66BB6A), count: 10, speed: 120);
           } else {
             _survived = 0;
           }
@@ -367,7 +431,13 @@ class _PortfolioGameState extends State<PortfolioGame>
   }
 
   // ─── Allocation controls ──────────────────────────────────────────────────
+  /// First real allocation move dismisses the coach hint (it fades over ~0.9s).
+  void _markActed() {
+    if (!_acted) _acted = true;
+  }
+
   void _shiftInto(int i, double chunk) {
+    _markActed();
     final others = 1.0 - _assets[i].weight;
     if (others <= 1e-6) return; // already fully concentrated here
     final add = min(chunk, others);
@@ -383,6 +453,7 @@ class _PortfolioGameState extends State<PortfolioGame>
   }
 
   void _shiftOut(int i, double chunk) {
+    _markActed();
     final w = _assets[i].weight;
     if (w <= 1e-6) return;
     final take = min(chunk, w);
@@ -406,6 +477,7 @@ class _PortfolioGameState extends State<PortfolioGame>
   }
 
   void _spreadEven() {
+    _markActed();
     setState(() {
       for (final a in _assets) {
         a.weight = 1.0 / _assets.length;
@@ -415,12 +487,24 @@ class _PortfolioGameState extends State<PortfolioGame>
   }
 
   void _allInEtf() {
+    _markActed();
     setState(() {
       for (int j = 0; j < _assets.length; j++) {
         _assets[j].weight = j == _kEtf ? 1.0 : 0.0;
       }
     });
     _spawnFx(_assets[_kEtf].color, count: 12, speed: 110);
+  }
+
+  /// Concentrate the whole book into one holding. Not a player control — used by
+  /// the ATTRACT demo to show a concentrated (risky) book on the chart.
+  void _allInStock(int i) {
+    setState(() {
+      for (int j = 0; j < _assets.length; j++) {
+        _assets[j].weight = j == i ? 1.0 : 0.0;
+      }
+    });
+    _spawnFx(_assets[i].color, count: 10, speed: 100);
   }
 
   void _normalize() {
@@ -672,10 +756,30 @@ class _BackgroundPainter extends CustomPainter {
   bool shouldRepaint(covariant _BackgroundPainter oldDelegate) => false;
 }
 
-// ─── HUD painter: value, diversification gauge, 3-line chart, market strip ──
+// ─── HUD painter: value, allocation donut, 3-line chart, market strip ───────
 class _HudPainter extends CustomPainter {
   final _PortfolioGameState s;
   _HudPainter(this.s) : super(repaint: s._ctrl);
+
+  // Static labels are laid out ONCE (design rule: don't re-layout static text
+  // via GameFx.text every frame). These are the always-on objective line and
+  // the coach how-to strip — the two comprehension anchors this pass adds.
+  static final TextPainter _objectiveTp = TextPainter(
+    text: TextSpan(
+      text: 'SPREAD RISK — SET THE MIX ACROSS 5 HOLDINGS',
+      style: Potatuhs.label(size: 9, color: Potatuhs.airForce),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+
+  static final TextPainter _hintTp = TextPainter(
+    text: TextSpan(
+      text: 'Tap  −  +  to set each weight  ·  SPREAD EVENLY to diversify',
+      style: Potatuhs.body(
+          size: 12, weight: FontWeight.w700, color: Potatuhs.textPrimary),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -694,9 +798,9 @@ class _HudPainter extends CustomPainter {
     );
 
     const pad = 12.0;
-    final topH = 56.0;
-    final stripH = 40.0;
-    final chartTop = topH + 6;
+    const topH = 78.0; // taller: value + objective line on the left, donut right
+    const stripH = 40.0;
+    const chartTop = topH + 6;
     final chartBottom = size.height - stripH - 6;
     final chartRect = Rect.fromLTRB(
         pad, chartTop, size.width - pad, chartBottom);
@@ -706,6 +810,33 @@ class _HudPainter extends CustomPainter {
     _paintMarketStrip(
         canvas,
         Rect.fromLTRB(pad, size.height - stripH, size.width - pad, size.height));
+
+    // Coach hint — bright, centered over the chart, fades out after first move.
+    if (s._hintAlpha > 0.01) {
+      // Idle pulse before the first action so the control is unmissable.
+      final pulse = s._acted ? 1.0 : (0.72 + 0.28 * (0.5 + 0.5 * sin(s._wall * 3.4)));
+      final a = (s._hintAlpha * pulse).clamp(0.0, 1.0);
+      final cx = size.width / 2;
+      final cy = chartRect.top + chartRect.height * 0.5;
+      final bw = _hintTp.width + 26;
+      final box = Rect.fromCenter(
+          center: Offset(cx, cy), width: bw, height: 34);
+      final rr = RRect.fromRectAndRadius(box, const Radius.circular(10));
+      canvas.drawRRect(
+          rr, Paint()..color = Potatuhs.inkDeep.withValues(alpha: 0.82 * a));
+      canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = Potatuhs.airForce.withValues(alpha: 0.7 * a),
+      );
+      canvas.saveLayer(
+          box.inflate(4), Paint()..color = Colors.white.withValues(alpha: a));
+      _hintTp.paint(
+          canvas, Offset(cx - _hintTp.width / 2, cy - _hintTp.height / 2));
+      canvas.restore();
+    }
   }
 
   void _paintHeader(Canvas canvas, Size size, double pad) {
@@ -723,48 +854,35 @@ class _HudPainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    vp.paint(canvas, Offset(pad, 6));
+    vp.paint(canvas, Offset(pad, 4));
 
     final deltaPct = (s._value / _kStartValue - 1) * 100;
     GameFx.text(
       canvas,
       '${deltaPct >= 0 ? '▲' : '▼'} ${deltaPct.abs().toStringAsFixed(1)}%',
-      Offset(pad + vp.width + 36, 6 + vp.height / 2),
+      Offset(pad + vp.width + 34, 4 + vp.height / 2),
       13,
       col,
       weight: FontWeight.w800,
     );
-    GameFx.text(canvas, 'PORTFOLIO', Offset(pad + 30, 6 + vp.height + 8), 8,
+    GameFx.text(canvas, 'PORTFOLIO VALUE', Offset(pad + 44, 4 + vp.height + 6), 8,
         Potatuhs.textFaint);
 
-    // Diversification gauge (right-aligned).
+    // Always-visible OBJECTIVE — the one line that makes Portfolio's distinct
+    // point (ALLOCATION across many holdings, not single-asset timing) obvious.
+    final oy = 4 + vp.height + 18.0;
+    canvas.drawCircle(Offset(pad + 4, oy + _objectiveTp.height / 2), 3.2,
+        Paint()..color = Potatuhs.airForce);
+    _objectiveTp.paint(canvas, Offset(pad + 12, oy));
+
+    // Allocation DONUT — the signature differentiator. A live pie of the five
+    // weights (this is ALLOCATION, which a single-asset trading desk can't show)
+    // with the diversification word + RISK SPREAD label in the hole.
     final d = s._diversification;
-    final gw = (size.width * 0.42).clamp(120.0, 240.0);
-    final gx = size.width - pad - gw;
-    final gy = 18.0;
-    final track = Rect.fromLTWH(gx, gy, gw, 9);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(track, const Radius.circular(5)),
-      Paint()..color = Colors.white.withValues(alpha: 0.08),
-    );
-    final fillCol =
-        Color.lerp(const Color(0xFFEF5350), const Color(0xFF66BB6A), d)!;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(gx, gy, gw * d.clamp(0.04, 1.0), 9),
-          const Radius.circular(5)),
-      Paint()..color = fillCol,
-    );
-    final word = d < 0.34
-        ? 'CONCENTRATED'
-        : (d < 0.67 ? 'BALANCED' : 'DIVERSIFIED');
-    final wp = TextPainter(
-      text: TextSpan(text: word, style: Potatuhs.label(size: 9, color: fillCol)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    wp.paint(canvas, Offset(size.width - pad - wp.width, gy - 13));
-    GameFx.text(canvas, 'RISK SPREAD', Offset(gx + 38, gy + 18), 7,
-        Potatuhs.textFaint);
+    final ringR = (size.height * 0.42).clamp(26.0, 40.0);
+    final cx = size.width - pad - ringR - 30;
+    final cy = size.height / 2;
+    _paintAllocationDonut(canvas, Offset(cx, cy), ringR, d);
 
     // Shock banner.
     if (s._bannerTtl > 0) {
@@ -781,6 +899,72 @@ class _HudPainter extends CustomPainter {
         glow: 0.7 * a,
       );
     }
+  }
+
+  // The allocation donut: each holding's weight as a colored arc, the shield-
+  // ringed ETF included. The hole shows the RISK SPREAD read-out. This is the
+  // "pie of weights" that visually separates Portfolio (allocation) from the
+  // single-price trading desk of Market Trader.
+  void _paintAllocationDonut(Canvas canvas, Offset c, double r, double d) {
+    final thick = r * 0.42;
+    final rr = r - thick / 2;
+    final ring = Rect.fromCircle(center: c, radius: rr);
+
+    // Faint full track behind the arcs.
+    canvas.drawCircle(
+      c,
+      rr,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = thick
+        ..color = Colors.white.withValues(alpha: 0.06),
+    );
+
+    double start = -pi / 2;
+    const gap = 0.045; // small seam between slices
+    for (final a in s._assets) {
+      final w = a.weight.clamp(0.0, 1.0);
+      if (w <= 0.001) continue;
+      final sweep = w * 2 * pi;
+      final drawSweep = (sweep - gap).clamp(0.0, 2 * pi);
+      canvas.drawArc(
+        ring,
+        start + gap / 2,
+        drawSweep,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = thick
+          ..strokeCap = StrokeCap.butt
+          ..color = a.color,
+      );
+      // ETF slice gets a bright inner rim (its shield motif) so the "safe
+      // basket" is recognizable at a glance.
+      if (a.isEtf) {
+        canvas.drawArc(
+          Rect.fromCircle(center: c, radius: rr - thick / 2 + 1),
+          start + gap / 2,
+          drawSweep,
+          false,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.6
+            ..color = Colors.white.withValues(alpha: 0.85),
+        );
+      }
+      start += sweep;
+    }
+
+    // Hole read-out: diversification word (red→green) + RISK SPREAD label.
+    final fillCol =
+        Color.lerp(const Color(0xFFEF5350), const Color(0xFF66BB6A), d)!;
+    final word = d < 0.34
+        ? 'CONCENTR.'
+        : (d < 0.67 ? 'BALANCED' : 'SPREAD');
+    GameFx.text(canvas, word, c.translate(0, -3), 9, fillCol,
+        weight: FontWeight.w800);
+    GameFx.text(canvas, 'RISK SPREAD', c.translate(0, 8), 6.5,
+        Potatuhs.textFaint, weight: FontWeight.w700);
   }
 
   void _paintChart(Canvas canvas, Rect r) {
@@ -949,6 +1133,47 @@ const List<(String, Color, bool)> _kLegAssets = [
   ('TUBR',  Potatuhs.airForce, true),
 ];
 
+// Width-constrained centered text for the legend cards. The shared [GameFx.text]
+// lays out at natural width with no cap, so the long crash headers ("⚠ CORRELATED
+// CRASH · FRYZ + MASH") and the packed ticker/% lingo spilled past their box on
+// the narrow embeds the cell runs in. This shrinks the font toward [minSize]
+// until the line fits [maxWidth] (mirrors the tissue/skin_layers fix; local
+// because the shared kit intentionally has no max-width and must not change).
+void _legFit(Canvas canvas, String s, Offset center, double size, Color color,
+    double maxWidth,
+    {bool display = false,
+    FontWeight weight = FontWeight.w800,
+    double glow = 0,
+    double minSize = 6}) {
+  if (maxWidth <= 0 || s.isEmpty) return;
+  var fontSize = size;
+  TextPainter tp() => TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            fontFamily: display ? Potatuhs.displayFont : Potatuhs.bodyFont,
+            fontSize: fontSize,
+            fontWeight: weight,
+            color: color,
+            shadows: glow > 0
+                ? [Shadow(color: color.withValues(alpha: glow), blurRadius: 12)]
+                : null,
+          ),
+        ),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      );
+  var painter = tp()..layout();
+  while (painter.width > maxWidth && fontSize > minSize) {
+    fontSize = (fontSize - 0.5).clamp(minSize, size);
+    painter = tp()..layout();
+  }
+  painter = tp()..layout(maxWidth: maxWidth);
+  painter.paint(canvas, center - Offset(painter.width / 2, painter.height / 2));
+}
+
 // One allocation row (glowing colour dot + ticker + weight bar + %) — the exact
 // row the player taps − / + on.
 void _legAssetRow(
@@ -969,19 +1194,20 @@ void _legAssetRow(
         ..color = color.withValues(alpha: 0.75),
     );
   }
-  GameFx.text(canvas, ticker, Offset(r.left + r.height * 1.6, cy), 12,
-      Potatuhs.textPrimary,
-      weight: FontWeight.w800);
-
   final barL = r.left + r.height * 2.7;
   final barR = r.right - r.height * 1.4;
+  // Ticker sits in the gap between the colour dot and the bar; fit it there so
+  // it never runs under the weight bar on a short row.
+  final tickLeft = r.left + r.height * 1.05;
+  _legFit(canvas, ticker, Offset((tickLeft + barL) / 2, cy), 12,
+      Potatuhs.textPrimary, barL - tickLeft - 2);
+
   if (barR > barL) {
     final track = Rect.fromLTWH(barL, cy - 5, barR - barL, 10);
     _legBar(canvas, track, weight, color);
   }
-  GameFx.text(canvas, '${(weight * 100).round()}%',
-      Offset(r.right - r.height * 0.6, cy), 11, color,
-      weight: FontWeight.w800);
+  _legFit(canvas, '${(weight * 100).round()}%',
+      Offset(r.right - r.height * 0.7, cy), 11, color, r.height * 1.4);
 }
 
 // The weight bar (rounded track + colour fill) as drawn in _assetRow.
@@ -1019,10 +1245,11 @@ void _legGauge(Canvas canvas, Rect track, double d) {
   );
   final word =
       d < 0.34 ? 'CONCENTRATED' : (d < 0.67 ? 'BALANCED' : 'DIVERSIFIED');
-  GameFx.text(canvas, word, Offset(track.center.dx, track.top - 11), 9, fillCol,
-      weight: FontWeight.w800);
-  GameFx.text(canvas, 'RISK SPREAD', Offset(track.center.dx, track.bottom + 9),
-      7, Potatuhs.textFaint);
+  _legFit(canvas, word, Offset(track.center.dx, track.top - 11), 9, fillCol,
+      track.width);
+  _legFit(canvas, 'RISK SPREAD', Offset(track.center.dx, track.bottom + 9), 7,
+      Potatuhs.textFaint, track.width,
+      weight: FontWeight.w700);
 }
 
 // A short signed arrow (a shock's direction on a ticker).
@@ -1050,14 +1277,15 @@ void _legActionBtn(Canvas canvas, Rect r, String label, Color accent) {
       ..strokeWidth = 1.4
       ..color = accent.withValues(alpha: 0.6),
   );
-  GameFx.text(canvas, label, r.center, 11, accent, weight: FontWeight.w800);
+  _legFit(canvas, label, r.center, 11, accent, r.width - 10);
 }
 
 // ── Frame 1: the book — split a fixed budget across the five positions ────────
 void _legendBook(Canvas canvas, Size size) {
   if (size.width < 24 || size.height < 24) return;
-  GameFx.text(canvas, 'YOUR \$1,000 BOOK', Offset(size.width * 0.5, size.height * 0.08),
-      10, Potatuhs.textFaint, weight: FontWeight.w800);
+  _legFit(canvas, 'YOUR \$1,000 BOOK',
+      Offset(size.width * 0.5, size.height * 0.08), 10, Potatuhs.textFaint,
+      size.width * 0.9);
   final rowH = (size.height * 0.15).clamp(14.0, 40.0);
   final gap = size.height * 0.028;
   final top = size.height * 0.15;
@@ -1165,19 +1393,20 @@ void _legTag(Canvas canvas, Offset at, String label, Color color) {
 // ── Frame 3: the danger — a sector crash craters a concentrated bet ───────────
 void _legendCrash(Canvas canvas, Size size) {
   if (size.width < 24 || size.height < 24) return;
-  GameFx.text(canvas, '⚠ SECTOR CRASH · SPUD',
+  _legFit(canvas, '⚠ SECTOR CRASH · SPUD',
       Offset(size.width * 0.5, size.height * 0.14), 12, _kLegDown,
-      weight: FontWeight.w800, glow: 0.7);
+      size.width * 0.9,
+      glow: 0.7);
 
   // The crashing ticker, market-strip style: ticker over a big red −%.
   final cx = size.width * 0.5;
-  GameFx.text(canvas, 'SPUD', Offset(cx, size.height * 0.36), 13,
-      Potatuhs.copper,
-      weight: FontWeight.w800);
+  _legFit(canvas, 'SPUD', Offset(cx, size.height * 0.36), 13, Potatuhs.copper,
+      size.width * 0.4);
   _legArrow(canvas, Offset(cx - size.width * 0.24, size.height * 0.52),
       size.height * 0.16, _kLegDown);
-  GameFx.text(canvas, '−72%', Offset(cx, size.height * 0.50), 22, _kLegDown,
-      weight: FontWeight.w800, glow: 0.6);
+  _legFit(canvas, '−72%', Offset(cx, size.height * 0.50), 22, _kLegDown,
+      size.width * 0.4,
+      glow: 0.6);
 
   // A book that's all-in on one stock reads CONCENTRATED — the losing setup.
   final gauge = Rect.fromLTWH(
@@ -1188,17 +1417,18 @@ void _legendCrash(Canvas canvas, Size size) {
 // ── Frame 4: the escalation — two sectors crash together; spread or hold ETF ──
 void _legendCorrelated(Canvas canvas, Size size) {
   if (size.width < 24 || size.height < 24) return;
-  GameFx.text(canvas, '⚠ CORRELATED CRASH · FRYZ + MASH',
+  _legFit(canvas, '⚠ CORRELATED CRASH · FRYZ + MASH',
       Offset(size.width * 0.5, size.height * 0.13), 11, _kLegDown,
-      weight: FontWeight.w800, glow: 0.7);
+      size.width * 0.94,
+      glow: 0.7);
 
   final leftX = size.width * 0.30;
   final rightX = size.width * 0.70;
   final tickerY = size.height * 0.30;
-  GameFx.text(canvas, 'FRYZ', Offset(leftX, tickerY), 12, Potatuhs.orange,
-      weight: FontWeight.w800);
-  GameFx.text(canvas, 'MASH', Offset(rightX, tickerY), 12, Potatuhs.glaucous,
-      weight: FontWeight.w800);
+  _legFit(canvas, 'FRYZ', Offset(leftX, tickerY), 12, Potatuhs.orange,
+      size.width * 0.36);
+  _legFit(canvas, 'MASH', Offset(rightX, tickerY), 12, Potatuhs.glaucous,
+      size.width * 0.36);
   _legArrow(canvas, Offset(leftX, size.height * 0.50), size.height * 0.14,
       _kLegDown);
   _legArrow(canvas, Offset(rightX, size.height * 0.50), size.height * 0.14,

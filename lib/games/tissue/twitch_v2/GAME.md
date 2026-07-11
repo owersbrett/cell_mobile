@@ -2,45 +2,44 @@
 
 **Scale:** Tissue · **Id:** `twitch_v2` · **Duration:** 50s · **Score unit:** force
 
+> v2 is the **tighter** cut of Twitch: the same reflex-arc + protein spine, tuned
+> faster and less forgiving, with haptics. Same rules as `twitch/GAME.md` — the
+> numbers below are what differs.
+
 ## Premise
-A nerve signal travels down the axon toward your muscle. Tap the instant it
-reaches the neuromuscular junction to fire a contraction — the sarcomere's actin
-filaments slide over the myosin and the muscle shortens. Fire fast enough and
-twitches **summate** into a sustained **tetanus** for bonus force. But hold a
-tetanus too long and the muscle **fatigues** — the bonus dwindles and you must
-relax to recover.
+A motor neuron fires an impulse down the axon from the **SOURCE** (neuron soma)
+to the **TARGET** (neuromuscular junction). Tap the target the instant the
+impulse lands to fire a contraction. Every clean reflex the source and target
+**jump** and the arc gets faster and tighter. After eight clean reflexes:
+**NOW EAT PROTEIN!**
 
-## Rules
-- A glowing signal pulse travels left→right along the nerve. Tap when it enters
-  the **strike zone** at the junction. Dead-center = `PERFECT`, more points.
-- A **mistimed tap** or **letting a signal pass** wastes it: the muscle relaxes
-  and your streak resets (streak multiplier up to 1.8×).
-- Cross the **TETANUS** line by stacking fast on-time taps for bonus force — but
-  the **fatigue** strip fills as you hold it; the bonus decays to nothing.
-- When **FATIGUED**, let the muscle drop and rest to recover, then rebuild.
+## The reflex arc (main loop)
+Identical to base Twitch: an impulse travels SOURCE → TARGET; a contracting
+strike ring shows the timing window; tap the target on landing for a clean
+reflex. Miss (off-time / wrong spot / let it pass) resets the streak. Each clean
+hit twitches the muscle and re-launches from a new source to a new target.
 
-## Acceleration & climax
-Signals speed up on a **time ramp** — everyone accelerates regardless of skill —
-plus a **skill ramp** every 5 hits. The last 10 seconds trigger **FINAL BURST**:
-fastest cadence, screen pulse, and a 1.5× payout on every hit and on tetanus, so
-even a trailing player gets a real comeback window and a distinct finish beat.
+## Escalation (v2 — steeper)
+Recomputed on every hit: faster travel (floor 0.38s vs 0.42s in base), tighter
+window (floor 0.075 vs 0.085), smaller target, and shorter warning. Each
+completed protein cycle adds **4** escalation steps (base adds 3) — v2 ramps
+harder between fuel stops.
+
+## The PROTEIN phase
+Every **8** clean reflexes → **NOW EAT PROTEIN!** A spread of dishes appears;
+rapid-tap them for ~4s (+16 each, dishes respawn). On timeout, back to the arc,
+one cycle harder.
 
 ## How to win
-Most force when the 50 seconds run out. Master the build → hold → release →
-recover rhythm to keep tetanus productive instead of fatigued.
+Most force when the 50 seconds run out. Chain clean reflexes for the streak
+multiplier; clear the protein spreads fast.
 
 ## Scoring
-- Hit: 9 + up to 13 for timing quality, times the streak multiplier (1.0→1.8×).
-- Tetanus drip: up to 20/sec at zero fatigue, decaying to 0 as fatigue fills.
-- FINAL BURST: 1.5× on hits and drip in the closing 10 seconds.
+- Clean reflex: base 12 + up to 18 for timing quality, × streak multiplier
+  (1.0 → 2.2×).
+- Protein dish: +16 each.
 - `humanMax` 2000 · stars `[700, 1300, 1800]`.
-
-## Fairness (fixes the v1 runaway)
-v1's tetanus paid +12/sec forever, compounding into an uncatchable lead. v2 caps
-that with **fatigue** (self-limiting) and a **shared FINAL BURST** comeback —
-tetanus stays aspirational, not snowballing.
 
 ## Session (the **S**)
 Host-owned clock: auto-starts on `isRunning`, calm "ready" state before, results
-on finish. Closing and re-entering starts a fresh run (state resets on the
-running edge via `_resetRun`).
+on finish. Fresh run resets all state on the not-running → running edge.

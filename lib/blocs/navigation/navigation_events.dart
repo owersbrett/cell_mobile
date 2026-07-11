@@ -1,6 +1,7 @@
 enum AppScreen {
   home, // LEARN / PARTY / GAMES doors live here
   scaleOverview,
+  scaleModules, // module picker for a scale (Scale → Module → Entity)
   scaleExplorer,
   entityDetail,
   cellInteractive,

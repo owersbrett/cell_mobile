@@ -4,6 +4,47 @@ import 'package:flutter/material.dart';
 
 import '../../fx.dart';
 import '../../mini_game.dart';
+import '../../../theme/potatuhs.dart';
+
+/// Width-constrained centered text. Unlike [GameFx.text] (which lays out at the
+/// string's natural width and can spill past its container on small embeds),
+/// this lays out inside [maxWidth]: it first shrinks the font down toward
+/// [minSize] to try to fit on one line, then ellipsizes if it still cannot —
+/// so a layer name, header, or role sentence never overflows its box.
+void _fitText(Canvas canvas, String s, Offset center, double size, Color color,
+    double maxWidth,
+    {FontWeight weight = FontWeight.w700,
+    double minSize = 7,
+    TextAlign align = TextAlign.center,
+    int maxLines = 1}) {
+  if (maxWidth <= 0 || s.isEmpty) return;
+  var fontSize = size;
+  TextPainter tp() => TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            fontFamily: Potatuhs.bodyFont,
+            fontSize: fontSize,
+            fontWeight: weight,
+            color: color,
+          ),
+        ),
+        textAlign: align,
+        textDirection: TextDirection.ltr,
+        maxLines: maxLines,
+        ellipsis: maxLines == 1 ? '…' : null,
+      );
+  // Shrink toward minSize until the natural (unclamped) width fits, or we hit
+  // the floor. Measuring unbounded gives the true single-line width.
+  var painter = tp()..layout();
+  while (painter.width > maxWidth && fontSize > minSize) {
+    fontSize = (fontSize - 0.5).clamp(minSize, size);
+    painter = tp()..layout();
+  }
+  // Final layout is bounded so anything still too long ellipsizes cleanly.
+  painter = tp()..layout(maxWidth: maxWidth);
+  painter.paint(canvas, center - Offset(painter.width / 2, painter.height / 2));
+}
 
 /// Skin Layers — a tissue-scale ANATOMY & DEPTH-ORDER primer.
 ///
@@ -160,13 +201,17 @@ void _legendBand(Canvas canvas, Rect rect, _LayerId id,
   if (compact) {
     GameFx.text(canvas, l.emoji, c.translate(0, -rect.height * 0.16), iconSize,
         Colors.white);
-    GameFx.text(canvas, l.abbrev, c.translate(0, rect.height * 0.30), labelSize,
-        Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+    _fitText(canvas, l.abbrev, c.translate(0, rect.height * 0.30), labelSize,
+        Colors.white.withValues(alpha: 0.92), rect.width - 8,
+        weight: FontWeight.w700);
   } else {
     GameFx.text(
-        canvas, l.emoji, c.translate(-rect.width * 0.32, 0), iconSize, Colors.white);
-    GameFx.text(canvas, l.name, c.translate(rect.width * 0.05, 0), labelSize,
-        Colors.white.withValues(alpha: 0.94), weight: FontWeight.w700);
+        canvas, l.emoji, c.translate(-rect.width * 0.38, 0), iconSize, Colors.white);
+    final nameLeft = rect.left + rect.width * 0.26;
+    final nameRight = rect.right - 8;
+    _fitText(canvas, l.name, Offset((nameLeft + nameRight) / 2, c.dy), labelSize,
+        Colors.white.withValues(alpha: 0.94), nameRight - nameLeft,
+        weight: FontWeight.w700);
   }
 }
 
@@ -326,9 +371,9 @@ void _legendAlive(Canvas canvas, Size size) {
     canvas.drawCircle(
         Offset(px, py), 2.6, Paint()..color = _kLegendGood.withValues(alpha: 0.8));
   }
-  GameFx.text(canvas, 'SKIN ALIVE +BONUS',
+  _fitText(canvas, 'SKIN ALIVE +BONUS',
       Offset(size.width / 2, bounds.top - 30), 11, _kLegendGood,
-      weight: FontWeight.w800);
+      (size.width - 16).clamp(60.0, size.width), weight: FontWeight.w800);
 }
 
 /// The visual manual for Skin Layers — wired into the registry spec.
@@ -848,11 +893,13 @@ class _SkinPainter extends CustomPainter {
     final goal = s._phase == _Phase.alive
         ? 'THE SKIN COMES ALIVE'
         : 'STACK THE SKIN — SURFACE ON TOP, DEEP AT THE BOTTOM';
-    GameFx.text(canvas, goal, Offset(size.width / 2, 16), 11,
-        Colors.white.withValues(alpha: 0.55), weight: FontWeight.w700);
+    // Leave room for the SECTION badge on the right at higher levels.
+    final headerMax = (size.width - (s._level > 0 ? 96 : 24)).clamp(60.0, size.width);
+    _fitText(canvas, goal, Offset(size.width / 2, 16), 11,
+        Colors.white.withValues(alpha: 0.55), headerMax, weight: FontWeight.w700);
     if (s._level > 0) {
-      GameFx.text(canvas, 'SECTION ${s._level + 1}',
-          Offset(size.width - 40, 18), 10, _accent.withValues(alpha: 0.8),
+      _fitText(canvas, 'SECTION ${s._level + 1}',
+          Offset(size.width - 40, 18), 10, _accent.withValues(alpha: 0.8), 72,
           weight: FontWeight.w700);
     }
   }
@@ -995,17 +1042,23 @@ class _SkinPainter extends CustomPainter {
     final iconSize = (h * 0.42).clamp(13.0, 20.0);
     final labelSize = (h * 0.28).clamp(8.0, 12.0);
     if (placed && showFull) {
-      // Band: icon left, name beside it.
-      GameFx.text(canvas, l.emoji, Offset(t.x - w * 0.30, t.y), iconSize,
+      // Band: icon left, name centered in the room right of the icon. The name
+      // block spans from just right of the icon to the pill's right padding.
+      GameFx.text(canvas, l.emoji, Offset(t.x - w * 0.38, t.y), iconSize,
           Colors.white);
-      GameFx.text(canvas, l.name, Offset(t.x + w * 0.04, t.y), labelSize,
-          Colors.white.withValues(alpha: 0.94), weight: FontWeight.w700);
+      final nameLeft = t.x - w * 0.24;
+      final nameRight = t.x + w * 0.5 - 8;
+      final nameCenter = (nameLeft + nameRight) / 2;
+      _fitText(canvas, l.name, Offset(nameCenter, t.y), labelSize,
+          Colors.white.withValues(alpha: 0.94), (nameRight - nameLeft),
+          weight: FontWeight.w700);
     } else {
-      // Tray pill: stacked icon over abbreviation.
+      // Tray pill: stacked icon over abbreviation (constrained to pill width).
       GameFx.text(canvas, l.emoji, Offset(t.x, t.y - h * 0.16), iconSize,
           Colors.white);
-      GameFx.text(canvas, l.abbrev, Offset(t.x, t.y + h * 0.30), labelSize,
-          Colors.white.withValues(alpha: 0.92), weight: FontWeight.w700);
+      _fitText(canvas, l.abbrev, Offset(t.x, t.y + h * 0.30), labelSize,
+          Colors.white.withValues(alpha: 0.92), w - 10,
+          weight: FontWeight.w700);
     }
   }
 
@@ -1026,8 +1079,10 @@ class _SkinPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.2
           ..color = s._roleColor.withValues(alpha: 0.5 * a));
-    GameFx.text(canvas, s._roleText, rect.center, 11,
-        Colors.white.withValues(alpha: 0.92 * a), weight: FontWeight.w600);
+    // Role sentences are long; fit them inside the card, wrapping to two lines.
+    _fitText(canvas, s._roleText, rect.center, 11,
+        Colors.white.withValues(alpha: 0.92 * a), rect.width - 20,
+        weight: FontWeight.w600, minSize: 8, maxLines: 2);
   }
 
   @override

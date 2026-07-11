@@ -164,6 +164,10 @@ class _SolarStormGameState extends State<SolarStormGame>
   double _shake = 0;
   double _redFlash = 0; // grid-damage screen flash
 
+  // Comprehension: an in-context HOW-TO hint that fades once the player acts.
+  bool _actedThisRun = false; // player has quelled/deflected at least once
+  double _hintAlpha = 1.0; // 1 → visible, eases to 0 after first action / grace
+
   // Threats
   final List<_Sunspot> _spots = [];
   final List<_Storm> _storms = [];
@@ -289,6 +293,8 @@ class _SolarStormGameState extends State<SolarStormGame>
     _popups.clear();
     _spotTimer = _kSpotSpawnBase * 0.5;
     _flareTimer = _kFlareSpawnBase;
+    _actedThisRun = false;
+    _hintAlpha = 1.0;
   }
 
   // ── game loop ──────────────────────────────────────────────────────────
@@ -311,6 +317,12 @@ class _SolarStormGameState extends State<SolarStormGame>
 
     if (running && _size != Size.zero) {
       _elapsed += dt;
+      // HOW-TO hint: hold while the player hasn't acted and we're still early;
+      // once they act (or after a ~6s grace) ease it out so it never obscures.
+      final holdHint = !_actedThisRun && _elapsed < 6.0;
+      _hintAlpha = holdHint
+          ? math.min(1.0, _hintAlpha + dt * 4)
+          : math.max(0.0, _hintAlpha - dt * 1.6);
       _cycle = (_elapsed / _round).clamp(0.0, 1.0);
       _grid = (_grid + _kGridRegen * dt).clamp(0.0, _kGridMax);
       _stepSunspots(dt);
@@ -473,8 +485,12 @@ class _SolarStormGameState extends State<SolarStormGame>
     widget.session.addScore(pts);
     _streak++;
     widget.session.noteStreak(_streak);
+    _noteSuccess(st.pos);
     final at = st.pos;
     _spawnPopup(at.dx, at.dy - 14, '+$pts', _kShield, 1.1);
+    if (st.progress < 0.35) {
+      _spawnPopup(at.dx, at.dy - 34, 'EARLY!', _kSunCore, 0.85);
+    }
     _spawnParticles(at, _kShield, count: 14);
   }
 
@@ -486,9 +502,22 @@ class _SolarStormGameState extends State<SolarStormGame>
     widget.session.addScore(pts);
     _streak++;
     widget.session.noteStreak(_streak);
+    _noteSuccess(_spotPos(s));
     final at = _spotPos(s);
     _spawnPopup(at.dx, at.dy - 10, '+$pts', _kSunMid, 1.0);
+    if (s.intensity < 0.35) {
+      _spawnPopup(at.dx, at.dy - 30, 'EARLY!', _kSunCore, 0.85);
+    }
     _spawnParticles(at, _kSpotRim, count: 10);
+  }
+
+  /// First successful action of the run flips the hint off and shows a one-time
+  /// "NICE!" so the player instantly connects tap → points.
+  void _noteSuccess(Offset at) {
+    if (!_actedThisRun) {
+      _actedThisRun = true;
+      _spawnPopup(at.dx, at.dy - 52, 'NICE! CATCH EARLY = MORE', _kSunCore, 0.8);
+    }
   }
 
   // ── build ──────────────────────────────────────────────────────────────
@@ -511,6 +540,7 @@ class _SolarStormGameState extends State<SolarStormGame>
                 streak: _streak,
                 shake: _shake,
                 redFlash: _redFlash,
+                hintAlpha: _hintAlpha,
                 sunCenter: _sunCenter,
                 sunR: _sunR,
                 beltY: _beltY,
@@ -536,7 +566,7 @@ class _SolarStormGameState extends State<SolarStormGame>
 // ===========================================================================
 
 class _SolarStormPainter extends CustomPainter {
-  final double t, cycle, grid, shake, redFlash;
+  final double t, cycle, grid, shake, redFlash, hintAlpha;
   final bool running;
   final int mult, streak;
   final Offset sunCenter;
@@ -558,6 +588,7 @@ class _SolarStormPainter extends CustomPainter {
     required this.streak,
     required this.shake,
     required this.redFlash,
+    required this.hintAlpha,
     required this.sunCenter,
     required this.sunR,
     required this.beltY,
@@ -593,6 +624,10 @@ class _SolarStormPainter extends CustomPainter {
     _drawPopups(canvas);
     _drawMeters(canvas, size);
     _drawComboBadge(canvas, size);
+    if (running) {
+      _drawObjective(canvas, size);
+      if (hintAlpha > 0.02) _drawHint(canvas, size);
+    }
     if (redFlash > 0.02) {
       canvas.drawRect(Offset.zero & size,
           Paint()..color = _kDanger.withValues(alpha: 0.22 * redFlash));
@@ -691,6 +726,13 @@ class _SolarStormPainter extends CustomPainter {
         continue;
       }
       final r = 7.0 + s.intensity * 9.0;
+      // TAP reticle — a dashed ring says "this is a target". Green-gold while
+      // it's still an early, high-value quell; shifts toward danger as it nears
+      // eruption so the player reads urgency without a manual.
+      final early = (1.0 - s.intensity).clamp(0.0, 1.0);
+      final reticleCol = Color.lerp(_kDanger, _kGridGood, early)!;
+      final rPulse = 1 + 0.08 * math.sin(t * 3 + s.seed * 6);
+      _tapReticle(canvas, p, (r + 10) * rPulse, reticleCol, 0.55);
       // Dark umbra.
       canvas.drawCircle(p, r, Paint()..color = _kSpotDark);
       canvas.drawCircle(
@@ -751,6 +793,27 @@ class _SolarStormPainter extends CustomPainter {
       canvas.drawCircle(pos, st.radius, Paint()..color = col);
       canvas.drawCircle(pos, st.radius * 0.45,
           Paint()..color = Colors.white.withValues(alpha: 0.9));
+      // TAP reticle — signals the storm is interactive. Bright green (big early
+      // bonus) high up, fading toward red danger as it nears the belt.
+      final early = (1.0 - st.progress).clamp(0.0, 1.0);
+      final reticleCol = Color.lerp(_kDanger, _kGridGood, early)!;
+      final rPulse = 1 + 0.10 * math.sin(t * 4 + st.seed * 6);
+      _tapReticle(canvas, pos, (st.radius + 14) * rPulse, reticleCol, 0.65);
+    }
+  }
+
+  /// A dashed crosshair ring that reads as "tap me". Cheap: 8 arc segments.
+  void _tapReticle(Canvas canvas, Offset c, double r, Color color, double a) {
+    final p = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round
+      ..color = color.withValues(alpha: a);
+    const seg = 8;
+    for (var i = 0; i < seg; i++) {
+      final start = (i / seg) * math.pi * 2 + t * 0.6;
+      canvas.drawArc(Rect.fromCircle(center: c, radius: r), start,
+          math.pi * 2 / seg * 0.55, false, p);
     }
   }
 
@@ -868,15 +931,71 @@ class _SolarStormPainter extends CustomPainter {
     }
   }
 
+  // ── always-visible objective + fading how-to hint ────────────────────────
+  // The objective TextPainter is built once (static string) and reused every
+  // frame — no per-frame layout for the persistent label.
+  static final TextPainter _objectiveTp = TextPainter(
+    text: const TextSpan(
+      text: 'TAP SPOTS & STORMS — CATCH THEM EARLY FOR MORE POINTS',
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: 11,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 0.6,
+        color: _kText,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
+
+  void _drawObjective(Canvas canvas, Size size) {
+    final w = _objectiveTp.width + 26;
+    final h = _objectiveTp.height + 10;
+    final left = (size.width - w) / 2;
+    const top = 8.0;
+    final rr = RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top, w, h), const Radius.circular(9));
+    canvas.drawRRect(rr, Paint()..color = _kSpace.withValues(alpha: 0.55));
+    canvas.drawRRect(
+        rr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1
+          ..color = _kSunMid.withValues(alpha: 0.35));
+    _objectiveTp.paint(
+        canvas, Offset(left + 13, top + (h - _objectiveTp.height) / 2));
+  }
+
+  void _drawHint(Canvas canvas, Size size) {
+    // Sits just under the objective; a bright, unmissable green-gold callout
+    // that names both targets and the winning behavior, then eases away.
+    final a = hintAlpha.clamp(0.0, 1.0);
+    const y = 46.0;
+    _text(
+        canvas,
+        'DARK SPOTS on the Sun · GLOWING STORMS falling toward Earth',
+        Offset(size.width * 0.5, y),
+        12,
+        _kSunCore.withValues(alpha: 0.9 * a),
+        bold: true,
+        glow: 0.5 * a);
+    _text(
+        canvas,
+        'green ring = tap now for the big bonus · red = about to hit',
+        Offset(size.width * 0.5, y + 18),
+        10.5,
+        _kText.withValues(alpha: 0.75 * a));
+  }
+
   void _drawReadyLabel(Canvas canvas, Size size) {
     _text(canvas, 'SOLAR MINIMUM', Offset(size.width * 0.5, sunCenter.dy),
         13, _kSunCore.withValues(alpha: 0.5), bold: true);
     _text(
         canvas,
-        'Tap sunspots to quell · deflect flares before they hit',
+        'Tap dark sunspots · tap incoming storms · catch them early',
         Offset(size.width * 0.5, size.height * 0.6),
         12,
-        _kText.withValues(alpha: 0.55));
+        _kText.withValues(alpha: 0.6));
   }
 
   // ── text helper ────────────────────────────────────────────────────────

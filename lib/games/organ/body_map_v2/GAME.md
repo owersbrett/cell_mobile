@@ -56,6 +56,20 @@ ghost; you must know them.
 The final 10 s become an orange **BODY SCRAMBLE** surge: faster feed, a 5th tray
 slot, and ×1.5 on every placement, building straight into the buzzer.
 
+## Presentation & legibility (visual pass)
+- **The figure is a stylized anatomy body**, not a pale ghost: warm skin
+  gradient (lit top-left, shaded edge), a body-glow halo, a rim light, and a
+  clipped **torso cavity** with faint rib-cage arcs + a spine seam, so placed
+  organs read as sitting *inside* the body. Tray/placed organs are layered orbs
+  (glow → radial gradient → rim → specular), never flat stickers.
+- **Always-visible OBJECTIVE** under the score: "DROP EACH ORGAN WHERE IT LIVES".
+- **Fading how-to hint** over the opening of the run: "Drag from the tray —
+  beat the fading ring".
+- **Target beacon while dragging**: on recall levels (or job tokens), holding a
+  token draws a pulsing colored crosshair at its home region — name tokens also
+  show the organ label; job tokens stay unlabelled (you must still know it). On
+  learning levels a name token still shows the full ghost snap-zone ring.
+
 ## Session / re-entry (the S in GAMES)
 Auto-starts when the host sets `isRunning`; until then a calm silhouette and a
 couple of demo tokens bob with the prompt "Drag each organ to where it lives". No

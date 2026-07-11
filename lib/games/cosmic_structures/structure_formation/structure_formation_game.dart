@@ -1,19 +1,17 @@
-// StructureFormationGame — "Structure Formation" cosmic-web cultivation blitz.
+// StructureFormationGame — "claim the cosmic web".
 //
-// Start from a nearly-smooth early universe: a faint density field, almost
-// uniform, like the cosmic microwave background. TAP to SEED tiny over-densities
-// (plant a fluctuation). GRAVITY then amplifies every over-density — matter
-// flows toward the denser side, clumps merge, and ridges weave the filamentary
-// cosmic web. Meanwhile cosmic EXPANSION dilutes contrast and, late in the run,
-// DARK ENERGY surges and tries to stretch your structure apart. Seed wisely:
-// spread fluctuations to build many nodes; over-seeding one spot or starving a
-// region wastes it. Score = mass that collapses into structure + well-formed
-// clusters (web nodes) before time runs out. 60-second blitz.
+// Rank-F rebuild (Brett, 2026-07-07, cyummu→yumutsu). The old version was an
+// abstract density-sim you couldn't read. This one is a CONTEST over one shared
+// young universe: you and rival civilizations plant OWNED seeds; every seed is a
+// bright node in its owner's color that pulls filaments and grows a territory.
+// You score the share of the web that collapses around YOUR seeds. Solo, the
+// rivals are bots; online they are real players — same code, behind one seam
+// (StructureSeedSource). See GAME.md.
 //
-// Self-contained module. Depends only on the framework session + shared FX/theme.
-// PERFORMANCE: the entire density field + particles render on ONE Ticker →
-// ONE CustomPainter. The simulation mutates flat typed-array state every frame
-// WITHOUT setState; only a throttled ~15fps setState refreshes the HUD text.
+// Self-contained module. Depends only on the framework session + shared FX/theme
+// + the seed-source seam. PERFORMANCE: the whole field + FX render on ONE Ticker
+// → ONE CustomPainter over flat typed arrays; only a throttled ~15fps setState
+// refreshes the HUD text (never the field).
 // ═══════════════════════════════════════════════════════════════════════════
 
 import 'dart:math';
@@ -25,97 +23,106 @@ import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 
+import 'structure_seed_source.dart';
+
 // ---------------------------------------------------------------------------
-// FEEL / TUNING CONSTANTS — change these without touching logic.
+// FEEL / TUNING — change these without touching logic.
 // ---------------------------------------------------------------------------
 
-/// Scale accent (cosmic violet — the cosmic-web hue).
+/// Scale accent (cosmic violet — chrome only; territory is drawn per-owner).
 const Color _sfAccent = Color(0xFF8E6BFF);
 
-/// Density-field grid. Fixed (independent of screen) so the simulation arrays
-/// never resize; the field is mapped onto whatever play area we get. Portrait
-/// is locked, so a tall grid reads naturally.
+/// Claimant colors. Index 0 is always YOU (warm gold — the one "you" hue);
+/// 1..3 are rivals in distinct, high-contrast hues.
+const List<Color> kClaimantColors = [
+  Color(0xFFFFC24B), // you — gold
+  Color(0xFF3FD8E0), // rival — cyan
+  Color(0xFFE85CC6), // rival — magenta
+  Color(0xFF7BE06B), // rival — green
+];
+
+/// Density-field grid. Fixed so the simulation arrays never resize; mapped onto
+/// whatever play area we get (portrait is locked, so a tall grid reads well).
 const int _cols = 22;
-const int _rows = 38;
+const int _rows = 34;
 const int _n = _cols * _rows;
 
 /// Gravitational accretion strength (matter flow toward denser neighbours).
-const double _gravity = 1.0;
+/// Tuned UP from the old build so a claimed node visibly grows in ~1–2s.
+const double _gravity = 1.7;
 
-/// Cosmic expansion: pulls every cell toward the mean (dilutes contrast). Ramps
-/// over the run; competes with gravity. Base + linear ramp by elapsed fraction.
-const double _expansionBase = 0.11;
-const double _expansionRamp = 0.55;
+/// Cosmic expansion: pulls every cell toward the mean (dilutes contrast). Gentle
+/// early so structure actually forms, ramping over the run.
+const double _expansionBase = 0.05;
+const double _expansionRamp = 0.34;
 
-/// Dark energy: a late surge (last [_darkEnergyAt]s) that adds to expansion and
-/// actively tears structure apart.
-const double _darkEnergyAt = 46.0;
-const double _darkEnergyBoost = 1.05;
+/// Dark energy: a late surge (last part of the run) that tears weak/contested
+/// structure apart. Kicks in at [_darkEnergyAt]s of the 45s round.
+const double _darkEnergyAt = 33.0;
+const double _darkEnergyBoost = 0.9;
 
-/// A cell counts as "collapsed into structure" above mean × this ratio.
-const double _collapseRatio = 2.4;
-/// Hysteresis: a collapsed cell only un-collapses below mean × this (stops a
-/// flickering cell from re-scoring repeatedly).
-const double _uncollapseRatio = 1.6;
+/// A cell counts as "collapsed into structure" above mean × this ratio;
+/// hysteresis un-collapses only below mean × [_uncollapseRatio].
+const double _collapseRatio = 2.15;
+const double _uncollapseRatio = 1.5;
 
-/// Points for one cell newly collapsing into structure (the mass score).
-const int _massPoints = 6;
-/// A connected blob of this many collapsed cells is a "well-formed cluster"
-/// (a web node). Reaching a new high count of nodes pays this each.
+/// Score = owned collapsed cells × this. Node bonus paid per new local node.
+const int _massPerCell = 5;
 const int _clusterMinSize = 5;
-const int _clusterBonus = 40;
+const int _clusterBonus = 30;
 
-/// Seed economy. Limited fluctuations, slowly replenished — over-seeding burns
-/// the budget, so placement matters.
-const int _seedMax = 7;
-const double _seedRegenSeconds = 2.2;
-const int _seedStart = 7;
+/// Seed economy — limited, slowly replenished, so placement matters.
+const int _seedMax = 6;
+const double _seedRegenSeconds = 2.0;
+const int _seedStart = 6;
 
-/// One seed deposits a small Gaussian over-density: peak amplitude + spread (in
-/// cells) + the radius it touches.
-const double _seedPeak = 2.3;
-const double _seedSigma = 1.05;
+/// One seed deposits a Gaussian over-density: peak (high enough that the centre
+/// collapses INSTANTLY — the tap is a node NOW), spread, and radius touched.
+const double _seedPeak = 2.1;
+const double _seedSigma = 1.15;
 const int _seedRadius = 2;
 
-/// Below this relative contrast a cell is "void" and isn't drawn (keeps the
-/// early universe near-smooth and the draw-call count low — only structure is
-/// painted over the atmospheric background).
-const double _drawFloor = 0.16;
+/// Below this relative contrast a cell is "void" and isn't drawn.
+const double _drawFloor = 0.18;
 
-/// How often (s) to flood-fill the collapsed cells for cluster scoring.
-const double _clusterScanEvery = 0.35;
+/// How often (s) to recompute ownership + score.
+const double _scanEvery = 0.28;
 
-// Educational payload — surfaced in a fixed banner, refreshed as web nodes form.
+// Educational payload — surfaced in the bottom banner, refreshed as nodes form.
 const List<String> _sfFacts = [
-  'The cosmic web grew from tiny density ripples — about 1 part in 100,000 — seen in the CMB.',
-  'Gravity amplifies over-dense regions: the rich get richer over billions of years.',
-  'Matter collapses along sheets and filaments, leaving vast near-empty voids.',
   'Galaxy clusters sit at the knots where cosmic filaments cross.',
-  'The early universe was almost perfectly smooth — structure is its slow self-assembly.',
-  'Expansion stretches space and fights gravity; only dense enough seeds collapse.',
+  'The cosmic web grew from ripples ~1 part in 100,000 — imprinted on the CMB.',
+  'Gravity makes the rich richer: over-dense regions pull in ever more matter.',
+  'Matter collapses along sheets and filaments, leaving vast near-empty voids.',
   'Dark energy now accelerates expansion, pulling the largest structures apart.',
   'The same instability that clumps galaxies once clumped the first stars.',
 ];
 
-// ---------------------------------------------------------------------------
-// PAINTER — draws the atmosphere, the density field, and all FX in ONE pass.
-// Repaints every tick off the game's ticker (no widget rebuild needed).
-// ---------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
+// PAINTER — atmosphere, the owner-tinted field, seed filaments, and FX in ONE
+// pass. Repaints every tick off the game's ticker (no widget rebuild).
+// ═══════════════════════════════════════════════════════════════════════════
 class _StructurePainter extends CustomPainter {
   final Float32List d;
   final Uint8List collapsed;
+  final Uint8List owner; // 0 = unowned, else claimant+1
   final double mean;
-  final double t; // seconds clock (drift / shimmer)
-  final double fieldAlpha; // dims the field in the calm ready state
+  final double t;
+  final double fieldAlpha;
+  final int claimantCount;
+  final List<_Seed> seeds;
   final List<FxParticle> fx;
   final List<FxPop> pops;
 
   _StructurePainter({
     required this.d,
     required this.collapsed,
+    required this.owner,
     required this.mean,
     required this.t,
     required this.fieldAlpha,
+    required this.claimantCount,
+    required this.seeds,
     required this.fx,
     required this.pops,
     required Listenable repaint,
@@ -123,8 +130,6 @@ class _StructurePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Any non-finite metric must not reach the draw calls — a single NaN can
-    // make the rasterizer drop the whole frame (black screen).
     if (!size.width.isFinite ||
         !size.height.isFinite ||
         size.width <= 0 ||
@@ -132,43 +137,51 @@ class _StructurePainter extends CustomPainter {
       return;
     }
 
-    // Cosmic background: gradient + drifting star motes (the smooth backdrop the
-    // web condenses out of).
-    GameFx.atmosphere(canvas, size, _sfAccent, t, motes: 46);
+    GameFx.atmosphere(canvas, size, _sfAccent, t, motes: 40);
 
     final double cw = size.width / _cols;
     final double ch = size.height / _rows;
-    // Tiny overlap kills seams between neighbouring lit cells (filaments read as
-    // continuous threads, not a tile grid).
     final double ow = cw + 0.7;
     final double oh = ch + 0.7;
     final double safeMean = mean.isFinite && mean > 1e-4 ? mean : 1.0;
 
+    // Filaments FIRST (under the nodes): thin threads between each claimant's
+    // own nearby seeds — the literal "web" the player is weaving.
+    _paintFilaments(canvas, cw, ch);
+
     final Paint cell = Paint();
-    final Paint hot = Paint();
+    final Paint core = Paint();
     for (int r = 0; r < _rows; r++) {
       for (int c = 0; c < _cols; c++) {
         final int i = r * _cols + c;
         final double dv = d[i];
         if (!dv.isFinite) continue;
-        final double rel = dv / safeMean - 1.0; // relative over-density
+        final double rel = dv / safeMean - 1.0;
         if (rel < _drawFloor) continue;
         final double x = c * cw;
         final double y = r * ch;
+        final int o = owner[i];
+        final bool claimed = collapsed[i] != 0 && o != 0;
+        // Claimed structure is drawn in its OWNER'S color (the board is a map of
+        // who owns what); unclaimed forming structure is faint neutral violet.
+        final Color base = claimed
+            ? kClaimantColors[(o - 1) % kClaimantColors.length]
+            : const Color(0xFF5B4B8A);
         final double a =
-            (0.22 + 0.78 * (rel / 1.5)).clamp(0.0, 1.0) * fieldAlpha;
-        cell.color = _cosmicColor(rel).withValues(alpha: a);
+            (0.18 + 0.82 * (rel / 1.6)).clamp(0.0, 1.0) * fieldAlpha;
+        cell.color = base.withValues(alpha: a);
         canvas.drawRect(Rect.fromLTWH(x - 0.35, y - 0.35, ow, oh), cell);
-        // Collapsed cells get a hot white core overlay (no per-cell blur — that
-        // is a per-frame web-rasterizer stall; brightness alone signals a node).
-        if (collapsed[i] != 0) {
-          hot.color = const Color(0xFFFFF6E0)
-              .withValues(alpha: 0.5 * fieldAlpha);
-          final double inset = cw * 0.28;
+        // A claimed core gets a bright inner pip in a lightened owner tint —
+        // brightness alone signals a node (no per-cell blur: that stalls the web
+        // rasterizer frame-to-frame → the black-screen class of bug).
+        if (claimed) {
+          core.color = Color.lerp(base, Colors.white, 0.55)!
+              .withValues(alpha: 0.7 * fieldAlpha);
+          final double inset = cw * 0.30;
           canvas.drawRect(
             Rect.fromLTWH(x + inset, y + inset, cw - 2 * inset + 0.5,
                 ch - 2 * inset + 0.5),
-            hot,
+            core,
           );
         }
       }
@@ -180,247 +193,63 @@ class _StructurePainter extends CustomPainter {
     }
   }
 
-  /// Maps a relative over-density to the cosmic-web colour ramp:
-  /// deep blue (sheets) → violet (filaments) → orange (collapsing) → white-hot
-  /// (cluster cores).
-  Color _cosmicColor(double rel) {
-    const stops = <Color>[
-      Color(0xFF1E3A8A), // deep blue — faint sheet
-      Color(0xFF6D45C9), // violet — filament
-      Color(0xFFC2410C), // deep orange — collapsing
-      Color(0xFFF59E0B), // amber — dense
-      Color(0xFFFFF1C9), // near white-hot — cluster core
-    ];
-    // Map rel ∈ [floor .. ~2.6] across the stops.
-    final double f =
-        ((rel - _drawFloor) / (2.6 - _drawFloor)).clamp(0.0, 1.0);
-    final double scaled = f * (stops.length - 1);
-    final int idx = scaled.floor().clamp(0, stops.length - 2);
-    final double frac = (scaled - idx).clamp(0.0, 1.0);
-    return Color.lerp(stops[idx], stops[idx + 1], frac)!;
+  /// Thin threads between each claimant's own seeds that sit close together —
+  /// the filaments of that owner's web, in the owner's color.
+  void _paintFilaments(Canvas canvas, double cw, double ch) {
+    if (seeds.length < 2) return;
+    final Paint line = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..strokeCap = StrokeCap.round;
+    // Link seeds of the same owner within this many cells (keeps the web local,
+    // not a spider across the whole board). O(seeds²) but seeds are few.
+    const double maxCell = 8.0;
+    const double maxSq = maxCell * maxCell;
+    for (int a = 0; a < seeds.length; a++) {
+      final sa = seeds[a];
+      for (int b = a + 1; b < seeds.length; b++) {
+        final sb = seeds[b];
+        if (sa.owner != sb.owner) continue;
+        final double dc = (sa.col - sb.col).toDouble();
+        final double dr = (sa.row - sb.row).toDouble();
+        final double dsq = dc * dc + dr * dr;
+        if (dsq > maxSq) continue;
+        final double fade = (1.0 - dsq / maxSq).clamp(0.0, 1.0);
+        line.color = kClaimantColors[(sa.owner - 1) % kClaimantColors.length]
+            .withValues(alpha: 0.16 + 0.24 * fade);
+        canvas.drawLine(
+          Offset((sa.col + 0.5) * cw, (sa.row + 0.5) * ch),
+          Offset((sb.col + 0.5) * cw, (sb.row + 0.5) * ch),
+          line,
+        );
+      }
+    }
   }
 
   @override
   bool shouldRepaint(_StructurePainter oldDelegate) => true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// VISUAL MANUAL — the legend carousel cards, drawn with the SAME density-field
-// primitives the live game uses (the cosmic-web colour ramp + hot collapsed
-// cores + filament links). Static, cheap, self-contained; rendered once in the
-// intro. Palette comes straight from the game's own constants + ramp — no new
-// hex introduced beyond the ramp the painter already draws.
-// ═══════════════════════════════════════════════════════════════════════════
-
-const Color _sfDanger = Color(0xFFFF6B6B); // the game's dark-energy warning hue
-const Color _sfNodeGlow = Color(0xFFFFE08A); // the game's WEB-NODE callout hue
-
-/// The cosmic-web colour ramp, mirrored from [_StructurePainter._cosmicColor]
-/// so the manual cells read identically to live play.
-Color _sfLegendColor(double rel) {
-  const stops = <Color>[
-    Color(0xFF1E3A8A), // deep blue — faint sheet
-    Color(0xFF6D45C9), // violet — filament
-    Color(0xFFC2410C), // deep orange — collapsing
-    Color(0xFFF59E0B), // amber — dense
-    Color(0xFFFFF1C9), // near white-hot — cluster core
-  ];
-  final double f = ((rel - _drawFloor) / (2.6 - _drawFloor)).clamp(0.0, 1.0);
-  final double scaled = f * (stops.length - 1);
-  final int idx = scaled.floor().clamp(0, stops.length - 2);
-  final double frac = (scaled - idx).clamp(0.0, 1.0);
-  return Color.lerp(stops[idx], stops[idx + 1], frac)!;
+/// One planted seed: grid cell + owner (claimant+1). Drives Voronoi ownership
+/// and the filament web.
+class _Seed {
+  final int col;
+  final int row;
+  final int owner; // claimant index + 1 (1 = you)
+  const _Seed(this.col, this.row, this.owner);
 }
-
-/// A single Gaussian over-density for the manual field: centre in normalized
-/// (0..1) field coords, peak amplitude, and spread.
-class _SfBump {
-  final double cx, cy, amp, sigma;
-  const _SfBump(this.cx, this.cy, this.amp, this.sigma);
-}
-
-/// Renders a density field from a set of over-density bumps, cell-for-cell in
-/// the game's own style (colour ramp + hot white core on collapsed cells).
-void _sfDrawField(Canvas canvas, Size size, List<_SfBump> bumps,
-    {int gc = 16, int gr = 24, double alpha = 1.0, bool cores = true}) {
-  final double cw = size.width / gc;
-  final double ch = size.height / gr;
-  final double ow = cw + 0.7, oh = ch + 0.7;
-  final Paint cell = Paint();
-  final Paint hot = Paint();
-  for (int r = 0; r < gr; r++) {
-    for (int c = 0; c < gc; c++) {
-      final double fx = (c + 0.5) / gc;
-      final double fy = (r + 0.5) / gr;
-      double rel = 0;
-      for (final b in bumps) {
-        final double dx = fx - b.cx, dy = fy - b.cy;
-        rel += b.amp * exp(-(dx * dx + dy * dy) / (2 * b.sigma * b.sigma));
-      }
-      if (rel < _drawFloor) continue;
-      final double x = c * cw, y = r * ch;
-      final double a = (0.22 + 0.78 * (rel / 1.5)).clamp(0.0, 1.0) * alpha;
-      cell.color = _sfLegendColor(rel).withValues(alpha: a);
-      canvas.drawRect(Rect.fromLTWH(x - 0.35, y - 0.35, ow, oh), cell);
-      if (cores && rel >= _collapseRatio * 0.62) {
-        final double inset = cw * 0.28;
-        hot.color = const Color(0xFFFFF6E0).withValues(alpha: 0.5 * alpha);
-        canvas.drawRect(
-          Rect.fromLTWH(x + inset, y + inset, cw - 2 * inset + 0.5,
-              ch - 2 * inset + 0.5),
-          hot,
-        );
-      }
-    }
-  }
-}
-
-/// The seed-budget dots (mirrors the in-game seed HUD) along the card bottom.
-void _sfSeedDots(Canvas canvas, Size size, {int filled = 5}) {
-  final double y = size.height * 0.90;
-  const int total = _seedMax;
-  const double gap = 13;
-  final double startX = size.width / 2 - (total - 1) * gap / 2;
-  for (int i = 0; i < total; i++) {
-    final Offset c = Offset(startX + i * gap, y);
-    if (i < filled) {
-      canvas.drawCircle(
-          c,
-          5,
-          Paint()
-            ..color = _sfAccent.withValues(alpha: 0.55)
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3));
-      canvas.drawCircle(c, 4, Paint()..color = _sfAccent);
-    } else {
-      canvas.drawCircle(c, 4, Paint()..color = Colors.white24);
-    }
-  }
-}
-
-/// A short chevron-tipped arrow (matter inflow / tearing pull cue).
-void _sfArrow(Canvas canvas, Offset from, Offset to, Color color) {
-  final Paint p = Paint()
-    ..color = color
-    ..strokeWidth = 2.4
-    ..strokeCap = StrokeCap.round
-    ..style = PaintingStyle.stroke;
-  canvas.drawLine(from, to, p);
-  final double ang = atan2(to.dy - from.dy, to.dx - from.dx);
-  const double head = 6;
-  canvas.drawLine(
-      to,
-      to - Offset(cos(ang - 0.5) * head, sin(ang - 0.5) * head), p);
-  canvas.drawLine(
-      to,
-      to - Offset(cos(ang + 0.5) * head, sin(ang + 0.5) * head), p);
-}
-
-/// Frame 1 — the verb: tap the smooth void to plant a tiny density ripple.
-void _legendSeed(Canvas canvas, Size size) {
-  if (size.width <= 4 || size.height <= 4) return;
-  GameFx.atmosphere(canvas, size, _sfAccent, 0, motes: 18);
-  // A single faint young over-density (a just-planted seed) in the centre.
-  _sfDrawField(canvas, size, const [_SfBump(0.5, 0.44, 0.95, 0.10)],
-      cores: false);
-  // Tap ring at the seed point.
-  final Offset seed = Offset(size.width * 0.5, size.height * 0.44);
-  canvas.drawCircle(
-      seed,
-      size.shortestSide * 0.20,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = _sfAccent.withValues(alpha: 0.75));
-  _sfSeedDots(canvas, size, filled: 6);
-}
-
-/// Frame 2 — how to score: gravity collapses over-densities into white-hot
-/// cores (each newly collapsed cell = mass into structure).
-void _legendCollapse(Canvas canvas, Size size) {
-  if (size.width <= 4 || size.height <= 4) return;
-  GameFx.atmosphere(canvas, size, _sfAccent, 0, motes: 18);
-  final Offset c = Offset(size.width * 0.5, size.height * 0.46);
-  _sfDrawField(canvas, size, const [_SfBump(0.5, 0.46, 2.7, 0.13)]);
-  // Matter flowing inward toward the collapsing well.
-  final double r = size.shortestSide * 0.34;
-  for (int i = 0; i < 6; i++) {
-    final double a = i / 6 * 2 * pi;
-    final Offset outer = c + Offset(cos(a), sin(a)) * r;
-    final Offset inner = c + Offset(cos(a), sin(a)) * (r * 0.5);
-    _sfArrow(canvas, outer, inner, _sfAccent.withValues(alpha: 0.85));
-  }
-  GameFx.text(canvas, '+6', Offset(size.width * 0.5, size.height * 0.86), 15,
-      _sfNodeGlow,
-      weight: FontWeight.w800, glow: 0.6);
-}
-
-/// Frame 3 — the payoff: link many collapsed clusters into a filamentary web;
-/// each new web node pays a bonus.
-void _legendWeb(Canvas canvas, Size size) {
-  if (size.width <= 4 || size.height <= 4) return;
-  GameFx.atmosphere(canvas, size, _sfAccent, 0, motes: 18);
-  const nodes = <_SfBump>[
-    _SfBump(0.28, 0.30, 2.6, 0.10),
-    _SfBump(0.70, 0.34, 2.6, 0.10),
-    _SfBump(0.50, 0.58, 2.6, 0.11),
-    _SfBump(0.30, 0.74, 2.5, 0.09),
-  ];
-  // Filament links between the nodes (the cosmic web threads).
-  Offset pt(_SfBump b) => Offset(b.cx * size.width, b.cy * size.height);
-  GameFx.glowLine(canvas, pt(nodes[0]), pt(nodes[1]), _sfAccent, width: 2.4);
-  GameFx.glowLine(canvas, pt(nodes[0]), pt(nodes[2]), _sfAccent, width: 2.4);
-  GameFx.glowLine(canvas, pt(nodes[1]), pt(nodes[2]), _sfAccent, width: 2.4);
-  GameFx.glowLine(canvas, pt(nodes[2]), pt(nodes[3]), _sfAccent, width: 2.4);
-  _sfDrawField(canvas, size, nodes);
-  GameFx.text(canvas, 'WEB NODE +40',
-      Offset(size.width * 0.5, size.height * 0.90), 12, _sfNodeGlow,
-      weight: FontWeight.w800, glow: 0.5);
-}
-
-/// Frame 4 — the late-game twist: expansion and a dark-energy surge stretch
-/// and tear your structure apart. Beat them by building dense enough.
-void _legendDarkEnergy(Canvas canvas, Size size) {
-  if (size.width <= 4 || size.height <= 4) return;
-  GameFx.atmosphere(canvas, size, _sfDanger, 0, motes: 18);
-  final Offset c = Offset(size.width * 0.5, size.height * 0.44);
-  // A fading, half-torn structure (dimmed alpha = losing contrast).
-  _sfDrawField(canvas, size, const [_SfBump(0.5, 0.44, 2.3, 0.14)],
-      alpha: 0.55);
-  // Outward tearing pull in all directions.
-  final double r = size.shortestSide * 0.20;
-  for (int i = 0; i < 6; i++) {
-    final double a = i / 6 * 2 * pi;
-    final Offset inner = c + Offset(cos(a), sin(a)) * r;
-    final Offset outer = c + Offset(cos(a), sin(a)) * (r * 2.0);
-    _sfArrow(canvas, inner, outer, _sfDanger);
-  }
-  GameFx.text(canvas, 'DARK ENERGY',
-      Offset(size.width * 0.5, size.height * 0.88), 13, _sfDanger,
-      weight: FontWeight.w800, glow: 0.5);
-}
-
-/// The visual manual for Structure Formation — wired into the registry spec.
-final List<LegendFrame> structureFormationLegendFrames = [
-  const LegendFrame(
-      caption: 'Tap the smooth void to seed a tiny density ripple',
-      paint: _legendSeed),
-  const LegendFrame(
-      caption: 'Gravity pulls matter into white-hot collapsed cores',
-      paint: _legendCollapse),
-  const LegendFrame(
-      caption: 'Link clusters into a web of nodes for big bonuses',
-      paint: _legendWeb),
-  const LegendFrame(
-      caption: 'Beat dark energy before it tears your web apart',
-      paint: _legendDarkEnergy),
-];
 
 // ---------------------------------------------------------------------------
 // GAME
 // ---------------------------------------------------------------------------
 class StructureFormationGame extends StatefulWidget {
   final MiniGameSession session;
-  const StructureFormationGame({super.key, required this.session});
+
+  /// Rival source. Null ⇒ solo (an [AiSeedSource] is created). Online passes a
+  /// networked source so real players' seeds stream into the same universe.
+  final StructureSeedSource? source;
+
+  const StructureFormationGame({super.key, required this.session, this.source});
 
   @override
   State<StructureFormationGame> createState() => _StructureFormationGameState();
@@ -430,24 +259,31 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ticker;
   final Random _rng = Random();
+  late StructureSeedSource _source;
 
   // ── Density field (flat typed arrays — mutated every frame, no setState) ──
   final Float32List _d = Float32List(_n);
   final Float32List _delta = Float32List(_n);
   final Uint8List _collapsed = Uint8List(_n);
+  final Uint8List _owner = Uint8List(_n); // 0 = unowned, else claimant+1
   double _totalMass = 0;
+
+  // Seeds (for Voronoi ownership + filament drawing).
+  final List<_Seed> _seeds = [];
 
   // ── Clock ──
   double _lastTime = 0;
   double _elapsed = 0;
 
-  // ── Seed economy ──
-  double _seeds = _seedStart.toDouble();
+  // ── Seed economy (local player only) ──
+  double _seeds_ = _seedStart.toDouble();
   double _seedRegen = 0;
 
-  // ── Cluster scoring ──
-  int _maxClusters = 0; // highest count of web nodes reached this run
-  double _clusterTimer = 0;
+  // ── Ownership / scoring ──
+  double _scanTimer = 0;
+  int _localScored = 0; // owned-cell count already converted to score
+  int _localNodes = 0; // highest local node count reached (bonus high-water)
+  List<int> _ownedCounts = List<int>.filled(kClaimantColors.length, 0);
   final Uint8List _visited = Uint8List(_n);
   final Int32List _stack = Int32List(_n);
 
@@ -459,31 +295,34 @@ class _StructureFormationGameState extends State<StructureFormationGame>
   int _factIndex = 0;
   String _currentFact = _sfFacts[0];
 
-  // ── Late-game flag (dark energy) ──
   bool _darkEnergy = false;
 
-  // ── Cached geometry (from build) for the out-of-build tap hit-test ──
+  /// Number of seeds the LOCAL player has planted this round. Drives the fading
+  /// in-context how-to hint: it shows until the player taps, then fades out.
+  int _localSeedsPlanted = 0;
+
+  // ── Cached geometry (for the out-of-build tap hit-test) ──
   double _cellW = 0, _cellH = 0;
   bool _geomReady = false;
 
-  // ── HUD rebuild throttle ──
   double _uiAccum = 0;
+
+  int get _claimantCount => _source.claimantCount;
 
   @override
   void initState() {
     super.initState();
+    _source = widget.source ??
+        AiSeedSource(cols: _cols, rows: _rows, seed: _rng.nextInt(1 << 30));
     _initField();
     _ticker = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_update);
     _ticker.forward();
-    // ATTRACT autopilot: this game knows how to play itself. Registered always
-    // (harmless in normal play — the host only calls it hands-free). See
-    // [_autoStep]. Dormant unless the host is driving the attract loop.
+    // ATTRACT autopilot — this game plays itself the right way (spread seeds).
     widget.session.autoPilot = _autoStep;
   }
 
-  /// Seed the nearly-smooth early universe: mean density 1.0 with faint random
-  /// fluctuations (~±4%), like the tiny ripples imprinted on the CMB.
+  /// Seed the nearly-smooth young universe: mean 1.0 with faint ripples (~±4%).
   void _initField() {
     _totalMass = 0;
     for (int i = 0; i < _n; i++) {
@@ -491,7 +330,9 @@ class _StructureFormationGameState extends State<StructureFormationGame>
       _d[i] = v;
       _totalMass += v;
       _collapsed[i] = 0;
+      _owner[i] = 0;
     }
+    _seeds.clear();
   }
 
   double get _mean => _totalMass / _n;
@@ -499,72 +340,43 @@ class _StructureFormationGameState extends State<StructureFormationGame>
   @override
   void dispose() {
     if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _source.dispose();
     _ticker.dispose();
     super.dispose();
   }
 
-  // ── ATTRACT autopilot ─────────────────────────────────────────────────────
-  /// One hands-free seed per host tick (~250ms). Plays the game the *right* way:
-  /// it SPREADS seeds instead of piling them up. Over-densities already live in
-  /// the density field, so the bot reads the field directly, collects the cells
-  /// that are meaningfully over-dense (existing seeded structure), and drops the
-  /// next seed on the grid cell whose NEAREST over-density is farthest away — a
-  /// maximin, well-spread, low-density spot with room to accrete. As that cell
-  /// then grows dense, the next tick's farthest point moves elsewhere, so the
-  /// web fills out node by node. Deterministic; respects the seed budget.
+  // ── ATTRACT autopilot — one spread seed per host tick while running ────────
   void _autoStep() {
-    if (!widget.session.isRunning || !_geomReady) return;
-    if (_seeds < 1) return; // out of budget this tick — wait for regen
-
-    // Cells that already carry meaningful over-density (seeded / accreting).
-    final double thresh = _mean * 1.3;
-    final List<int> dense = [];
-    for (int i = 0; i < _n; i++) {
-      if (_d[i] >= thresh) dense.add(i);
+    if (!widget.session.isRunning || !_geomReady || _seeds_ < 1) return;
+    // Drop the local seed on the cell whose nearest existing local seed is
+    // farthest — a maximin spread that stakes wide territory.
+    int bestCol = _cols ~/ 2, bestRow = _rows ~/ 2;
+    double best = -1;
+    final mine = [for (final s in _seeds) if (s.owner == 1) s];
+    if (mine.isEmpty) {
+      _placeLocalSeed(bestCol, bestRow);
+      return;
     }
-
-    int bestCol = _cols ~/ 2;
-    int bestRow = _rows ~/ 2;
-    if (dense.isNotEmpty) {
-      // Pick the cell whose distance to the nearest over-density is greatest
-      // (farthest-point spread). Tie-break toward the lower-density cell so we
-      // seed the emptier region of the near-smooth field.
-      double bestScore = -1;
-      double bestFill = double.infinity;
-      for (int r = 0; r < _rows; r++) {
-        final int rowBase = r * _cols;
-        for (int c = 0; c < _cols; c++) {
-          double nearest = double.infinity;
-          for (final j in dense) {
-            final int jr = j ~/ _cols;
-            final int jc = j - jr * _cols;
-            final double dd =
-                ((jr - r) * (jr - r) + (jc - c) * (jc - c)).toDouble();
-            if (dd < nearest) nearest = dd;
-          }
-          final double fill = _d[rowBase + c];
-          if (nearest > bestScore ||
-              (nearest == bestScore && fill < bestFill)) {
-            bestScore = nearest;
-            bestFill = fill;
-            bestCol = c;
-            bestRow = r;
-          }
+    for (int r = 0; r < _rows; r++) {
+      for (int c = 0; c < _cols; c++) {
+        double nearest = double.infinity;
+        for (final s in mine) {
+          final double dd =
+              ((s.row - r) * (s.row - r) + (s.col - c) * (s.col - c)).toDouble();
+          if (dd < nearest) nearest = dd;
+        }
+        if (nearest > best) {
+          best = nearest;
+          bestCol = c;
+          bestRow = r;
         }
       }
     }
-
-    _placeSeed(
-      bestCol,
-      bestRow,
-      Offset((bestCol + 0.5) * _cellW, (bestRow + 0.5) * _cellH),
-    );
+    _placeLocalSeed(bestCol, bestRow);
   }
 
-  // ── Simulation step ─────────────────────────────────────────────────────
+  // ── Simulation step ────────────────────────────────────────────────────────
   void _update() {
-    // Always advance FX so the ready-state shimmer / lingering particles move,
-    // but only advance the physics + clock while the host says we're playing.
     final now = _ticker.lastElapsedDuration?.inMicroseconds ?? 0;
     final tsec = now / 1e6;
     final dt = (_lastTime == 0 ? 0.016 : (tsec - _lastTime)).clamp(0.0, 0.05);
@@ -573,74 +385,67 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     _stepFx(dt);
 
     if (!widget.session.isRunning) {
-      // Calm ready state — no growth, no seed regen, no scoring.
       _maybeRebuildHud(dt);
       return;
     }
 
     _elapsed += dt;
 
-    // Seed regen (capped).
-    if (_seeds < _seedMax) {
+    // Local seed regen.
+    if (_seeds_ < _seedMax) {
       _seedRegen += dt;
       if (_seedRegen >= _seedRegenSeconds) {
         _seedRegen -= _seedRegenSeconds;
-        _seeds = (_seeds + 1).clamp(0.0, _seedMax.toDouble());
+        _seeds_ = (_seeds_ + 1).clamp(0.0, _seedMax.toDouble());
       }
     }
 
-    _stepPhysics(dt);
-    _scoreCollapse();
+    // Rival seeds (bots or real players) arriving this frame.
+    if (_source is AiSeedSource) {
+      (_source as AiSeedSource).reportOwnership(_ownedCounts);
+    }
+    final rivals = _source.takeRivalSeeds(_elapsed, _ownedCounts[0]);
+    for (final rs in rivals) {
+      // Clamp owner into range and skip the local slot (rivals never seed as us).
+      if (rs.owner <= 0 || rs.owner >= _claimantCount) continue;
+      _seedAt(rs.col, rs.row, rs.owner + 1, burst: true);
+    }
 
-    _clusterTimer += dt;
-    if (_clusterTimer >= _clusterScanEvery) {
-      _clusterTimer = 0;
-      _scoreClusters();
+    _stepPhysics(dt);
+
+    _scanTimer += dt;
+    if (_scanTimer >= _scanEvery) {
+      _scanTimer = 0;
+      _recomputeOwnershipAndScore();
     }
 
     final wasDark = _darkEnergy;
     _darkEnergy = _elapsed >= _darkEnergyAt;
-    if (_darkEnergy && !wasDark) {
-      _nextFact();
-    }
+    if (_darkEnergy && !wasDark) _nextFact();
 
     _maybeRebuildHud(dt);
   }
 
-  /// Gravity (accretion toward denser neighbours, mass-conserving) + cosmic
-  /// expansion (dilution toward the mean) over the whole field.
+  /// Gravity (accretion toward denser neighbours, mass-conserving) + expansion
+  /// (dilution toward the mean), over the whole field.
   void _stepPhysics(double dt) {
     final mean = _mean;
-    // Expansion rate ramps over the run; dark energy surges at the end.
-    final frac = (_elapsed / 60.0).clamp(0.0, 1.0);
+    final frac = (_elapsed / 45.0).clamp(0.0, 1.0);
     double expansion = _expansionBase + _expansionRamp * frac;
     if (_darkEnergy) expansion += _darkEnergyBoost;
 
-    // Clear the accumulation buffer.
     for (int i = 0; i < _n; i++) {
       _delta[i] = 0;
     }
-
-    // Mass-conserving accretion: visit each right/down edge once and move mass
-    // from the lighter cell into the heavier (gravity pulls matter into wells).
     for (int r = 0; r < _rows; r++) {
       final int rowBase = r * _cols;
       for (int c = 0; c < _cols; c++) {
         final int i = rowBase + c;
         final double di = _d[i];
-        // Right neighbour.
-        if (c + 1 < _cols) {
-          _flux(i, i + 1, di, _d[i + 1], dt);
-        }
-        // Down neighbour.
-        if (r + 1 < _rows) {
-          _flux(i, i + _cols, di, _d[i + _cols], dt);
-        }
+        if (c + 1 < _cols) _flux(i, i + 1, di, _d[i + 1], dt);
+        if (r + 1 < _rows) _flux(i, i + _cols, di, _d[i + _cols], dt);
       }
     }
-
-    // Apply accretion, then expansion (pulls each cell toward the mean). Both
-    // conserve total mass, so [_totalMass] only changes when the player seeds.
     for (int i = 0; i < _n; i++) {
       double v = _d[i] + _delta[i];
       v += expansion * dt * (mean - v);
@@ -648,10 +453,6 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     }
   }
 
-  /// Move mass between cells [a] and [b] along one edge, accumulating into
-  /// [_delta]. Flows from the lighter cell into the heavier one (gravitational
-  /// instability), at a rate scaled by local density, clamped so a donor can
-  /// never lose more than a quarter of its mass in one step (stability).
   void _flux(int a, int b, double da, double db, double dt) {
     final double diff = db - da; // >0 ⇒ b heavier ⇒ mass flows a→b
     final double avg = (da + db) * 0.5;
@@ -664,41 +465,90 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     _delta[b] += f;
   }
 
-  /// Rising-edge scoring: every cell that newly crosses the collapse threshold
-  /// is mass that just fell into structure. Hysteresis prevents re-scoring a
-  /// flickering cell.
-  void _scoreCollapse() {
+  /// Recompute which cells are collapsed, assign each to its nearest seed's
+  /// owner (Voronoi territory), tally per-claimant owned mass, then score the
+  /// local player's growth + any new local web node.
+  void _recomputeOwnershipAndScore() {
     final double up = _mean * _collapseRatio;
     final double down = _mean * _uncollapseRatio;
-    int newlyCollapsed = 0;
+    final counts = List<int>.filled(kClaimantColors.length, 0);
+    // Accumulate the local player's owned-cell centroid so a +N score pop can
+    // float up right where YOUR territory is growing (the "why am I scoring").
+    double localSumX = 0, localSumY = 0;
+
     for (int i = 0; i < _n; i++) {
+      // Hysteresis collapse flag.
       if (_collapsed[i] == 0) {
-        if (_d[i] >= up) {
-          _collapsed[i] = 1;
-          newlyCollapsed++;
-        }
+        if (_d[i] >= up) _collapsed[i] = 1;
       } else {
         if (_d[i] < down) _collapsed[i] = 0;
       }
+      if (_collapsed[i] == 0) {
+        _owner[i] = 0;
+        continue;
+      }
+      // Nearest seed → owner.
+      final int r = i ~/ _cols;
+      final int c = i - r * _cols;
+      int bestOwner = 0;
+      double bestDist = double.infinity;
+      for (final s in _seeds) {
+        final double dc = (s.col - c).toDouble();
+        final double dr = (s.row - r).toDouble();
+        final double dd = dc * dc + dr * dr;
+        if (dd < bestDist) {
+          bestDist = dd;
+          bestOwner = s.owner;
+        }
+      }
+      _owner[i] = bestOwner;
+      if (bestOwner > 0 && bestOwner <= counts.length) {
+        counts[bestOwner - 1]++;
+        if (bestOwner == 1) {
+          localSumX += c;
+          localSumY += r;
+        }
+      }
     }
-    if (newlyCollapsed > 0) {
-      widget.session.addScore(newlyCollapsed * _massPoints);
+    _ownedCounts = counts;
+
+    // Score the local player's owned-mass GROWTH (monotonic — a rival stealing
+    // border cells shows in the live bar, but never claws back banked score).
+    final int localOwned = counts[0];
+    if (localOwned > _localScored) {
+      final int gainedCells = localOwned - _localScored;
+      final int points = gainedCells * _massPerCell;
+      widget.session.addScore(points);
+      _localScored = localOwned;
+      // Float a "+N" at the centroid of YOUR territory so it's obvious the
+      // score climbs because your web is spreading (score-driver feedback).
+      if (localOwned > 0 && _geomReady) {
+        final double cx = (localSumX / localOwned + 0.5) * _cellW;
+        final double cy = (localSumY / localOwned + 0.5) * _cellH;
+        _spawnScorePop(Offset(cx, cy), points);
+      }
+    }
+
+    // New local web node → bonus + streak + a callout.
+    final int nodes = _countLocalNodes();
+    if (nodes > _localNodes) {
+      final int gained = nodes - _localNodes;
+      _localNodes = nodes;
+      widget.session.addScore(gained * _clusterBonus);
+      widget.session.noteStreak(nodes);
+      _spawnWebPop(gained);
+      _nextFact();
     }
   }
 
-  /// Flood-fill the collapsed cells (4-connected) into clusters. A cluster of
-  /// at least [_clusterMinSize] cells is a "well-formed" web node. Whenever the
-  /// run reaches a NEW high count of nodes, award the bonus for each new node —
-  /// rewarding a richer web, never double-paying when structure is torn and
-  /// re-forms.
-  void _scoreClusters() {
+  /// Count connected blobs (≥ [_clusterMinSize]) of LOCAL-owned collapsed cells.
+  int _countLocalNodes() {
     for (int i = 0; i < _n; i++) {
       _visited[i] = 0;
     }
     int nodeCount = 0;
     for (int start = 0; start < _n; start++) {
-      if (_collapsed[start] == 0 || _visited[start] != 0) continue;
-      // Iterative flood fill over this connected component.
+      if (_owner[start] != 1 || _visited[start] != 0) continue;
       int sp = 0;
       _stack[sp++] = start;
       _visited[start] = 1;
@@ -715,40 +565,42 @@ class _StructureFormationGameState extends State<StructureFormationGame>
       }
       if (size >= _clusterMinSize) nodeCount++;
     }
-
-    if (nodeCount > _maxClusters) {
-      final int gained = nodeCount - _maxClusters;
-      _maxClusters = nodeCount;
-      widget.session.addScore(gained * _clusterBonus);
-      widget.session.noteStreak(nodeCount);
-      _nextFact();
-      _spawnWebPop(gained);
-    }
+    return nodeCount;
   }
 
-  /// Push neighbour [idx] onto the flood-fill stack if it's an unvisited
-  /// collapsed cell; returns the new stack pointer.
   int _pushIf(int idx, int sp) {
-    if (_collapsed[idx] != 0 && _visited[idx] == 0) {
+    if (_owner[idx] == 1 && _visited[idx] == 0) {
       _visited[idx] = 1;
       _stack[sp++] = idx;
     }
     return sp;
   }
 
-  // ── FX ───────────────────────────────────────────────────────────────────
+  // ── FX ─────────────────────────────────────────────────────────────────────
   void _stepFx(double dt) {
     _fx.removeWhere((p) => !p.step(dt));
     _pops.removeWhere((p) => !p.step(dt));
     if (_pops.length > 6) _pops.removeRange(0, _pops.length - 6);
   }
 
+  /// Float a "+N" at [at] (clamped inside the board) in YOUR color — the live
+  /// score-driver: it reads that owning more web is what earns points.
+  void _spawnScorePop(Offset at, int points) {
+    final double w = _cellW * _cols;
+    final double h = _cellH * _rows;
+    final Offset p = Offset(
+      at.dx.clamp(24.0, w - 24.0),
+      at.dy.clamp(90.0, h - 60.0),
+    );
+    _pops.add(FxPop(p, '+$points', kClaimantColors[0]));
+    if (_pops.length > 6) _pops.removeRange(0, _pops.length - 6);
+  }
+
   void _spawnWebPop(int gained) {
-    // A floating callout near the top-centre of the field.
     final x = (_cellW * _cols) * (0.3 + _rng.nextDouble() * 0.4);
-    final y = (_cellH * _rows) * 0.32;
+    final y = (_cellH * _rows) * 0.34;
     _pops.add(FxPop(Offset(x, y), gained > 1 ? 'WEB ×$gained' : 'WEB NODE',
-        const Color(0xFFFFE08A)));
+        kClaimantColors[0]));
   }
 
   void _nextFact() {
@@ -761,36 +613,32 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     _currentFact = _sfFacts[idx];
   }
 
-  // ── Input: seed a density fluctuation ─────────────────────────────────────
+  // ── Input: plant one of YOUR seeds ──────────────────────────────────────────
   void _onTapDown(TapDownDetails d) {
     if (!widget.session.isRunning || !_geomReady) return;
-    if (_seeds < 1) {
-      // Out of seeds — a tiny visual "denied" pulse so the tap isn't silent.
-      _pops.add(FxPop(d.localPosition, 'NO SEEDS',
-          const Color(0xFFB0A0C0)));
+    if (_seeds_ < 1) {
+      _pops.add(FxPop(d.localPosition, 'NO SEEDS', const Color(0xFFB0A0C0)));
       if (_pops.length > 6) _pops.removeRange(0, _pops.length - 6);
       return;
     }
     final pos = d.localPosition;
     final int col = (pos.dx / _cellW).floor().clamp(0, _cols - 1);
     final int row = (pos.dy / _cellH).floor().clamp(0, _rows - 1);
-    _placeSeed(col, row, pos);
+    _placeLocalSeed(col, row);
   }
 
-  /// Deposit one seed at grid cell (col,row) and spend a seed from the budget,
-  /// bursting FX at [fxPos]. Shared by the human tap path and the autopilot.
-  void _placeSeed(int col, int row, Offset fxPos) {
-    _seedAt(col, row);
-    _seeds -= 1;
-
-    // Seed burst FX.
-    _fx.addAll(FxBurst.spawn(fxPos, _sfAccent, count: 12, speed: 90, size: 2.6));
-    if (_fx.length > 160) _fx.removeRange(0, _fx.length - 160);
+  void _placeLocalSeed(int col, int row) {
+    _seedAt(col, row, 1, burst: true); // owner 1 = you
+    _seeds_ -= 1;
+    _localSeedsPlanted++;
+    _source.onLocalSeed(col, row); // broadcast to rivals (no-op solo)
   }
 
-  /// Deposit a small Gaussian over-density centred on (col,row). Adds mass to
-  /// the field (raising total mass — the only thing that does).
-  void _seedAt(int col, int row) {
+  /// Deposit a Gaussian over-density owned by [ownerPlus1] and register the seed
+  /// for Voronoi ownership + filaments. The centre collapses INSTANTLY so the
+  /// tap is a visible owned node immediately.
+  void _seedAt(int col, int row, int ownerPlus1, {bool burst = false}) {
+    _seeds.add(_Seed(col, row, ownerPlus1));
     const double twoSigSq = 2 * _seedSigma * _seedSigma;
     for (int dr = -_seedRadius; dr <= _seedRadius; dr++) {
       final int rr = row + dr;
@@ -804,7 +652,19 @@ class _StructureFormationGameState extends State<StructureFormationGame>
         final int i = rr * _cols + cc;
         _d[i] += add;
         _totalMass += add;
+        // Instant claim on the strong centre cells so the node reads NOW.
+        if (_d[i] >= _mean * _collapseRatio) {
+          _collapsed[i] = 1;
+          _owner[i] = ownerPlus1;
+        }
       }
+    }
+    if (burst && _geomReady) {
+      final color = kClaimantColors[(ownerPlus1 - 1) % kClaimantColors.length];
+      _fx.addAll(FxBurst.spawn(
+          Offset((col + 0.5) * _cellW, (row + 0.5) * _cellH), color,
+          count: 12, speed: 90, size: 2.6));
+      if (_fx.length > 160) _fx.removeRange(0, _fx.length - 160);
     }
   }
 
@@ -816,7 +676,7 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     }
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // ── Build ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final running = widget.session.isRunning;
@@ -827,23 +687,23 @@ class _StructureFormationGameState extends State<StructureFormationGame>
       _cellH = h / _rows;
       _geomReady = _cellW > 0 && _cellH > 0;
 
-      final int seedsDisplay = _seeds.floor();
-
       return Container(
         color: Potatuhs.inkDeep,
         child: Stack(
           clipBehavior: Clip.hardEdge,
           children: [
-            // Field + FX canvas — one painter, repaints off the ticker.
             Positioned.fill(
               child: RepaintBoundary(
                 child: CustomPaint(
                   painter: _StructurePainter(
                     d: _d,
                     collapsed: _collapsed,
+                    owner: _owner,
                     mean: _mean,
                     t: _elapsed,
-                    fieldAlpha: running ? 1.0 : 0.55,
+                    fieldAlpha: running ? 1.0 : 0.5,
+                    claimantCount: _claimantCount,
+                    seeds: _seeds,
                     fx: _fx,
                     pops: _pops,
                     repaint: _ticker,
@@ -852,7 +712,6 @@ class _StructureFormationGameState extends State<StructureFormationGame>
               ),
             ),
 
-            // Full-area tap surface — seeds a fluctuation anywhere you tap.
             Positioned.fill(
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
@@ -860,37 +719,64 @@ class _StructureFormationGameState extends State<StructureFormationGame>
               ),
             ),
 
-            // ── Seed budget (top-centre, clear of the host quit/disruption) ──
-            Positioned(
+            // ── ALWAYS-VISIBLE OBJECTIVE (the one line: what am I doing?) ──
+            const Positioned(
               top: 8,
-              left: 0,
-              right: 0,
-              child: IgnorePointer(
-                child: Center(child: _seedBar(seedsDisplay)),
-              ),
+              left: 12,
+              right: 12,
+              child: IgnorePointer(child: _ObjectiveBanner()),
             ),
 
-            // ── Dark-energy warning badge ──
+            // ── Live share bar: who owns how much of the web ──
+            Positioned(
+              top: 38,
+              left: 12,
+              right: 12,
+              child: IgnorePointer(child: _shareBar()),
+            ),
+
+            // ── Seed budget ──
+            Positioned(
+              top: 96,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(child: Center(child: _seedBar(_seeds_.floor()))),
+            ),
+
             if (running && _darkEnergy)
               Positioned(
-                top: 44,
+                top: 126,
                 left: 0,
                 right: 0,
                 child: IgnorePointer(
                   child: Center(
-                    child: _badge('⚡ DARK ENERGY — structure is pulling apart',
+                    child: _badge('⚡ DARK ENERGY — thin structure is tearing',
                         const Color(0xFFFF6B6B)),
                   ),
                 ),
               ),
 
-            // ── Calm ready-state hint (intro/countdown) ──
-            if (!running)
-              const Positioned.fill(
-                child: IgnorePointer(child: _ReadyHint()),
+            // ── Fading in-context how-to: shows once play starts and the player
+            //    hasn't planted yet; fades away the moment they act. ──
+            if (running && _localSeedsPlanted < 2)
+              Positioned(
+                left: 24,
+                right: 24,
+                bottom: 74,
+                child: IgnorePointer(
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 350),
+                    opacity: _localSeedsPlanted == 0 ? 1.0 : 0.0,
+                    child: _badge(
+                        '👆 TAP anywhere to plant a seed — your territory grows in your colour',
+                        kClaimantColors[0]),
+                  ),
+                ),
               ),
 
-            // ── Education banner (fixed, refreshes as nodes form) ──
+            if (!running)
+              const Positioned.fill(child: IgnorePointer(child: _ReadyHint())),
+
             Positioned(
               left: 12,
               right: 12,
@@ -912,10 +798,9 @@ class _StructureFormationGameState extends State<StructureFormationGame>
                     overflow: TextOverflow.ellipsis,
                     textAlign: TextAlign.center,
                     style: Potatuhs.body(
-                      size: 10.5,
-                      height: 1.25,
-                      color: const Color(0xFFD9CEF0),
-                    ),
+                        size: 10.5,
+                        height: 1.25,
+                        color: const Color(0xFFD9CEF0)),
                   ),
                 ),
               ),
@@ -926,19 +811,124 @@ class _StructureFormationGameState extends State<StructureFormationGame>
     });
   }
 
+  /// The competitive readout: one filled segment per claimant, width ∝ owned
+  /// web, YOU first and labelled. Always answers "am I winning?".
+  Widget _shareBar() {
+    final counts = _ownedCounts;
+    int total = 0;
+    for (int i = 0; i < _claimantCount && i < counts.length; i++) {
+      total += counts[i];
+    }
+    final int youPct = total == 0 ? 0 : ((counts[0] / total) * 100).round();
+    // Are you ahead? Compare your share to the strongest rival for a live verdict.
+    int topRival = 0;
+    for (int i = 1; i < _claimantCount && i < counts.length; i++) {
+      if (counts[i] > topRival) topRival = counts[i];
+    }
+    final bool leading = counts[0] > topRival;
+    final bool anyClaimed = total > 0;
+    final Color verdictColor =
+        !anyClaimed ? Potatuhs.textSecondary : (leading ? kClaimantColors[0] : const Color(0xFFFF8A8A));
+    final String verdict =
+        !anyClaimed ? 'CLAIM SOME WEB' : (leading ? 'LEADING' : 'BEHIND');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Text('YOUR WEB',
+                  style: Potatuhs.label(size: 9, color: kClaimantColors[0])),
+              const SizedBox(width: 8),
+              Text(verdict,
+                  style: Potatuhs.label(size: 8.5, color: verdictColor)),
+              const Spacer(),
+              Text('$youPct%',
+                  style: Potatuhs.body(
+                      size: 12,
+                      weight: FontWeight.w800,
+                      color: kClaimantColors[0])),
+            ],
+          ),
+          const SizedBox(height: 5),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: SizedBox(
+              height: 8,
+              child: Row(
+                children: [
+                  for (int i = 0; i < _claimantCount && i < counts.length; i++)
+                    Expanded(
+                      flex: total == 0 ? 1 : (counts[i] * 1000 ~/ (total)) + 1,
+                      child: Container(
+                          color: kClaimantColors[i % kClaimantColors.length]
+                              .withValues(alpha: i == 0 ? 1.0 : 0.75)),
+                    ),
+                  if (total == 0) const Expanded(flex: 20, child: SizedBox()),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 5),
+          // Legend: which colour is YOU vs each rival — makes the board readable.
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              for (int i = 0; i < _claimantCount && i < counts.length; i++)
+                _legendChip(
+                    kClaimantColors[i % kClaimantColors.length],
+                    i == 0 ? 'YOU' : 'RIVAL $i',
+                    highlight: i == 0),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _legendChip(Color color, String label, {bool highlight = false}) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            boxShadow: highlight
+                ? [BoxShadow(color: color.withValues(alpha: 0.7), blurRadius: 5)]
+                : null,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(label,
+            style: Potatuhs.label(
+                size: 8,
+                color: highlight ? color : Potatuhs.textSecondary)),
+      ],
+    );
+  }
+
   Widget _seedBar(int seeds) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.45),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _sfAccent.withValues(alpha: 0.4)),
+        border: Border.all(color: kClaimantColors[0].withValues(alpha: 0.4)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text('SEEDS',
-              style: Potatuhs.label(size: 9, color: const Color(0xFFB9A8E8))),
+              style: Potatuhs.label(size: 9, color: const Color(0xFFE9D9A8))),
           const SizedBox(width: 8),
           for (int i = 0; i < _seedMax; i++) ...[
             if (i > 0) const SizedBox(width: 3),
@@ -947,9 +937,13 @@ class _StructureFormationGameState extends State<StructureFormationGame>
               height: 8,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: i < seeds ? _sfAccent : Colors.white12,
+                color: i < seeds ? kClaimantColors[0] : Colors.white12,
                 boxShadow: i < seeds
-                    ? [BoxShadow(color: _sfAccent.withValues(alpha: 0.6), blurRadius: 5)]
+                    ? [
+                        BoxShadow(
+                            color: kClaimantColors[0].withValues(alpha: 0.6),
+                            blurRadius: 5)
+                      ]
                     : null,
               ),
             ),
@@ -967,10 +961,44 @@ class _StructureFormationGameState extends State<StructureFormationGame>
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: color.withValues(alpha: 0.7)),
       ),
-      child: Text(
-        text,
-        style: Potatuhs.body(
-            size: 10.5, weight: FontWeight.w700, color: color),
+      child: Text(text,
+          style:
+              Potatuhs.body(size: 10.5, weight: FontWeight.w700, color: color)),
+    );
+  }
+}
+
+/// The always-on objective line. Const so it builds once and never churns the
+/// tree during play (static label — never per-frame GameFx.text).
+class _ObjectiveBanner extends StatelessWidget {
+  const _ObjectiveBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: kClaimantColors[0].withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.hub, size: 13, color: kClaimantColors[0]),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              'CLAIM THE COSMIC WEB — seed nodes, own the most mass',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: Potatuhs.body(
+                  size: 11, weight: FontWeight.w800, color: Potatuhs.textPrimary),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -986,16 +1014,17 @@ class _ReadyHint extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.grain, size: 40, color: _sfAccent.withValues(alpha: 0.85)),
+          Icon(Icons.hub, size: 40, color: kClaimantColors[0].withValues(alpha: 0.9)),
           const SizedBox(height: 12),
-          Text('STRUCTURE FORMATION',
+          Text('CLAIM THE WEB',
               style: Potatuhs.display(size: 20, color: Potatuhs.textPrimary)),
           const SizedBox(height: 8),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 36),
             child: Text(
-              'A nearly-smooth universe. Tap to seed tiny density ripples — '
-              'gravity will grow them into the cosmic web.',
+              'Tap to plant your seeds. Each is a node in YOUR color — gravity '
+              'grows it into territory. Own the most cosmic web before the '
+              'dark-energy surge. Rivals want it too.',
               textAlign: TextAlign.center,
               style: Potatuhs.body(
                   size: 12.5, color: Potatuhs.textSecondary, height: 1.4),
@@ -1004,5 +1033,106 @@ class _ReadyHint extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VISUAL MANUAL — legend cards drawn with the game's OWN primitives (owned
+// node, filament web, contested border, dark-energy tear). Static + cheap.
+// ═══════════════════════════════════════════════════════════════════════════
+final List<LegendFrame> structureFormationLegendFrames = [
+  LegendFrame(
+    caption: 'TAP to plant a seed — a bright node in YOUR color, instantly.',
+    paint: (canvas, size) => _legendNode(canvas, size, kClaimantColors[0]),
+  ),
+  const LegendFrame(
+    caption: 'Your seeds link into filaments — you are weaving your web.',
+    paint: _legendFilament,
+  ),
+  const LegendFrame(
+    caption: 'Rivals seed too. Nearest seed owns the cell — contest the border.',
+    paint: _legendContested,
+  ),
+  const LegendFrame(
+    caption: 'Own the most web before dark energy tears the thin structure.',
+    paint: _legendDarkEnergy,
+  ),
+];
+
+void _legendBg(Canvas canvas, Size size) {
+  canvas.drawRect(Offset.zero & size,
+      Paint()..color = const Color(0xFF0B0B14));
+  GameFx.atmosphere(canvas, size, _sfAccent, 0.4, motes: 22);
+}
+
+void _legendNodeAt(Canvas canvas, Offset c, double r, Color color) {
+  canvas.drawCircle(c, r,
+      Paint()..color = color.withValues(alpha: 0.30));
+  canvas.drawCircle(c, r * 0.55,
+      Paint()..color = color.withValues(alpha: 0.7));
+  canvas.drawCircle(c, r * 0.28,
+      Paint()..color = Color.lerp(color, Colors.white, 0.6)!);
+}
+
+void _legendNode(Canvas canvas, Size size, Color color) {
+  _legendBg(canvas, size);
+  _legendNodeAt(canvas, size.center(Offset.zero),
+      size.shortestSide * 0.22, color);
+}
+
+void _legendFilament(Canvas canvas, Size size) {
+  _legendBg(canvas, size);
+  final color = kClaimantColors[0];
+  final pts = [
+    Offset(size.width * 0.28, size.height * 0.34),
+    Offset(size.width * 0.6, size.height * 0.28),
+    Offset(size.width * 0.72, size.height * 0.62),
+    Offset(size.width * 0.4, size.height * 0.7),
+  ];
+  final line = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2
+    ..strokeCap = StrokeCap.round
+    ..color = color.withValues(alpha: 0.5);
+  for (int i = 0; i < pts.length; i++) {
+    for (int j = i + 1; j < pts.length; j++) {
+      canvas.drawLine(pts[i], pts[j], line);
+    }
+  }
+  for (final p in pts) {
+    _legendNodeAt(canvas, p, size.shortestSide * 0.09, color);
+  }
+}
+
+void _legendContested(Canvas canvas, Size size) {
+  _legendBg(canvas, size);
+  _legendNodeAt(canvas, Offset(size.width * 0.34, size.height * 0.5),
+      size.shortestSide * 0.16, kClaimantColors[0]);
+  _legendNodeAt(canvas, Offset(size.width * 0.66, size.height * 0.5),
+      size.shortestSide * 0.16, kClaimantColors[1]);
+  // The seam between the two territories.
+  final seam = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2
+    ..color = Colors.white.withValues(alpha: 0.5);
+  canvas.drawLine(Offset(size.width * 0.5, size.height * 0.2),
+      Offset(size.width * 0.5, size.height * 0.8), seam);
+}
+
+void _legendDarkEnergy(Canvas canvas, Size size) {
+  _legendBg(canvas, size);
+  final c = size.center(Offset.zero);
+  _legendNodeAt(canvas, c, size.shortestSide * 0.18, kClaimantColors[0]);
+  // Tearing arrows pulling outward.
+  final arrow = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.4
+    ..strokeCap = StrokeCap.round
+    ..color = const Color(0xFFFF6B6B);
+  for (int i = 0; i < 6; i++) {
+    final a = i * pi / 3;
+    final from = c + Offset(cos(a), sin(a)) * size.shortestSide * 0.24;
+    final to = c + Offset(cos(a), sin(a)) * size.shortestSide * 0.42;
+    canvas.drawLine(from, to, arrow);
   }
 }

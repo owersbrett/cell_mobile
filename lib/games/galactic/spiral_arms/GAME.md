@@ -20,13 +20,25 @@ rotation is always running), and a slow pattern (the wave) is what keeps the arm
 
 ## Core loop
 - A disk of ~170 stars orbits a bright core; **inner stars visibly outrun outer stars** (differential).
+- **Bold, always-visible logarithmic spiral arm lanes** wind out of the core (dust-lane shadow + a hot,
+  star-forming ridge). A faint spiral **ghost is drawn even at zero coherence**, so the field always reads
+  as a *spiral galaxy* — never a generic disk of dots.
 - The visible arms are tied to a **slow-rotating density wave** (the pattern speed) — far slower than the
   stars themselves.
-- **Coherence** (a 0–1 meter) is how crisp the arms read. It **always bleeds away** as the disk shears.
-- A **beat ring** shrinks onto a target ring each beat. **Tap on the beat** to pulse the wave: coherence
+- **Coherence** (surfaced on screen as the **ARM DEFINITION** meter, 0–1) is how crisp the arms read. It
+  **always bleeds away** as the disk shears (`CRISP → WINDING UP → SMEARED`).
+- A **beat ring** shrinks onto a target ring each beat. **Tap on the beat** to pulse the wave: definition
   jumps, the stars snap back onto crisp arms, and you score a timing bonus.
-- Let coherence fall and the render shows the **raw sheared orbital positions** — the arms wind up and
-  smear into a uniform disk. (That is literally the orbital truth showing through.)
+- Let it fall and the render shows the **raw sheared orbital positions** — the arms wind up and smear into
+  a uniform disk (the lanes go dark, only the ghost remains). That is literally the orbital truth showing.
+
+## On-screen legibility (the clarity contract)
+- **Always-visible identity + objective** top-left: `SPIRAL GALAXY` / `PULSE THE BEAT · KEEP THE ARMS WOUND`
+  — so a player instantly knows this is galactic spiral-arm formation, not an abstract merge/coherence puzzle.
+- **Live score-driver readout** — a `+N/s` figure floats above the core, greening as coherence (and thus the
+  per-second drip) rises. Winning behaviour is discoverable: crisp arms visibly pay.
+- **Unmissable how-to hint** — a large centered `TAP ON THE BEAT` + sub-line appears at run start and **fades
+  out after the player lands ~2 pulses** (`_hintFade`). In-context, self-retiring.
 
 ## Escalation (accelerate)
 Over the 60s round the level climbs (every ~12s, to LV5):
@@ -50,8 +62,10 @@ Highest score when the 60s run ends — keep the arms crisp and chain clean on-b
 
 ## Implementation notes
 - ONE `Ticker` drives all physics; ONE `CustomPainter` (`_SpiralPainter`) draws disk, arms, stars, core,
-  beat ring, sparks, HUD and popups. No per-frame setState over a big widget tree — the only child is the
-  painter.
+  beat ring, sparks, HUD, the score-driver `+N/s`, the fading hint and popups. No per-frame setState over a
+  big widget tree — the only child is the painter.
+- The spiral arm lanes are drawn as smooth log-spiral `Path`s (`_armPath`) in three passes — dust-lane
+  shadow, persistent ghost, hot density-wave ridge — so the galaxy silhouette reads at every coherence level.
 - Stars keep a fixed radius + arm membership; a live `orbitAngle` advances under differential rotation.
   Display position = `lerp(orbitalPos, crispWavePos, coherence)` — the entire visual thesis in one line.
 - Calm ready state: when `!session.isRunning`, coherence eases back to crisp and the disk drifts slowly;

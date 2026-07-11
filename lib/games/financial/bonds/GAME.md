@@ -48,8 +48,22 @@ targets every 4.5s → 2.0s), and the rate chases them harder. Longer bonds unlo
 ceiling on both profit and risk. Late game is a fast, sharp rate environment where a mistimed 30Y is
 brutal and a well-timed one pays out big.
 
+## Comprehension layer (teach the ONE action)
+Bond finance is unfamiliar to most players, so three always-legible aids make the core loop obvious
+without redesigning the mechanic:
+- **Objective strip** (under the wallet bar, never leaves): a live one-liner that names the CURRENT best
+  move. Flat → `BUY a bond cheap, SELL after rates fall`; holding underwater → `HOLDING — wait for rates
+  to FALL, then SELL`; sitting on a gain → `PROFIT READY — SELL to bank +$N`. Colour + icon track the state.
+- **How-to coach:** an unmissable, pointer-transparent card over the chart at round start, breathing
+  gently. Colour-coded rule: *Rates HIGH ⇒ bonds CHEAP. Tap a bond, BUY — then when rates FALL, SELL for
+  profit.* It **fades for good on the player's first buy** (WarioWare-style teach that gets out of the way).
+- **Live SELL subtext:** the SELL button reads `bank +$N` / `loss -$N` for the selected position, so the
+  score-driver is legible at the exact moment of action (this, plus the floating `+$N` pop on the sell,
+  makes "why did my score move" self-evident).
+
 ## UI layout (top → bottom)
 - **Wallet bar:** CASH · BONDS (mark-to-market value of holdings) · PROFIT (realized P&L).
+- **Objective strip:** the always-visible one-line objective (see Comprehension layer).
 - **Rate panel:** the live INTEREST RATE with its trend arrow, plus the cause→effect callout
   `RATES ▲ ⇒ PRICES ▼` that flips in real time — the inverse rule, narrated.
 - **Chart:** gold RATE line + the selected bond's PRICE line (its colour), visibly inverse. The price

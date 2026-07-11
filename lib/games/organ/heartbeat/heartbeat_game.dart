@@ -5,70 +5,70 @@ import 'package:flutter/scheduler.dart';
 
 import '../../fx.dart';
 import '../../mini_game.dart';
-import '../../../theme/potatuhs.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Heartbeat — route blood through the heart IN ORDER, on the beat.
+// Heartbeat — a HEART-RATE TIME TRIAL. You ARE the pacemaker.
 //
-// Scale: BioScale.organ. The player taps the chambers/valves in the correct
-// circulation sequence — body → right atrium → right ventricle → lungs
-// (oxygenate) → left atrium → left ventricle → body — and must tap the NEXT
-// stage on the downbeat to pump. Deoxygenated (blue) vs oxygenated (red) blood
-// is shown so the loop is visible. Mistimed or out-of-order taps stall the
-// flow and break the streak. Streak builds the heart rate (BPM), which tightens
-// the timing window — the game accelerates as you play well.
+// Scale: BioScale.organ. DOUBLE-TAP the screen to "beat" the heart — each
+// double-tap is one heartbeat. A live BPM is computed from your recent
+// inter-beat intervals; the game shows the TARGET BPM (the goal) and your
+// CURRENT BPM, plus a heart that thumps on every tap. The target ramps
+// GRADUALLY across the round (rest → escalating zones), and you score for time
+// spent inside the target band. Arrhythmia (jittery, irregular tapping) and
+// spiking way over the target are penalized — the reward is a SMOOTH, gradual
+// climb that reaches each new goal and HOLDS it. The band tightens and the
+// goals change faster as the round escalates.
 //
 // One Ticker drives one CustomPainter. The host owns the clock, countdown,
-// score and results; this widget renders ONLY the play area.
+// score and results; this widget renders ONLY the play area. Continuous motion
+// (the beating heart, the drift) lives on the ticker canvas, never in per-frame
+// widget rebuilds.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── Feel constants (tune freely) ────────────────────────────────────────────
-const double _kBaseBpm = 64; // resting rate when the streak is cold
-const double _kMaxBpm = 176; // ceiling — streak can't push faster than this
-const double _kBpmPerStreak = 5; // each clean pump in a streak adds this much
-const double _kIdleBpm = 50; // gentle resting thump in the calm ready state
+const double _kIdleBpm = 52; // gentle resting thump in the calm ready state
+const double _kRoundSeconds = 60; // must match the registry durationSeconds
 
-// Timing window (in beat-phase units, where a full beat is 0..1 and the
-// downbeat is phase 0). Shrinks as BPM climbs — the accelerate lever.
-const double _kWindowWide = 0.22; // forgiving window at resting rate
-const double _kWindowTight = 0.09; // tightest window at max rate
-const double _kPerfectFrac = 0.4; // inside this fraction of the window = PERFECT
+// A double-tap is the two taps within this window. A third tap in the window
+// is ignored (already beat). Taps further apart than this start a new beat.
+const double _kDoubleTapWindow = 0.42; // seconds between the two taps of a beat
 
-// Scoring.
-const int _kPumpBase = 12; // points for a clean pump
-const int _kPerfectBonus = 8; // extra for a dead-on-the-beat pump
-const int _kStreakCap = 12; // streak bonus is min(streak, cap)
-const int _kCycleBonus = 40; // returning blood to the body completes a cycle
+// BPM is a smoothed average of the most recent inter-beat intervals.
+const int _kIbiMemory = 5; // how many recent intervals feed the BPM estimate
+
+// Scoring: points per second spent inside the target band, scaled by how tight
+// the band is (tighter band later = more points) and by smoothness.
+const double _kInBandBase = 22; // points/sec at the wide early band
+const double _kSmoothBonus = 14; // extra points/sec for a steady rhythm
+
+// Penalty knobs.
+const double _kSpikePenalty = 18; // points/sec drained while spiking past target
+const double _kArrhythmiaPenalty = 12; // points/sec drained while arrhythmic
 
 // ── Palette ─────────────────────────────────────────────────────────────────
 const Color _kAccent = Color(0xFFE5484D); // cardinal red — the heart
-const Color _kBlue = Color(0xFF42A5F5); // deoxygenated blood
-const Color _kBlueDeep = Color(0xFF1565C0);
-const Color _kRed = Color(0xFFEF5350); // oxygenated blood
-const Color _kRedDeep = Color(0xFFB71C1C);
-const Color _kGreen = Color(0xFF69F0AE);
+const Color _kBand = Color(0xFF69F0AE); // in-band good green
+const Color _kWarn = Color(0xFFFFB300); // near-band amber
+const Color _kBad = Color(0xFFEF5350); // out-of-band / penalized red
 const Color _kWhite = Colors.white;
 
-/// One stage in the circulation loop.
-class _Stage {
-  final String label; // short tag drawn on the node
-  final String full; // full name surfaced for the active stage
-  final bool oxy; // true = oxygenated (red), false = deoxygenated (blue)
-  const _Stage(this.label, this.full, this.oxy);
-
-  Color get color => oxy ? _kRed : _kBlue;
-  Color get deep => oxy ? _kRedDeep : _kBlueDeep;
+/// One escalation zone: a target BPM the player must climb to and hold, plus a
+/// band half-width (± tolerance) that tightens as the round advances.
+class _Zone {
+  final double target; // goal BPM for this zone
+  final double band; // ± tolerance in BPM (in-band = |cur-target| <= band)
+  final double atFrac; // fraction of the round (0..1) at which this zone begins
+  const _Zone(this.target, this.band, this.atFrac);
 }
 
-/// The fixed loop. Index order IS the pump order. Blood turns red at the
-/// lungs (oxygenate) and back to blue at the body (O₂ delivered).
-const List<_Stage> _kLoop = <_Stage>[
-  _Stage('BODY', 'Body · O₂ delivered', false),
-  _Stage('RA', 'Right Atrium', false),
-  _Stage('RV', 'Right Ventricle', false),
-  _Stage('LUNGS', 'Lungs · oxygenate', true),
-  _Stage('LA', 'Left Atrium', true),
-  _Stage('LV', 'Left Ventricle', true),
+/// The ramp. Gradual climb: rest → jog → run → sprint → redline. The band
+/// tightens (18 → 8 BPM) and later zones arrive faster — the escalation lever.
+const List<_Zone> _kZones = <_Zone>[
+  _Zone(60, 18, 0.00), // warm rest — easy to find
+  _Zone(90, 15, 0.18), // brisk
+  _Zone(120, 12, 0.40), // cardio
+  _Zone(150, 10, 0.62), // hard
+  _Zone(172, 8, 0.82), // redline — tightest band, hold to the finish
 ];
 
 class HeartbeatGame extends StatefulWidget {
@@ -85,41 +85,44 @@ class _HeartbeatGameState extends State<HeartbeatGame>
   Duration _lastElapsed = Duration.zero;
   bool _wasRunning = false;
 
-  // Last known viewport, so the attract autopilot can resolve node geometry
-  // (for pump FX) off-frame. Refreshed every build.
-  Size _size = const Size(400, 800);
+  // ── Core rhythm state ──────────────────────────────────────────────────────
+  double _clock = 0.0; // seconds since this run started
+  double _curBpm = 0.0; // smoothed BPM estimate (0 = no beats yet)
+  double _target = _kZones.first.target; // current goal BPM
+  double _band = _kZones.first.band; // current ± tolerance
+  int _zoneIndex = 0;
 
-  // ── Core state ─────────────────────────────────────────────────────────────
-  int _pos = 0; // index of the stage currently holding the blood
-  int _streak = 0; // consecutive clean pumps
-  int _cycles = 0; // full loops completed
-  double _bpm = _kBaseBpm;
-  double _window = _kWindowWide;
+  // Double-tap detection + interval memory.
+  double? _pendingTapAt; // time of the first tap of an in-progress double
+  double? _lastBeatAt; // time of the last COMPLETED beat
+  final List<double> _ibis = []; // recent inter-beat intervals (seconds)
 
-  // Beat metronome. _beatPhase wraps 0→1 every beat; downbeat is phase 0.
-  double _beatPhase = 0.0;
+  // Rhythm quality, derived every tick.
+  double _jitter = 0.0; // 0 = perfectly steady, 1 = wildly arrhythmic
+  bool _inBand = false;
+  bool _spiking = false; // current BPM shooting well past the target
+
+  // Beat animation — the thump lives here, advanced by the ticker.
+  double _beatPulse = 0.0; // 1 on a beat, decays toward 0
+  double _idlePhase = 0.0; // drives the calm ready-state thump
 
   // ── Juice ──────────────────────────────────────────────────────────────────
-  double _beatFlash = 0.0; // bloom on a clean pump, 1 → 0
-  double _missFlash = 0.0; // red wash on a stall, 1 → 0
-  double _perfectFlash = 0.0; // gold ring on a PERFECT pump
-  String? _banner; // transient callout (CYCLE, PERFECT, MISS…)
+  double _flash = 0.0; // green bloom on a good beat
+  double _badFlash = 0.0; // red wash while penalized
+  String? _banner; // transient callout (zone changes, "HOLD IT")
   double _bannerAge = 0.0;
-  Color _bannerColor = _kGreen;
+  Color _bannerColor = _kBand;
+  double _hintFade = 1.0; // in-context instruction, fades after first beats
   final List<FxParticle> _fx = [];
   final List<FxPop> _pops = [];
 
-  int get _active => (_pos + 1) % _kLoop.length;
+  // Autopilot cadence bookkeeping (ATTRACT drives this game hands-free).
+  double _autoNextBeatAt = 0.0;
 
   @override
   void initState() {
     super.initState();
-    _recalc();
     _ticker = createTicker(_onTick)..start();
-
-    // ATTRACT autopilot: this game knows how to route blood on the beat. The
-    // host calls it on the autopilot cadence (~250ms) while running; it is a
-    // no-op during hands-on play. See [_autoStep]. Registered always (harmless).
     widget.session.autoPilot = _autoStep;
   }
 
@@ -131,59 +134,40 @@ class _HeartbeatGameState extends State<HeartbeatGame>
   }
 
   // ── ATTRACT autopilot ───────────────────────────────────────────────────
-  /// One competent hands-free move per host tick (~250ms). Heartbeat is a
-  /// SEQUENCE + TIMING game: the blood must be pumped to the next chamber in
-  /// circulation order ([_active]) and only on the downbeat (timing error [te]
-  /// inside [_window]). The metronome sweeps continuously between ticks, so
-  /// "pump if on-beat right now" would sail clean past most downbeats. Instead
-  /// we look exactly one tick ahead, like the collider:
-  ///
-  ///   • Only fire when firing NOW already lands inside the window
-  ///     (teNow <= _window). An off-beat tap stalls the flow and drops the
-  ///     streak (see [_stall]), so we never do it.
-  ///   • Among the in-window ticks, fire on the LOCAL MINIMUM of timing error:
-  ///     only when NOW is at least as close to the downbeat as the NEXT tick
-  ///     will be (teNow <= teNext). If a tighter downbeat is still ahead we wait
-  ///     for it — this steers toward PERFECT and always scores.
-  ///
-  /// The chamber is never in doubt: it is always [_active], the next stage in
-  /// the fixed loop, so the sequence half is deterministic by construction.
+  /// Hands-free play: emit steady beats at the current target BPM so the demo
+  /// visibly holds the band and climbs through the zones. Called ~4×/s by the
+  /// host; it fakes a clean, on-target double-tap when a beat is due.
   void _autoStep() {
     if (!widget.session.isRunning) return;
-
-    final teNow = math.min(_beatPhase, 1 - _beatPhase);
-    if (teNow > _window) return; // off-beat → would stall; wait.
-
-    // Advance the metronome one host tick (~250ms) and re-measure the error.
-    const tick = 0.25;
-    final period = 60.0 / _bpm;
-    final phaseNext = (_beatPhase + tick / period) % 1.0;
-    final teNext = math.min(phaseNext, 1 - phaseNext);
-    if (teNow > teNext) return; // a tighter downbeat is still ahead — wait.
-
-    // On-beat and at the closest approach: pump the correct next chamber.
-    _pump(teNow, _HeartGeo.of(_size));
+    if (_clock < _autoNextBeatAt) return;
+    final period = 60.0 / _target;
+    _registerBeat(_clock);
+    _autoNextBeatAt = _clock + period;
   }
 
-  void _recalc() {
-    _bpm = (_kBaseBpm + _streak * _kBpmPerStreak).clamp(_kBaseBpm, _kMaxBpm);
-    final t = ((_bpm - _kBaseBpm) / (_kMaxBpm - _kBaseBpm)).clamp(0.0, 1.0);
-    _window = _kWindowWide + (_kWindowTight - _kWindowWide) * t;
-  }
-
+  // ── Round lifecycle ────────────────────────────────────────────────────────
   void _resetRun() {
-    _pos = 0;
-    _streak = 0;
-    _cycles = 0;
-    _beatPhase = 0.0;
-    _beatFlash = 0;
-    _missFlash = 0;
-    _perfectFlash = 0;
+    _clock = 0;
+    _curBpm = 0;
+    _target = _kZones.first.target;
+    _band = _kZones.first.band;
+    _zoneIndex = 0;
+    _pendingTapAt = null;
+    _lastBeatAt = null;
+    _ibis.clear();
+    _jitter = 0;
+    _inBand = false;
+    _spiking = false;
+    _beatPulse = 0;
+    _flash = 0;
+    _badFlash = 0;
     _banner = null;
     _bannerAge = 0;
+    _hintFade = 1.0;
     _fx.clear();
     _pops.clear();
-    _recalc();
+    _autoNextBeatAt = 0;
+    _flash = 0;
   }
 
   void _onTick(Duration elapsed) {
@@ -192,22 +176,25 @@ class _HeartbeatGameState extends State<HeartbeatGame>
     if (dt <= 0) return;
 
     final running = widget.session.isRunning;
-    // Fresh run detected: reset internal state so a session can re-enter clean.
     if (running && !_wasRunning) _resetRun();
     _wasRunning = running;
 
-    // Advance the metronome. Idle (calm) thump when not running.
-    final bpm = running ? _bpm : _kIdleBpm;
-    final period = 60.0 / bpm;
-    _beatPhase = (_beatPhase + dt / period) % 1.0;
+    _idlePhase = (_idlePhase + dt) % 1000.0;
 
-    // Decay juice.
-    _beatFlash = math.max(0.0, _beatFlash - dt * 2.6);
-    _missFlash = math.max(0.0, _missFlash - dt * 3.0);
-    _perfectFlash = math.max(0.0, _perfectFlash - dt * 2.2);
+    if (running) {
+      _clock += dt;
+      _advanceZone();
+      _decayBpm();
+      _score(dt);
+    }
+
+    // Decay juice + beat pulse (always, so the ready state breathes).
+    _beatPulse = math.max(0.0, _beatPulse - dt * 3.4);
+    _flash = math.max(0.0, _flash - dt * 2.4);
+    _badFlash = math.max(0.0, _badFlash - dt * 2.2);
     if (_banner != null) {
       _bannerAge += dt;
-      if (_bannerAge > 1.2) _banner = null;
+      if (_bannerAge > 1.6) _banner = null;
     }
     _fx.removeWhere((p) => !p.step(dt));
     _pops.removeWhere((p) => !p.step(dt));
@@ -215,110 +202,182 @@ class _HeartbeatGameState extends State<HeartbeatGame>
     setState(() {});
   }
 
-  // ── Input ────────────────────────────────────────────────────────────────
-  void _handleTap(Offset local, Size size) {
-    if (!widget.session.isRunning) return;
-    final geo = _HeartGeo.of(size);
+  /// Move the target to the zone whose [atFrac] the round clock has crossed.
+  void _advanceZone() {
+    final frac = (_clock / _kRoundSeconds).clamp(0.0, 1.0);
+    var idx = 0;
+    for (var i = 0; i < _kZones.length; i++) {
+      if (frac >= _kZones[i].atFrac) idx = i;
+    }
+    if (idx != _zoneIndex) {
+      _zoneIndex = idx;
+      _target = _kZones[idx].target;
+      _band = _kZones[idx].band;
+      _banner = 'GOAL  ${_target.round()} BPM';
+      _bannerColor = _kWarn;
+      _bannerAge = 0;
+    }
+  }
 
-    // Nearest node within a generous, thumb-friendly hit radius.
-    int hit = -1;
-    double best = geo.nodeR * 1.7;
-    for (var i = 0; i < geo.nodes.length; i++) {
-      final d = (geo.nodes[i] - local).distance;
-      if (d < best) {
-        best = d;
-        hit = i;
+  /// If the player stops tapping, the estimated BPM should sag back toward zero
+  /// (no beats = no rhythm). Older intervals age out so an abandoned run reads
+  /// as "flatlining", not a frozen number.
+  void _decayBpm() {
+    if (_lastBeatAt == null) return;
+    final gap = _clock - _lastBeatAt!;
+    // If more than ~1.6 s since the last beat, treat the rhythm as fading.
+    if (gap > 1.6) {
+      _curBpm = math.max(0.0, _curBpm - _curBpm * 0.9 * (gap - 1.6) * 0.4);
+      if (gap > 3.0) {
+        _ibis.clear();
+        _curBpm = 0;
       }
     }
-    if (hit < 0) return;
+  }
 
-    // Must tap the NEXT stage in the loop.
-    if (hit != _active) {
-      _stall('WRONG WAY', geo.nodes[hit]);
+  /// The per-tick scoring + rhythm-quality evaluation.
+  void _score(double dt) {
+    if (_curBpm <= 0) {
+      _inBand = false;
+      _spiking = false;
       return;
     }
+    final err = _curBpm - _target;
+    final absErr = err.abs();
+    _inBand = absErr <= _band;
+    // Spiking = shooting well PAST the target (fast, not gradual). Being under
+    // the target is never "spiking" — you just haven't climbed yet.
+    _spiking = err > _band * 2.2;
 
-    // Right stage — now check the beat. timingError 0 = dead on the downbeat.
-    final te = math.min(_beatPhase, 1 - _beatPhase);
-    if (te > _window) {
-      _stall(_beatPhase < 0.5 ? 'TOO LATE' : 'TOO SOON', geo.nodes[hit]);
+    // Jitter from interval variance (arrhythmia). 0 = metronome-steady.
+    _jitter = _computeJitter();
+    final arrhythmic = _jitter > 0.34;
+
+    var gain = 0.0;
+    if (_inBand) {
+      // Band tightness scales the reward: holding the redline pays more.
+      final tightness = (18.0 / _band).clamp(1.0, 2.4);
+      gain += _kInBandBase * tightness * dt;
+      // Smoothness bonus — steady rhythm inside the band is the sweet spot.
+      final smooth = (1.0 - _jitter / 0.34).clamp(0.0, 1.0);
+      gain += _kSmoothBonus * smooth * dt;
+    }
+    if (_spiking) gain -= _kSpikePenalty * dt;
+    if (arrhythmic) gain -= _kArrhythmiaPenalty * dt;
+
+    if (gain > 0) {
+      _scoreAcc += gain;
+      while (_scoreAcc >= 1.0) {
+        widget.session.addScore(1);
+        _scoreAcc -= 1.0;
+      }
+    }
+
+    // Visual state for penalties.
+    if (_spiking || arrhythmic) {
+      _badFlash = math.max(_badFlash, 0.5);
+    }
+  }
+
+  double _scoreAcc = 0.0;
+
+  /// Coefficient of variation of recent intervals, mapped to 0..1.
+  double _computeJitter() {
+    if (_ibis.length < 3) return 0.0;
+    final mean = _ibis.reduce((a, b) => a + b) / _ibis.length;
+    if (mean <= 0) return 0.0;
+    var v = 0.0;
+    for (final x in _ibis) {
+      v += (x - mean) * (x - mean);
+    }
+    final sd = math.sqrt(v / _ibis.length);
+    return (sd / mean).clamp(0.0, 1.0); // CV, clamped
+  }
+
+  // ── Input ────────────────────────────────────────────────────────────────
+  void _handleTap() {
+    if (!widget.session.isRunning) return;
+    final now = _clock;
+    if (_pendingTapAt == null) {
+      // First tap of a potential double.
+      _pendingTapAt = now;
+      _beatPulse = math.max(_beatPulse, 0.35); // small anticipation thump
       return;
     }
-
-    _pump(te, geo);
-  }
-
-  void _pump(double te, _HeartGeo geo) {
-    final perfect = te <= _window * _kPerfectFrac;
-    _pos = _active;
-    _streak++;
-    _recalc();
-
-    var pts = _kPumpBase + _streak.clamp(0, _kStreakCap);
-    if (perfect) {
-      pts += _kPerfectBonus;
-      _perfectFlash = 1.0;
-    }
-
-    final stage = _kLoop[_pos];
-    final pos = geo.nodes[_pos];
-    widget.session.addScore(pts);
-    widget.session.noteStreak(_streak);
-    _beatFlash = 1.0;
-    _fx.addAll(FxBurst.spawn(pos, stage.color,
-        count: perfect ? 18 : 12, speed: perfect ? 150 : 110));
-    _pops.add(FxPop(pos, '+$pts', perfect ? Potatuhs.gold : _kWhite));
-
-    // Returning blood to the body closes a full circulation cycle.
-    if (_pos == 0) {
-      _cycles++;
-      widget.session.addScore(_kCycleBonus);
-      _flash('CYCLE +$_kCycleBonus', Potatuhs.gold);
-    } else if (perfect) {
-      _flash('PERFECT', Potatuhs.gold);
-    } else if (_pos == 3) {
-      _flash('OXYGENATED', _kRed);
+    final gap = now - _pendingTapAt!;
+    if (gap <= _kDoubleTapWindow) {
+      // Completed a double-tap → one heartbeat.
+      _pendingTapAt = null;
+      _registerBeat(now);
+    } else {
+      // Too slow — this tap becomes the first of a new double.
+      _pendingTapAt = now;
+      _beatPulse = math.max(_beatPulse, 0.35);
     }
   }
 
-  void _stall(String why, Offset at) {
-    _streak = 0;
-    _recalc();
-    _missFlash = 0.7;
-    _pops.add(FxPop(at, why, _kRedDeep));
+  /// A confirmed heartbeat at [at] (seconds on the run clock).
+  void _registerBeat(double at) {
+    _beatPulse = 1.0;
+    _hintFade = math.max(0.0, _hintFade - 0.34); // hint retires after a few beats
+
+    if (_lastBeatAt != null) {
+      final ibi = at - _lastBeatAt!;
+      if (ibi > 0.18 && ibi < 3.0) {
+        _ibis.add(ibi);
+        while (_ibis.length > _kIbiMemory) {
+          _ibis.removeAt(0);
+        }
+        // Smoothed BPM from the recent intervals (median-ish via mean of memory).
+        final mean = _ibis.reduce((a, b) => a + b) / _ibis.length;
+        _curBpm = 60.0 / mean;
+      }
+    }
+    _lastBeatAt = at;
+
+    // Feedback: green burst + score-agnostic pop when landing in-band, else a
+    // small neutral thump. (Actual scoring is per-tick in [_score].)
+    final good = _inBand && _jitter <= 0.34;
+    _flash = good ? 1.0 : math.max(_flash, 0.3);
+    if (good) {
+      _fx.addAll(FxBurst.spawn(_heartCenter, _kBand, count: 10, speed: 90));
+    }
   }
 
-  void _flash(String text, Color color) {
-    _banner = text;
-    _bannerColor = color;
-    _bannerAge = 0;
-  }
+  // Cached heart center for FX (refreshed each build from the last size).
+  Offset _heartCenter = const Offset(200, 360);
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
-      _size = size;
+      _heartCenter = Offset(size.width / 2, size.height * 0.44);
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapDown: (d) => _handleTap(d.localPosition, size),
+        onTapDown: (_) => _handleTap(),
         child: ClipRect(
           child: CustomPaint(
+            // Childless CustomPaint with no size = Size.zero → black screen.
+            // Fill the play area so the painter actually draws.
+            size: size,
             painter: _HeartPainter(
-              loopPos: _pos,
-              active: _active,
-              beatPhase: _beatPhase,
-              window: _window,
-              bpm: _bpm,
-              streak: _streak,
-              cycles: _cycles,
               running: widget.session.isRunning,
-              beatFlash: _beatFlash,
-              missFlash: _missFlash,
-              perfectFlash: _perfectFlash,
+              clock: _clock,
+              idlePhase: _idlePhase,
+              curBpm: _curBpm,
+              target: _target,
+              band: _band,
+              zoneIndex: _zoneIndex,
+              inBand: _inBand,
+              spiking: _spiking,
+              jitter: _jitter,
+              beatPulse: _beatPulse,
+              flash: _flash,
+              badFlash: _badFlash,
               banner: _banner,
               bannerAge: _bannerAge,
               bannerColor: _bannerColor,
+              hintFade: _hintFade,
               fx: _fx,
               pops: _pops,
             ),
@@ -330,268 +389,293 @@ class _HeartbeatGameState extends State<HeartbeatGame>
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Geometry — the six stages laid out on an ellipse so the loop reads as a ring.
-// ═══════════════════════════════════════════════════════════════════════════
-class _HeartGeo {
-  final Offset center;
-  final double nodeR;
-  final List<Offset> nodes;
-  const _HeartGeo(this.center, this.nodeR, this.nodes);
-
-  factory _HeartGeo.of(Size size) {
-    final center = Offset(size.width / 2, size.height * 0.5);
-    final rx = size.width * 0.33;
-    final ry = size.height * 0.33;
-    final nodeR = (size.shortestSide * 0.085).clamp(22.0, 42.0);
-    final nodes = <Offset>[
-      for (var i = 0; i < _kLoop.length; i++)
-        center +
-            Offset(
-              math.cos(math.pi / 2 + i * math.pi / 3) * rx,
-              math.sin(math.pi / 2 + i * math.pi / 3) * ry,
-            ),
-    ];
-    return _HeartGeo(center, nodeR, nodes);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Painter — one pass, whole play area.
+// Painter — one pass, whole play area. All continuous motion is derived from
+// the ticker-advanced fields (beatPulse, idlePhase, clock), never widgets.
 // ═══════════════════════════════════════════════════════════════════════════
 class _HeartPainter extends CustomPainter {
-  final int loopPos;
-  final int active;
-  final double beatPhase;
-  final double window;
-  final double bpm;
-  final int streak;
-  final int cycles;
   final bool running;
-  final double beatFlash;
-  final double missFlash;
-  final double perfectFlash;
+  final double clock;
+  final double idlePhase;
+  final double curBpm;
+  final double target;
+  final double band;
+  final int zoneIndex;
+  final bool inBand;
+  final bool spiking;
+  final double jitter;
+  final double beatPulse;
+  final double flash;
+  final double badFlash;
   final String? banner;
   final double bannerAge;
   final Color bannerColor;
+  final double hintFade;
   final List<FxParticle> fx;
   final List<FxPop> pops;
 
   _HeartPainter({
-    required this.loopPos,
-    required this.active,
-    required this.beatPhase,
-    required this.window,
-    required this.bpm,
-    required this.streak,
-    required this.cycles,
     required this.running,
-    required this.beatFlash,
-    required this.missFlash,
-    required this.perfectFlash,
+    required this.clock,
+    required this.idlePhase,
+    required this.curBpm,
+    required this.target,
+    required this.band,
+    required this.zoneIndex,
+    required this.inBand,
+    required this.spiking,
+    required this.jitter,
+    required this.beatPulse,
+    required this.flash,
+    required this.badFlash,
     required this.banner,
     required this.bannerAge,
     required this.bannerColor,
+    required this.hintFade,
     required this.fx,
     required this.pops,
   });
 
-  double get _beatPulse {
-    final te = math.min(beatPhase, 1 - beatPhase);
-    return math.pow(math.max(0.0, 1 - te / 0.16), 2).toDouble();
+  // Idle breathing thump when not actively tapping.
+  double get _idlePulse {
+    final ph = (idlePhase * (_kIdleBpm / 60.0)) % 1.0;
+    final te = math.min(ph, 1 - ph);
+    return math.pow(math.max(0.0, 1 - te / 0.14), 2).toDouble();
+  }
+
+  double get _pulse => math.max(beatPulse, running ? 0.0 : _idlePulse * 0.7);
+
+  Color get _stateColor {
+    if (spiking) return _kBad;
+    if (inBand) return _kBand;
+    if (curBpm > 0) return _kWarn;
+    return _kWhite;
   }
 
   @override
   void paint(Canvas canvas, Size size) {
-    GameFx.atmosphere(canvas, size, _kAccent, beatPhase + cycles.toDouble());
-    final geo = _HeartGeo.of(size);
+    GameFx.atmosphere(canvas, size, _kAccent, clock * 0.6);
 
-    _paintSegments(canvas, geo);
-    _paintCenterHeart(canvas, geo);
-    for (var i = 0; i < geo.nodes.length; i++) {
-      _paintNode(canvas, geo, i);
-    }
-    _paintApproachRing(canvas, geo);
+    final center = Offset(size.width / 2, size.height * 0.44);
+    final heartR = (size.shortestSide * 0.20).clamp(60.0, 140.0);
+
+    _paintPulseTrace(canvas, size);
+    _paintBandGauge(canvas, size);
+    _paintHeart(canvas, center, heartR);
+    _paintReadouts(canvas, size, center, heartR);
+
     FxBurst.paint(canvas, fx);
     for (final p in pops) {
       p.paint(canvas);
     }
-    _paintActiveLabel(canvas, size, geo);
+
     _paintBanner(canvas, size);
+    if (running) _paintHint(canvas, size);
     _paintFlashes(canvas, size);
     if (!running) _paintReadyHint(canvas, size);
   }
 
-  // ── Loop segments + flow arrows ────────────────────────────────────────────
-  void _paintSegments(Canvas canvas, _HeartGeo geo) {
-    final n = geo.nodes.length;
-    for (var i = 0; i < n; i++) {
-      final a = geo.nodes[i];
-      final b = geo.nodes[(i + 1) % n];
-      final color = _kLoop[i].color; // blood color leaving stage i
-      final isActiveSeg = i == loopPos; // the segment about to be pumped along
-      // Pipe.
-      canvas.drawLine(
-        a,
-        b,
+  // ── The beating heart (canvas, ticker-driven) ─────────────────────────────
+  void _paintHeart(Canvas canvas, Offset c, double baseR) {
+    final s = baseR * (0.9 + 0.18 * _pulse);
+    final path = _heartPath(c, s);
+    final glow = _stateColor;
+    // Glow halo — brighter on a beat and when in-band.
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = glow.withValues(alpha: 0.22 + 0.4 * _pulse)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 14 + 8 * _pulse),
+    );
+    // Gradient body.
+    canvas.drawPath(
+      path,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color.lerp(_kAccent, Colors.white, 0.35)!,
+            _kAccent,
+            const Color(0xFFB71C1C),
+          ],
+          stops: const [0.0, 0.5, 1.0],
+        ).createShader(Rect.fromCircle(center: c, radius: s)),
+    );
+    // In-band ring hugging the heart (tells you you're holding it).
+    if (inBand) {
+      canvas.drawPath(
+        path,
         Paint()
-          ..color = color.withValues(alpha: isActiveSeg ? 0.55 : 0.22)
-          ..strokeWidth = isActiveSeg ? 7 : 4
-          ..strokeCap = StrokeCap.round,
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..color = _kBand.withValues(alpha: 0.65 + 0.3 * _pulse),
       );
-      // Direction chevron at the midpoint.
-      _flowArrow(canvas, a, b, color.withValues(alpha: isActiveSeg ? 0.9 : 0.4));
+    } else {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = _kWhite.withValues(alpha: 0.5),
+      );
     }
   }
 
-  // ── Central heart that thumps on every beat ───────────────────────────────
-  void _paintCenterHeart(Canvas canvas, _HeartGeo geo) {
-    final s = geo.nodeR * (0.9 + 0.16 * _beatPulse);
-    final path = _heartPath(geo.center, s);
-    // Glow.
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = _kAccent.withValues(alpha: 0.30 + 0.35 * _beatPulse)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
-    );
-    canvas.drawPath(
-      path,
-      Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [_kRed, _kAccent, _kRedDeep],
-        ).createShader(Rect.fromCircle(center: geo.center, radius: s)),
-    );
-    canvas.drawPath(
-      path,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.6
-        ..color = _kWhite.withValues(alpha: 0.5),
-    );
-    // BPM readout under the heart.
+  // ── The two big readouts: TARGET (goal) and CURRENT (you) ─────────────────
+  void _paintReadouts(Canvas canvas, Size size, Offset c, double heartR) {
+    // CURRENT BPM sits on the heart — the number the player is steering.
+    final curLabel = curBpm > 0 ? '${curBpm.round()}' : '—';
     GameFx.text(
       canvas,
-      '${bpm.round()} BPM',
-      geo.center.translate(0, geo.nodeR * 1.5),
+      curLabel,
+      c.translate(0, -heartR * 0.05),
+      heartR * 0.62,
+      _kWhite,
+      display: true,
+      glow: 0.5 + 0.4 * _pulse,
+    );
+    GameFx.text(
+      canvas,
+      'YOUR BPM',
+      c.translate(0, heartR * 0.42),
       12,
-      _kWhite.withValues(alpha: 0.85),
+      _kWhite.withValues(alpha: 0.75),
       weight: FontWeight.w800,
     );
-    if (streak >= 2) {
-      GameFx.text(
-        canvas,
-        '🔥 $streak',
-        geo.center.translate(0, geo.nodeR * 1.5 + 16),
-        12,
-        Potatuhs.gold,
-        weight: FontWeight.w700,
-      );
-    }
-  }
 
-  // ── A circulation stage node ──────────────────────────────────────────────
-  void _paintNode(Canvas canvas, _HeartGeo geo, int i) {
-    final stage = _kLoop[i];
-    final pos = geo.nodes[i];
-    final isHere = i == loopPos; // blood currently here
-    final isActive = i == active; // next to be tapped
-    final dim = !isHere && !isActive;
-
-    final pulse = isHere ? (1.0 + 0.12 * _beatPulse) : 1.0;
-    GameFx.orb(
-      canvas,
-      pos,
-      geo.nodeR * pulse,
-      dim ? stage.deep : stage.color,
-      glow: isHere ? (0.7 + 0.6 * _beatPulse) : (isActive ? 0.7 : 0.25),
-      rim: isActive ? _kWhite : null,
-    );
-
-    // The blood token sits on the current stage as a bright pulsing core.
-    if (isHere) {
-      canvas.drawCircle(
-        pos,
-        geo.nodeR * 0.42 * pulse,
-        Paint()
-          ..color = _kWhite.withValues(alpha: 0.85)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
-      );
-    }
-
+    // TARGET readout up top — the goal, in the zone/state color.
+    final gy = size.height * 0.12;
     GameFx.text(
       canvas,
-      stage.label,
-      pos,
-      geo.nodeR * 0.42,
-      _kWhite.withValues(alpha: dim ? 0.65 : 0.95),
+      'GOAL',
+      Offset(size.width / 2, gy - 20),
+      13,
+      _kWarn.withValues(alpha: 0.9),
       weight: FontWeight.w800,
     );
-  }
-
-  // ── Rhythm approach ring on the active node ───────────────────────────────
-  void _paintApproachRing(Canvas canvas, _HeartGeo geo) {
-    if (!running) return;
-    final pos = geo.nodes[active];
-    // Triangle wave: 0 at the downbeat, 1 between beats.
-    final tri = beatPhase < 0.5 ? beatPhase * 2 : (1 - beatPhase) * 2;
-    final r = geo.nodeR * (1.0 + 1.8 * tri);
-    final te = math.min(beatPhase, 1 - beatPhase);
-    final inWindow = te <= window;
-
-    // Static target ring — tap when the approach ring shrinks onto it.
-    canvas.drawCircle(
-      pos,
-      geo.nodeR * 1.18,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = (inWindow ? _kGreen : _kWhite).withValues(alpha: 0.45),
-    );
-    // Shrinking approach ring.
-    canvas.drawCircle(
-      pos,
-      r,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = inWindow ? 4 : 2.4
-        ..color = (inWindow ? _kGreen : _kLoop[active].color)
-            .withValues(alpha: inWindow ? 0.95 : 0.6),
-    );
-  }
-
-  // ── Active-stage name (the educational label) ─────────────────────────────
-  void _paintActiveLabel(Canvas canvas, Size size, _HeartGeo geo) {
-    if (!running) return;
-    final stage = _kLoop[active];
-    final tint = stage.oxy ? _kRed : _kBlue;
     GameFx.text(
       canvas,
-      'NEXT  →  ${stage.full}',
-      Offset(size.width / 2, size.height - 30),
-      14,
-      tint,
-      weight: FontWeight.w800,
+      '${target.round()} BPM',
+      Offset(size.width / 2, gy + 12),
+      34,
+      _kWarn,
+      display: true,
       glow: 0.5,
     );
     GameFx.text(
       canvas,
-      stage.oxy ? 'oxygenated · red' : 'deoxygenated · blue',
-      Offset(size.width / 2, size.height - 12),
-      10,
-      _kWhite.withValues(alpha: 0.55),
+      '± ${band.round()}  ·  hold it here',
+      Offset(size.width / 2, gy + 40),
+      11,
+      _kWhite.withValues(alpha: 0.6),
+    );
+
+    // Live state word under the heart.
+    final word = curBpm <= 0
+        ? 'START TAPPING'
+        : spiking
+            ? 'TOO FAST — EASE OFF'
+            : inBand
+                ? (jitter > 0.34 ? 'STEADY THE RHYTHM' : 'IN THE ZONE')
+                : (curBpm < target ? 'CLIMB — TAP FASTER' : 'SLOW DOWN');
+    GameFx.text(
+      canvas,
+      word,
+      Offset(size.width / 2, c.dy + heartR * 1.25),
+      15,
+      _stateColor,
+      weight: FontWeight.w800,
+      glow: 0.4,
+    );
+  }
+
+  // ── The band gauge: a vertical BPM scale with the target band + your marker ─
+  void _paintBandGauge(Canvas canvas, Size size) {
+    final x = size.width * 0.90;
+    final top = size.height * 0.22;
+    final bot = size.height * 0.72;
+    const lo = 40.0, hi = 190.0;
+    double yFor(double bpm) =>
+        bot - (bpm.clamp(lo, hi) - lo) / (hi - lo) * (bot - top);
+
+    // Track.
+    canvas.drawLine(
+      Offset(x, top),
+      Offset(x, bot),
+      Paint()
+        ..color = _kWhite.withValues(alpha: 0.18)
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round,
+    );
+    // Target band.
+    final byTop = yFor(target + band);
+    final byBot = yFor(target - band);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTRB(x - 6, byTop, x + 6, byBot),
+        const Radius.circular(4),
+      ),
+      Paint()..color = _kBand.withValues(alpha: 0.30),
+    );
+    // Target line.
+    final ty = yFor(target);
+    canvas.drawLine(
+      Offset(x - 10, ty),
+      Offset(x + 10, ty),
+      Paint()
+        ..color = _kWarn
+        ..strokeWidth = 3,
+    );
+    // Your marker.
+    if (curBpm > 0) {
+      final my = yFor(curBpm);
+      GameFx.orb(canvas, Offset(x, my), 7, _stateColor, glow: 0.9);
+    }
+    GameFx.text(canvas, 'BPM', Offset(x, top - 14), 10,
+        _kWhite.withValues(alpha: 0.5), weight: FontWeight.w700);
+  }
+
+  // ── An ECG-style pulse trace sweeping behind the heart (pure motion) ───────
+  void _paintPulseTrace(Canvas canvas, Size size) {
+    final y = size.height * 0.86;
+    final path = Path();
+    final w = size.width;
+    // Frequency of spikes reflects current BPM (or idle when resting).
+    final bpm = running && curBpm > 0 ? curBpm : _kIdleBpm;
+    final spikes = (bpm / 12).clamp(3.0, 16.0);
+    final phase = clock * (bpm / 60.0);
+    for (double px = 0; px <= w; px += 3) {
+      final u = px / w;
+      final s = (u * spikes - phase) % 1.0;
+      double dy = 0;
+      // A narrow QRS-like spike near s≈0.15.
+      final d = (s - 0.15).abs();
+      if (d < 0.05) dy = -(1 - d / 0.05) * 24;
+      if (px == 0) {
+        path.moveTo(px, y + dy);
+      } else {
+        path.lineTo(px, y + dy);
+      }
+    }
+    final col = _stateColor.withValues(alpha: 0.5);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = col
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5),
     );
   }
 
   void _paintBanner(Canvas canvas, Size size) {
     if (banner == null) return;
-    final t = (bannerAge / 1.2).clamp(0.0, 1.0);
+    final t = (bannerAge / 1.6).clamp(0.0, 1.0);
     final alpha = (1 - t * t);
     GameFx.text(
       canvas,
       banner!,
-      Offset(size.width / 2, size.height * 0.18 - 24 * t),
+      Offset(size.width / 2, size.height * 0.30 - 24 * t),
       26,
       bannerColor.withValues(alpha: alpha),
       display: true,
@@ -599,17 +683,29 @@ class _HeartPainter extends CustomPainter {
     );
   }
 
+  void _paintHint(Canvas canvas, Size size) {
+    if (hintFade <= 0.02) return;
+    GameFx.text(
+      canvas,
+      'DOUBLE-TAP to beat — match the goal BPM',
+      Offset(size.width / 2, size.height * 0.68),
+      13,
+      _kWhite.withValues(alpha: 0.85 * hintFade),
+      weight: FontWeight.w700,
+    );
+  }
+
   void _paintFlashes(Canvas canvas, Size size) {
-    if (missFlash > 0) {
+    if (badFlash > 0) {
       canvas.drawRect(
         Offset.zero & size,
-        Paint()..color = _kRedDeep.withValues(alpha: 0.28 * missFlash),
+        Paint()..color = _kBad.withValues(alpha: 0.22 * badFlash),
       );
     }
-    if (perfectFlash > 0.3) {
+    if (flash > 0.4) {
       canvas.drawRect(
         Offset.zero & size,
-        Paint()..color = Potatuhs.gold.withValues(alpha: 0.14 * perfectFlash),
+        Paint()..color = _kBand.withValues(alpha: 0.10 * flash),
       );
     }
   }
@@ -618,7 +714,7 @@ class _HeartPainter extends CustomPainter {
     GameFx.text(
       canvas,
       'HEARTBEAT',
-      Offset(size.width / 2, size.height * 0.12),
+      Offset(size.width / 2, size.height * 0.16),
       30,
       _kAccent,
       display: true,
@@ -626,15 +722,15 @@ class _HeartPainter extends CustomPainter {
     );
     GameFx.text(
       canvas,
-      'Route blood through the heart — in order, on the beat.',
-      Offset(size.width / 2, size.height * 0.12 + 30),
+      "You're the pacemaker. Double-tap to beat.",
+      Offset(size.width / 2, size.height * 0.16 + 30),
       13,
       _kWhite.withValues(alpha: 0.8),
     );
     GameFx.text(
       canvas,
-      'Tap the glowing chamber when the ring snaps shut.',
-      Offset(size.width / 2, size.height * 0.12 + 50),
+      'Climb smoothly to each goal BPM and hold it.',
+      Offset(size.width / 2, size.height * 0.16 + 50),
       12,
       _kWhite.withValues(alpha: 0.55),
     );
@@ -645,11 +741,11 @@ class _HeartPainter extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Shared component draws — used by BOTH the live painter and the visual manual
-// so the legend shows the LITERAL heart / arrow / node the player will meet.
+// Shared draws — used by BOTH the live painter and the visual manual so the
+// legend shows the LITERAL heart / gauge the player will meet.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// The thumping center-heart silhouette (same path the live painter fills).
+/// The thumping heart silhouette.
 Path _heartPath(Offset c, double s) {
   return Path()
     ..moveTo(c.dx, c.dy + s * 0.36)
@@ -660,245 +756,165 @@ Path _heartPath(Offset c, double s) {
     ..close();
 }
 
-/// Direction chevron at the midpoint of a pipe segment.
-void _flowArrow(Canvas canvas, Offset a, Offset b, Color color) {
-  final mid = Offset.lerp(a, b, 0.5)!;
-  final dir = (b - a);
-  final len = dir.distance;
-  if (len < 1) return;
-  final u = dir / len;
-  final perp = Offset(-u.dy, u.dx);
-  const s = 7.0;
-  final tip = mid + u * s;
-  final p1 = mid - u * s + perp * s;
-  final p2 = mid - u * s - perp * s;
-  final path = Path()
-    ..moveTo(tip.dx, tip.dy)
-    ..lineTo(p1.dx, p1.dy)
-    ..lineTo(p2.dx, p2.dy)
-    ..close();
-  canvas.drawPath(path, Paint()..color = color);
-}
-
-/// One circulation node, drawn exactly like [_HeartPainter._paintNode]:
-/// layered orb tinted by blood state, white rim when it is the NEXT stage,
-/// bright blood token when the blood is currently HERE, short label on top.
-void _legendStageNode(Canvas canvas, Offset pos, double r, _Stage stage,
-    {bool here = false, bool next = false}) {
-  final dim = !here && !next;
-  GameFx.orb(
-    canvas,
-    pos,
-    r,
-    dim ? stage.deep : stage.color,
-    glow: here ? 1.1 : (next ? 0.7 : 0.25),
-    rim: next ? _kWhite : null,
-  );
-  if (here) {
-    canvas.drawCircle(
-      pos,
-      r * 0.42,
-      Paint()
-        ..color = _kWhite.withValues(alpha: 0.85)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
-    );
-  }
-  GameFx.text(canvas, stage.label, pos, r * 0.42,
-      _kWhite.withValues(alpha: dim ? 0.65 : 0.95),
-      weight: FontWeight.w800);
-}
-
-/// The filled + rimmed center heart with an optional BPM readout beneath.
-void _legendHeart(Canvas canvas, Offset c, double s, {String? bpmLabel}) {
+void _legendHeart(Canvas canvas, Offset c, double s,
+    {bool inBand = false, String? bpm}) {
   final path = _heartPath(c, s);
+  final glow = inBand ? _kBand : _kAccent;
   canvas.drawPath(
     path,
     Paint()
-      ..color = _kAccent.withValues(alpha: 0.45)
+      ..color = glow.withValues(alpha: 0.4)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
   );
   canvas.drawPath(
     path,
     Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [_kRed, _kAccent, _kRedDeep],
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Color.lerp(_kAccent, Colors.white, 0.35)!,
+          _kAccent,
+          const Color(0xFFB71C1C),
+        ],
       ).createShader(Rect.fromCircle(center: c, radius: s)),
   );
   canvas.drawPath(
     path,
     Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6
-      ..color = _kWhite.withValues(alpha: 0.5),
+      ..strokeWidth = inBand ? 3 : 1.6
+      ..color = (inBand ? _kBand : _kWhite).withValues(alpha: inBand ? 0.8 : 0.5),
   );
-  if (bpmLabel != null) {
-    GameFx.text(canvas, bpmLabel, c.translate(0, s * 1.35), 11,
-        _kWhite.withValues(alpha: 0.85),
-        weight: FontWeight.w800);
+  if (bpm != null) {
+    GameFx.text(canvas, bpm, c, s * 0.55, _kWhite, display: true, glow: 0.4);
   }
+}
+
+/// A mini band-gauge for the manual: track + green band + your marker.
+void _legendGauge(Canvas canvas, Offset base, double h,
+    {required double markerFrac, required double bandFrac}) {
+  final top = base.dy - h / 2, bot = base.dy + h / 2;
+  final x = base.dx;
+  canvas.drawLine(Offset(x, top), Offset(x, bot),
+      Paint()..color = _kWhite.withValues(alpha: 0.2)..strokeWidth = 4);
+  final ty = bot - (0.5) * h;
+  final bandH = bandFrac * h;
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromLTRB(x - 6, ty - bandH / 2, x + 6, ty + bandH / 2),
+      const Radius.circular(4),
+    ),
+    Paint()..color = _kBand.withValues(alpha: 0.32),
+  );
+  canvas.drawLine(Offset(x - 10, ty), Offset(x + 10, ty),
+      Paint()..color = _kWarn..strokeWidth = 3);
+  final my = bot - markerFrac * h;
+  GameFx.orb(canvas, Offset(x, my), 7,
+      (markerFrac - 0.5).abs() < bandFrac / 2 ? _kBand : _kWarn,
+      glow: 0.9);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Visual manual — legend carousel cards, drawn with the REAL components.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Frame 1 — the loop: six stages on the ring, pipes tinted by blood color,
-// flow chevrons, the thumping heart at the center. Blood is BLUE on the right
-// (pulmonary) half and RED on the left (systemic) half.
-void _legendLoop(Canvas canvas, Size size) {
+// Frame 1 — the verb: DOUBLE-TAP beats the heart.
+void _legendBeat(Canvas canvas, Size size) {
   if (size.width <= 0 || size.height <= 0) return;
-  final center = Offset(size.width / 2, size.height * 0.52);
-  final rx = size.width * 0.36;
-  final ry = size.height * 0.34;
-  if (rx <= 0 || ry <= 0) return;
-  final nodeR = (size.shortestSide * 0.085).clamp(8.0, 24.0);
-  final nodes = <Offset>[
-    for (var i = 0; i < _kLoop.length; i++)
-      center +
-          Offset(
-            math.cos(math.pi / 2 + i * math.pi / 3) * rx,
-            math.sin(math.pi / 2 + i * math.pi / 3) * ry,
-          ),
-  ];
-  // Pipes + flow chevrons, tinted by the blood leaving each stage.
-  for (var i = 0; i < nodes.length; i++) {
-    final a = nodes[i];
-    final b = nodes[(i + 1) % nodes.length];
-    final color = _kLoop[i].color;
-    canvas.drawLine(
-      a,
-      b,
-      Paint()
-        ..color = color.withValues(alpha: 0.35)
-        ..strokeWidth = 4
-        ..strokeCap = StrokeCap.round,
-    );
-    _flowArrow(canvas, a, b, color.withValues(alpha: 0.75));
-  }
-  _legendHeart(canvas, center, nodeR * 0.95);
-  for (var i = 0; i < nodes.length; i++) {
-    _legendStageNode(canvas, nodes[i], nodeR, _kLoop[i],
-        here: i == 0, next: i == 1);
-  }
-  // Blood-state key: blue half vs red half.
-  GameFx.text(canvas, 'deoxygenated', Offset(size.width * 0.80, size.height * 0.10),
-      9, _kBlue.withValues(alpha: 0.9), weight: FontWeight.w800);
-  GameFx.text(canvas, 'oxygenated', Offset(size.width * 0.20, size.height * 0.10),
-      9, _kRed.withValues(alpha: 0.9), weight: FontWeight.w800);
-}
-
-// Frame 2 — the verb: the NEXT chamber (white rim) with the static target ring
-// and the shrinking green approach ring snapping shut on the downbeat.
-void _legendTap(Canvas canvas, Size size) {
-  if (size.width <= 0 || size.height <= 0) return;
-  final pos = Offset(size.width / 2, size.height * 0.46);
-  final r = (size.shortestSide * 0.16).clamp(14.0, 44.0);
-  // Static target ring — in-window, so it reads green like live play.
-  canvas.drawCircle(
-    pos,
-    r * 1.18,
-    Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = _kGreen.withValues(alpha: 0.45),
-  );
-  // Approach ring, one beat from snapping shut.
-  canvas.drawCircle(
-    pos,
-    r * 1.55,
-    Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
-      ..color = _kGreen.withValues(alpha: 0.95),
-  );
-  _legendStageNode(canvas, pos, r, _kLoop[2], next: true); // RV, blue
-  GameFx.text(canvas, '+13', pos.translate(r * 1.9, -r * 1.2), 13, _kWhite,
+  final c = Offset(size.width / 2, size.height * 0.44);
+  final s = (size.shortestSide * 0.22).clamp(20.0, 70.0);
+  _legendHeart(canvas, c, s, bpm: '♥');
+  GameFx.text(canvas, 'tap  tap', c.translate(0, s * 1.7), 14, _kWhite,
       weight: FontWeight.w800, glow: 0.4);
-  GameFx.text(canvas, 'dead-on = PERFECT +8',
-      Offset(size.width / 2, size.height * 0.88), 11, Potatuhs.gold,
-      weight: FontWeight.w800, glow: 0.4);
-}
-
-// Frame 3 — the stall: tapping the wrong chamber, or the right one off-beat,
-// stops the flow and resets the streak (red wash, WRONG WAY / TOO SOON pops).
-void _legendStall(Canvas canvas, Size size) {
-  if (size.width <= 0 || size.height <= 0) return;
-  canvas.drawRect(
-    Offset.zero & size,
-    Paint()..color = _kRedDeep.withValues(alpha: 0.16),
-  );
-  final r = (size.shortestSide * 0.13).clamp(12.0, 36.0);
-  final left = Offset(size.width * 0.28, size.height * 0.42);
-  final right = Offset(size.width * 0.72, size.height * 0.42);
-  // Wrong chamber: LUNGS tapped while it is not the next stage.
-  _legendStageNode(canvas, left, r, _kLoop[3]);
-  GameFx.text(canvas, 'WRONG WAY', left.translate(0, r * 1.9), 11, _kRedDeep,
-      weight: FontWeight.w800, glow: 0.5);
-  // Right chamber, off-beat: approach ring still far from the target.
-  canvas.drawCircle(
-    right,
-    r * 2.2,
-    Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.4
-      ..color = _kLoop[2].color.withValues(alpha: 0.6),
-  );
-  _legendStageNode(canvas, right, r, _kLoop[2], next: true);
-  GameFx.text(canvas, 'TOO SOON', right.translate(0, r * 1.9), 11, _kRedDeep,
-      weight: FontWeight.w800, glow: 0.5);
-  GameFx.text(canvas, 'streak resets to 0',
+  GameFx.text(canvas, 'a double-tap = one heartbeat',
       Offset(size.width / 2, size.height * 0.86), 11,
-      _kWhite.withValues(alpha: 0.8), weight: FontWeight.w800);
+      _kWhite.withValues(alpha: 0.8), weight: FontWeight.w700);
 }
 
-// Frame 4 — the escalation: a clean streak raises BPM, which tightens the
-// timing window (wide ring at rest → tight ring at max rate).
-void _legendBpm(Canvas canvas, Size size) {
+// Frame 2 — the goal: match YOUR BPM to the GOAL band and hold it.
+void _legendMatch(Canvas canvas, Size size) {
   if (size.width <= 0 || size.height <= 0) return;
-  final s = (size.shortestSide * 0.13).clamp(12.0, 34.0);
-  final left = Offset(size.width * 0.26, size.height * 0.42);
-  final right = Offset(size.width * 0.74, size.height * 0.42);
-  // Resting heart, forgiving window.
-  _legendHeart(canvas, left, s * 0.85, bpmLabel: '64 BPM');
-  canvas.drawCircle(
-    left,
-    s * 2.1,
-    Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 6
-      ..color = _kGreen.withValues(alpha: 0.55),
-  );
-  // Streaking heart, tight window.
-  _legendHeart(canvas, right, s * 1.15, bpmLabel: '176 BPM');
-  canvas.drawCircle(
-    right,
-    s * 2.1,
-    Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = _kGreen.withValues(alpha: 0.95),
-  );
-  GameFx.text(canvas, '🔥 12', right.translate(0, s * 2.0), 11, Potatuhs.gold,
-      weight: FontWeight.w700);
-  GameFx.text(canvas, 'full loop = CYCLE +40',
-      Offset(size.width / 2, size.height * 0.88), 11, Potatuhs.gold,
+  final c = Offset(size.width * 0.42, size.height * 0.44);
+  final s = (size.shortestSide * 0.20).clamp(18.0, 60.0);
+  _legendHeart(canvas, c, s, inBand: true, bpm: '120');
+  _legendGauge(canvas, Offset(size.width * 0.82, size.height * 0.44),
+      size.height * 0.5,
+      markerFrac: 0.5, bandFrac: 0.16);
+  GameFx.text(canvas, 'GOAL 120', Offset(size.width * 0.42, size.height * 0.14),
+      13, _kWarn, weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, 'in the band = scoring',
+      Offset(size.width / 2, size.height * 0.86), 11, _kBand,
       weight: FontWeight.w800, glow: 0.4);
+}
+
+// Frame 3 — the ramp: the goal climbs in zones across the round.
+void _legendRamp(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final y0 = size.height * 0.72;
+  final w = size.width;
+  final path = Path()..moveTo(w * 0.08, y0);
+  final pts = [60.0, 90.0, 120.0, 150.0, 172.0];
+  for (var i = 0; i < pts.length; i++) {
+    final x = w * (0.08 + 0.84 * (i / (pts.length - 1)));
+    final y = y0 - (pts[i] - 40) / 150 * size.height * 0.5;
+    path.lineTo(x, y);
+    GameFx.orb(canvas, Offset(x, y), 6, _kWarn, glow: 0.8);
+  }
+  canvas.drawPath(
+    path,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = _kWarn.withValues(alpha: 0.8),
+  );
+  GameFx.text(canvas, 'rest → jog → run → sprint → redline',
+      Offset(size.width / 2, size.height * 0.14), 12, _kWhite,
+      weight: FontWeight.w700);
+  GameFx.text(canvas, 'the goal ramps up — climb gradually',
+      Offset(size.width / 2, size.height * 0.88), 11,
+      _kWhite.withValues(alpha: 0.8), weight: FontWeight.w700);
+}
+
+// Frame 4 — the penalties: spiking past the goal + arrhythmia both drain score.
+void _legendPenalty(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  canvas.drawRect(Offset.zero & size,
+      Paint()..color = _kBad.withValues(alpha: 0.12));
+  final s = (size.shortestSide * 0.15).clamp(14.0, 44.0);
+  final left = Offset(size.width * 0.30, size.height * 0.44);
+  final right = Offset(size.width * 0.70, size.height * 0.44);
+  // Spike: heart over the goal.
+  _legendGauge(canvas, left, size.height * 0.42,
+      markerFrac: 0.85, bandFrac: 0.14);
+  GameFx.text(canvas, 'TOO FAST', left.translate(0, s * 1.9), 11, _kBad,
+      weight: FontWeight.w800, glow: 0.4);
+  // Arrhythmia: jagged intervals.
+  final path = Path()..moveTo(right.dx - s, right.dy);
+  final off = [0.0, -s * 0.9, s * 0.4, -s * 0.6, s, -s * 0.2];
+  for (var i = 0; i < off.length; i++) {
+    path.lineTo(right.dx - s + (i / (off.length - 1)) * 2 * s, right.dy + off[i]);
+  }
+  canvas.drawPath(path,
+      Paint()..style = PaintingStyle.stroke..strokeWidth = 2.4..color = _kBad);
+  GameFx.text(canvas, 'ARRHYTHMIA', right.translate(0, s * 1.9), 11, _kBad,
+      weight: FontWeight.w800, glow: 0.4);
+  GameFx.text(canvas, 'smooth & gradual scores — jitter drains',
+      Offset(size.width / 2, size.height * 0.86), 11,
+      _kWhite.withValues(alpha: 0.85), weight: FontWeight.w800);
 }
 
 /// The visual manual for Heartbeat — wired into the registry spec.
 final List<LegendFrame> heartbeatLegendFrames = [
   const LegendFrame(
-      caption: 'Pump blood around the loop: BODY→RA→RV→LUNGS→LA→LV',
-      paint: _legendLoop),
+      caption: 'Double-tap the screen to beat the heart', paint: _legendBeat),
   const LegendFrame(
-      caption: 'Tap the ringed chamber as the ring snaps shut',
-      paint: _legendTap),
+      caption: 'Match YOUR BPM to the GOAL band and hold it',
+      paint: _legendMatch),
   const LegendFrame(
-      caption: 'Wrong chamber or off-beat stalls the flow',
-      paint: _legendStall),
+      caption: 'The goal ramps up across the round — climb gradually',
+      paint: _legendRamp),
   const LegendFrame(
-      caption: 'Streaks raise BPM — faster beat, tighter window',
-      paint: _legendBpm),
+      caption: 'Spiking past the goal or arrhythmia drains your score',
+      paint: _legendPenalty),
 ];

@@ -60,6 +60,19 @@ Left Kidney · Right Kidney · Spleen · Pancreas.
 Each round uses the first `4 + roundIndex × 2` organs of this list (capped at 12), shuffled.
 Early rounds drill the big landmarks; later rounds add the small, easily-confused organs.
 
+## Presentation & legibility (visual pass)
+- **The figure is a stylized anatomy body**, not a pale ghost: warm skin
+  gradient (lit top-left, shaded edge), a body-glow halo, a rim light, and a
+  clipped **torso cavity** with faint rib-cage arcs + a spine seam, so placed
+  organs read as sitting *inside* the body. Organs are layered orbs (glow →
+  radial gradient → rim → specular highlight), never flat stickers.
+- **Always-visible OBJECTIVE** at top-centre: "DROP EACH ORGAN WHERE IT LIVES".
+- **Fading how-to hint** over the first ~4.5 s of a run: "Drag the organ from
+  the tray onto the body".
+- **Target beacon while dragging**: whenever the player holds the organ, a
+  pulsing colored crosshair + the organ's name marks its home region — so the
+  destination is legible even after the training ghost ring turns off.
+
 ## Session / re-entry (the S in GAMES)
 - Auto-starts when the host sets `isRunning`; until then it shows a calm silhouette and the
   prompt "Drag each organ to where it lives". No self-owned clock or game-over screen.

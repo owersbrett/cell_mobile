@@ -160,17 +160,43 @@ void _legendSilhouette(Canvas canvas, Size size, {double alpha = 1.0}) {
       Rect.fromLTWH(cx + shoulderHalf - armW * 0.55, armTop, armW, armH),
       Radius.circular(armW * 0.5)));
 
+  // Warm skin gradient (matches the play body, lighter for the small card).
   canvas.drawPath(
     p,
     Paint()
-      ..color = const Color(0xFFFDF5EB).withValues(alpha: 0.08 * alpha),
+      ..shader = RadialGradient(
+        center: const Alignment(-0.35, -0.55),
+        radius: 1.15,
+        colors: [
+          const Color(0xFFF6D6BC).withValues(alpha: alpha),
+          const Color(0xFFE0A981).withValues(alpha: alpha),
+          const Color(0xFF7A4E3C).withValues(alpha: alpha),
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Offset.zero & size),
   );
+  // Torso cavity so organs read as inside.
+  canvas.save();
+  canvas.clipPath(p);
+  final cavity = Rect.fromCenter(
+      center: Offset(cx, top + bh * 0.48), width: bw * 0.80, height: bh * 0.66);
+  canvas.drawOval(
+    cavity,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFF3A1E1A).withValues(alpha: 0.40 * alpha),
+          const Color(0xFF3A1E1A).withValues(alpha: 0.0),
+        ],
+      ).createShader(cavity),
+  );
+  canvas.restore();
   canvas.drawPath(
     p,
     Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.4
-      ..color = Colors.white.withValues(alpha: 0.16 * alpha),
+      ..color = const Color(0xFFFBE9D6).withValues(alpha: 0.42 * alpha),
   );
 }
 
@@ -751,25 +777,31 @@ class _BodyMapV2Painter extends CustomPainter {
 
     _paintSilhouette(canvas, size);
 
-    // Ghost target ring for the held NAME token (learning levels only).
+    // Target guidance for the held token.
     final held = state._held;
-    if (held != null &&
-        state._showGhost &&
-        !held.jobMode &&
-        running) {
+    if (held != null && running) {
       final target = _bodyPoint(size, held.organ.nx, held.organ.ny);
       final tol = _bodyW(size) * state._tolFrac;
       final pulse = 0.5 + 0.5 * math.sin(t * 3.2);
-      canvas.drawCircle(
-        target,
-        tol,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..color = held.organ.color.withValues(alpha: 0.22 + pulse * 0.20),
-      );
-      canvas.drawCircle(target, 3.5,
-          Paint()..color = held.organ.color.withValues(alpha: 0.6));
+      if (state._showGhost && !held.jobMode) {
+        // Learning levels, name token: the full ghost snap-zone ring.
+        canvas.drawCircle(
+          target,
+          tol,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..color = held.organ.color.withValues(alpha: 0.22 + pulse * 0.20),
+        );
+        canvas.drawCircle(target, 3.5,
+            Paint()..color = held.organ.color.withValues(alpha: 0.6));
+      } else {
+        // Recall levels / job tokens: a compact crosshair beacon marks the
+        // home region (no full ring — you must still know it), so a dragging
+        // player always sees where the drop is going. Job tokens stay unlabelled.
+        _targetBeacon(canvas, target, tol, held.organ.color,
+            held.jobMode ? '' : held.organ.label, pulse);
+      }
     }
 
     // Placed organs popping in then fading off.
@@ -807,7 +839,10 @@ class _BodyMapV2Painter extends CustomPainter {
     if (!running) _paintReady(canvas, size, t);
   }
 
-  // ── Human silhouette (single union path, single fill: seam-free) ─────────────
+  // ── Human silhouette — layered anatomy figure (anti-flat-circle law) ─────────
+  //    Body-glow halo → warm skin gradient (lit top-left, shaded edge) → rim
+  //    light → clipped torso cavity + rib/spine hints, so placed organs read as
+  //    being INSIDE a real body, not floating on a pale ghost blob.
   void _paintSilhouette(Canvas canvas, Size size) {
     final cx = size.width / 2;
     final top = size.height * _kBodyTopFrac;
@@ -859,24 +894,80 @@ class _BodyMapV2Painter extends CustomPainter {
         Rect.fromLTWH(cx + hipHalf * 0.96 - legW, hipY, legW, legBot - hipY),
         Radius.circular(legW * 0.4)));
 
+    // 1. Body-glow halo.
     canvas.drawPath(
       p,
       Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color(0xFFFDF5EB).withValues(alpha: 0.10),
-            const Color(0xFFFDF5EB).withValues(alpha: 0.05),
-          ],
-        ).createShader(Offset.zero & size),
+        ..color = const Color(0xFFE8B48A).withValues(alpha: 0.14)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
     );
+
+    // 2. Warm skin gradient body.
+    canvas.drawPath(
+      p,
+      Paint()
+        ..shader = const RadialGradient(
+          center: Alignment(-0.35, -0.55),
+          radius: 1.15,
+          colors: [
+            Color(0xFFF6D6BC),
+            Color(0xFFE0A981),
+            Color(0xFF7A4E3C),
+          ],
+          stops: [0.0, 0.55, 1.0],
+        ).createShader(Offset.zero & size)
+        ..color = const Color(0xFFE0A981).withValues(alpha: 0.22),
+    );
+
+    // 3. Clipped interior: torso cavity + rib cage + spine.
+    canvas.save();
+    canvas.clipPath(p);
+    final cavity = Rect.fromCenter(
+        center: Offset(cx, top + bh * 0.48),
+        width: bw * 0.80,
+        height: bh * 0.66);
+    canvas.drawOval(
+      cavity,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            const Color(0xFF3A1E1A).withValues(alpha: 0.42),
+            const Color(0xFF3A1E1A).withValues(alpha: 0.0),
+          ],
+        ).createShader(cavity),
+    );
+    final rib = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = const Color(0xFFFBE9D6).withValues(alpha: 0.20);
+    final ribTop = top + bh * 0.24;
+    for (var i = 0; i < 4; i++) {
+      final y = ribTop + i * bh * 0.045;
+      final halfW = bw * (0.30 - i * 0.018);
+      canvas.drawArc(
+          Rect.fromCenter(
+              center: Offset(cx, y), width: halfW * 2, height: bh * 0.10),
+          math.pi * 0.12,
+          math.pi * 0.76,
+          false,
+          rib);
+    }
+    canvas.drawLine(
+      Offset(cx, top + bh * 0.22),
+      Offset(cx, top + bh * 0.80),
+      Paint()
+        ..strokeWidth = 2
+        ..color = const Color(0xFFFBE9D6).withValues(alpha: 0.10),
+    );
+    canvas.restore();
+
+    // 4. Rim light.
     canvas.drawPath(
       p,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..color = Colors.white.withValues(alpha: 0.16),
+        ..strokeWidth = 1.6
+        ..color = const Color(0xFFFBE9D6).withValues(alpha: 0.42),
     );
   }
 
@@ -995,6 +1086,14 @@ class _BodyMapV2Painter extends CustomPainter {
         ..color = (job ? Potatuhs.gold : Colors.white)
             .withValues(alpha: (job ? 0.85 : 0.55) * alpha),
     );
+    // Specular highlight — a wet 3D organ, not a flat sticker.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: at.translate(-r * 0.34, -r * 0.36),
+          width: r * 0.7,
+          height: r * 0.42),
+      Paint()..color = Colors.white.withValues(alpha: 0.34 * alpha),
+    );
     final fontSize = (r * 0.40).clamp(8.5, 12.0);
     final labelPos = labelBelow ? at.translate(0, r * 0.85 + fontSize) : at;
     GameFx.text(canvas, label, labelPos, fontSize,
@@ -1019,6 +1118,21 @@ class _BodyMapV2Painter extends CustomPainter {
         Offset(size.width / 2, 51), 9.5, Potatuhs.textSecondary);
 
     if (running) {
+      // Always-visible one-line OBJECTIVE.
+      GameFx.text(canvas, 'DROP EACH ORGAN WHERE IT LIVES',
+          Offset(size.width / 2, 70), 11, Potatuhs.textSecondary,
+          weight: FontWeight.w800);
+
+      // Fading how-to hint over the opening of the run.
+      final prog = state._progress;
+      if (prog < 0.12) {
+        final fade = (1 - prog / 0.09).clamp(0.0, 1.0);
+        GameFx.text(canvas, 'Drag from the tray — beat the fading ring',
+            Offset(size.width / 2, 89), 11,
+            Potatuhs.gold.withValues(alpha: 0.85 * fade),
+            weight: FontWeight.w700);
+      }
+
       final mult = state._mult;
       GameFx.text(canvas, 'LV${state._level}', Offset(46, size.height - 26), 13,
           Potatuhs.textSecondary,
@@ -1028,6 +1142,35 @@ class _BodyMapV2Painter extends CustomPainter {
             20, Potatuhs.gold,
             weight: FontWeight.w900, glow: 0.5);
       }
+    }
+  }
+
+  // A compact crosshair beacon marking a held token's home region.
+  void _targetBeacon(Canvas canvas, Offset at, double r, Color color,
+      String label, double pulse) {
+    canvas.drawCircle(
+      at,
+      r * (1.0 + pulse * 0.12),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = color.withValues(alpha: 0.30 + pulse * 0.30)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+    );
+    final tick = Paint()
+      ..color = color.withValues(alpha: 0.55 + pulse * 0.25)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 4; i++) {
+      final a = i * math.pi / 2;
+      final d = Offset(math.cos(a), math.sin(a));
+      canvas.drawLine(at + d * (r * 0.7), at + d * (r * 1.05), tick);
+    }
+    canvas.drawCircle(at, 3.0, Paint()..color = color.withValues(alpha: 0.85));
+    if (label.isNotEmpty) {
+      GameFx.text(canvas, label, at.translate(0, -r - 12), 12,
+          Colors.white.withValues(alpha: 0.95),
+          weight: FontWeight.w800, glow: 0.4);
     }
   }
 

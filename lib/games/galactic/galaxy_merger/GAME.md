@@ -50,6 +50,28 @@ collide; the galaxies mostly pass *through* each other.
 Most **stars** when time runs out. In practice: land clean, graceful merges back-to-back to build the
 streak multiplier, and thread the tidal tails through the cued zones.
 
+## Visual language — the objects are GALAXIES, not planets
+Each galaxy is drawn as a **spiral galaxy**, never a shaded planet sphere (anti-flat-circle rule):
+- **Halo bloom** — a wide, soft diffuse glow far larger than any planet's disc.
+- **Inclined luminous disc** — a tilted elliptical sheet of light (a plane seen at an angle), so it
+  never reads as a face-on sticker or a ball.
+- **Two winding spiral arms** — logarithmic arms of dust lanes + star knots, wound in the disc's
+  spin direction (retrograde winds the other way). The tracer stars live on top of these arms.
+- **White-hot core bulge** — an additive, blooming nucleus with **no dark bottom edge** (a planet
+  has a shadow; a galactic core glows all around). This is the single biggest fix vs. the old orbs.
+- The fused **remnant** is drawn as a smooth, armless **elliptical** galaxy (the merge payoff).
+
+Host = gold, intruder = glaucous blue, remnant = gold. Palette from `theme/potatuhs.dart` only.
+
+## Legibility (in-context teaching)
+- **Always-visible one-line objective** (top strip): *"MERGE the galaxy cores · sweep stars through
+  gold zones for +stars."* Never disappears.
+- **Live STARS meter** (top HUD): the running `session.score`, so the winning behavior is discoverable
+  — the number visibly ticks up on every merge / zone sweep, alongside floating `+N` pops.
+- **Unmissable HOW-TO prompt**: a large pulsing *"DRAG the blue galaxy…"* callout centered over the
+  field at the start of the run; it **fades out for good once the player launches their first pass**.
+- Per-round tactical hint + post-pass science fact stay in the bottom banner.
+
 ## Educational blocks engaged
 - **Galaxy mergers / collisions** ✅ — the entire mechanic (Milky Way ↔ Andromeda).
 - **Tidal forces** ✅ — the bridge + tail are the same force that raises ocean tides.

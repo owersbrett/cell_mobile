@@ -60,7 +60,17 @@ void main() {
   //  • decay_chain    — v2 judged the winner, PROMOTED onto the canonical id.
   //  • standard_model — v2 judged the winner, PROMOTED onto the canonical id.
   //  • isotopes       — v2 retired; v1 stands on its own for now.
-  const noSeparateV2 = {'decay_chain', 'standard_model', 'isotopes'};
+  //  • membrane_gate  — v1/v2 were identical after the fix; v2 deleted (Brett, 2026-07-08).
+  //  • powerhouse     — v1/v2 identical after the three-mechanic rework; v2 deleted.
+  //  • constants      — v1 got the gesture redesign; identical v2 deleted.
+  const noSeparateV2 = {
+    'decay_chain',
+    'standard_model',
+    'isotopes',
+    'membrane_gate',
+    'powerhouse',
+    'constants',
+  };
 
   test('all 41 UX-pass games have an enabled <id>_v2 alternative wired', () {
     final enabledIds =

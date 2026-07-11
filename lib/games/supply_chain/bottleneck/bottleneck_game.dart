@@ -116,6 +116,12 @@ class _BottleneckGameState extends State<BottleneckGame>
   double _beltPhase = 0;
   double _denyShake = 0; // feedback when tapping a stage on cooldown
 
+  // Comprehension aids — teach the score driver in-context.
+  bool _everBoosted = false; // has the player boosted a stage yet this round?
+  double _howToHold = 3.2; // seconds the "tap the red bin" hint stays fully up
+  double _howToFade = 0; // 0..1 fade-out once the player acts / time passes
+  double _shipPulse = 0; // flashes the throughput meter when a potato ships
+
   final List<_Popup> _popups = [];
 
   // Last layout, for hit-testing taps → stage index and popup placement.
@@ -180,6 +186,17 @@ class _BottleneckGameState extends State<BottleneckGame>
     final running = widget.session.isRunning;
     _beltPhase += (0.4 + _throughput) * dt;
     _denyShake = math.max(0, _denyShake - dt * 4);
+    _shipPulse = math.max(0, _shipPulse - dt * 2.2);
+    // The HOW-TO hint holds briefly, then fades — instantly once the player
+    // has boosted a stage (they've clearly got it), otherwise on a timer.
+    if (running) {
+      if (_everBoosted) {
+        _howToFade = math.min(1, _howToFade + dt * 3);
+      } else {
+        _howToHold = math.max(0, _howToHold - dt);
+        if (_howToHold <= 0) _howToFade = math.min(1, _howToFade + dt * 0.9);
+      }
+    }
     for (var i = 0; i < _kStages; i++) {
       _overflowFlash[i] = math.max(0, _overflowFlash[i] - dt * 2.2);
     }
@@ -261,6 +278,7 @@ class _BottleneckGameState extends State<BottleneckGame>
       _shippedScored += delta;
       _flowStreak += delta;
       widget.session.noteStreak(_flowStreak);
+      _shipPulse = 1.0; // flash the throughput meter — THIS is the score engine
       _popups.add(_Popup(
         Offset(_w * 0.86, _h * 0.30),
         '+$delta',
@@ -298,6 +316,7 @@ class _BottleneckGameState extends State<BottleneckGame>
   // ── Input ─────────────────────────────────────────────────────────────────
   void _tapAt(Offset local) {
     if (!widget.session.isRunning) return;
+    _everBoosted = true; // a real player has acted — retire the how-to hint
     final colW = _w / _kStages;
     final i = (local.dx / colW).floor().clamp(0, _kStages - 1);
     _boostStage(i);
@@ -379,17 +398,32 @@ class _BottleneckPainter extends CustomPainter {
     final colW = size.width / _kStages;
     final bottlenecks = s._bottleneckSet();
 
-    // Geometry: a header strip, the conveyor band, the bins, a boost footer.
+    // Geometry: an objective line, throughput meter, header strip, the conveyor
+    // band, the bins, a boost footer.
+    const objH = 16.0;
     const headerH = 30.0;
-    final topMeterH = 34.0;
-    final beltY = topMeterH + headerH + 14;
-    final binTop = beltY + 18;
-    final footerH = 26.0;
+    const topMeterH = 34.0;
+    const beltY = objH + topMeterH + headerH + 14;
+    const binTop = beltY + 18;
+    const footerH = 26.0;
     final binBottom = size.height - footerH - 8;
     final binH = math.max(20.0, binBottom - binTop);
 
-    _paintThroughput(canvas, size, topMeterH);
+    _paintObjective(canvas, size, objH);
+    _paintThroughput(canvas, size, objH, topMeterH);
     _paintBelt(canvas, size, beltY, colW);
+
+    // Which stage the player SHOULD tap right now — the worst-backed-up bin.
+    // Used to point the how-to hint at a real target.
+    var worst = -1;
+    var worstFill = 0.0;
+    for (var i = 0; i < _kStages; i++) {
+      final f = s._queue[i] / _kBinCap;
+      if (f > worstFill) {
+        worstFill = f;
+        worst = i;
+      }
+    }
 
     for (var i = 0; i < _kStages; i++) {
       final cx = colW * (i + 0.5);
@@ -398,12 +432,18 @@ class _BottleneckPainter extends CustomPainter {
       final color = _BottleneckGameState._kStageColor(i, choking);
 
       _paintStageHeader(
-          canvas, i, cx, topMeterH + 6, colW, choking, color);
+          canvas, i, cx, objH + topMeterH + 6, colW, choking, color);
       _paintBin(canvas, i, cx, binTop, binH, colW, fill, choking, color);
       _paintFooter(canvas, i, cx, size.height - footerH - 2, colW);
     }
 
     _paintExit(canvas, size, binTop, binH);
+
+    // In-play HOW-TO hint: fades in over the worst bottleneck, then out once the
+    // player boosts (or on a timer). Points at the exact bin to tap.
+    if (running && s._howToFade < 1 && worst >= 0 && worstFill >= 0.28) {
+      _paintHowTo(canvas, size, colW * (worst + 0.5), binTop, binH);
+    }
 
     if (!running) _paintReadyHint(canvas, size);
 
@@ -412,11 +452,24 @@ class _BottleneckPainter extends CustomPainter {
     }
   }
 
-  // ── Throughput meter (top) ─────────────────────────────────────────────────
-  void _paintThroughput(Canvas canvas, Size size, double h) {
+  // ── Always-visible objective (very top) ────────────────────────────────────
+  void _paintObjective(Canvas canvas, Size size, double h) {
+    _text(
+      canvas,
+      'SHIP MORE POTATOES — tap the red bin to unclog the line',
+      Offset(size.width / 2, h * 0.5 + 2),
+      size: 10,
+      color: Colors.white.withValues(alpha: 0.6),
+      align: 0,
+      bold: true,
+    );
+  }
+
+  // ── Throughput meter (the score engine) ────────────────────────────────────
+  void _paintThroughput(Canvas canvas, Size size, double top, double h) {
     const pad = 14.0;
     final barW = size.width - pad * 2;
-    final y = h * 0.5 + 4;
+    final y = top + h * 0.5 + 4;
     // Track.
     final track = RRect.fromRectAndRadius(
       Rect.fromLTWH(pad, y, barW, 7),
@@ -426,20 +479,47 @@ class _BottleneckPainter extends CustomPainter {
     // Fill — normalised against a healthy ~3.5/s line.
     final frac = (s._throughput / 3.5).clamp(0.0, 1.0);
     final fillColor = Color.lerp(_kWarn, _kStarve, frac)!;
+    // A shipment just landed → flash the bar brighter so the player links
+    // "a potato shipped" to "the meter (my score rate) went up".
+    final pulse = s._shipPulse;
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromLTWH(pad, y, barW * frac, 7),
         const Radius.circular(4),
       ),
       Paint()
-        ..color = fillColor
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+        ..color = Color.lerp(fillColor, _kShip, pulse * 0.6)!
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 2 + 4 * pulse),
     );
-    _text(canvas, 'THROUGHPUT', Offset(pad, y - 12),
+    _text(canvas, 'FLOW = SCORE', Offset(pad, y - 12),
         size: 9, color: Colors.white.withValues(alpha: 0.45), align: -1, bold: true);
     _text(canvas, '${s._throughput.toStringAsFixed(1)}/s',
         Offset(size.width - pad, y - 12),
-        size: 11, color: fillColor, align: 1, bold: true);
+        size: 11,
+        color: Color.lerp(fillColor, _kShip, pulse)!,
+        align: 1,
+        bold: true);
+  }
+
+  // ── In-play HOW-TO hint — fades in over the current bottleneck bin ──────────
+  void _paintHowTo(Canvas canvas, Size size, double cx, double binTop,
+      double binH) {
+    final a = (1 - s._howToFade).clamp(0.0, 1.0);
+    if (a <= 0.02) return;
+    final pulse = 0.5 + 0.5 * math.sin(s._beltPhase * 5);
+    // Bouncing down-arrow pointing at the worst bin.
+    final ay = binTop - 22 + pulse * 3;
+    final ap = Paint()
+      ..color = _kChoke.withValues(alpha: a * (0.7 + 0.3 * pulse))
+      ..style = PaintingStyle.fill;
+    final path = Path()
+      ..moveTo(cx - 7, ay)
+      ..lineTo(cx + 7, ay)
+      ..lineTo(cx, ay + 9)
+      ..close();
+    canvas.drawPath(path, ap);
+    _text(canvas, 'TAP HERE', Offset(cx, ay - 9),
+        size: 10, color: _kChoke.withValues(alpha: a), align: 0, bold: true);
   }
 
   // ── Conveyor belt with drifting potatoes ───────────────────────────────────
@@ -621,10 +701,10 @@ class _BottleneckPainter extends CustomPainter {
   void _paintReadyHint(Canvas canvas, Size size) {
     _text(
       canvas,
-      'Tap the BOTTLENECK to keep potatoes shipping',
+      'The RED bin is clogged — tap it to boost that stage and keep the line shipping',
       Offset(size.width / 2, size.height - 14),
       size: 11,
-      color: Colors.white.withValues(alpha: 0.5),
+      color: Colors.white.withValues(alpha: 0.55),
       align: 0,
       bold: true,
     );

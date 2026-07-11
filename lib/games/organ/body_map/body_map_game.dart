@@ -89,12 +89,26 @@ class BodyMapArt {
 
   /// The human silhouette (head → legs), mapped into [size] by the same
   /// geometry ([_bodyW]/[_bodyPoint]) the game uses for hit testing.
+  ///
+  /// Built in layers (anti-flat-circle law): a soft body-glow halo, a warm
+  /// skin-toned gradient body with a top-left light and darker edges, a rim
+  /// light, a translucent torso cavity so placed organs read as being *inside*
+  /// the body, and a hint of the rib cage + spine. Reads as a stylized anatomy
+  /// figure, not a pale ghost blob.
   static void silhouette(Canvas canvas, Size size) {
     final cx = size.width / 2;
     final top = size.height * _kBodyTopFrac;
     final bh = size.height * _kBodyHeightFrac;
     final bw = _bodyW(size);
 
+    final p = _bodyPath(size, cx, top, bh, bw, legBotFrac: 0.985);
+    _paintBody(canvas, size, p, cx, top, bh, bw);
+  }
+
+  /// The union body path — shared so hit-region and drawing agree.
+  static Path _bodyPath(
+      Size size, double cx, double top, double bh, double bw,
+      {required double legBotFrac}) {
     final p = Path();
     final headR = bw * 0.18;
     p.addOval(Rect.fromCircle(
@@ -134,7 +148,7 @@ class BodyMapArt {
         Radius.circular(armW * 0.5)));
 
     // Legs.
-    final legBot = size.height * 0.985;
+    final legBot = size.height * legBotFrac;
     final legW = bw * 0.27;
     p.addRRect(RRect.fromRectAndRadius(
         Rect.fromLTWH(cx - hipHalf * 0.96, hipY, legW, legBot - hipY),
@@ -142,27 +156,128 @@ class BodyMapArt {
     p.addRRect(RRect.fromRectAndRadius(
         Rect.fromLTWH(cx + hipHalf * 0.96 - legW, hipY, legW, legBot - hipY),
         Radius.circular(legW * 0.4)));
+    return p;
+  }
 
-    // Soft body fill (single draw → uniform translucency, no seam darkening).
+  /// Layered body render — glow, skin gradient, rim, torso cavity + skeleton.
+  static void _paintBody(Canvas canvas, Size size, Path p, double cx,
+      double top, double bh, double bw) {
+    // 1. Soft body-glow halo so the figure lifts off the background.
     canvas.drawPath(
       p,
       Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color(0xFFFDF5EB).withValues(alpha: 0.10),
-            const Color(0xFFFDF5EB).withValues(alpha: 0.05),
-          ],
-        ).createShader(Offset.zero & size),
+        ..color = const Color(0xFFE8B48A).withValues(alpha: 0.14)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
     );
+
+    // 2. Warm skin gradient body — light toward top-left, darker at the edges.
+    canvas.drawPath(
+      p,
+      Paint()
+        ..shader = const RadialGradient(
+          center: Alignment(-0.35, -0.55),
+          radius: 1.15,
+          colors: [
+            Color(0xFFF6D6BC), // lit skin
+            Color(0xFFE0A981), // mid
+            Color(0xFF7A4E3C), // shaded edge
+          ],
+          stops: [0.0, 0.55, 1.0],
+        ).createShader(Offset.zero & size)
+        ..color = const Color(0xFFE0A981).withValues(alpha: 0.22),
+    );
+
+    // Clip everything inside the body so cavity + skeleton stay contained.
+    canvas.save();
+    canvas.clipPath(p);
+
+    // 3. Torso cavity — a darker inner region so organs read as INSIDE.
+    final cavity = Rect.fromCenter(
+        center: Offset(cx, top + bh * 0.48),
+        width: bw * 0.80,
+        height: bh * 0.66);
+    canvas.drawOval(
+      cavity,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            const Color(0xFF3A1E1A).withValues(alpha: 0.42),
+            const Color(0xFF3A1E1A).withValues(alpha: 0.0),
+          ],
+        ).createShader(cavity),
+    );
+
+    // 4. Rib cage arcs (hint of anatomy, top of the cavity).
+    final rib = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = const Color(0xFFFBE9D6).withValues(alpha: 0.20);
+    final ribTop = top + bh * 0.24;
+    for (var i = 0; i < 4; i++) {
+      final y = ribTop + i * bh * 0.045;
+      final halfW = bw * (0.30 - i * 0.018);
+      canvas.drawArc(
+          Rect.fromCenter(
+              center: Offset(cx, y), width: halfW * 2, height: bh * 0.10),
+          math.pi * 0.12,
+          math.pi * 0.76,
+          false,
+          rib);
+    }
+
+    // 5. Spine — a soft vertical seam down the torso.
+    canvas.drawLine(
+      Offset(cx, top + bh * 0.22),
+      Offset(cx, top + bh * 0.80),
+      Paint()
+        ..strokeWidth = 2
+        ..color = const Color(0xFFFBE9D6).withValues(alpha: 0.10),
+    );
+
+    canvas.restore();
+
+    // 6. Rim light — brighter on the lit side, subtle overall outline.
     canvas.drawPath(
       p,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
-        ..color = Colors.white.withValues(alpha: 0.16),
+        ..strokeWidth = 1.6
+        ..color = const Color(0xFFFBE9D6).withValues(alpha: 0.42),
     );
+  }
+
+  /// A clear beacon marking the active organ's home region: a pulsing colored
+  /// ring, a crosshair, and (optionally) a labelled call-out so the player
+  /// always knows WHERE the target sits, even when the ghost ring is off.
+  static void targetBeacon(Canvas canvas, Offset at, double r, Color color,
+      String label, double pulse) {
+    // Outer breathing ring.
+    canvas.drawCircle(
+      at,
+      r * (1.0 + pulse * 0.12),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4
+        ..color = color.withValues(alpha: 0.30 + pulse * 0.30)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+    );
+    // Crosshair ticks.
+    final tick = Paint()
+      ..color = color.withValues(alpha: 0.55 + pulse * 0.25)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 4; i++) {
+      final a = i * math.pi / 2;
+      final d = Offset(math.cos(a), math.sin(a));
+      canvas.drawLine(at + d * (r * 0.7), at + d * (r * 1.05), tick);
+    }
+    canvas.drawCircle(at, 3.0, Paint()..color = color.withValues(alpha: 0.85));
+    if (label.isNotEmpty) {
+      final labelPos = at.translate(0, -r - 12);
+      GameFx.text(canvas, label, labelPos, 12,
+          Colors.white.withValues(alpha: 0.95),
+          weight: FontWeight.w800, glow: 0.4);
+    }
   }
 
   /// One organ token: shaded oval + rim + optional label ([label] empty skips
@@ -198,6 +313,14 @@ class BodyMapArt {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.4
         ..color = Colors.white.withValues(alpha: 0.55),
+    );
+    // Specular highlight — reads as a wet 3D organ, not a flat sticker.
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: at.translate(-r * 0.34, -r * 0.36),
+          width: r * 0.7,
+          height: r * 0.42),
+      Paint()..color = Colors.white.withValues(alpha: 0.38),
     );
     if (label.isEmpty) return;
     final fontSize = (r * 0.42).clamp(9.0, 13.0);
@@ -810,13 +933,21 @@ class _BodyMapPainter extends CustomPainter {
 
     BodyMapArt.silhouette(canvas, size);
 
-    // Ghost target for the active organ (training rounds only).
+    // Target guidance for the active organ.
     final a = active;
-    if (a != null && showGhost && !a.grabbed) {
+    if (a != null) {
       final target = _bodyPoint(size, a.def.nx, a.def.ny);
       final tol = _bodyW(size) * tolFrac;
       final pulse = 0.5 + 0.5 * math.sin(clock * 3.2);
-      BodyMapArt.ghostRing(canvas, target, tol, a.def.color, pulse: pulse);
+      if (showGhost && !a.grabbed) {
+        // Learning rounds: the full ghost snap-zone ring.
+        BodyMapArt.ghostRing(canvas, target, tol, a.def.color, pulse: pulse);
+      } else if (a.grabbed) {
+        // While dragging (any round): a clear labelled beacon marks the home,
+        // so the player always knows where to release.
+        BodyMapArt.targetBeacon(
+            canvas, target, tol, a.def.color, a.def.label, pulse);
+      }
     }
 
     // Already-placed organs.
@@ -865,6 +996,29 @@ class _BodyMapPainter extends CustomPainter {
   // ---- HUD ----
 
   void _drawHud(Canvas canvas, Size size) {
+    // Always-visible one-line OBJECTIVE, top-centre under the host score bar.
+    GameFx.text(
+      canvas,
+      'DROP EACH ORGAN WHERE IT LIVES',
+      Offset(size.width / 2, size.height * 0.085),
+      12,
+      Potatuhs.textSecondary,
+      weight: FontWeight.w800,
+    );
+
+    // Fading how-to hint over the first ~4.5s of a run.
+    if (running && clock < 4.5) {
+      final fade = (1 - (clock - 3.0) / 1.5).clamp(0.0, 1.0);
+      GameFx.text(
+        canvas,
+        'Drag the organ from the tray onto the body',
+        Offset(size.width / 2, size.height * 0.135),
+        12,
+        Potatuhs.gold.withValues(alpha: 0.85 * fade),
+        weight: FontWeight.w700,
+      );
+    }
+
     // Streak (bottom-right) — host owns the timer + live score up top.
     if (streak > 1) {
       GameFx.text(

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'learn/learn_progress.dart';
 import 'my_app.dart';
 
 import 'firebase_bootstrap.dart';
@@ -15,6 +16,8 @@ Future<void> mainCommon(String env) async {
   if (kIsWeb) usePathUrlStrategy();
   // Load the JSON config into memory
   await SharedPreferences.getInstance();
+  // Viewed-topic progress for LEARN (cards/modules/explorer read it sync).
+  await LearnProgress.instance.load();
 
   runApp(MyApp());
 

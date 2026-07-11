@@ -708,7 +708,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   Widget _buildWalletBar() {
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
       decoration: Potatuhs.surface(
         fill: Potatuhs.inkPanel.withValues(alpha: 0.9),
         borderColor: Potatuhs.airForce.withValues(alpha: 0.35),
@@ -742,20 +742,23 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     return Expanded(
       child: Column(children: [
         Text(label,
-            style: Potatuhs.label(size: 8, color: Potatuhs.textFaint),
+            style: Potatuhs.label(size: 10, color: Potatuhs.textFaint),
             maxLines: 1, overflow: TextOverflow.ellipsis),
-        const SizedBox(height: 2),
-        Text(value,
-            style: Potatuhs.body(
-                size: 15, weight: FontWeight.w800, color: color),
-            maxLines: 1, overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 3),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(value,
+              style: Potatuhs.body(
+                  size: 19, weight: FontWeight.w800, color: color),
+              maxLines: 1),
+        ),
       ]),
     );
   }
 
   Widget _walletDivider() => Container(
         width: 1,
-        height: 26,
+        height: 34,
         margin: const EdgeInsets.symmetric(horizontal: 6),
         color: Colors.white.withValues(alpha: 0.08),
       );
@@ -789,18 +792,18 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           ),
           const SizedBox(width: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
             decoration: BoxDecoration(
               color: (up
                       ? const Color(0xFF1B5E20)
                       : const Color(0xFF7F0000))
                   .withValues(alpha: 0.7),
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(7),
             ),
             child: Text(
               '${up ? "▲" : "▼"} ${delta.abs().toStringAsFixed(2)}',
               style: Potatuhs.label(
-                  size: 11,
+                  size: 13,
                   color: up
                       ? const Color(0xFF66BB6A)
                       : const Color(0xFFEF5350)),
@@ -810,7 +813,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           if (_inPosition)
             Text(
               'avg \$${_avgCost.toStringAsFixed(2)}',
-              style: Potatuhs.label(size: 10, color: Potatuhs.textSecondary),
+              style: Potatuhs.label(size: 12, color: Potatuhs.textSecondary),
             ),
         ],
       ),
@@ -830,17 +833,17 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         border: Border.all(color: Potatuhs.orange.withValues(alpha: 0.6)),
       ),
       child: Row(children: [
-        const Text('\u{1F4F0}', style: TextStyle(fontSize: 14)),
+        const Text('\u{1F4F0}', style: TextStyle(fontSize: 16)),
         const SizedBox(width: 8),
         Expanded(
           child: Text(news.headline,
               style: Potatuhs.body(
-                  size: 12, weight: FontWeight.w700, color: Potatuhs.gold)),
+                  size: 13, weight: FontWeight.w700, color: Potatuhs.gold)),
         ),
         Text(
           news.impulse > 0 ? '▲ SPIKE' : '▼ CRASH',
           style: Potatuhs.label(
-              size: 10,
+              size: 12,
               color: news.impulse > 0
                   ? const Color(0xFF66BB6A)
                   : const Color(0xFFEF5350)),
@@ -862,7 +865,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
               ? 'Hustle back in — \$1 a tap'
               : 'No shares held — set a size, then BUY or place a LIMIT order',
           style: Potatuhs.label(
-              size: 10,
+              size: 12,
               color: busted ? Potatuhs.gold : Potatuhs.textFaint),
           textAlign: TextAlign.center,
         ),
@@ -872,7 +875,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     final col  = upnl >= 0 ? const Color(0xFF66BB6A) : const Color(0xFFEF5350);
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: Potatuhs.surface(
         fill: col.withValues(alpha: 0.18),
         borderColor: col.withValues(alpha: 0.5),
@@ -880,14 +883,14 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       ),
       child: Row(children: [
         Text('${_heldShares.toStringAsFixed(0)} sh @ \$${_avgCost.toStringAsFixed(2)}',
-            style: Potatuhs.label(size: 11, color: Potatuhs.textSecondary)),
+            style: Potatuhs.label(size: 13, color: Potatuhs.textSecondary)),
         const Spacer(),
         Text('val \$${_positionValue.toStringAsFixed(0)}',
-            style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary)),
-        const SizedBox(width: 10),
+            style: Potatuhs.body(size: 14, color: Potatuhs.textSecondary)),
+        const SizedBox(width: 12),
         Text(
           'unreal ${upnl >= 0 ? "+" : "-"}\$${upnl.abs().toStringAsFixed(0)}',
-          style: Potatuhs.body(size: 13, weight: FontWeight.w700, color: col),
+          style: Potatuhs.body(size: 15, weight: FontWeight.w700, color: col),
         ),
       ]),
     );
@@ -897,7 +900,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   Widget _buildSizeControl() {
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 4, 10, 2),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       decoration: Potatuhs.surface(
         fill: Potatuhs.inkPanel.withValues(alpha: 0.7),
         borderColor: Potatuhs.gold.withValues(alpha: 0.3),
@@ -906,46 +909,54 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
       child: Column(children: [
         Row(children: [
           Text('SIZE',
-              style: Potatuhs.label(size: 10, color: Potatuhs.gold)),
-          const SizedBox(width: 10),
+              style: Potatuhs.label(size: 12, color: Potatuhs.gold)),
+          const SizedBox(width: 8),
           _stepperBtn('−', () => _bumpLot(-1)),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
           Expanded(
             child: Center(
-              child: Text('$_lotSize sh',
-                  style: Potatuhs.body(
-                      size: 20,
-                      weight: FontWeight.w800,
-                      color: Potatuhs.textPrimary)),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text('$_lotSize sh',
+                    style: Potatuhs.body(
+                        size: 24,
+                        weight: FontWeight.w800,
+                        color: Potatuhs.textPrimary)),
+              ),
             ),
           ),
-          _stepperBtn('+', () => _bumpLot(1)),
           const SizedBox(width: 8),
-          ..._kMtLotPresets.map((p) => Padding(
-                padding: const EdgeInsets.only(left: 4),
-                child: _presetBtn('$p', () => _setLot(p), _lotSize == p),
-              )),
-          const SizedBox(width: 4),
-          _presetBtn('MAX', _maxLot, false, wide: true),
+          _stepperBtn('+', () => _bumpLot(1)),
         ]),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
+        // Lot presets on their own row so each stays a comfortable touch target.
         Row(children: [
-          Text('LIMIT', style: Potatuhs.label(size: 9, color: Potatuhs.airForce)),
+          ..._kMtLotPresets.map((p) => Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: _presetBtn('$p', () => _setLot(p), _lotSize == p),
+                ),
+              )),
+          Expanded(child: _presetBtn('MAX', _maxLot, false, wide: true)),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Text('LIMIT', style: Potatuhs.label(size: 11, color: Potatuhs.airForce)),
           const SizedBox(width: 6),
           Text(
             _limitOffset <= 0.001
                 ? 'at market \$${_price.toStringAsFixed(2)}'
                 : '\$${_limitPrice.toStringAsFixed(2)}  (${(_limitOffset * _kMtLimitOffsetMax * 100).toStringAsFixed(0)}% below)',
-            style: Potatuhs.label(size: 9, color: Potatuhs.textSecondary),
+            style: Potatuhs.label(size: 11, color: Potatuhs.textSecondary),
           ),
           Expanded(
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(
-                trackHeight: 3,
+                trackHeight: 5,
                 thumbShape:
-                    const RoundSliderThumbShape(enabledThumbRadius: 7),
+                    const RoundSliderThumbShape(enabledThumbRadius: 10),
                 overlayShape:
-                    const RoundSliderOverlayShape(overlayRadius: 14),
+                    const RoundSliderOverlayShape(overlayRadius: 20),
                 activeTrackColor: Potatuhs.airForce,
                 inactiveTrackColor: Colors.white.withValues(alpha: 0.12),
                 thumbColor: Potatuhs.airForce,
@@ -965,17 +976,17 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 34,
-        height: 34,
+        width: 44,
+        height: 44,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: Colors.white.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(9),
+          borderRadius: BorderRadius.circular(11),
           border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
         ),
         child: Text(label,
             style: Potatuhs.body(
-                size: 20,
+                size: 24,
                 weight: FontWeight.w800,
                 color: Potatuhs.textPrimary)),
       ),
@@ -987,15 +998,15 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        constraints: BoxConstraints(minWidth: wide ? 40 : 28),
-        height: 30,
+        constraints: BoxConstraints(minWidth: wide ? 48 : 40),
+        height: 40,
         alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
           color: active
               ? Potatuhs.gold.withValues(alpha: 0.28)
               : Colors.white.withValues(alpha: 0.06),
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(9),
           border: Border.all(
             color: active
                 ? Potatuhs.gold.withValues(alpha: 0.7)
@@ -1004,7 +1015,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         ),
         child: Text(label,
             style: Potatuhs.label(
-                size: 10,
+                size: 13,
                 color: active ? Potatuhs.gold : Potatuhs.textSecondary)),
       ),
     );
@@ -1021,7 +1032,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           child: GestureDetector(
             onTap: placeReady ? _placeOrder : null,
             child: Container(
-              height: 46,
+              height: 54,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: placeReady
@@ -1040,13 +1051,14 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                 children: [
                   Text('PLACE LIMIT BUY',
                       style: Potatuhs.label(
-                          size: 11,
+                          size: 13,
                           color: placeReady
                               ? Potatuhs.airForce
                               : Potatuhs.textFaint)),
+                  const SizedBox(height: 2),
                   Text(
                     'reserve \$${_orderCost.toStringAsFixed(0)}  ·  $_lotSize @ \$${_limitPrice.toStringAsFixed(2)}',
-                    style: Potatuhs.label(size: 8, color: Potatuhs.textFaint),
+                    style: Potatuhs.label(size: 10, color: Potatuhs.textFaint),
                   ),
                 ],
               ),
@@ -1057,8 +1069,8 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         GestureDetector(
           onTap: _orders.isNotEmpty ? _cancelAllOrders : null,
           child: Container(
-            height: 46,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+            height: 54,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: _orders.isNotEmpty
@@ -1077,12 +1089,13 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
               children: [
                 Text('CANCEL ALL',
                     style: Potatuhs.label(
-                        size: 10,
+                        size: 12,
                         color: _orders.isNotEmpty
                             ? const Color(0xFFEF5350)
                             : Potatuhs.textFaint)),
+                const SizedBox(height: 2),
                 Text('${(_kMtCancelFeeRate * 100).toStringAsFixed(0)}% fee',
-                    style: Potatuhs.label(size: 7, color: Potatuhs.textFaint)),
+                    style: Potatuhs.label(size: 9, color: Potatuhs.textFaint)),
               ],
             ),
           ),
@@ -1096,26 +1109,27 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 10, 2),
       child: Wrap(
-        spacing: 6,
-        runSpacing: 4,
+        spacing: 7,
+        runSpacing: 6,
         children: List.generate(_orders.length, (i) {
           final o = _orders[i];
           return GestureDetector(
             onTap: () => _cancelOrder(i),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              constraints: const BoxConstraints(minHeight: 34),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
               decoration: BoxDecoration(
                 color: Potatuhs.sienna.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(9),
                 border:
                     Border.all(color: Potatuhs.sienna.withValues(alpha: 0.55)),
               ),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Text('${o.shares} @ \$${o.limit.toStringAsFixed(2)}',
-                    style: Potatuhs.label(size: 9, color: Potatuhs.sienna)),
-                const SizedBox(width: 6),
+                    style: Potatuhs.label(size: 12, color: Potatuhs.sienna)),
+                const SizedBox(width: 7),
                 Icon(Icons.close,
-                    size: 12, color: const Color(0xFFEF5350).withValues(alpha: 0.9)),
+                    size: 15, color: const Color(0xFFEF5350).withValues(alpha: 0.9)),
               ]),
             ),
           );
@@ -1144,12 +1158,12 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                 padding: const EdgeInsets.symmetric(horizontal: 2),
                 child: Stack(alignment: Alignment.center, children: [
                   Container(
-                    height: 42,
+                    height: 52,
                     decoration: BoxDecoration(
                       color: ready
                           ? accentCol.withValues(alpha: 0.18)
                           : Colors.white.withValues(alpha: 0.05),
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(11),
                       border: Border.all(
                         color: ready
                             ? accentCol.withValues(alpha: 0.55)
@@ -1162,37 +1176,40 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                       children: [
                         Text(ev.emoji,
                             style: TextStyle(
-                              fontSize: 13,
+                              fontSize: 17,
                               color: ready
                                   ? Colors.white
                                   : Colors.white.withValues(alpha: 0.3),
                             )),
-                        Text(ev.label,
-                            style: Potatuhs.label(
-                              size: 7,
-                              color: ready
-                                  ? accentCol
-                                  : Potatuhs.textFaint.withValues(alpha: 0.4),
-                            ),
-                            overflow: TextOverflow.ellipsis),
+                        const SizedBox(height: 1),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(ev.label,
+                              style: Potatuhs.label(
+                                size: 9,
+                                color: ready
+                                    ? accentCol
+                                    : Potatuhs.textFaint.withValues(alpha: 0.4),
+                              )),
+                        ),
                       ],
                     ),
                   ),
                   if (!ready)
                     SizedBox(
-                      width: 42,
-                      height: 42,
+                      width: 52,
+                      height: 52,
                       child: CustomPaint(
                         painter: _MtCooldownRingPainter(progress, accentCol),
                       ),
                     ),
                   if (!ready)
                     Positioned(
-                      bottom: 2,
-                      right: 3,
+                      bottom: 3,
+                      right: 4,
                       child: Text('${cd.ceil()}',
                           style: Potatuhs.label(
-                              size: 7,
+                              size: 9,
                               color: Colors.white.withValues(alpha: 0.55))),
                     ),
                 ]),
@@ -1240,8 +1257,8 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         GestureDetector(
           onTap: sellReady ? _sellAll : null,
           child: Container(
-            height: 58,
-            width: 58,
+            height: 64,
+            width: 62,
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: sellReady
@@ -1258,7 +1275,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
             child: Text('SELL\nALL',
                 textAlign: TextAlign.center,
                 style: Potatuhs.label(
-                    size: 11,
+                    size: 13,
                     color: sellReady
                         ? const Color(0xFFEF5350)
                         : Potatuhs.textFaint)),
@@ -1289,8 +1306,8 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           return Transform.scale(scale: squash, child: child);
         },
         child: Container(
-          height: 58,
-          width: 58,
+          height: 64,
+          width: 62,
           alignment: Alignment.center,
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -1319,9 +1336,9 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text('HUSTLE',
-                  style: Potatuhs.label(size: 9, color: Potatuhs.gold)),
+                  style: Potatuhs.label(size: 11, color: Potatuhs.gold)),
               Text('+\$1',
-                  style: Potatuhs.display(size: 15, color: Potatuhs.gold)),
+                  style: Potatuhs.display(size: 17, color: Potatuhs.gold)),
             ],
           ),
         ),
@@ -1341,7 +1358,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     return GestureDetector(
       onTap: enabled ? onTap : null,
       child: Container(
-        height: 58,
+        height: 64,
         decoration: BoxDecoration(
           gradient: enabled
               ? LinearGradient(
@@ -1373,13 +1390,14 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                 fit: BoxFit.scaleDown,
                 child: Text(top,
                     style: Potatuhs.display(
-                        size: 18,
+                        size: 21,
                         color: enabled ? accent : Potatuhs.textFaint)),
               ),
             ),
+            const SizedBox(height: 2),
             Text(sub,
                 style: Potatuhs.label(
-                    size: 8,
+                    size: 10,
                     color: enabled
                         ? Colors.white.withValues(alpha: 0.8)
                         : Potatuhs.textFaint)),
@@ -1652,6 +1670,46 @@ const Color _kMtDown     = Color(0xFFEF5350);
 const Color _kMtDownDeep = Color(0xFF7F0000);
 const Color _kMtDownMid  = Color(0xFFC62828);
 
+/// Width-constrained centered text for the legend cards. The shared
+/// [GameFx.text] lays out at natural width with no cap, so packed desk lingo
+/// ("RESERVED \$460", "market \$520", the order chip) could crowd on the narrow
+/// embeds the cell runs in. This shrinks the font toward [minSize] until the
+/// line fits [maxWidth]. Local by design — the shared kit stays unconstrained.
+void _mtFit(Canvas canvas, String s, Offset center, double size, Color color,
+    double maxWidth,
+    {bool display = false,
+    FontWeight weight = FontWeight.w800,
+    double glow = 0,
+    double minSize = 5}) {
+  if (maxWidth <= 0 || s.isEmpty) return;
+  var fontSize = size;
+  TextPainter tp() => TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            fontFamily: display ? Potatuhs.displayFont : Potatuhs.bodyFont,
+            fontSize: fontSize,
+            fontWeight: weight,
+            color: color,
+            shadows: glow > 0
+                ? [Shadow(color: color.withValues(alpha: glow), blurRadius: 12)]
+                : null,
+          ),
+        ),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      );
+  var painter = tp()..layout();
+  while (painter.width > maxWidth && fontSize > minSize) {
+    fontSize = (fontSize - 0.5).clamp(minSize, size);
+    painter = tp()..layout();
+  }
+  painter = tp()..layout(maxWidth: maxWidth);
+  painter.paint(canvas, center - Offset(painter.width / 2, painter.height / 2));
+}
+
 bool _mtLegendBad(Size size) =>
     size.width <= 0 ||
     size.height <= 0 ||
@@ -1812,11 +1870,11 @@ void _mtLegendBtn(Canvas canvas, Rect r, String top, String sub, Color colorA,
       ..strokeWidth = 1.5
       ..color = accent.withValues(alpha: 0.8),
   );
-  GameFx.text(canvas, top, Offset(r.center.dx, r.center.dy - r.height * 0.14),
-      r.height * 0.30, accent,
+  _mtFit(canvas, top, Offset(r.center.dx, r.center.dy - r.height * 0.14),
+      r.height * 0.30, accent, r.width - 12,
       display: true);
-  GameFx.text(canvas, sub, Offset(r.center.dx, r.center.dy + r.height * 0.26),
-      r.height * 0.15, Colors.white.withValues(alpha: 0.8));
+  _mtFit(canvas, sub, Offset(r.center.dx, r.center.dy + r.height * 0.26),
+      r.height * 0.15, Colors.white.withValues(alpha: 0.8), r.width - 12);
 }
 
 /// A small pill button in the SIZE-control style ([_presetBtn] / [_stepperBtn]).
@@ -1839,9 +1897,8 @@ void _mtLegendPill(Canvas canvas, Rect r, String label, bool active,
           ? Potatuhs.gold.withValues(alpha: 0.7)
           : Colors.white.withValues(alpha: 0.14),
   );
-  GameFx.text(canvas, label, r.center, fontSize,
-      active ? Potatuhs.gold : Potatuhs.textSecondary,
-      weight: FontWeight.w800);
+  _mtFit(canvas, label, r.center, fontSize,
+      active ? Potatuhs.gold : Potatuhs.textSecondary, r.width - 4);
 }
 
 /// One open-order chip, drawn like [_buildOpenOrders]: sienna pill + cancel ✕.
@@ -1856,9 +1913,11 @@ void _mtLegendOrderChip(Canvas canvas, Rect r, String label) {
       ..strokeWidth = 1
       ..color = Potatuhs.sienna.withValues(alpha: 0.55),
   );
-  GameFx.text(canvas, label, Offset(r.center.dx - r.width * 0.08, r.center.dy),
-      r.height * 0.38, Potatuhs.sienna,
-      weight: FontWeight.w800);
+  // Label fills the pill left of the cancel ✕; fit it so a long "5 @ \$92.00"
+  // never runs under the ✕ mark.
+  final xZone = r.height * 0.9; // space the ✕ reserves on the right
+  _mtFit(canvas, label, Offset(r.left + (r.width - xZone) / 2, r.center.dy),
+      r.height * 0.38, Potatuhs.sienna, r.width - xZone - 6);
   final xc = Offset(r.right - r.height * 0.42, r.center.dy);
   final xr = r.height * 0.14;
   final xPaint = Paint()
@@ -1894,9 +1953,9 @@ void _legendDesk(Canvas canvas, Size size) {
     _kMtUp,
     baselineFrac: 0.58,
   );
-  GameFx.text(canvas, '\$104.20 ▲', Offset(w * 0.5, h * 0.60), h * 0.055,
-      _kMtUp,
-      weight: FontWeight.w800, glow: 0.5);
+  _mtFit(canvas, '\$104.20 ▲', Offset(w * 0.5, h * 0.60), h * 0.055, _kMtUp,
+      w * 0.6,
+      glow: 0.5);
   final btnW = w * 0.38, btnH = h * 0.20, by = h * 0.70;
   _mtLegendBtn(canvas, Rect.fromLTWH(w * 0.09, by, btnW, btnH), 'BUY 5',
       'market', _kMtUpDeep, _kMtUpMid, _kMtUp);
@@ -2004,27 +2063,30 @@ void _legendLimit(Canvas canvas, Size size) {
   final w = size.width, h = size.height;
   final chart = Rect.fromLTWH(w * 0.07, h * 0.06, w * 0.86, h * 0.46);
   _mtLegendChart(canvas, chart, _kMtTapeDip, _kMtDown, limitFrac: 0.78);
-  GameFx.text(
+  _mtFit(
       canvas,
       'LIMIT \$92',
       Offset(chart.left + chart.width * 0.16,
           chart.top + chart.height * 0.78 - 10),
       h * 0.036,
       Potatuhs.sienna,
-      weight: FontWeight.w800);
+      chart.width * 0.32);
 
   // The resting order chip + the cash it reserves.
-  _mtLegendOrderChip(
-      canvas, Rect.fromLTWH(w * 0.09, h * 0.58, w * 0.44, h * 0.105),
-      '5 @ \$92.00');
-  GameFx.text(canvas, 'RESERVED \$460', Offset(w * 0.755, h * 0.633),
-      h * 0.038, Potatuhs.sienna,
-      weight: FontWeight.w800);
+  final chipRect = Rect.fromLTWH(w * 0.09, h * 0.58, w * 0.44, h * 0.105);
+  _mtLegendOrderChip(canvas, chipRect, '5 @ \$92.00');
+  // "RESERVED $460" fills the column right of the chip, fit so it can't back
+  // over the chip on a narrow card.
+  final resLeft = chipRect.right + 8;
+  final resW = (w - 8) - resLeft;
+  _mtFit(canvas, 'RESERVED \$460', Offset(resLeft + resW / 2, h * 0.633),
+      h * 0.038, Potatuhs.sienna, resW);
 
-  // The buzzer risk: unsold shares bank nothing — SELL ALL before 0:00.
-  GameFx.text(canvas, '0:07', Offset(w * 0.25, h * 0.815), h * 0.075,
-      _kMtDown,
-      weight: FontWeight.w800, glow: 0.6);
+  // The buzzer risk: unsold shares bank nothing — SELL ALL before 0:00. Fit the
+  // clock into the column left of the button so the two never touch.
+  _mtFit(canvas, '0:07', Offset(w * 0.20, h * 0.815), h * 0.075, _kMtDown,
+      w * 0.34,
+      glow: 0.6);
   _mtLegendBtn(
       canvas,
       Rect.fromLTWH(w * 0.42, h * 0.735, w * 0.44, h * 0.17),
@@ -2040,9 +2102,9 @@ void _legendHustle(Canvas canvas, Size size) {
   if (_mtLegendBad(size)) return;
   final w = size.width, h = size.height;
   // The bust state: an empty wallet.
-  GameFx.text(canvas, 'AVAILABLE \$0', Offset(w * 0.5, h * 0.10), h * 0.055,
-      _kMtDown,
-      weight: FontWeight.w800, glow: 0.5);
+  _mtFit(canvas, 'AVAILABLE \$0', Offset(w * 0.5, h * 0.10), h * 0.055, _kMtDown,
+      w * 0.7,
+      glow: 0.5);
   // The gold HUSTLE button, drawn like the live one.
   _mtLegendBtn(
       canvas,
@@ -2063,11 +2125,12 @@ void _legendHustle(Canvas canvas, Size size) {
       Potatuhs.gold,
       weight: FontWeight.w800, glow: 0.7);
   // Labor buys the stake; the market is where it compounds.
-  GameFx.text(canvas, 'taps buy a stake', Offset(w * 0.5, h * 0.68),
-      h * 0.045, Potatuhs.textSecondary);
-  GameFx.text(canvas, 'only TRADES score', Offset(w * 0.5, h * 0.80),
-      h * 0.055, _kMtUp,
-      weight: FontWeight.w800, glow: 0.5);
+  _mtFit(canvas, 'taps buy a stake', Offset(w * 0.5, h * 0.68), h * 0.045,
+      Potatuhs.textSecondary, w * 0.86,
+      weight: FontWeight.w700);
+  _mtFit(canvas, 'only TRADES score', Offset(w * 0.5, h * 0.80), h * 0.055,
+      _kMtUp, w * 0.86,
+      glow: 0.5);
 }
 
 /// The visual manual for Market Trader — wired into the registry spec.

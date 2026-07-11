@@ -1,52 +1,57 @@
 # Constants — Manual (the **M** in GAMES)
 
-**Scale:** `BioScale.universeAll` · **Verb:** TUNE-THE-DIALS · **id:** `constants`
+**Scale:** `BioScale.universeAll` · **Verb:** HOLD-REALITY-IN-BAND · **id:** `constants`
 
 ## Premise
 You are at the control desk of reality. Four of the universe's fundamental
-constants sit on dials, each with a narrow **habitable band**. Set them all in
-band and a universe that can form stars, atoms and chemistry stays
-**life-permitting**. Let any one drift out and the cosmos fails in a specific,
-physical way.
+constants each have a narrow **habitable band** — but there are **no sliders**.
+Every constant is tuned by a **bespoke physical gesture** that evokes its actual
+physics. Keep them all in band at once and a universe that can form stars, atoms
+and chemistry stays **life-permitting**. Let any one slip out and the cosmos
+fails in a specific, physical way.
 
-## The dials
-| Dial | Constant | Out of band → |
-|------|----------|---------------|
-| **G** | Gravity strength | too strong → stars **collapse**; too weak → **no galaxies** |
-| **S** | Strong nuclear force | off → **no nuclei**; too high → **no hydrogen** |
-| **Λ** | Cosmological constant | too high → cosmos **rips apart**; too low → **instant recollapse** |
-| **μ** | Electron/proton mass ratio | off → **no stable atoms / no chemistry** |
+## The four gestures
+Each control **fights back**, so you must keep re-applying the gesture — a tap
+alone never holds a constant in band.
 
-The live **universe preview** at the top reacts in real time: gravity high pulls
-the star cluster into a collapse singularity, gravity low disperses it, Λ high
-flings stars outward, the strong force dimming kills stellar fusion, and a bad
-mass ratio reddens the field as chemistry breaks. A banner names the current
-failure — that diagnostic IS the teaching.
+| Constant | Gesture | Physics feel | Out of band → |
+|----------|---------|--------------|---------------|
+| **G — Gravity** | **PULL DOWN** on the heavy handle | it floats back **up**; keep hauling it to the mid-depth band | too deep → stars **collapse**; too shallow → **no galaxies** |
+| **S — Strong force** | **PINCH** the two nucleon halves toward the centre | they **spring apart**; hold them bound | too tight → **no hydrogen**; too loose → **no nuclei** |
+| **Λ — Cosmological Λ** | **DRAG** the expansion orb onto the sweet-spot ring | the orb **wanders** on its own across the 2-D field | off the sweet spot → the cosmos **rips apart / recollapses** |
+| **μ — Mass ratio** | **STRETCH** the breathing atom shell to the target ring | the shell is **alive**, inflating and deflating; resize it to hold | too big → **no stable atoms**; too small → **no chemistry** |
 
-## Controls
-- **Drag a dial's knob** left/right to set its value. The green zone is the
-  habitable band; the centre tick is the ideal.
-- You are fighting two things: a constant **drift** that nudges every dial, and
-  periodic **shocks** that knock one dial far out (red flash). Drag a shocked
-  dial back into band to **STABILISE** it for a bonus.
+Each station shows a small **band meter** under its title (a green band + a
+moving marker) so you always know how close that constant is. The panel rim goes
+**green** when it is in band.
+
+## The live universe
+The **preview** at the top reacts in real time: gravity too strong pulls the
+star cluster into a collapse singularity, gravity too weak disperses it, Λ off
+the sweet spot flings stars outward, the strong force dimming kills stellar
+fusion, and a bad mass ratio reddens the field as chemistry breaks. A banner
+names the current failure — that diagnostic IS the teaching.
 
 ## Rules
-- Keep **every active dial** inside its green band → the universe is
-  life-permitting and you score continuously.
-- The round starts with 2 dials. **Λ** unlocks at ~30% of the round, **μ** at
-  ~62%.
-- As time passes the bands **narrow** and the drift **speeds up**.
+- Keep **every active station** in band → the universe is life-permitting and
+  you score continuously.
+- The round starts with **G** and **S**. **Λ** comes online at ~30% of the
+  round, **μ** at ~62% — so the number of gestures you juggle grows.
+- Periodic **shocks** knock one station far out (red flash / red rim). Recover
+  it back into band with its gesture to **RECOVER** it for a bonus.
+- As time passes the bands **narrow** and the drift **speeds up** — a perfect
+  hold becomes humanly impossible.
 
 ## How to win
-Maximise total score: time spent life-permitting plus shocks stabilised. The
+Maximise total score: time spent life-permitting plus shocks recovered. The
 longer you keep the whole universe in band without a break, the higher your
 **stability streak**.
 
 ## Scoring
-- **+14 / second** while life-permitting (all active dials in band).
-- **+60** each time you stabilise a shocked dial.
+- **+14 / second** while life-permitting (all active stations in band).
+- **+60** each time you recover a shocked station.
 - **Streak** = consecutive whole seconds the universe stays life-permitting;
-  resets to 0 the instant any dial leaves its band. Surfaced as the results
+  resets to 0 the instant any station leaves its band. Surfaced as the results
   streak award.
 
 ## GAMES rubric

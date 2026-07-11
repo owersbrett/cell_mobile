@@ -33,10 +33,23 @@ The corridor is full before every arrival. Read the arrival, then **swipe**:
 - **Streak multiplier** 1× → 4× (capped — no runaway leader), +1× every 4 legal
   moves; an eviction resets it. Best streak is reported for the mastery award.
 - `humanMax 3000`, `starThresholds [800, 1600, 2400]`.
+- **One score, one number (2026-07 UX pass).** The live SCORE lives in the host
+  HUD only. The bottom strip is now a **control legend + one-line objective**
+  ("SWIPE THE GOLD ARROW — SCORE PER GUEST CHECKED IN") — it no longer shows a
+  second `CHECK-INS N` counter that disagreed with the HUD points. Score-unit
+  note: the registry says `scoreUnit: 'check-ins'` but `session.score` is weighted
+  POINTS; the registry unit should read `pts` (shared-registry change, flagged to Brett).
 
 ## How to win
 Most **check-ins** when the 55s clock ends. Reads in pass-and-play / party mode:
 a watcher sees the corridor slide and rooms light up.
+
+## Layout (2026-07 UX pass)
+- `_kRooms` **12 → 8**: at phone width, 12 rooms shrank the potato guests to tiny
+  dots and crowded the `→ ∞` label. 8 rooms read as potatoes and the ∞ fade is clear.
+- `_kBottomPanel` 92 → 78; `_kBannerTop` 60 → 56 — the corridor keeps real height.
+- The inline consequence **toast** now sits just INSIDE the play field (above the
+  coach strip) on a soft plate, so it never overlaps the swipe legend below.
 
 ## Perf guardrail
 One `Ticker` drives `setState`; one `_HotelPainter` draws the corridor, residents,

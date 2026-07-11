@@ -5,9 +5,9 @@
 
 - **Scale:** organ (`BioScale.organ`)
 - **Game id:** heartbeat
-- **One-line concept:** Route blood through the heart in the correct circulation order, tapping each
-  chamber/valve on the beat to pump. Deoxygenated (blue) vs oxygenated (red) blood is shown so the
-  whole loop is visible.
+- **One-line concept:** A heart-rate time trial — YOU are the pacemaker. Double-tap the screen to
+  beat the heart; a live BPM is read from your rhythm; climb smoothly to each ramping GOAL BPM and
+  hold it inside the band. Arrhythmia and spiking past the goal drain your score.
 - **Role:** solo high-score (timed, 60s)
 - **Six-in-one?** no
 
@@ -15,67 +15,73 @@
 
 ## Lore
 
-A heartbeat is a pump cycle with a strict order. Blood returning from the **body** is oxygen-poor
-(blue). It enters the **right atrium**, drops into the **right ventricle**, and is pushed to the
-**lungs**, where it picks up oxygen and turns red. The now-oxygenated blood returns to the **left
-atrium**, falls into the **left ventricle**, and is pumped back out to the **body** — completing one
-full circuit. The right heart drives **pulmonary** circulation (heart → lungs → heart); the left
-heart drives **systemic** circulation (heart → body → heart). Tap the loop in order, on the beat.
+Heart rate is a rhythm, not a switch. At rest a healthy heart idles near 60 BPM; effort walks it up
+through zones — a brisk 90, a cardio 120, a hard 150, a redline near 172 — and a fit heart moves
+between them **smoothly and gradually**, never in jagged jumps. A jittery, irregular rhythm
+(arrhythmia) is unhealthy; a rate that spikes far past where it should be is the body overshooting.
+The player *is* the pacemaker: they set the beat by hand and must steer it up the ramp under control.
 
 ---
 
 ## Rules (canonical)
 
-1. **The loop is fixed and ordered:** Body → Right Atrium (RA) → Right Ventricle (RV) → Lungs → Left
-   Atrium (LA) → Left Ventricle (LV) → Body. The six stages sit on a ring; arrows show flow direction.
+1. **Double-tap to beat.** Each **double-tap** on the screen registers one heartbeat. A single tap
+   arms a beat; the second tap within `_kDoubleTapWindow` (0.42 s) confirms it. Two taps further apart
+   than the window are read as the start of a new beat, not a beat each — so you cannot cheese BPM by
+   mashing.
 
-2. **Blood has a color.** It is **blue (deoxygenated)** from the Body through RA, RV, and into the
-   Lungs; it turns **red (oxygenated)** at the Lungs and stays red through LA, LV, and back to the
-   Body, where O₂ is delivered and it turns blue again. The ring's pipes are tinted by the blood that
-   flows through them, so the player can see the pulmonary vs systemic halves.
+2. **Live BPM is computed from your rhythm.** The last few inter-beat intervals (`_kIbiMemory` = 5)
+   are averaged into **YOUR BPM**, shown big on the heart. Stop tapping and the estimate sags toward
+   zero (flatline) within a few seconds.
 
-3. **A metronome beats.** A shrinking "approach ring" closes onto the next stage once per beat; the
-   downbeat is the moment it snaps shut. The central heart thumps on every beat.
+3. **The GOAL ramps in zones.** The target BPM climbs across the round: `60 → 90 → 120 → 150 → 172`,
+   each zone arriving at a fixed fraction of the round (`0 / 0.18 / 0.40 / 0.62 / 0.82`). Each new goal
+   is announced with a banner. The tolerance **band** tightens with each zone (± 18 → ± 8 BPM).
 
-4. **Tap the NEXT stage on the beat to pump.** The next stage in the loop is highlighted (white rim +
-   approach ring). Tapping it while the beat is inside the timing window advances the blood one stage:
-   that's a **clean pump** (+points, streak +1).
+4. **Score for time spent IN the band.** While `|YOUR BPM − GOAL| ≤ band`, points accrue per second
+   (`_kInBandBase`), scaled up as the band tightens. Holding a **steady** rhythm adds a smoothness
+   bonus (`_kSmoothBonus`), largest when your intervals are metronome-even.
 
-5. **Two ways to stall (no advance, streak resets to 0):**
-   - **Wrong order** — tapping any node that is not the next stage ("WRONG WAY").
-   - **Mistimed** — tapping the correct stage outside the timing window ("TOO SOON" / "TOO LATE").
+5. **Two ways to bleed score:**
+   - **Spiking** — YOUR BPM shoots well *past* the goal (`err > band × 2.2`): draining
+     `_kSpikePenalty`/s. Being *under* the goal is never a spike — you just haven't climbed yet.
+   - **Arrhythmia** — your inter-beat intervals are highly irregular (jitter/CV > 0.34): draining
+     `_kArrhythmiaPenalty`/s. The reward is a smooth, gradual climb; jitter is punished.
 
-6. **Streak builds the heart rate.** BPM = `64 + streak × 5`, clamped to `[64, 176]`. A stall drops
-   you back to 64 BPM. Higher BPM tightens the timing window (`0.22 → 0.09` beat-phase units) — the
-   game accelerates as you play well, and eases off when you break.
-
-7. **A full cycle scores a bonus.** Pumping blood back into the Body (returning to stage 0) completes
-   one circulation cycle: +40 and a "CYCLE" banner.
+6. **Escalation.** Later zones arrive over a fixed clock, the band tightens, and the redline (172, ± 8)
+   must be held to the buzzer — the game gets strictly harder the longer it runs.
 
 ---
 
 ## Controls
 
-Tap a stage node. Hit radius is `nodeR × 1.7` (generous). All rendering is `CustomPainter` — no raster
-assets. Visual language:
-- **Nodes** — layered orbs colored by blood state (blue = deox, red = oxy). The current stage holds a
-  bright white blood token and pulses with the beat; the next stage has a white rim + approach ring.
-- **Pipes + chevrons** — the ring connecting the stages, tinted by blood color, with direction arrows.
-- **Center heart** — a heart that thumps each beat; BPM and current streak read out beneath it.
-- **Active label** — bottom strip names the next stage in full ("Right Ventricle") and its blood state.
+Double-tap anywhere. All rendering is `CustomPainter` — no raster assets. Visual language:
+- **Center heart** — a layered, gradient heart that **thumps on every confirmed beat** (pulse on the
+  ticker canvas). It wears a green rim while you're in the band. YOUR BPM sits on it.
+- **GOAL readout (top)** — the target BPM in amber, with its ± band and a "hold it here" cue.
+- **Band gauge (right edge)** — a vertical BPM scale: the green band, the amber target line, and your
+  live marker (green in-band / amber near / red spiking).
+- **ECG trace (lower)** — an ECG-style pulse sweep whose spike frequency tracks your live BPM.
+- **State word** — under the heart: START TAPPING / CLIMB — TAP FASTER / IN THE ZONE / SLOW DOWN /
+  TOO FAST — EASE OFF / STEADY THE RHYTHM.
+- **Hint** — "DOUBLE-TAP to beat — match the goal BPM" fades after the first few beats.
 
 ---
 
 ## Scoring
 
-| Event | Score |
-|---|---|
-| Clean pump | `12 + min(streak, 12)` |
-| Perfect pump (within 40% of the window) | `+8` on top |
-| Cycle complete (blood back to Body) | `+40` |
-| Stall (wrong order or mistimed) | no penalty; streak resets to 0 |
+Score is **time-in-band**, accumulated per second, not per event:
 
-Score unit: **pumps** (every clean pump is one pump; points accumulate as above).
+| Condition | Effect (per second) |
+|---|---|
+| In the band | `+_kInBandBase (22)` × band tightness (up to ×2.4) |
+| In the band AND steady | `+_kSmoothBonus (14)` × smoothness (0..1) |
+| Spiking past the goal | `−_kSpikePenalty (18)` |
+| Arrhythmic (jitter > 0.34) | `−_kArrhythmiaPenalty (12)` |
+
+Net gain is fractional per tick and accumulated; only positive net gain adds points (the score never
+decreases — penalties suppress gain, they don't subtract from a banked score). Score unit: **BPM·s**
+(seconds held on target), surfaced as generic points.
 
 ---
 
@@ -88,10 +94,11 @@ wins. No built-in early end. The game never ends itself.
 
 ## Difficulty curve
 
-One self-reinforcing lever: the **streak → BPM → window** loop. Cold, the heart rests at 64 BPM with a
-wide 0.22 window. A clean run climbs toward 176 BPM and a 0.09 window — faster beats, tighter timing,
-and the cycle bonus arriving more often. A single stall collapses the rate back to resting, so the
-ramp is earned and re-earned. The order requirement is constant; the timing is what accelerates.
+Two compounding levers: the **ramping goal** and the **tightening band**. Early on the goal is a
+gentle 60 with a wide ± 18 band — easy to find and hold. Each zone raises the target and shrinks the
+band, and the player must *transition smoothly* (spiking to the new goal is penalized), so the skill
+is controlled acceleration, not reflex. The redline zone (172 ± 8) is humanly hard to hold steadily,
+so scores cluster at skill, not at a ceiling.
 
 ---
 
@@ -99,18 +106,18 @@ ramp is earned and re-earned. The order requirement is constant; the timing is w
 
 | Concept | How it's taught in the mechanic |
 |---|---|
-| Path of blood through the heart | The win condition IS the correct sequence — you cannot score out of order. |
-| Pulmonary vs systemic circulation | Right heart → Lungs (pulmonary) and Left heart → Body (systemic) are the two tinted halves of the ring. |
-| Oxygenation at the lungs | Blood is blue until the Lungs stage, where it turns red ("OXYGENATED"); red until the Body. |
-| Chambers & flow | Atria (RA/LA) receive, ventricles (RV/LV) pump; named in full on the active label. |
-| Heart rate | BPM is shown live and rises with a clean streak. |
+| Resting vs active heart rate | The ramp literally walks you from a resting ~60 up through effort zones to a redline. |
+| Heart-rate zones | The named goals (rest / brisk / cardio / hard / redline) are the scoring targets. |
+| Gradual vs abrupt change | Spiking past the goal is penalized; a smooth climb is rewarded. |
+| Arrhythmia | Irregular inter-beat intervals (high CV) drain score — a steady rhythm is healthy. |
+| Inter-beat interval → BPM | YOUR BPM is computed live from the time between your beats (60 / mean IBI). |
 
 ---
 
 ## Session / resume
 
-Persist (if ever needed): `score`, elapsed time, `_pos` (current stage), `_streak`, `_pumps`,
-`_cycles`. The beat phase and juice are ephemeral. On a fresh run the widget detects the
+Persist (if ever needed): `score`, elapsed time, `_curBpm`, `_target`, `_zoneIndex`, the recent
+`_ibis`. The beat pulse and juice are ephemeral. On a fresh run the widget detects the
 not-running → running transition and calls `_resetRun()`, so a session can close and a new one start
 clean (the S in GAMES).
 
@@ -119,20 +126,22 @@ clean (the S in GAMES).
 ## Implementation notes
 
 **File:** `lib/games/organ/heartbeat/heartbeat_game.dart` — class `HeartbeatGame`. One `Ticker` drives
-one `_HeartPainter`. Self-contained: imports only `mini_game.dart`, `fx.dart`, `theme/potatuhs.dart`,
-and Flutter.
+one `_HeartPainter` (continuous motion — beating heart, ECG sweep — lives on the canvas, never in
+per-frame widget rebuilds). Self-contained: imports only `mini_game.dart`, `fx.dart`, and Flutter.
 
 **Tunable constants:**
 
 | Constant | Value | Effect |
 |---|---|---|
-| `_kBaseBpm` | 64 | Resting rate (cold streak) |
-| `_kMaxBpm` | 176 | Rate ceiling |
-| `_kBpmPerStreak` | 5 | BPM added per clean pump in the streak |
-| `_kWindowWide` / `_kWindowTight` | 0.22 / 0.09 | Timing window at min / max BPM |
-| `_kPerfectFrac` | 0.4 | Fraction of the window that counts as PERFECT |
-| `_kPumpBase` | 12 | Points per clean pump (before streak/perfect) |
-| `_kPerfectBonus` | 8 | Extra for a perfect pump |
-| `_kStreakCap` | 12 | Streak-bonus cap |
-| `_kCycleBonus` | 40 | Points for completing a circulation cycle |
-| `_kIdleBpm` | 50 | Calm ready-state thump rate |
+| `_kIdleBpm` | 52 | Calm ready-state thump rate |
+| `_kRoundSeconds` | 60 | Round length (matches registry `durationSeconds`) |
+| `_kDoubleTapWindow` | 0.42 | Max seconds between the two taps of one beat |
+| `_kIbiMemory` | 5 | Recent intervals averaged into the BPM estimate |
+| `_kInBandBase` | 22 | Base points/sec while in the band |
+| `_kSmoothBonus` | 14 | Extra points/sec for a steady rhythm |
+| `_kSpikePenalty` | 18 | Points/sec drained while spiking past the goal |
+| `_kArrhythmiaPenalty` | 12 | Points/sec drained while arrhythmic |
+| `_kZones` | see file | The (target, band, atFrac) ramp: 60/90/120/150/172 |
+
+**Registry note:** `durationSeconds: 60`, `humanMax: 1600`, `starThresholds: [350, 800, 1400]` were
+tuned for the OLD blood-routing game and want a playtest re-tune for the time trial (see AGENT.md).

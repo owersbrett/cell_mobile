@@ -6,26 +6,27 @@ import '../../fx.dart';
 import '../../mini_game.dart';
 import '../../../theme/potatuhs.dart';
 
-/// Cosmic Web — "Trace the Filaments".
+/// Trace the Constellations — internal id `cosmic_web`.
 ///
-/// The universe's largest structures are not scattered at random: galaxy
-/// superclusters string together along vast **filaments** of dark matter,
-/// woven around enormous near-empty **voids**. This game asks the player to
-/// trace that scaffolding — drag cluster → cluster along the (faintly glowing)
-/// filament threads to light up the cosmic web. Link two clusters that a real
-/// filament joins and the thread ignites and scores; drag across a **void**
-/// (where no filament exists) and the link fizzles.
+/// A field of stars, ONE target constellation shown as a faint **ghost figure**
+/// (star nodes + the edges of the figure). The player **races to trace it** —
+/// drag star → star along a ghost edge; a correct trace **ignites** the edge
+/// (warm gold), banks points, and grows a chain combo. A wrong drag **fizzles**
+/// (no score, combo resets, a soft cue) — never a game-over. Light every edge to
+/// **complete** the figure: it flares into the finished shape + a name label,
+/// banks a completion + speed bonus, and the next figure fades in denser &
+/// fainter.
 ///
-/// Light every filament in a web to **complete** it and bank a speed + accuracy
-/// bonus; a new, **denser** web replaces it — more clusters, fainter filament
-/// hints, more voids. The proper, on-theme successor to the deleted
-/// "Neuron Connect": same connect-the-nodes feel, correctly themed to the
-/// large-scale structure of the cosmos.
+/// Over the tracing, the sky throws **reaction events** on the game's OWN local
+/// RNG schedule — pure bonus, never required, never a fail:
+///   • shooting star  — a streak; tap before it exits (+15)
+///   • supernova      — a star flares bright then fades ~1.2 s; tap while lit (+40)
+///   • meteor shower  — a burst of several quick streaks; tap each (+8)
 ///
 /// The host ([MiniGameHost]) owns the timer, 3·2·1 countdown, score HUD and
-/// results; this widget renders ONLY the 60-second play area. All rendering is
-/// a single [CustomPainter] driven by one `days:1` ticker — no per-frame
-/// setState over the web tree.
+/// results; this widget renders ONLY the 60-second play area. All rendering is a
+/// single [CustomPainter] driven by one `days:1` ticker — animated state mutates
+/// without per-frame setState over the widget tree (only throttled HUD text).
 class CosmicWebGame extends StatefulWidget {
   final MiniGameSession session;
   const CosmicWebGame({super.key, required this.session});
@@ -34,23 +35,45 @@ class CosmicWebGame extends StatefulWidget {
   State<CosmicWebGame> createState() => _CosmicWebGameState();
 }
 
-/// One candidate filament between two clusters (undirected; a < b not enforced
-/// at construction — use [_CosmicWebGameState._sameEdge] to compare).
-class _Filament {
+/// One edge of a figure (undirected). Compare with [_CosmicWebGameState._same].
+class _Edge {
   final int a;
   final int b;
-  const _Filament(this.a, this.b);
+  const _Edge(this.a, this.b);
 }
+
+/// An authored, real constellation: a name, normalised star coords (0..1 in the
+/// play area) and the edge list that draws the recognisable figure.
+class _Figure {
+  final String name;
+  final List<Offset> stars;
+  final List<_Edge> edges;
+  const _Figure(this.name, this.stars, this.edges);
+}
+
+/// A live reaction event (shooting star / supernova / one meteor of a shower).
+class _SkyEvent {
+  final _EventKind kind;
+  Offset from; // normalised
+  Offset to; // normalised (streaks travel from→to; supernova ignores)
+  double age = 0; // seconds since spawn
+  final double life; // seconds until it exits / fades
+  bool caught = false;
+  double deathFlash = 0; // 1→0 after being caught (a satisfying pop)
+  _SkyEvent(this.kind, this.from, this.to, this.life);
+}
+
+enum _EventKind { shootingStar, supernova, meteor }
 
 class _CosmicWebGameState extends State<CosmicWebGame>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   final math.Random _rng = math.Random();
 
-  // ── Cosmic accent palette (deep violet → bright matter glow) ──
-  static const Color _accent = Color(0xFF7C5CFF); // dark-matter violet
-  static const Color _lit = Color(0xFFFFD27A); // ignited matter (gold-warm)
-  static const Color _voidTint = Color(0xFF0A0814); // near-empty void
+  // ── Constellation accent palette (deep night violet → ignited starlight) ──
+  static const Color _accent = Color(0xFF7C5CFF); // night-sky violet
+  static const Color _lit = Color(0xFFFFD27A); // ignited star / lit edge (gold)
+  static const Color _meteorHot = Color(0xFFFFE9B8); // streak-hot white-gold
 
   // ── Session re-entry (the S) ──
   bool _started = false;
@@ -58,28 +81,41 @@ class _CosmicWebGameState extends State<CosmicWebGame>
   // ── Timeline (seconds while playing) ──
   double _clock = 0;
   double _lastT = 0;
-  double _webStart = 0; // _clock when the current web appeared
+  double _figureStart = 0; // _clock when the current figure appeared
 
-  // ── The web (positions normalised 0..1 within the play area) ──
-  List<Offset> _clusters = [];
-  List<_Filament> _filaments = [];
-  late List<bool> _litFil; // parallel to _filaments — has this thread ignited?
-  List<_VoidBlob> _voids = [];
-  int _level = 0;
+  // ── The current figure (positions normalised 0..1 within the play area) ──
+  List<Offset> _stars = [];
+  List<_Edge> _edges = [];
+  late List<bool> _litEdge; // parallel to _edges — has this edge ignited?
+  String _figureName = '';
+  int _figureNum = 0; // 0-based figure index this run
+  List<Offset> _dust = []; // decorative faint background stars (non-interactive)
 
   // ── Interaction ──
   int? _dragFrom;
   Offset? _dragPos; // normalised finger position while dragging
   Offset? _lastDragNorm;
 
+  // ── Reaction events ──
+  final List<_SkyEvent> _events = [];
+  double _nextEventIn = 3.0; // seconds until the next spawn
+  int _meteorShowerLeft = 0; // remaining meteors queued in a burst
+  double _meteorGap = 0; // countdown between shower meteors
+
   // ── Feedback / juice ──
   int _combo = 0;
-  double _completeFlash = 0; // 1 → 0 after a web completes
-  double _voidFlash = 0; // 1 → 0 after a void miss
+  double _fizzleFlash = 0; // 1 → 0 after a wrong drag
+  double _figureReveal = 0; // 1 → 0 one-shot flare of the finished figure
   String _flashText = '';
+  String _revealName = ''; // name shown during the completion flare
   final List<FxParticle> _fx = [];
   final List<FxPop> _pops = [];
   double _lastW = 1, _lastH = 1;
+
+  // Throttled HUD refresh (combo pill / progress) — never per frame.
+  int _hudCombo = 0;
+  int _hudLit = 0;
+  int _hudTotal = 0;
 
   @override
   void initState() {
@@ -87,11 +123,8 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     _ctrl = AnimationController(vsync: this, duration: const Duration(days: 1))
       ..addListener(_onTick)
       ..forward();
-    _newWeb(0);
-    // ATTRACT autopilot: this game knows how to trace itself. Registered always
-    // (harmless in normal play — the host only calls it hands-free). See
-    // [_autoStep]. Default interval (act every tick): Cosmic Web is a connect
-    // game, so one filament lit per tick reads as steady, deliberate tracing.
+    _newFigure(0);
+    // ATTRACT autopilot: this game knows how to trace itself hands-free.
     widget.session.autoPilot = _autoStep;
   }
 
@@ -103,32 +136,45 @@ class _CosmicWebGameState extends State<CosmicWebGame>
   }
 
   // ── ATTRACT autopilot ───────────────────────────────────────────────────
-  /// One competent move per host tick (~250ms). Lights the web the way scoring
-  /// rewards — trace REAL filaments only — using the game's OWN link handler
-  /// ([_attempt]), never synthetic drags or coordinate math.
-  ///
-  /// Strategy: [_filaments] is the set of real cluster-pairs a filament joins;
-  /// [_litFil] flags which are already ignited. Each tick, take the first real
-  /// filament still dark and hand its two clusters to [_attempt] — since the
-  /// pair comes straight from [_filaments] it is guaranteed real, so [_attempt]
-  /// resolves it via [_onFilamentLit] (score + combo) and NEVER as a void miss.
-  /// Lighting the last thread fires [_onWebComplete], which banks the bonus and
-  /// advances to the next, denser web after its own delay. While that hand-off
-  /// is in flight every filament reads as lit, so there is nothing to do and we
-  /// simply return — the host advances the web.
+  /// One competent move per host tick (~250 ms). Plays the game the right way:
+  /// prefer catching a live reaction event (they expire), otherwise trace the
+  /// first still-dark edge of the current figure. The edge pair comes straight
+  /// from [_edges] so it is guaranteed real — [_attempt] resolves it as a lit
+  /// edge, never a fizzle. Respects [isRunning].
   void _autoStep() {
     if (!widget.session.isRunning) return;
-    if (_clusters.isEmpty || _filaments.isEmpty) return;
-    for (var i = 0; i < _filaments.length; i++) {
-      if (_litFil[i]) continue;
-      final f = _filaments[i];
-      _attempt(f.a, f.b); // real pair → _onFilamentLit; never a void
+    // 1) If a reaction event is catchable, grab it (best value first).
+    _SkyEvent? target;
+    for (final e in _events) {
+      if (e.caught) continue;
+      if (e.kind == _EventKind.supernova && e.age > e.life) continue;
+      if (target == null) {
+        target = e;
+      } else if (_eventValue(e.kind) > _eventValue(target.kind)) {
+        target = e;
+      }
+    }
+    if (target != null) {
+      _catchEvent(target);
       return;
     }
-    // Web complete / advancing — nothing to light; let the host advance.
+    // 2) Otherwise trace the next dark edge.
+    if (_stars.isEmpty || _edges.isEmpty) return;
+    for (var i = 0; i < _edges.length; i++) {
+      if (_litEdge[i]) continue;
+      _attempt(_edges[i].a, _edges[i].b);
+      return;
+    }
+    // Figure complete / handing off — nothing to do; the host advances it.
   }
 
-  // ── The single ticker: advances clock, FX, and the session re-entry guard ──
+  int _eventValue(_EventKind k) => switch (k) {
+        _EventKind.supernova => 40,
+        _EventKind.shootingStar => 15,
+        _EventKind.meteor => 8,
+      };
+
+  // ── The single ticker: clock, events, FX, session re-entry guard ──
   void _onTick() {
     final t = (_ctrl.lastElapsedDuration?.inMicroseconds ?? 0) / 1e6;
     final dt = _lastT == 0 ? 0.016 : (t - _lastT).clamp(0.0, 0.05);
@@ -137,10 +183,10 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     // FX always animate (keeps the calm ready state alive too).
     if (_fx.isNotEmpty) _fx.removeWhere((p) => !p.step(dt));
     if (_pops.isNotEmpty) _pops.removeWhere((p) => !p.step(dt));
-    if (_completeFlash > 0) {
-      _completeFlash = (_completeFlash - dt * 1.4).clamp(0.0, 1.0);
+    if (_figureReveal > 0) {
+      _figureReveal = (_figureReveal - dt * 0.9).clamp(0.0, 1.0);
     }
-    if (_voidFlash > 0) _voidFlash = (_voidFlash - dt * 2.2).clamp(0.0, 1.0);
+    if (_fizzleFlash > 0) _fizzleFlash = (_fizzleFlash - dt * 2.2).clamp(0.0, 1.0);
 
     // Rising-edge reset → a fresh session starts clean (the S).
     final running = widget.session.isRunning;
@@ -154,36 +200,154 @@ class _CosmicWebGameState extends State<CosmicWebGame>
 
     if (!running) return;
     _clock += dt;
+    _stepEvents(dt);
+    _syncHud();
   }
 
   void _resetRun() {
     _clock = 0;
-    _level = 0;
+    _figureNum = 0;
     _combo = 0;
-    _completeFlash = 0;
-    _voidFlash = 0;
+    _figureReveal = 0;
+    _fizzleFlash = 0;
     _fx.clear();
     _pops.clear();
-    _newWeb(0);
+    _events.clear();
+    _nextEventIn = 3.0;
+    _meteorShowerLeft = 0;
+    _meteorGap = 0;
+    _newFigure(0);
+    _syncHud(force: true);
   }
 
-  // ── Web generation ─────────────────────────────────────────────────────────
-  void _newWeb(int level) {
-    final n = math.min(14, 6 + level); // denser each round
-    _clusters = _scatter(n);
-    // Filament scaffold = Euclidean Minimum Spanning Tree (the real cosmic web
-    // is tree-like) + a few short loop edges that bound the voids.
-    final extra = math.min(n - 2, (level / 2).floor());
-    _filaments = _buildFilaments(_clusters, extra);
-    _litFil = List<bool>.filled(_filaments.length, false);
-    _voids = _placeVoids(_clusters, 2 + (level ~/ 3));
+  /// Only setState when a HUD-visible value actually changes (combo, progress).
+  /// Keeps continuous motion off the widget tree per the performance law.
+  void _syncHud({bool force = false}) {
+    final lit = _litCount;
+    final total = _edges.length;
+    if (force ||
+        _combo != _hudCombo ||
+        lit != _hudLit ||
+        total != _hudTotal) {
+      _hudCombo = _combo;
+      _hudLit = lit;
+      _hudTotal = total;
+      if (mounted) setState(() {});
+    }
+  }
+
+  // ── Reaction events ─────────────────────────────────────────────────────────
+  void _stepEvents(double dt) {
+    // Age / cull existing events.
+    for (final e in _events) {
+      e.age += dt;
+      if (e.deathFlash > 0) e.deathFlash = (e.deathFlash - dt * 3).clamp(0.0, 1.0);
+    }
+    _events.removeWhere((e) =>
+        (e.caught && e.deathFlash <= 0) ||
+        (!e.caught && e.age > e.life));
+
+    // Meteor shower drip-feed.
+    if (_meteorShowerLeft > 0) {
+      _meteorGap -= dt;
+      if (_meteorGap <= 0) {
+        _spawnStreak(_EventKind.meteor);
+        _meteorShowerLeft--;
+        _meteorGap = 0.18 + _rng.nextDouble() * 0.16;
+      }
+    }
+
+    // Scheduled spawns. Cadence tightens slightly as figures advance.
+    _nextEventIn -= dt;
+    if (_nextEventIn <= 0) {
+      _spawnEvent();
+      final base = (3.4 - _figureNum * 0.14).clamp(1.7, 3.4);
+      _nextEventIn = base + _rng.nextDouble() * 1.6;
+    }
+  }
+
+  void _spawnEvent() {
+    final roll = _rng.nextDouble();
+    if (roll < 0.20) {
+      // Meteor shower: a short burst of quick streaks.
+      _meteorShowerLeft = 3 + _rng.nextInt(3);
+      _meteorGap = 0;
+    } else if (roll < 0.58) {
+      _spawnStreak(_EventKind.shootingStar);
+    } else {
+      _spawnSupernova();
+    }
+  }
+
+  void _spawnStreak(_EventKind kind) {
+    // A streak enters one edge, crosses the field, exits the far side.
+    final fromTop = _rng.nextBool();
+    final x0 = 0.05 + _rng.nextDouble() * 0.9;
+    final from = fromTop
+        ? Offset(x0, -0.05)
+        : Offset(-0.05, 0.1 + _rng.nextDouble() * 0.7);
+    final dir = Offset(
+      (_rng.nextDouble() * 0.9 + 0.2) * (from.dx < 0.5 ? 1 : -1),
+      _rng.nextDouble() * 0.7 + 0.5,
+    );
+    final to = from + dir;
+    final life = kind == _EventKind.meteor ? 0.85 : 1.35;
+    _events.add(_SkyEvent(kind, from, to, life));
+  }
+
+  void _spawnSupernova() {
+    // A supernova flares at an empty patch of sky, away from the drag stars.
+    Offset p = Offset(0.2 + _rng.nextDouble() * 0.6, 0.24 + _rng.nextDouble() * 0.5);
+    var guard = 0;
+    while (guard < 12 && _stars.any((s) => (s - p).distance < 0.12)) {
+      guard++;
+      p = Offset(0.2 + _rng.nextDouble() * 0.6, 0.24 + _rng.nextDouble() * 0.5);
+    }
+    _events.add(_SkyEvent(_EventKind.supernova, p, p, 1.2));
+  }
+
+  // ── Figure generation ───────────────────────────────────────────────────────
+  void _newFigure(int num) {
+    _figureNum = num;
+    const real = _realFigures;
+    // Real, recognisable constellations first; procedural once exhausted / at
+    // higher figure numbers (procedural kicks in past the authored set).
+    final _Figure fig;
+    if (num < real.length) {
+      fig = real[num];
+    } else {
+      fig = _proceduralFigure(num);
+    }
+    _stars = List<Offset>.from(fig.stars);
+    _edges = List<_Edge>.from(fig.edges);
+    _litEdge = List<bool>.filled(_edges.length, false);
+    _figureName = fig.name;
+    _dust = _scatterDust(22 + num * 2);
     _dragFrom = null;
     _dragPos = null;
-    _webStart = _clock;
-    if (mounted) setState(() {});
+    _figureStart = _clock;
+    _syncHud(force: true);
   }
 
-  /// Spread [n] superclusters out with a minimum separation so the web reads.
+  /// Faint decorative background stars — pure atmosphere, non-interactive.
+  List<Offset> _scatterDust(int n) {
+    return [
+      for (var i = 0; i < n; i++)
+        Offset(0.04 + _rng.nextDouble() * 0.92, 0.08 + _rng.nextDouble() * 0.86),
+    ];
+  }
+
+  // ── Procedural figures: EMST + a few loop edges (always fully traceable) ──
+  _Figure _proceduralFigure(int num) {
+    final over = num - _realFigures.length;
+    final n = math.min(14, 6 + over);
+    final stars = _scatter(n);
+    final extra = math.min(n - 2, (over / 2).floor());
+    final edges = _buildEdges(stars, extra);
+    return _Figure('FIGURE ${num + 1}', stars, edges);
+  }
+
+  /// Spread [n] stars out with a minimum separation so the figure reads.
   List<Offset> _scatter(int n) {
     final pts = <Offset>[];
     final minSep = (0.30 - n * 0.012).clamp(0.13, 0.30);
@@ -191,25 +355,25 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     while (pts.length < n && guard < 3000) {
       guard++;
       final p = Offset(
-        0.09 + _rng.nextDouble() * 0.82,
-        0.16 + _rng.nextDouble() * 0.70,
+        0.10 + _rng.nextDouble() * 0.80,
+        0.16 + _rng.nextDouble() * 0.68,
       );
       if (pts.every((q) => (q - p).distance >= minSep)) pts.add(p);
     }
     while (pts.length < n) {
       pts.add(Offset(
-        0.09 + _rng.nextDouble() * 0.82,
-        0.16 + _rng.nextDouble() * 0.70,
+        0.10 + _rng.nextDouble() * 0.80,
+        0.16 + _rng.nextDouble() * 0.68,
       ));
     }
     return pts;
   }
 
-  /// Euclidean MST via Prim's, plus the [extra] shortest non-tree edges (the
-  /// loops that wrap a void). Guarantees a connected, fully-traceable web.
-  List<_Filament> _buildFilaments(List<Offset> pts, int extra) {
+  /// Euclidean MST via Prim's, plus the [extra] shortest non-tree edges (loops).
+  /// Guarantees a connected, fully-traceable figure.
+  List<_Edge> _buildEdges(List<Offset> pts, int extra) {
     final n = pts.length;
-    final out = <_Filament>[];
+    final out = <_Edge>[];
     if (n < 2) return out;
     final inTree = List<bool>.filled(n, false);
     inTree[0] = true;
@@ -230,15 +394,15 @@ class _CosmicWebGameState extends State<CosmicWebGame>
       }
       if (bj < 0) break;
       inTree[bj] = true;
-      out.add(_Filament(bi, bj));
+      out.add(_Edge(bi, bj));
     }
     if (extra > 0) {
       final present = out.map((e) => _key(e.a, e.b)).toSet();
-      final cand = <MapEntry<double, _Filament>>[];
+      final cand = <MapEntry<double, _Edge>>[];
       for (var i = 0; i < n; i++) {
         for (var j = i + 1; j < n; j++) {
           if (present.contains(_key(i, j))) continue;
-          cand.add(MapEntry((pts[i] - pts[j]).distance, _Filament(i, j)));
+          cand.add(MapEntry((pts[i] - pts[j]).distance, _Edge(i, j)));
         }
       }
       cand.sort((a, b) => a.key.compareTo(b.key));
@@ -249,57 +413,64 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     return out;
   }
 
-  /// Decorative void blobs — placed in the emptiest gaps (far from clusters).
-  /// Purely visual: they reinforce "the dark gaps hold no filaments".
-  List<_VoidBlob> _placeVoids(List<Offset> pts, int count) {
-    final out = <_VoidBlob>[];
-    var guard = 0;
-    while (out.length < count && guard < 400) {
-      guard++;
-      final p = Offset(
-        0.16 + _rng.nextDouble() * 0.68,
-        0.22 + _rng.nextDouble() * 0.58,
-      );
-      // distance to nearest cluster — want it in open space
-      var near = double.infinity;
-      for (final c in pts) {
-        near = math.min(near, (c - p).distance);
-      }
-      if (near < 0.16) continue;
-      if (out.any((v) => (v.center - p).distance < 0.22)) continue;
-      out.add(_VoidBlob(p, 0.09 + _rng.nextDouble() * 0.05));
-    }
-    return out;
-  }
-
   static String _key(int a, int b) => a < b ? '$a-$b' : '$b-$a';
 
-  bool _sameEdge(_Filament e, int a, int b) =>
+  bool _same(_Edge e, int a, int b) =>
       (e.a == a && e.b == b) || (e.a == b && e.b == a);
 
-  /// Index of the filament joining clusters [a] and [b], or -1 if that pair is
-  /// separated by a void (no filament).
-  int _filamentIndex(int a, int b) {
-    for (var i = 0; i < _filaments.length; i++) {
-      if (_sameEdge(_filaments[i], a, b)) return i;
+  /// Index of the edge joining stars [a] and [b], or -1 if the figure has no
+  /// such line (a wrong drag).
+  int _edgeIndex(int a, int b) {
+    for (var i = 0; i < _edges.length; i++) {
+      if (_same(_edges[i], a, b)) return i;
     }
     return -1;
   }
 
-  int get _litCount => _litFil.where((v) => v).length;
+  int get _litCount => _litEdge.where((v) => v).length;
 
   // ── Interaction ────────────────────────────────────────────────────────────
   int? _nodeAt(Offset normPos, {double radius = 0.085}) {
     int? best;
     var bestD = radius;
-    for (var i = 0; i < _clusters.length; i++) {
-      final d = (_clusters[i] - normPos).distance;
+    for (var i = 0; i < _stars.length; i++) {
+      final d = (_stars[i] - normPos).distance;
       if (d < bestD) {
         bestD = d;
         best = i;
       }
     }
     return best;
+  }
+
+  /// Nearest live, catchable event within tap radius of [normPos], or null.
+  _SkyEvent? _eventAt(Offset normPos) {
+    _SkyEvent? best;
+    var bestD = 0.11;
+    for (final e in _events) {
+      if (e.caught) continue;
+      final pos = _eventPos(e);
+      final d = (pos - normPos).distance;
+      // Supernova only catchable while lit (age <= life).
+      if (e.kind == _EventKind.supernova && e.age > e.life) continue;
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  Offset _eventPos(_SkyEvent e) {
+    if (e.kind == _EventKind.supernova) return e.from;
+    final f = (e.age / e.life).clamp(0.0, 1.0);
+    return Offset.lerp(e.from, e.to, f)!;
+  }
+
+  void _onTapDown(Offset norm) {
+    if (!widget.session.isRunning) return;
+    final e = _eventAt(norm);
+    if (e != null) _catchEvent(e);
   }
 
   void _onPanStart(Offset norm) {
@@ -317,105 +488,110 @@ class _CosmicWebGameState extends State<CosmicWebGame>
     final target = _nodeAt(_lastDragNorm ?? Offset.zero);
     _dragFrom = null;
     _dragPos = null;
-    if (from == null || target == null || from == target) {
-      setState(() {});
-      return;
-    }
-    if (!widget.session.isRunning) {
-      setState(() {});
-      return;
-    }
+    if (!widget.session.isRunning) return;
+    if (from == null || target == null || from == target) return;
     _attempt(from, target);
   }
 
   void _attempt(int a, int b) {
-    final idx = _filamentIndex(a, b);
+    final idx = _edgeIndex(a, b);
     if (idx < 0) {
-      _onVoidMiss(a, b);
+      _onFizzle(a, b);
       return;
     }
-    if (_litFil[idx]) {
-      // Already traced — a tiny pulse, no penalty, no score.
-      _litPulse(a, b);
-      setState(() {});
+    if (_litEdge[idx]) {
+      _litPulse(a, b); // already traced — a tiny pulse, no penalty, no score.
       return;
     }
-    _onFilamentLit(idx, a, b);
+    _onEdgeLit(idx, a, b);
   }
 
-  void _onFilamentLit(int idx, int a, int b) {
-    _litFil[idx] = true;
+  void _onEdgeLit(int idx, int a, int b) {
+    _litEdge[idx] = true;
     _combo++;
     widget.session.noteStreak(_combo);
 
-    // Each thread: base + a combo bonus, scaled gently by web density.
-    final base = 10 + (_level * 0.6).round();
+    // + (10 + 0.6·figure#) base, + min(combo·2, 20) chain bonus.
+    final base = 10 + (_figureNum * 0.6).round();
     final comboBonus = math.min(_combo * 2, 20);
     final points = base + comboBonus;
     widget.session.addScore(points);
 
     final mid = Offset(
-      (_clusters[a].dx + _clusters[b].dx) * 0.5 * _lastW,
-      (_clusters[a].dy + _clusters[b].dy) * 0.5 * _lastH,
+      (_stars[a].dx + _stars[b].dx) * 0.5 * _lastW,
+      (_stars[a].dy + _stars[b].dy) * 0.5 * _lastH,
     );
     _fx.addAll(FxBurst.spawn(mid, _lit, count: 8, speed: 90));
     _pops.add(FxPop(mid.translate(0, -8), '+$points', _lit));
 
-    if (_litCount == _filaments.length) {
-      _onWebComplete();
-    } else {
-      setState(() {});
+    if (_litCount == _edges.length) {
+      _onFigureComplete();
     }
+    _syncHud();
   }
 
   void _litPulse(int a, int b) {
     final mid = Offset(
-      (_clusters[a].dx + _clusters[b].dx) * 0.5 * _lastW,
-      (_clusters[a].dy + _clusters[b].dy) * 0.5 * _lastH,
+      (_stars[a].dx + _stars[b].dx) * 0.5 * _lastW,
+      (_stars[a].dy + _stars[b].dy) * 0.5 * _lastH,
     );
-    _fx.addAll(FxBurst.spawn(mid, _lit.withValues(alpha: 0.6),
-        count: 4, speed: 50));
+    _fx.addAll(
+        FxBurst.spawn(mid, _lit.withValues(alpha: 0.6), count: 4, speed: 50));
   }
 
-  void _onVoidMiss(int a, int b) {
+  void _onFizzle(int a, int b) {
     _combo = 0;
-    _voidFlash = 1.0;
-    _flashText = 'VOID — no filament there';
+    _fizzleFlash = 1.0;
+    _flashText = 'not a line';
     final mid = Offset(
-      (_clusters[a].dx + _clusters[b].dx) * 0.5 * _lastW,
-      (_clusters[a].dy + _clusters[b].dy) * 0.5 * _lastH,
+      (_stars[a].dx + _stars[b].dx) * 0.5 * _lastW,
+      (_stars[a].dy + _stars[b].dy) * 0.5 * _lastH,
     );
-    _fx.addAll(FxBurst.spawn(mid, _accent.withValues(alpha: 0.5),
-        count: 6, speed: 60));
-    setState(() {});
+    _fx.addAll(FxBurst.spawn(mid, Colors.white.withValues(alpha: 0.5),
+        count: 6, speed: 55));
+    _syncHud(force: true);
   }
 
-  void _onWebComplete() {
-    final solveTime = _clock - _webStart;
-    final par = _filaments.length * 1.15;
+  void _onFigureComplete() {
+    final solveTime = _clock - _figureStart;
+    final par = _edges.length * 1.15;
     final speedPts = ((par - solveTime) * 5).clamp(0.0, 45.0).round();
     final bonus = 25 + speedPts;
     widget.session.addScore(bonus);
 
-    _completeFlash = 1.0;
+    _figureReveal = 1.0;
+    _revealName = _figureName;
     _flashText = speedPts >= 30
-        ? 'WEB COMPLETE!  +$bonus  fast trace'
-        : 'WEB COMPLETE  +$bonus';
+        ? '$_figureName!  +$bonus  fast trace'
+        : '$_figureName  +$bonus';
 
     final center = Offset(_lastW * 0.5, _lastH * 0.45);
     _fx.addAll(FxBurst.spawn(center, _lit, count: 26, speed: 170));
     _pops.add(FxPop(center.translate(0, -26), '+$bonus', _lit));
 
-    setState(() {});
-    Future.delayed(const Duration(milliseconds: 700), () {
+    Future.delayed(const Duration(milliseconds: 750), () {
       if (!mounted || !widget.session.isRunning) return;
-      _level++;
-      _newWeb(_level);
+      _newFigure(_figureNum + 1);
     });
   }
 
-  /// Faint filament-hint alpha — dims as webs get denser (harder to read).
-  double get _hintAlpha => (0.50 - _level * 0.035).clamp(0.13, 0.50);
+  void _catchEvent(_SkyEvent e) {
+    if (e.caught) return;
+    e.caught = true;
+    e.deathFlash = 1.0;
+    final pts = _eventValue(e.kind);
+    widget.session.addScore(pts);
+    final pos = Offset(_eventPos(e).dx * _lastW, _eventPos(e).dy * _lastH);
+    final color = e.kind == _EventKind.supernova ? _lit : _meteorHot;
+    _fx.addAll(FxBurst.spawn(pos, color,
+        count: e.kind == _EventKind.supernova ? 22 : 10,
+        speed: e.kind == _EventKind.supernova ? 150 : 90));
+    _pops.add(FxPop(pos.translate(0, -10), '+$pts', color));
+    _syncHud();
+  }
+
+  /// Faint ghost-edge alpha — dims as figures get denser (fainter guide).
+  double get _hintAlpha => (0.50 - _figureNum * 0.037).clamp(0.13, 0.50);
 
   // ── Build ──────────────────────────────────────────────────────────────────
   @override
@@ -426,10 +602,11 @@ class _CosmicWebGameState extends State<CosmicWebGame>
       _lastW = w;
       _lastH = h;
       Offset toNorm(Offset local) => Offset(local.dx / w, local.dy / h);
-      final lit = _litCount;
-      final total = _filaments.length;
+      final lit = _hudLit;
+      final total = _hudTotal;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
+        onTapDown: (d) => _onTapDown(toNorm(d.localPosition)),
         onPanStart: (d) => _onPanStart(toNorm(d.localPosition)),
         onPanUpdate: (d) {
           _lastDragNorm = toNorm(d.localPosition);
@@ -451,7 +628,7 @@ class _CosmicWebGameState extends State<CosmicWebGame>
               child: Column(
                 children: [
                   Text(
-                    'TRACE THE DARK-MATTER FILAMENTS',
+                    'TRACE THE CONSTELLATION',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontFamily: Potatuhs.bodyFont,
@@ -466,7 +643,7 @@ class _CosmicWebGameState extends State<CosmicWebGame>
                 ],
               ),
             ),
-            if (_combo >= 2)
+            if (_hudCombo >= 2)
               Positioned(
                 top: 6,
                 right: 10,
@@ -479,58 +656,12 @@ class _CosmicWebGameState extends State<CosmicWebGame>
                     border: Border.all(color: _lit),
                   ),
                   child: Text(
-                    '×$_combo CHAIN',
+                    '×$_hudCombo CHAIN',
                     style: const TextStyle(
                       fontFamily: Potatuhs.bodyFont,
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                       color: _lit,
-                    ),
-                  ),
-                ),
-              ),
-            if (_voidFlash > 0)
-              Positioned(
-                bottom: 26,
-                left: 0,
-                right: 0,
-                child: IgnorePointer(
-                  child: Opacity(
-                    opacity: _voidFlash.clamp(0.0, 1.0),
-                    child: Text(
-                      _flashText,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontFamily: Potatuhs.bodyFont,
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: _accent.withValues(alpha: 0.95),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            if (_completeFlash > 0)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: Center(
-                    child: Opacity(
-                      opacity: _completeFlash.clamp(0.0, 1.0),
-                      child: Text(
-                        _flashText,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontFamily: Potatuhs.bodyFont,
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: _lit,
-                          shadows: [
-                            Shadow(
-                                color: _lit.withValues(alpha: 0.6),
-                                blurRadius: 14),
-                          ],
-                        ),
-                      ),
                     ),
                   ),
                 ),
@@ -544,7 +675,7 @@ class _CosmicWebGameState extends State<CosmicWebGame>
   Widget _progressPill(int lit, int total) {
     final frac = total <= 0 ? 0.0 : (lit / total).clamp(0.0, 1.0);
     return Container(
-      constraints: const BoxConstraints(maxWidth: 250),
+      constraints: const BoxConstraints(maxWidth: 260),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       margin: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
@@ -558,8 +689,8 @@ class _CosmicWebGameState extends State<CosmicWebGame>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _stat('FILAMENTS', '$lit / $total', _lit),
-              _stat('WEB', '${_level + 1}', _accent),
+              _stat('LINES', '$lit / $total', _lit),
+              _stat('FIGURE', '${_figureNum + 1}', _accent),
             ],
           ),
           const SizedBox(height: 6),
@@ -618,38 +749,149 @@ class _CosmicWebGameState extends State<CosmicWebGame>
   }
 }
 
-/// A near-empty cosmic void (decorative): a dark, faintly-rimmed region the
-/// filaments wrap around but never cross.
-class _VoidBlob {
-  final Offset center;
-  final double radius;
-  const _VoidBlob(this.center, this.radius);
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// Authored, real constellations. Star coords are normalised 0..1 in the play
+// area (x → right, y → down), hand-placed to read as the recognisable figure;
+// edges are index pairs into the star list. Self-contained (no external data).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const List<_Figure> _realFigures = [
+  // ── ORION — the hunter: shoulders, belt, feet, club (a bold opener). ──
+  _Figure(
+    'ORION',
+    [
+      Offset(0.34, 0.16), // 0 Betelgeuse (upper-left shoulder)
+      Offset(0.64, 0.20), // 1 Bellatrix (upper-right shoulder)
+      Offset(0.44, 0.46), // 2 belt-left (Alnitak)
+      Offset(0.51, 0.49), // 3 belt-mid (Alnilam)
+      Offset(0.58, 0.52), // 4 belt-right (Mintaka)
+      Offset(0.36, 0.80), // 5 Saiph (lower-left foot)
+      Offset(0.66, 0.82), // 6 Rigel (lower-right foot)
+      Offset(0.30, 0.30), // 7 club / raised arm
+    ],
+    [
+      _Edge(0, 1), // shoulders
+      _Edge(0, 2), // left shoulder → belt
+      _Edge(1, 4), // right shoulder → belt
+      _Edge(2, 3), _Edge(3, 4), // the belt
+      _Edge(2, 5), // belt → left foot
+      _Edge(4, 6), // belt → right foot
+      _Edge(0, 7), // shoulder → club
+    ],
+  ),
+
+  // ── THE BIG DIPPER — the ladle (Ursa Major's asterism). ──
+  _Figure(
+    'BIG DIPPER',
+    [
+      Offset(0.20, 0.34), // 0 handle end
+      Offset(0.34, 0.30), // 1
+      Offset(0.47, 0.32), // 2 handle → bowl
+      Offset(0.60, 0.40), // 3 bowl top-right
+      Offset(0.62, 0.60), // 4 bowl bottom-right
+      Offset(0.47, 0.62), // 5 bowl bottom-left
+      Offset(0.46, 0.44), // 6 bowl top-left
+    ],
+    [
+      _Edge(0, 1), _Edge(1, 2), _Edge(2, 6), // the handle
+      _Edge(6, 3), _Edge(3, 4), _Edge(4, 5), _Edge(5, 6), // the bowl
+    ],
+  ),
+
+  // ── CASSIOPEIA — the W (or M) of the queen. ──
+  _Figure(
+    'CASSIOPEIA',
+    [
+      Offset(0.18, 0.38),
+      Offset(0.36, 0.62),
+      Offset(0.52, 0.36),
+      Offset(0.68, 0.64),
+      Offset(0.84, 0.40),
+    ],
+    [
+      _Edge(0, 1), _Edge(1, 2), _Edge(2, 3), _Edge(3, 4),
+    ],
+  ),
+
+  // ── SOUTHERN CROSS (Crux) — the compact cross + a pointer bar. ──
+  _Figure(
+    'SOUTHERN CROSS',
+    [
+      Offset(0.50, 0.16), // 0 top (Gacrux)
+      Offset(0.50, 0.74), // 1 bottom (Acrux)
+      Offset(0.28, 0.46), // 2 left (Delta)
+      Offset(0.72, 0.44), // 3 right (Becrux)
+      Offset(0.55, 0.46), // 4 centre-ish (Epsilon, off-axis)
+    ],
+    [
+      _Edge(0, 1), // long axis
+      _Edge(2, 3), // crossbar
+      _Edge(0, 4), _Edge(4, 1), // the faint 5th anchor on the axis
+    ],
+  ),
+
+  // ── LEO — the lion: the Sickle (head) + a triangular hindquarters. ──
+  _Figure(
+    'LEO',
+    [
+      Offset(0.24, 0.66), // 0 Regulus (front paw / base of sickle)
+      Offset(0.26, 0.48), // 1 sickle
+      Offset(0.32, 0.34), // 2 sickle
+      Offset(0.42, 0.28), // 3 sickle top (mane)
+      Offset(0.50, 0.36), // 4 sickle curl
+      Offset(0.62, 0.52), // 5 mid-body
+      Offset(0.80, 0.44), // 6 Denebola (tail)
+      Offset(0.70, 0.70), // 7 hind paw
+    ],
+    [
+      _Edge(0, 1), _Edge(1, 2), _Edge(2, 3), _Edge(3, 4), _Edge(4, 1), // sickle
+      _Edge(0, 5), // front → body
+      _Edge(5, 6), // body → tail
+      _Edge(5, 7), // body → hind paw
+      _Edge(6, 7), // hindquarters triangle
+    ],
+  ),
+
+  // ── CYGNUS — the Northern Cross / swan. ──
+  _Figure(
+    'CYGNUS',
+    [
+      Offset(0.50, 0.14), // 0 Deneb (tail)
+      Offset(0.50, 0.40), // 1 body
+      Offset(0.50, 0.62), // 2 body
+      Offset(0.50, 0.84), // 3 Albireo (beak)
+      Offset(0.26, 0.48), // 4 left wing
+      Offset(0.74, 0.44), // 5 right wing
+    ],
+    [
+      _Edge(0, 1), _Edge(1, 2), _Edge(2, 3), // spine
+      _Edge(4, 1), _Edge(1, 5), // the wings (cross the spine at the body)
+    ],
+  ),
+];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Visual manual — legend carousel cards, drawn with the REAL components (the
-// same orbs, filament threads and void wells the live game uses). Static,
+// same star orbs, ghost/lit edges and streaks the live game uses). Static,
 // cheap, size-guarded; palette from the game's own private constants.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const Color _lAccent = _CosmicWebGameState._accent; // dark-matter violet
-const Color _lLit = _CosmicWebGameState._lit; // ignited matter (gold-warm)
-const Color _lVoidTint = _CosmicWebGameState._voidTint; // near-empty void
+const Color _lAccent = _CosmicWebGameState._accent;
+const Color _lLit = _CosmicWebGameState._lit;
+const Color _lMeteor = _CosmicWebGameState._meteorHot;
 
-/// A supercluster node with a dark thread still to trace: violet orb + halo.
-void _legendCluster(Canvas canvas, Offset c, {bool lit = false}) {
+/// A star node: violet-white orb + halo (dim), or warm gold once fully traced.
+void _legendStar(Canvas canvas, Offset c, {bool lit = false, double r = 8}) {
   if (!lit) {
     canvas.drawCircle(
-      c,
-      16,
-      Paint()..color = _lAccent.withValues(alpha: 0.20),
-    );
+        c, r + 6, Paint()..color = _lAccent.withValues(alpha: 0.20));
   }
-  GameFx.orb(canvas, c, 9, lit ? _lLit : _lAccent, glow: lit ? 1.1 : 0.7);
+  GameFx.orb(canvas, c, r, lit ? _lLit : const Color(0xFFCFC7FF),
+      glow: lit ? 1.1 : 0.7);
 }
 
-/// A faint dark-matter filament waiting to be traced (as in-game).
-void _legendDarkThread(Canvas canvas, Offset a, Offset b) {
+/// A faint ghost edge showing where a line belongs (the figure to draw).
+void _legendGhost(Canvas canvas, Offset a, Offset b) {
   canvas.drawLine(
     a,
     b,
@@ -661,135 +903,108 @@ void _legendDarkThread(Canvas canvas, Offset a, Offset b) {
   );
 }
 
-/// A dark void well the web bends around (same radial fill as the game).
-void _legendVoidWell(Canvas canvas, Offset c, double r) {
-  canvas.drawCircle(
-    c,
-    r,
-    Paint()
-      ..shader = RadialGradient(colors: [
-        _lVoidTint.withValues(alpha: 0.85),
-        _lVoidTint.withValues(alpha: 0.0),
-      ]).createShader(Rect.fromCircle(center: c, radius: r)),
-  );
-  canvas.drawCircle(
-    c,
-    r * 0.92,
-    Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1
-      ..color = _lAccent.withValues(alpha: 0.16),
-  );
-}
-
-/// (a) Core objects + verb: drag one cluster to another along a faint filament.
+/// (a) Core verb: drag star → star along a faint ghost edge.
 void _legendTrace(Canvas canvas, Size size) {
   if (size.width <= 0 || size.height <= 0) return;
-  final a = Offset(size.width * 0.26, size.height * 0.55);
-  final b = Offset(size.width * 0.74, size.height * 0.45);
-  _legendDarkThread(canvas, a, b);
-  // Drag hint: a gold rubber-band growing from a toward b.
+  final a = Offset(size.width * 0.26, size.height * 0.58);
+  final b = Offset(size.width * 0.74, size.height * 0.44);
+  _legendGhost(canvas, a, b);
   final tip = Offset.lerp(a, b, 0.6)!;
   canvas.drawLine(
     a,
     tip,
     Paint()
-      ..color = _lLit.withValues(alpha: 0.6)
-      ..strokeWidth = 2.4
+      ..color = _lLit.withValues(alpha: 0.65)
+      ..strokeWidth = 2.6
       ..strokeCap = StrokeCap.round,
   );
-  _legendCluster(canvas, a);
-  _legendCluster(canvas, b);
+  _legendStar(canvas, a);
+  _legendStar(canvas, b);
 }
 
-/// (b) Score: a real filament ignites warm gold and banks points.
-void _legendIgnite(Canvas canvas, Size size) {
+/// (b) Complete it: light every line and the figure flares + names itself.
+void _legendComplete(Canvas canvas, Size size) {
   if (size.width <= 0 || size.height <= 0) return;
-  final a = Offset(size.width * 0.26, size.height * 0.55);
-  final b = Offset(size.width * 0.74, size.height * 0.45);
-  GameFx.glowLine(canvas, a, b, _lLit, width: 3.2);
-  _legendCluster(canvas, a, lit: true);
-  _legendCluster(canvas, b, lit: true);
-  GameFx.text(canvas, '+10', Offset.lerp(a, b, 0.5)!.translate(0, -20), 15,
+  Offset p(double nx, double ny) => Offset(size.width * nx, size.height * ny);
+  // A little "W" (Cassiopeia-ish) fully lit.
+  final nodes = <Offset>[
+    p(0.16, 0.42),
+    p(0.34, 0.66),
+    p(0.50, 0.40),
+    p(0.66, 0.66),
+    p(0.84, 0.44),
+  ];
+  const edges = <List<int>>[
+    [0, 1],
+    [1, 2],
+    [2, 3],
+    [3, 4],
+  ];
+  for (final e in edges) {
+    GameFx.glowLine(canvas, nodes[e[0]], nodes[e[1]], _lLit, width: 2.8);
+  }
+  for (final n in nodes) {
+    _legendStar(canvas, n, lit: true, r: 6);
+  }
+  GameFx.text(canvas, 'CASSIOPEIA', p(0.5, 0.86), 12, _lLit,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// (c) Reaction bonus: tap a shooting star as it streaks past.
+void _legendStreak(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final head = Offset(size.width * 0.68, size.height * 0.40);
+  final tail = Offset(size.width * 0.26, size.height * 0.66);
+  // Fading streak tail.
+  for (var i = 0; i < 8; i++) {
+    final f = i / 8;
+    final p = Offset.lerp(head, tail, f)!;
+    canvas.drawCircle(
+        p, 3.2 * (1 - f * 0.7),
+        Paint()..color = _lMeteor.withValues(alpha: 0.75 * (1 - f)));
+  }
+  GameFx.orb(canvas, head, 5, _lMeteor, glow: 1.2);
+  GameFx.text(canvas, '+15', head.translate(0, -18), 14, _lMeteor,
+      weight: FontWeight.w800, glow: 0.5);
+}
+
+/// (d) Reaction bonus: tap a supernova while it is lit (small window).
+void _legendSupernova(Canvas canvas, Size size) {
+  if (size.width <= 0 || size.height <= 0) return;
+  final c = Offset(size.width * 0.5, size.height * 0.5);
+  // Bright flare + shrinking tap-window ring.
+  canvas.drawCircle(
+      c, size.shortestSide * 0.34,
+      Paint()
+        ..color = _lLit.withValues(alpha: 0.16)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12));
+  GameFx.orb(canvas, c, 12, _lLit, glow: 1.4);
+  canvas.drawCircle(
+      c, size.shortestSide * 0.24,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = _lLit.withValues(alpha: 0.7));
+  GameFx.text(canvas, '+40', c.translate(0, -size.shortestSide * 0.34), 14,
       _lLit,
       weight: FontWeight.w800, glow: 0.5);
 }
 
-/// (c) Danger: dragging across a void has no filament — the link fizzles.
-void _legendVoid(Canvas canvas, Size size) {
-  if (size.width <= 0 || size.height <= 0) return;
-  final a = Offset(size.width * 0.24, size.height * 0.50);
-  final b = Offset(size.width * 0.76, size.height * 0.50);
-  final r = size.shortestSide * 0.20;
-  _legendVoidWell(canvas, Offset(size.width * 0.5, size.height * 0.50), r);
-  // White (invalid) rubber-band crossing the void — reads as a miss.
-  canvas.drawLine(
-    a,
-    b,
-    Paint()
-      ..color = Colors.white.withValues(alpha: 0.55)
-      ..strokeWidth = 2.2
-      ..strokeCap = StrokeCap.round,
-  );
-  _legendCluster(canvas, a);
-  _legendCluster(canvas, b);
-}
-
-/// (d) Escalation: light every thread to complete the web — then a denser one
-/// replaces it. A small MST-like web with some threads lit, some still dark.
-void _legendWeb(Canvas canvas, Size size) {
-  if (size.width <= 0 || size.height <= 0) return;
-  Offset p(double nx, double ny) => Offset(size.width * nx, size.height * ny);
-  final nodes = <Offset>[
-    p(0.22, 0.30),
-    p(0.50, 0.20),
-    p(0.78, 0.36),
-    p(0.34, 0.66),
-    p(0.66, 0.72),
-    p(0.50, 0.48),
-  ];
-  // Edges: (index pair, lit?). A partly-traced web.
-  const edges = <List<int>>[
-    [0, 5, 1],
-    [1, 5, 1],
-    [2, 5, 0],
-    [3, 5, 0],
-    [4, 5, 1],
-    [1, 2, 0],
-  ];
-  _legendVoidWell(canvas, p(0.80, 0.66), size.shortestSide * 0.11);
-  for (final e in edges) {
-    final a = nodes[e[0]], b = nodes[e[1]];
-    if (e[2] == 1) {
-      GameFx.glowLine(canvas, a, b, _lLit, width: 2.6);
-    } else {
-      _legendDarkThread(canvas, a, b);
-    }
-  }
-  for (var i = 0; i < nodes.length; i++) {
-    // A node is "lit" only if all its edges are lit.
-    var allLit = true;
-    for (final e in edges) {
-      if ((e[0] == i || e[1] == i) && e[2] == 0) allLit = false;
-    }
-    _legendCluster(canvas, nodes[i], lit: allLit);
-  }
-}
-
-/// The visual manual for Cosmic Web — wired into the registry spec.
+/// The visual manual for Trace the Constellations — wired into the registry
+/// spec. Symbol name is unchanged (`cosmicWebLegendFrames`) so the registry
+/// import keeps resolving.
 final List<LegendFrame> cosmicWebLegendFrames = [
   const LegendFrame(
-      caption: 'Drag cluster to cluster along a faint filament',
-      paint: _legendTrace),
+      caption: 'Drag star → star to trace the figure', paint: _legendTrace),
   const LegendFrame(
-      caption: 'A real filament ignites gold and scores',
-      paint: _legendIgnite),
+      caption: 'Light every line to complete the constellation',
+      paint: _legendComplete),
   const LegendFrame(
-      caption: 'Cross a void (no filament) and the link fizzles',
-      paint: _legendVoid),
+      caption: 'Tap shooting stars streaking past for bonus',
+      paint: _legendStreak),
   const LegendFrame(
-      caption: 'Light every thread — a denser web then replaces it',
-      paint: _legendWeb),
+      caption: 'Tap a supernova while it flares — small window',
+      paint: _legendSupernova),
 ];
 
 class _CosmicWebPainter extends CustomPainter {
@@ -799,53 +1014,48 @@ class _CosmicWebPainter extends CustomPainter {
 
   static const _accent = _CosmicWebGameState._accent;
   static const _lit = _CosmicWebGameState._lit;
-  static const _voidTint = _CosmicWebGameState._voidTint;
+  static const _meteor = _CosmicWebGameState._meteorHot;
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Guard against non-finite / degenerate sizes (a NaN blacks the frame).
+    if (!size.width.isFinite ||
+        !size.height.isFinite ||
+        size.width <= 0 ||
+        size.height <= 0) {
+      return;
+    }
     final t = state._clock;
-    // Deep-space backdrop with drifting motes (the brand atmosphere).
-    GameFx.atmosphere(canvas, size, _accent, t, motes: 48);
+    // Deep night-sky backdrop with drifting motes (the brand atmosphere).
+    GameFx.atmosphere(canvas, size, _accent, t, motes: 40);
 
-    final clusters = state._clusters;
-    if (clusters.isEmpty) return;
     Offset px(Offset n) => Offset(n.dx * size.width, n.dy * size.height);
     final pulse = 0.5 + 0.5 * math.sin(t * 2.0);
 
-    // ── Voids: dark wells the web bends around. ──
-    for (final v in state._voids) {
-      final c = px(v.center);
-      final r = v.radius * size.shortestSide;
+    // ── Decorative dust stars (twinkle, non-interactive). ──
+    for (var i = 0; i < state._dust.length; i++) {
+      final p = px(state._dust[i]);
+      final tw = 0.20 + 0.30 * (0.5 + 0.5 * math.sin(t * 1.6 + i * 1.3));
       canvas.drawCircle(
-        c,
-        r,
-        Paint()
-          ..shader = RadialGradient(colors: [
-            _voidTint.withValues(alpha: 0.55),
-            _voidTint.withValues(alpha: 0.0),
-          ]).createShader(Rect.fromCircle(center: c, radius: r)),
-      );
-      canvas.drawCircle(
-        c,
-        r * 0.92,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1
-          ..color = _accent.withValues(alpha: 0.06 + 0.04 * pulse),
-      );
+          p, 1.0 + (i % 3) * 0.4,
+          Paint()..color = Colors.white.withValues(alpha: tw));
     }
 
-    // ── Filaments. ──
+    final stars = state._stars;
+    if (stars.isEmpty) return;
+
+    // ── Ghost / lit edges. ──
     final hint = state._hintAlpha;
-    for (var i = 0; i < state._filaments.length; i++) {
-      final f = state._filaments[i];
-      final a = px(clusters[f.a]);
-      final b = px(clusters[f.b]);
-      if (state._litFil[i]) {
-        // Ignited: GameFx glow beam in warm matter colour.
-        GameFx.glowLine(canvas, a, b, _lit, width: 3.2);
+    final reveal = state._figureReveal; // one-shot completion flare
+    for (var i = 0; i < state._edges.length; i++) {
+      final e = state._edges[i];
+      final a = px(stars[e.a]);
+      final b = px(stars[e.b]);
+      if (state._litEdge[i]) {
+        // Ignited: warm-gold glow beam; brighter during the reveal flare.
+        GameFx.glowLine(canvas, a, b, _lit, width: 3.2 + reveal * 2.4);
       } else {
-        // Faint dark-matter thread waiting to be traced.
+        // Faint ghost thread showing where the line belongs.
         canvas.drawLine(
           a,
           b,
@@ -858,56 +1068,87 @@ class _CosmicWebPainter extends CustomPainter {
       }
     }
 
-    // ── Rubber-band while dragging. ──
+    // ── Rubber-band while dragging (gold if it lands on a real edge). ──
     final from = state._dragFrom;
     final dragPos = state._dragPos;
-    if (from != null && dragPos != null) {
-      final a = px(clusters[from]);
+    if (from != null && dragPos != null && from < stars.length) {
+      final a = px(stars[from]);
       final tip = px(dragPos);
       final target = state._nodeAt(dragPos);
-      // Preview-colour the band: gold if it lands on a real filament, violet
-      // otherwise — teaches "this gap is a void" before you commit.
       final valid = target != null &&
           target != from &&
-          state._filamentIndex(from, target) >= 0;
+          state._edgeIndex(from, target) >= 0;
       canvas.drawLine(
         a,
         tip,
         Paint()
-          ..color = (valid ? _lit : Colors.white).withValues(alpha: 0.6)
-          ..strokeWidth = 2.4
+          ..color = (valid ? _lit : Colors.white).withValues(alpha: 0.65)
+          ..strokeWidth = 2.6
           ..strokeCap = StrokeCap.round,
       );
     }
 
-    // ── Clusters (superclusters). ──
-    for (var i = 0; i < clusters.length; i++) {
-      final p = px(clusters[i]);
-      // Count how many of this cluster's filaments are still dark.
+    // ── Star nodes. Dim white until all their edges are lit, gold once done. ──
+    for (var i = 0; i < stars.length; i++) {
+      final p = px(stars[i]);
       var hasDark = false;
-      for (var k = 0; k < state._filaments.length; k++) {
-        final f = state._filaments[k];
-        if ((f.a == i || f.b == i) && !state._litFil[k]) {
+      for (var k = 0; k < state._edges.length; k++) {
+        final e = state._edges[k];
+        if ((e.a == i || e.b == i) && !state._litEdge[k]) {
           hasDark = true;
           break;
         }
       }
       if (hasDark) {
-        // Halo so the eye finds clusters that still have threads to trace.
         canvas.drawCircle(
           p,
-          14 + pulse * 4,
-          Paint()..color = _accent.withValues(alpha: 0.14 + pulse * 0.10),
+          12 + pulse * 4,
+          Paint()..color = _accent.withValues(alpha: 0.12 + pulse * 0.10),
         );
       }
-      GameFx.orb(canvas, p, 8, hasDark ? _accent : _lit, glow: hasDark ? 0.7 : 1.1);
+      GameFx.orb(canvas, p, 7,
+          hasDark ? const Color(0xFFCFC7FF) : _lit,
+          glow: hasDark ? 0.7 : 1.1);
     }
 
-    // ── First-web affordance. ──
-    if (state._litCount == 0 && state._dragFrom == null) {
+    // ── Reaction events (over the figure). ──
+    for (final ev in state._events) {
+      _paintEvent(canvas, size, ev, t);
+    }
+
+    // ── Completion name flare. ──
+    if (reveal > 0 && state._revealName.isNotEmpty) {
       GameFx.text(
         canvas,
-        'Drag cluster → cluster along a filament',
+        state._revealName,
+        Offset(size.width / 2, size.height * 0.40),
+        30,
+        _lit.withValues(alpha: reveal.clamp(0.0, 1.0)),
+        display: true,
+        weight: FontWeight.w800,
+        glow: 0.8 * reveal,
+      );
+    }
+
+    // ── Fizzle cue. ──
+    if (state._fizzleFlash > 0) {
+      GameFx.text(
+        canvas,
+        state._flashText,
+        Offset(size.width / 2, size.height - 30),
+        14,
+        Colors.white.withValues(alpha: 0.75 * state._fizzleFlash),
+      );
+    }
+
+    // ── First-figure affordance. ──
+    if (state._litCount == 0 &&
+        state._dragFrom == null &&
+        state._fizzleFlash <= 0 &&
+        reveal <= 0) {
+      GameFx.text(
+        canvas,
+        'Drag star → star along a ghost line',
         Offset(size.width / 2, size.height - 24),
         12,
         Colors.white.withValues(alpha: 0.45),
@@ -919,6 +1160,61 @@ class _CosmicWebPainter extends CustomPainter {
     for (final pop in state._pops) {
       pop.paint(canvas);
     }
+  }
+
+  void _paintEvent(Canvas canvas, Size size, _SkyEvent ev, double t) {
+    Offset px(Offset n) => Offset(n.dx * size.width, n.dy * size.height);
+    if (ev.kind == _EventKind.supernova) {
+      final c = px(ev.from);
+      final f = (ev.age / ev.life).clamp(0.0, 1.0);
+      if (ev.caught) {
+        // Caught pop: a quick bright bloom fading out.
+        final d = ev.deathFlash;
+        canvas.drawCircle(
+            c, size.shortestSide * 0.10 * (1.4 - d),
+            Paint()
+              ..color = _lit.withValues(alpha: 0.5 * d)
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10));
+        return;
+      }
+      // Brightness rises then fades over the life; shrinking window ring.
+      final bright = math.sin(f * math.pi); // 0→1→0
+      canvas.drawCircle(
+          c, size.shortestSide * (0.14 + 0.10 * bright),
+          Paint()
+            ..color = _lit.withValues(alpha: 0.22 * bright)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14));
+      GameFx.orb(canvas, c, 8 + 6 * bright, _lit, glow: 1.0 + bright);
+      // The shrinking tap-window ring (1 → small as time runs out).
+      final ringR = size.shortestSide * (0.22 * (1 - f) + 0.05);
+      canvas.drawCircle(
+          c, ringR,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..color = _lit.withValues(alpha: 0.6 * (1 - f) + 0.2));
+      return;
+    }
+
+    // Streak (shooting star / meteor): a moving head + fading tail.
+    if (ev.caught) return;
+    final f = (ev.age / ev.life).clamp(0.0, 1.0);
+    final head = px(Offset.lerp(ev.from, ev.to, f)!);
+    final dir = px(ev.to) - px(ev.from);
+    final len = ev.kind == _EventKind.meteor ? 0.10 : 0.13;
+    final tailV = dir.distance == 0
+        ? Offset.zero
+        : dir / dir.distance * size.shortestSide * len;
+    final fade = (1 - f).clamp(0.0, 1.0);
+    for (var i = 0; i < 8; i++) {
+      final s = i / 8;
+      final p = head - tailV * s;
+      canvas.drawCircle(
+          p, (ev.kind == _EventKind.meteor ? 2.4 : 3.2) * (1 - s * 0.7),
+          Paint()..color = _meteor.withValues(alpha: 0.8 * fade * (1 - s)));
+    }
+    GameFx.orb(canvas, head, ev.kind == _EventKind.meteor ? 3.5 : 4.5, _meteor,
+        glow: 1.2 * fade);
   }
 
   @override

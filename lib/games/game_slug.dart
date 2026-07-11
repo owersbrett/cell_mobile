@@ -77,6 +77,24 @@ class GameSlug {
     return targetFrom(frag.pathSegments, frag.queryParameters);
   }
 
+  /// The reserved `/loop` route — a chromeless, perpetual cell animation with
+  /// the "Explore The Cell" title, for embedding as a marketing loop. Matches
+  /// under both URL strategies (path and hash), never collides with a game slug
+  /// (no game's specId is `loop`). Additive — does not touch navigation.
+  static bool isLoopRoute() {
+    if (!kIsWeb) return false;
+    final uri = Uri.base;
+    if (_firstSegment(uri.pathSegments) == 'loop') return true;
+    return _firstSegment(Uri.parse(uri.fragment).pathSegments) == 'loop';
+  }
+
+  static String? _firstSegment(List<String> segs) {
+    for (final s in segs) {
+      if (s.isNotEmpty) return s.toLowerCase();
+    }
+    return null;
+  }
+
   static const _attractSeg = 'attract';
 
   /// Resolves route segments + query to an embed target. Exposed for tests —

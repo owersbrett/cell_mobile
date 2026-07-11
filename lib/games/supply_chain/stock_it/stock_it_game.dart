@@ -100,6 +100,9 @@ class _StockItGameState extends State<StockItGame>
   // --- Streak ("smooth supply" days) ---
   int _streak = 0;
 
+  // --- How-to hint: fades once the player places their first order ---
+  bool _hasOrdered = false;
+
   // --- History / chart ---
   final List<_DayPoint> _history = [];
   final List<double> _demandWindow = []; // recent demand-per-day
@@ -263,22 +266,35 @@ class _StockItGameState extends State<StockItGame>
       _streak = 0;
     }
 
-    // 6. Feedback.
+    // 6. Feedback. The score driver is DAILY PROFIT — always show it move so the
+    //    player can SEE why the number changes. Green = you gained, red = bled.
     if (missed > 0.5) {
+      // Sold out: red flash + the penalty as a floating loss.
       _stockoutFlash = 1.0;
-      _flashText = 'STOCKOUT! −${missed.round()} sold out';
+      _flashText = 'STOCKOUT! ${missed.round()} unsold — order sooner';
       _flashColor = const Color(0xFFEF5350);
       _flash = 1.0;
-      _pops.add(FxPop(_center(0.42), '−\$${penalty.round()}',
+      _pops.add(FxPop(_center(0.44), '−\$${penalty.round()} lost sales',
           const Color(0xFFEF5350)));
-    } else if (heavyOver) {
-      _flashText = 'OVERSTOCK — holding \$${holding.round()}/day';
-      _flashColor = Potatuhs.sienna;
-      _flash = 0.9;
-    } else if (smooth && _streak >= 3 && _streak % 2 == 1) {
-      _flashText = '×$_streak SMOOTH SUPPLY';
-      _flashColor = const Color(0xFF66BB6A);
-      _flash = 0.9;
+    } else {
+      // Filled the demand: show the money you MADE this day (the win state).
+      if (sales > 0) {
+        _pops.add(FxPop(_center(0.44), '+\$${revenue.round()} sold',
+            const Color(0xFF66BB6A)));
+      }
+      if (heavyOver) {
+        _flashText = 'OVERSTOCK — bleeding \$${holding.round()}/day holding';
+        _flashColor = Potatuhs.sienna;
+        _flash = 0.9;
+        if (holding >= 1) {
+          _pops.add(FxPop(_center(0.56), '−\$${holding.round()} holding',
+              Potatuhs.sienna));
+        }
+      } else if (smooth && _streak >= 3 && _streak % 2 == 1) {
+        _flashText = '×$_streak SMOOTH SUPPLY';
+        _flashColor = const Color(0xFF66BB6A);
+        _flash = 0.9;
+      }
     }
 
     // 7. Record history + the per-day demand/order series for the bullwhip meter.
@@ -317,7 +333,10 @@ class _StockItGameState extends State<StockItGame>
     setState(() {
       _pipeline[_leadTime] += _orderSize.toDouble();
       _orderThisDay += _orderSize;
-      _pops.add(FxPop(_center(0.62), '+$_orderSize ordered', Potatuhs.airForce));
+      _hasOrdered = true; // fades the how-to hint the first time
+      _pops.add(FxPop(_center(0.62),
+          '+$_orderSize ordered · arrives day ${_day + _leadTime}',
+          Potatuhs.airForce));
     });
   }
 
@@ -352,6 +371,7 @@ class _StockItGameState extends State<StockItGame>
             const Spacer(),
             _pipelineRow(),
             const SizedBox(height: 6),
+            if (running && !_hasOrdered) _howToHint(),
             _orderControl(running),
             const SizedBox(height: 8),
           ]),
@@ -365,12 +385,29 @@ class _StockItGameState extends State<StockItGame>
   }
 
   Widget _goalLine() {
+    // Always-visible one-liner: WHAT to do + the score driver (PROFIT from sales).
     return Padding(
       padding: const EdgeInsets.only(top: 6, bottom: 2),
-      child: Text(
-        'KEEP STOCK IN THE BAND — ORDER AHEAD OF THE LEAD TIME',
+      child: RichText(
         textAlign: TextAlign.center,
-        style: Potatuhs.label(size: 9.5, color: Potatuhs.textFaint),
+        text: TextSpan(
+          style: Potatuhs.label(size: 10.5, color: Potatuhs.textSecondary),
+          children: [
+            const TextSpan(text: 'SELL SPUDS FOR '),
+            TextSpan(
+              text: 'PROFIT',
+              style: Potatuhs.label(
+                  size: 10.5, color: const Color(0xFF66BB6A)),
+            ),
+            const TextSpan(text: ' — keep stock in the '),
+            TextSpan(
+              text: 'GREEN BAND',
+              style: Potatuhs.label(
+                  size: 10.5, color: const Color(0xFF66BB6A)),
+            ),
+            const TextSpan(text: ', order EARLY (arrives days later)'),
+          ],
+        ),
       ),
     );
   }
@@ -403,7 +440,7 @@ class _StockItGameState extends State<StockItGame>
             _incoming > 0 ? Potatuhs.airForce : Potatuhs.textFaint),
         _div(),
         _stat(
-          'PROFIT',
+          'PROFIT = SCORE',
           '${_profit >= 0 ? "+" : "−"}\$${_profit.abs().round()}',
           _profit >= 0 ? const Color(0xFF66BB6A) : const Color(0xFFEF5350),
         ),
@@ -473,6 +510,33 @@ class _StockItGameState extends State<StockItGame>
     );
   }
 
+  // In-context how-to nudge. Shows only until the first order, then vanishes.
+  Widget _howToHint() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 24),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Potatuhs.gold.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Potatuhs.gold.withValues(alpha: 0.55)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.touch_app_outlined, size: 14, color: Potatuhs.gold),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              'Set a size, then tap ORDER — it restocks the shelf days later',
+              textAlign: TextAlign.center,
+              style: Potatuhs.label(size: 10, color: Potatuhs.gold),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
   // Order size stepper + presets + the big ORDER button.
   Widget _orderControl(bool running) {
     final lvl = _demandLevel.round();
@@ -530,8 +594,10 @@ class _StockItGameState extends State<StockItGame>
               boxShadow: running
                   ? [
                       BoxShadow(
-                          color: Potatuhs.airForce.withValues(alpha: 0.3),
-                          blurRadius: 14)
+                          // Gold, brighter glow until the first order draws the eye.
+                          color: (!_hasOrdered ? Potatuhs.gold : Potatuhs.airForce)
+                              .withValues(alpha: !_hasOrdered ? 0.6 : 0.3),
+                          blurRadius: !_hasOrdered ? 20 : 14)
                     ]
                   : null,
             ),
@@ -616,9 +682,9 @@ class _StockItGameState extends State<StockItGame>
             style: Potatuhs.display(size: 18, color: Potatuhs.textPrimary)),
         const SizedBox(height: 6),
         Text(
-          'Orders arrive AFTER a lead time — order for the future.\n'
-          'Hold a safety buffer. Don\'t chase spikes: overreacting is\n'
-          'exactly what makes the bullwhip whip.',
+          'Every potato you SELL is profit — and profit is your score.\n'
+          'Orders arrive AFTER a lead time, so order for the future.\n'
+          'Empty shelf = lost sales; hoarding = holding fees.',
           textAlign: TextAlign.center,
           style: Potatuhs.body(size: 11.5, color: Potatuhs.textSecondary),
         ),
@@ -799,7 +865,7 @@ class _StockChartPainter extends CustomPainter {
         : amp < 2.1
             ? Potatuhs.gold
             : const Color(0xFFEF5350);
-    final boxW = 118.0;
+    const boxW = 118.0;
     final box = Rect.fromLTWH(r.right - boxW - 6, r.top + 6, boxW, 30);
     canvas.drawRRect(
       RRect.fromRectAndRadius(box, const Radius.circular(8)),

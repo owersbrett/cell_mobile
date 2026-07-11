@@ -50,10 +50,19 @@ stage's bin at its own **RATE**. The last stage (Ship) sends product out the end
 - **Most potatoes shipped when the buzzer sounds wins.** No fail state; overflow just bleeds potential.
 
 ## HUD (drawn in-canvas; host owns score + timer)
-- Top **THROUGHPUT** meter (smoothed potatoes/sec, normalised against a healthy line).
+- **Always-visible objective line** (very top): *"SHIP MORE POTATOES — tap the red bin to unclog the
+  line"* — the goal + the score driver, never hidden during play.
+- **FLOW = SCORE** meter (smoothed potatoes/sec, normalised against a healthy line). Labeled so the
+  player reads it as the score engine; it **flashes bright teal on every shipment** (`_shipPulse`) so
+  the cause of a point is unmissable.
+- **In-play HOW-TO hint**: while the round runs and the player hasn't boosted yet, a pulsing red
+  `TAP HERE` down-arrow hovers over the *current* worst bin (the real target). It fades in over ~3.2 s
+  then out, and retires instantly the moment the player boosts anything (`_everBoosted`).
 - Per-stage: icon + name + live rate, a bin with a coloured fill (green ok → orange filling → red
   choke), a `BOTTLENECK` tag on choking stages, `idle` on starved ones, and a tap/boost/cooldown
   footer pill.
+- **Score-cause feedback**: a floating `+N` rises from the SHIP exit on each shipment, paired with the
+  meter pulse — so the player links *unclog the choke → line flows → meter rises → score*.
 
 ## Potato angle
 Native — it's a literal potato supply chain: Farm grows them, Wash & Sort, Process (fries/chips),

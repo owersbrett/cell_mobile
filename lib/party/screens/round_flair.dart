@@ -1,4 +1,5 @@
 import 'package:cell_mobile/party/party_controller.dart';
+import 'package:cell_mobile/party/screens/party_dialogue.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:flutter/material.dart';
 
@@ -146,7 +147,7 @@ class _RoundFlairScreenState extends State<RoundFlairScreen>
                 Text(
                   'ROUND ${widget.controller.round}',
                   textAlign: TextAlign.center,
-                  style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary)
+                  style: Potatuhs.body(size: 12, color: accent)
                       .copyWith(letterSpacing: 4),
                 ),
                 const SizedBox(height: 16),
@@ -163,31 +164,15 @@ class _RoundFlairScreenState extends State<RoundFlairScreen>
                       ),
                     );
                   },
-                  child: Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Potatuhs.inkPanel,
-                      borderRadius: BorderRadius.circular(18),
-                      border:
-                          Border.all(color: accent.withValues(alpha: 0.45)),
-                      boxShadow:
-                          Potatuhs.glow(accent, strength: 0.25, blur: 24),
-                    ),
-                    child: Column(
-                      children: [
-                        Text(
-                          speaker,
-                          style: Potatuhs.body(size: 11, color: accent)
-                              .copyWith(letterSpacing: 3),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          line,
-                          textAlign: TextAlign.center,
-                          style: Potatuhs.body(
-                              size: 16, color: Potatuhs.textPrimary),
-                        ),
-                      ],
+                  child: DialogueStrip(
+                    beat: DialogueBeat(
+                      speaker == 'RUSS' ? kCharRuss : kCharButter,
+                      line,
+                      speaker == 'RUSS'
+                          ? (isBossDebut || isGhostDebut
+                              ? CharacterMood.worried
+                              : CharacterMood.excited)
+                          : CharacterMood.smug,
                     ),
                   ),
                 ),

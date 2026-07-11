@@ -44,9 +44,22 @@ stays near ×1.
 
 ## Scoring / win
 - **Score = running PROFIT** (revenue − holding − stockout penalty), pushed via `session.addScore` (the
-  session clamps cumulative at ≥ 0). Most profit at the buzzer wins.
+  session clamps cumulative at ≥ 0). Most profit at the buzzer wins. The PROFIT stat is labelled
+  **PROFIT = SCORE** so the driver is unambiguous.
 - **Streak** = consecutive "smooth supply" days (no stockout AND not heavily overstocked), via
   `session.noteStreak` — surfaced as a mastery award on the host results screen.
+
+### Legibility — the score must be *seen* moving (comprehension pass)
+The number changing silently reads as noise, so every day surfaces WHY profit moved:
+- **Sale (win state):** a green floating `+$N sold` pop each day you fill demand — the revenue you just
+  earned. This is the primary "how do I score" signal.
+- **Stockout:** red flash + a `−$N lost sales` pop (the penalty).
+- **Overstock:** sienna flash + a `−$N holding` pop (the fee you're bleeding).
+- **Always-visible objective line** (top): *"SELL SPUDS FOR PROFIT — keep stock in the GREEN BAND, order
+  EARLY (arrives days later)"* — names the driver and the control in one read.
+- **In-context how-to hint:** a gold "Set a size, then tap ORDER…" banner + a brighter gold glow on the
+  ORDER button, shown only until the player's **first order**, then it vanishes. The order pop also names
+  the arrival day (`+N ordered · arrives day X`) so the lead-time delay is concrete.
 
 ## Escalation
 - **Lead time** stretches: 3 days (early) → 4 (mid, ~day 14) → 5 (late, ~day 26). Longer delay = you must
@@ -56,7 +69,8 @@ stays near ×1.
 
 ## Controls
 - **Order size** stepper (−/+) with presets: `=level` (match current demand level), `+5`, `0`.
-- **ORDER** button — drops the current size into the pipeline at the lead-time slot.
+- **ORDER** button — drops the current size into the pipeline at the lead-time slot; its label reads
+  `ORDER N · arrives in L days`, and placing it pops `+N ordered · arrives day X`.
 - Incoming pipeline chips show each batch and how many days until it arrives.
 
 ## Potato angle

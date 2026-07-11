@@ -6,297 +6,388 @@ import 'package:flutter/services.dart';
 
 import '../../fx.dart';
 import '../../mini_game.dart';
-import '../../../theme/potatuhs.dart';
 
-// ── Feel constants ──────────────────────────────────────────────────────────
-// All timing/scoring tunables live here. Play-test and adjust freely.
+// ═════════════════════════════════════════════════════════════════════════════
+// TWITCH v2 — the reflex arc, tuned tighter than the base game (50s round, a
+// steeper escalation, haptics). Same spine: an impulse leaves a shifting SOURCE
+// (motor neuron), races down the axon to a shifting TARGET (neuromuscular
+// junction), and you TAP THE TARGET the instant it lands. Every clean reflex is
+// faster, tighter, and the source+target JUMP. After a run of clean reflexes the
+// muscle demands fuel: "NOW EAT PROTEIN!" — rapid-tap dishes, then back to the
+// arc, one cycle harder. (Brett notes #19 + #31.)
+// ═════════════════════════════════════════════════════════════════════════════
 
-/// Seconds a nerve signal takes to travel the nerve at the calm baseline.
-const double _kBasePeriod = 1.10;
+// ── Feel constants (v2: tighter, faster than base) ───────────────────────────
+const double _kBaseTravel = 1.15;
+const double _kMinTravel = 0.38;
+const double _kTravelDecay = 0.95;
+const double _kBaseWindow = 0.24;
+const double _kMinWindow = 0.075;
+const double _kWindowDecay = 0.93;
+const double _kBaseTargetR = 0.108;
+const double _kMinTargetR = 0.058;
+const double _kTargetShrink = 0.97;
 
-/// Tightest signal period at full ramp (fastest cadence).
-const double _kMinPeriod = 0.50;
+/// Clean reflexes before the muscle demands fuel (v2: 8 — quicker cadence).
+const int _kHitsPerProtein = 8;
+const double _kProteinSeconds = 4.0;
+const int _kProteinDishes = 6;
+const int _kProteinPointsPerDish = 16;
 
-/// Half-width of the strike window (phase units 0–1) at baseline — generous.
-const double _kBaseWindow = 0.150;
-
-/// Half-width of the strike window at full ramp — tight.
-const double _kMinWindow = 0.060;
-
-/// Phase (0–1) at which the signal reaches the junction: the ideal tap moment.
-const double _kTargetPhase = 0.84;
-
-/// Successful contractions needed to climb one skill level.
-const int _kHitsPerLevel = 5;
-
-/// Skill-ramp levels from baseline → min cadence/window.
-const int _kMaxLevel = 8;
-
-/// Force a single twitch adds to the contraction (0–1). Rapid hits SUM toward
-/// fused tetanus; one isolated twitch relaxes before the next signal.
-const double _kTwitchAmount = 0.50;
-
-/// Contraction relaxation rate (units/sec) when no new signal sustains it.
-const double _kRelaxRate = 1.30;
-
-/// Contraction above this counts as sustained (tetanus).
-const double _kTetanusThreshold = 0.80;
-
-/// Max tetanus bonus (points/sec) at ZERO fatigue. The drip decays as the
-/// muscle fatigues — this is what tames the old runaway-leader engine.
-const double _kMaxDrip = 20.0;
-
-/// Fatigue accrued per second while holding tetanus (~1/this sec to fully tire).
-const double _kFatigueRate = 0.34;
-
-/// Fatigue recovered per second while the muscle is rested.
-const double _kRecoverRate = 0.55;
-
-/// Contraction below this lets fatigue recover (the muscle "rests").
-const double _kRestLevel = 0.30;
-
-/// Seconds-remaining threshold that triggers the FINAL BURST crescendo.
-const double _kFinalBurstSecs = 10.0;
-
-// ── Palette ─────────────────────────────────────────────────────────────────
-const Color _kMuscle = Color(0xFFE05260); // muscle red (accent)
+// ── Palette (muscle / reflex theme) ─────────────────────────────────────────
+const Color _kMuscle = Color(0xFFE05260);
 const Color _kMuscleDeep = Color(0xFF8E2C3A);
-const Color _kActin = Color(0xFFFFCBB0); // thin filaments
-const Color _kMyosin = Color(0xFF6E1E2C); // thick filaments
-const Color _kZdisc = Color(0xFFFFE0C2);
-const Color _kSignal = Potatuhs.gold; // action potential = brand energy
-const Color _kFused = Color(0xFF69F0AE); // tetanus fused green
-const Color _kFatigue = Color(0xFFE19816); // fatigue amber (brand sienna)
+const Color _kNerve = Color(0xFFB9C6D6);
+const Color _kSignal = Color(0xFFFFE066);
+const Color _kSource = Color(0xFF8AB4F8);
+const Color _kFused = Color(0xFF69F0AE);
+const Color _kProtein = Color(0xFFF2A65A);
 const Color _kRed = Color(0xFFFF5252);
+const Color _kActinTint = Color(0xFFFFCBB0);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Visual manual — legend carousel cards, each drawn with the REAL components
-// (the same nerve, sarcomere, and HUD bars the live game paints).
+// Visual manual (public name preserved: `twitchV2LegendFrames`).
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Draws one sarcomere at [shorten] (0 relaxed → 1 fully contracted), centred at
-/// [cx],[cy] over width [w]. Mirrors [_TwitchV2Painter._paintSarcomere] so the
-/// legend shows the literal actin-over-myosin the player watches shorten.
-void _legendSarcomere(
-    Canvas canvas, double cx, double cy, double w, double shorten,
-    {Color? active}) {
-  final restHalf = w * 0.31;
-  final contractedHalf = w * 0.165;
-  final half = restHalf + (contractedHalf - restHalf) * shorten;
-  final myosinHalf = w * 0.125;
-  final rowGap = w * 0.052;
-  const rows = 3;
-  final zColor = Color.lerp(_kZdisc, active ?? _kZdisc, 0.6 * shorten)!;
+const Color _kNucleus = Color(0xFF3E5FA8);
+const Color _kSomaCore = Color(0xFFAFC8FA);
 
-  for (final dir in [-1.0, 1.0]) {
-    final zx = cx + dir * half;
-    canvas.drawLine(
-      Offset(zx, cy - rowGap * 1.7),
-      Offset(zx, cy + rowGap * 1.7),
-      Paint()
-        ..color = zColor.withValues(alpha: 0.9)
-        ..strokeWidth = 4
-        ..strokeCap = StrokeCap.round,
-    );
-  }
-  for (var r = 0; r < rows; r++) {
-    final y = cy + (r - (rows - 1) / 2) * rowGap;
-    for (final dir in [-1.0, 1.0]) {
-      final zx = cx + dir * half;
+// ── SOURCE: motor-neuron soma ────────────────────────────────────────────────
+// Lumpy cell BODY (not a disc): irregular membrane, cytoplasm gradient, nucleus
+// + nucleolus, tapered branching dendrites, and an electric charge that blooms
+// as it is about to fire. [preFire] 0→1 intensifies. Procedural, safe/frame.
+void twitchV2PaintSoma(Canvas canvas, Offset c, double r, double idle,
+    {double preFire = 0.0}) {
+  final wob = math.sin(idle * 2.0);
+  final charge = preFire.clamp(0.0, 1.0);
+
+  final dPaint = Paint()..strokeCap = StrokeCap.round;
+  for (var i = 0; i < 6; i++) {
+    final a = i / 6 * 2 * math.pi + idle * 0.25 + i * 0.7;
+    final len = r * (1.55 + 0.25 * math.sin(idle * 1.7 + i));
+    final dir = Offset(math.cos(a), math.sin(a));
+    final base = c + dir * r * 0.82;
+    final tip = c + dir * (r * 0.82 + len);
+    final bend = Offset(-dir.dy, dir.dx) * r * 0.28 * math.sin(idle + i);
+    final path = Path()
+      ..moveTo(base.dx, base.dy)
+      ..quadraticBezierTo((base.dx + tip.dx) / 2 + bend.dx,
+          (base.dy + tip.dy) / 2 + bend.dy, tip.dx, tip.dy);
+    dPaint
+      ..color = _kSource.withValues(alpha: 0.32 + 0.35 * charge)
+      ..strokeWidth = r * 0.22
+      ..style = PaintingStyle.stroke;
+    canvas.drawPath(path, dPaint);
+    for (final s in [-1.0, 1.0]) {
+      final fork =
+          tip + Offset(-dir.dy * s + dir.dx, dir.dx * s + dir.dy) * r * 0.4;
       canvas.drawLine(
-        Offset(zx, y),
-        Offset(cx + dir * (myosinHalf * 0.35), y),
+        tip,
+        fork,
         Paint()
-          ..color = _kActin.withValues(alpha: 0.85)
-          ..strokeWidth = 2.4
+          ..color = _kSource.withValues(alpha: 0.28 + 0.3 * charge)
+          ..strokeWidth = r * 0.1
           ..strokeCap = StrokeCap.round,
       );
     }
-    canvas.drawLine(
-      Offset(cx - myosinHalf, y),
-      Offset(cx + myosinHalf, y),
-      Paint()
-        ..color = Color.lerp(_kMyosin, _kMuscle, 0.3 + 0.5 * shorten)!
-        ..strokeWidth = 7
-        ..strokeCap = StrokeCap.round,
-    );
   }
-}
 
-/// Frame 1 — the verb: a signal races the nerve into the strike zone; tap then.
-void _legendBeat(Canvas canvas, Size size) {
-  if (size.width < 8 || size.height < 8) return;
-  final y = size.height * 0.55;
-  final left = size.width * 0.10;
-  final right = size.width * 0.90;
-  final span = right - left;
-
-  canvas.drawLine(
-    Offset(left, y),
-    Offset(right, y),
+  final glowR = r * (1.35 + 0.5 * charge);
+  canvas.drawCircle(
+    c,
+    glowR,
     Paint()
-      ..color = Colors.white.withValues(alpha: 0.14)
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.round,
+      ..color = _kSignal.withValues(alpha: 0.10 + 0.30 * charge)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 + 10 * charge),
   );
 
-  final zoneHalfPx = _kBaseWindow * span;
-  final targetX = left + _kTargetPhase * span;
-  final zoneRect =
-      Rect.fromLTRB(targetX - zoneHalfPx, y - 22, targetX + zoneHalfPx, y + 22);
-  canvas.drawRRect(RRect.fromRectAndRadius(zoneRect, const Radius.circular(8)),
-      Paint()..color = _kSignal.withValues(alpha: 0.18));
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(zoneRect, const Radius.circular(8)),
+  final body = Path();
+  const lobes = 7;
+  for (var i = 0; i <= lobes; i++) {
+    final t = i / lobes;
+    final ang = t * 2 * math.pi;
+    final lump = 1.0 +
+        0.09 * math.sin(ang * 3 + idle * 1.3 + wob) +
+        0.05 * math.cos(ang * 5 - idle);
+    final p = c + Offset(math.cos(ang), math.sin(ang)) * r * lump;
+    if (i == 0) {
+      body.moveTo(p.dx, p.dy);
+    } else {
+      body.lineTo(p.dx, p.dy);
+    }
+  }
+  body.close();
+  canvas.drawPath(
+    body,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.5),
+        colors: [
+          _kSomaCore,
+          _kSource,
+          Color.lerp(_kSource, Colors.black, 0.5)!,
+        ],
+        stops: const [0.0, 0.5, 1.0],
+      ).createShader(Rect.fromCircle(center: c, radius: r * 1.15)),
+  );
+  canvas.drawPath(
+    body,
     Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.6
-      ..color = _kSignal.withValues(alpha: 0.7),
-  );
-  canvas.drawLine(Offset(targetX, y - 26), Offset(targetX, y + 26),
-      Paint()..color = _kSignal.withValues(alpha: 0.85)..strokeWidth = 2);
-
-  // Junction orb at the muscle end.
-  GameFx.orb(canvas, Offset(left + span, y), 9, _kMuscle, glow: 0.9);
-
-  // The travelling signal, arriving in-zone (green = on the beat).
-  final pulseX = targetX - zoneHalfPx * 0.4;
-  for (var i = 1; i <= 5; i++) {
-    final tx = pulseX - i * span * 0.02;
-    if (tx < left) continue;
-    canvas.drawCircle(Offset(tx, y), 4.5 * (1 - i / 6),
-        Paint()..color = _kSignal.withValues(alpha: 0.18 * (1 - i / 6)));
-  }
-  GameFx.orb(canvas, Offset(pulseX, y), 8.5, _kFused, glow: 1.4);
-
-  GameFx.text(canvas, 'STRIKE ZONE', Offset(targetX, y + 42), 10,
-      _kSignal.withValues(alpha: 0.85), weight: FontWeight.w800);
-}
-
-/// Frame 2 — how to score: a clean hit fires a contraction; the sarcomere
-/// shortens and the FORCE bar fills.
-void _legendContract(Canvas canvas, Size size) {
-  if (size.width < 8 || size.height < 8) return;
-  _legendSarcomere(canvas, size.width * 0.5, size.height * 0.40, size.width,
-      0.62,
-      active: _kMuscle);
-
-  // Force bar filling.
-  final margin = size.width * 0.14;
-  final barW = size.width - margin * 2;
-  final by = size.height * 0.74;
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-        Rect.fromLTWH(margin, by, barW, 9), const Radius.circular(5)),
-    Paint()..color = Colors.white.withValues(alpha: 0.10),
-  );
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-        Rect.fromLTWH(margin, by, barW * 0.62, 9), const Radius.circular(5)),
-    Paint()..color = _kMuscle.withValues(alpha: 0.92),
-  );
-  GameFx.text(canvas, 'FORCE', Offset(size.width * 0.5, by + 22), 11,
-      _kMuscle.withValues(alpha: 0.9), weight: FontWeight.w800);
-}
-
-/// Frame 3 — the twist & the danger: stack taps into TETANUS (green, past the
-/// line) for bonus, but the FATIGUE strip fills and eats it away.
-void _legendTetanus(Canvas canvas, Size size) {
-  if (size.width < 8 || size.height < 8) return;
-  _legendSarcomere(canvas, size.width * 0.5, size.height * 0.34, size.width,
-      0.92,
-      active: _kFused);
-
-  final margin = size.width * 0.14;
-  final barW = size.width - margin * 2;
-  final by = size.height * 0.66;
-
-  // Force bar pushed past the tetanus line → fused green.
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-        Rect.fromLTWH(margin, by, barW, 9), const Radius.circular(5)),
-    Paint()..color = Colors.white.withValues(alpha: 0.10),
-  );
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-        Rect.fromLTWH(margin, by, barW * 0.92, 9), const Radius.circular(5)),
-    Paint()..color = _kFused.withValues(alpha: 0.92),
-  );
-  final tx = margin + barW * _kTetanusThreshold;
-  canvas.drawLine(Offset(tx, by - 5), Offset(tx, by + 14),
-      Paint()..color = _kFused.withValues(alpha: 0.8)..strokeWidth = 1.5);
-
-  // Fatigue strip filling amber→red beneath.
-  final fy = by + 14;
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-        Rect.fromLTWH(margin, fy, barW, 5), const Radius.circular(3)),
-    Paint()..color = Colors.white.withValues(alpha: 0.07),
-  );
-  canvas.drawRRect(
-    RRect.fromRectAndRadius(
-        Rect.fromLTWH(margin, fy, barW * 0.7, 5), const Radius.circular(3)),
-    Paint()..color = Color.lerp(_kFatigue, _kRed, 0.5)!.withValues(alpha: 0.85),
+      ..color = Color.lerp(_kSource, _kSignal, charge)!
+          .withValues(alpha: 0.65 + 0.3 * charge),
   );
 
-  GameFx.text(canvas, 'TETANUS', Offset(size.width * 0.5, by - 26), 15, _kFused,
-      display: true, glow: 0.5);
-  GameFx.text(canvas, 'FATIGUE', Offset(size.width * 0.5, fy + 20), 10,
-      _kFatigue.withValues(alpha: 0.9), weight: FontWeight.w800);
-}
-
-/// Frame 4 — the escalation: the last 10s trigger FINAL BURST — fastest
-/// cadence, signals bunched, 1.5× payout.
-void _legendBurst(Canvas canvas, Size size) {
-  if (size.width < 8 || size.height < 8) return;
-  final y = size.height * 0.50;
-  final left = size.width * 0.10;
-  final right = size.width * 0.90;
-  final span = right - left;
-
-  canvas.drawLine(
-    Offset(left, y),
-    Offset(right, y),
+  final nc = c.translate(r * 0.12, r * 0.16);
+  canvas.drawCircle(
+    nc,
+    r * 0.44,
     Paint()
-      ..color = Colors.white.withValues(alpha: 0.14)
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.round,
+      ..shader = RadialGradient(
+        center: const Alignment(-0.3, -0.4),
+        colors: [
+          Color.lerp(_kNucleus, Colors.white, 0.35)!,
+          _kNucleus,
+          Color.lerp(_kNucleus, Colors.black, 0.4)!,
+        ],
+      ).createShader(Rect.fromCircle(center: nc, radius: r * 0.44)),
   );
-  // Junction.
-  GameFx.orb(canvas, Offset(right, y), 9, _kMuscle, glow: 1.0);
-  // Signals bunched tight → fast cadence.
-  for (final f in [0.30, 0.52, 0.74]) {
-    GameFx.orb(canvas, Offset(left + f * span, y), 7, _kSignal, glow: 1.1);
+  canvas.drawCircle(nc.translate(-r * 0.1, -r * 0.1), r * 0.15,
+      Paint()..color = Color.lerp(_kNucleus, Colors.black, 0.35)!);
+  canvas.drawCircle(c.translate(-r * 0.38, -r * 0.42), r * 0.16,
+      Paint()..color = Colors.white.withValues(alpha: 0.4));
+
+  if (charge > 0.35) {
+    final sp = Paint()
+      ..color = _kSignal.withValues(alpha: (charge - 0.35) * 1.2)
+      ..strokeWidth = 1.4
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < 3; i++) {
+      final a = idle * 6 + i * 2.1;
+      final p0 = c + Offset(math.cos(a), math.sin(a)) * r * 0.95;
+      final p1 = c + Offset(math.cos(a + 0.4), math.sin(a + 0.4)) * r * 1.3;
+      canvas.drawLine(p0, p1, sp);
+    }
   }
-  GameFx.text(canvas, 'FINAL BURST', Offset(size.width * 0.5, size.height * 0.24),
-      17, _kSignal, display: true, glow: 0.7);
-  GameFx.text(canvas, '1.5× PAYOUT', Offset(size.width * 0.5, size.height * 0.74),
-      12, _kSignal.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+// ── TARGET: neuromuscular junction / motor endplate ──────────────────────────
+// Striated muscle-fiber slab meeting a synaptic terminal bouton — a LANDING PAD.
+// The fiber contracts (striations bunch, reddens) on [muscle] 0→1. Procedural.
+void twitchV2PaintJunction(
+    Canvas canvas, Offset c, double r, double idle, double muscle) {
+  final shorten = muscle.clamp(0.0, 1.0);
+  final muscleTint = Color.lerp(_kMuscleDeep, _kMuscle, 0.35 + 0.65 * shorten)!;
+
+  canvas.drawOval(
+    Rect.fromCenter(center: c, width: r * 4.4, height: r * 3.0),
+    Paint()
+      ..color = _kMuscle.withValues(alpha: 0.12 + 0.22 * shorten)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+  );
+
+  final fiberW = r * (3.5 - 0.9 * shorten);
+  final fiberH = r * (1.9 + 0.7 * shorten);
+  final slab = RRect.fromRectAndRadius(
+    Rect.fromCenter(center: c, width: fiberW, height: fiberH),
+    Radius.circular(fiberH * 0.5),
+  );
+  canvas.drawRRect(
+    slab,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Color.lerp(muscleTint, Colors.white, 0.28)!,
+          muscleTint,
+          Color.lerp(muscleTint, Colors.black, 0.45)!,
+        ],
+        stops: const [0.0, 0.45, 1.0],
+      ).createShader(slab.outerRect),
+  );
+
+  canvas.save();
+  canvas.clipRRect(slab);
+  const bands = 9;
+  final spread = fiberW * (0.92 - 0.28 * shorten);
+  for (var i = 0; i < bands; i++) {
+    final t = i / (bands - 1) - 0.5;
+    final x = c.dx + t * spread;
+    canvas.drawLine(
+      Offset(x, c.dy - fiberH * 0.42),
+      Offset(x, c.dy + fiberH * 0.42),
+      Paint()
+        ..color = _kActinTint.withValues(alpha: 0.22 + 0.35 * shorten)
+        ..strokeWidth = 1.6,
+    );
+  }
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(
+      Rect.fromCenter(
+          center: c.translate(0, -fiberH * 0.28),
+          width: fiberW * 0.9,
+          height: fiberH * 0.28),
+      Radius.circular(fiberH * 0.14),
+    ),
+    Paint()..color = Colors.white.withValues(alpha: 0.16),
+  );
+  canvas.restore();
+
+  canvas.drawRRect(
+    slab,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color =
+          Color.lerp(muscleTint, Colors.white, 0.35)!.withValues(alpha: 0.6),
+  );
+
+  final term = c.translate(0, -fiberH * 0.5);
+  canvas.drawCircle(
+    term,
+    r * 0.5,
+    Paint()
+      ..color = _kNerve.withValues(alpha: 0.22)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+  );
+  for (var i = 0; i < 4; i++) {
+    final a = -math.pi * 0.5 + (i - 1.5) * 0.5;
+    final foot = term + Offset(math.cos(a), math.sin(a)) * r * 0.42;
+    canvas.drawCircle(
+      foot,
+      r * 0.2,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-0.4, -0.5),
+          colors: [
+            Color.lerp(_kNerve, Colors.white, 0.5)!,
+            _kNerve,
+            Color.lerp(_kNerve, Colors.black, 0.4)!,
+          ],
+        ).createShader(Rect.fromCircle(center: foot, radius: r * 0.2)),
+    );
+  }
+  canvas.drawCircle(
+    term.translate(0, r * 0.3),
+    r * 0.16,
+    Paint()..color = _kSignal.withValues(alpha: 0.35 + 0.4 * shorten),
+  );
+}
+
+void _axon(Canvas canvas, Offset a, Offset b, double progress) {
+  GameFx.glowLine(canvas, a, b, _kNerve.withValues(alpha: 0.5), width: 3);
+  final tip = Offset.lerp(a, b, progress.clamp(0.0, 1.0))!;
+  for (var i = 1; i <= 5; i++) {
+    final tp = (progress - i * 0.04).clamp(0.0, 1.0);
+    canvas.drawCircle(Offset.lerp(a, b, tp)!, 4.0 * (1 - i / 6),
+        Paint()..color = _kSignal.withValues(alpha: 0.16 * (1 - i / 6)));
+  }
+  GameFx.orb(canvas, tip, 7, _kSignal, glow: 1.3);
+}
+
+void _legendReflex(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final src = Offset(size.width * 0.22, size.height * 0.30);
+  final tgt = Offset(size.width * 0.78, size.height * 0.66);
+  _axon(canvas, src, tgt, 0.62);
+  twitchV2PaintSoma(canvas, src, 12, 0.0, preFire: 0.6);
+  twitchV2PaintJunction(canvas, tgt, 14, 0.0, 0.4);
+  canvas.drawCircle(
+    tgt,
+    26,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..color = _kFused.withValues(alpha: 0.8),
+  );
+  GameFx.text(canvas, 'TAP THE TARGET', Offset(size.width * 0.5, size.height * 0.9),
+      12, _kSignal.withValues(alpha: 0.85), weight: FontWeight.w800);
+}
+
+void _legendMove(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final oldSrc = Offset(size.width * 0.20, size.height * 0.24);
+  final oldTgt = Offset(size.width * 0.55, size.height * 0.40);
+  final newSrc = Offset(size.width * 0.72, size.height * 0.30);
+  final newTgt = Offset(size.width * 0.34, size.height * 0.68);
+  twitchV2PaintSoma(canvas, oldSrc, 7, 0.0);
+  twitchV2PaintJunction(canvas, oldTgt, 9, 0.0, 0.0);
+  for (final pair in [[oldSrc, newSrc], [oldTgt, newTgt]]) {
+    canvas.drawLine(
+      pair[0],
+      pair[1],
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.25)
+        ..strokeWidth = 1.4,
+    );
+  }
+  twitchV2PaintSoma(canvas, newSrc, 11, 0.0, preFire: 0.5);
+  twitchV2PaintJunction(canvas, newTgt, 13, 0.0, 0.3);
+  GameFx.text(canvas, 'SOURCE + TARGET JUMP EACH HIT',
+      Offset(size.width * 0.5, size.height * 0.92), 11,
+      _kSource.withValues(alpha: 0.9), weight: FontWeight.w800);
+}
+
+void _dish(Canvas canvas, Offset c, double r) {
+  canvas.drawOval(
+    Rect.fromCenter(center: c.translate(0, r * 0.3), width: r * 2.6, height: r * 1.1),
+    Paint()..color = Colors.white.withValues(alpha: 0.16),
+  );
+  canvas.drawOval(
+    Rect.fromCenter(center: c.translate(0, r * 0.3), width: r * 2.6, height: r * 1.1),
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = Colors.white.withValues(alpha: 0.4),
+  );
+  GameFx.orb(canvas, c, r * 0.7, _kProtein, glow: 0.9);
+}
+
+void _legendProtein(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final r = size.shortestSide * 0.10;
+  _dish(canvas, Offset(size.width * 0.28, size.height * 0.40), r);
+  _dish(canvas, Offset(size.width * 0.62, size.height * 0.34), r * 0.9);
+  _dish(canvas, Offset(size.width * 0.78, size.height * 0.58), r * 1.05);
+  _dish(canvas, Offset(size.width * 0.40, size.height * 0.62), r * 0.85);
+  GameFx.text(canvas, 'NOW EAT PROTEIN!',
+      Offset(size.width * 0.5, size.height * 0.20), 17, _kProtein,
+      display: true, glow: 0.6);
+  GameFx.text(canvas, 'RAPID-TAP DISHES FOR FUEL',
+      Offset(size.width * 0.5, size.height * 0.9), 11,
+      _kProtein.withValues(alpha: 0.9), weight: FontWeight.w800);
 }
 
 /// The visual manual for Twitch v2 — wired into the registry spec.
 final List<LegendFrame> twitchV2LegendFrames = [
   const LegendFrame(
-      caption: 'Tap the instant the signal hits the strike zone',
-      paint: _legendBeat),
+      caption: 'An impulse races the axon — tap the TARGET as it lands',
+      paint: _legendReflex),
   const LegendFrame(
-      caption: 'A clean hit fires a contraction — force builds',
-      paint: _legendContract),
+      caption: 'Every clean reflex is faster, tighter — and it MOVES',
+      paint: _legendMove),
   const LegendFrame(
-      caption: 'Stack fast taps into TETANUS — but it FATIGUES',
-      paint: _legendTetanus),
-  const LegendFrame(
-      caption: 'Last 10s: FINAL BURST — fastest pace, 1.5× points',
-      paint: _legendBurst),
+      caption: 'After 8 reflexes: NOW EAT PROTEIN — rapid-tap the dishes',
+      paint: _legendProtein),
 ];
 
-/// "Twitch" v2 — drive muscle contraction by TIMING taps to a nerve signal.
-/// A signal travels the axon toward the neuromuscular junction; tap as it
-/// arrives in the strike zone to fire a contraction. Actin slides over myosin
-/// and the sarcomere shortens. Rapid on-time taps SUM into a sustained tetanus
-/// for bonus force — but holding tetanus builds FATIGUE that decays the bonus,
-/// so you must release and recover. A time-driven ramp plus a final-seconds
-/// burst means every run, even a flubbed one, accelerates to a finish.
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum _Mode { reflex, protein }
+
+class _Dish {
+  Offset pos;
+  double r;
+  double born;
+  bool eaten = false;
+  double eatFlash = 0.0;
+  _Dish(this.pos, this.r, this.born);
+}
+
+/// "Twitch" v2 — the reflex arc + protein burst, tuned tighter than base.
+/// Public class name preserved (`TwitchV2Game`) so the registry is untouched.
 class TwitchV2Game extends StatefulWidget {
   final MiniGameSession session;
   const TwitchV2Game({super.key, required this.session});
@@ -309,73 +400,43 @@ class _TwitchV2GameState extends State<TwitchV2Game>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
   Duration _lastElapsed = Duration.zero;
+  final math.Random _rng = math.Random();
 
-  // ── Core rhythm state ──────────────────────────────────────────────────────
-  double _phase = 0.0; // 0→1 within the current signal travel
-  bool _beatResolved = false; // already tapped/missed for this signal
+  _Mode _mode = _Mode.reflex;
   bool _prevRunning = false;
-  Size _lastSize = Size.zero; // latest laid-out size, for autopilot fires
+  Size _lastSize = Size.zero;
 
-  // ── Contraction / scoring ──────────────────────────────────────────────────
-  double _contraction = 0.0; // 0 (relaxed) → 1 (fully shortened)
-  double _fatigue = 0.0; // 0 (fresh) → 1 (spent): decays the tetanus bonus
-  int _level = 0;
+  Offset _source = const Offset(0.25, 0.30);
+  Offset _target = const Offset(0.75, 0.66);
+  double _travelT = 0.0;
+  double _travelDur = _kBaseTravel;
+  double _window = _kBaseWindow;
+  double _targetR = _kBaseTargetR;
+  bool _beatResolved = false;
+  bool _launched = false;
+  double _preDelay = 0.0;
+  double _preDelayLeft = 0.0;
+
   int _hits = 0;
+  int _sinceProtein = 0;
   int _streak = 0;
-  bool _inTetanus = false; // true while contraction held past threshold
-  double _tetanusAcc = 0.0; // fractional tetanus points carried over
-  double _tetanusGlow = 0.0; // visual: how long held in tetanus
+  int _cycle = 0;
 
-  // ── Juice ──────────────────────────────────────────────────────────────────
-  double _fireFlash = 0.0; // bloom on a clean hit
-  double _missFlash = 0.0; // red flash on a wasted signal
-  double _idle = 0.0; // ambient breathing / pulsing clock
+  double _proteinLeft = 0.0;
+  final List<_Dish> _dishes = [];
+
+  double _fireFlash = 0.0;
+  double _missFlash = 0.0;
+  double _idle = 0.0;
+  double _bannerT = 0.0;
+  double _muscle = 0.0;
   final List<FxParticle> _sparks = [];
   final List<FxPop> _pops = [];
-
-  // ── Derived ramp ────────────────────────────────────────────────────────────
-  // Difficulty is the GREATER of a time ramp (everyone accelerates) and a skill
-  // ramp (mastery accelerates faster) — so a struggling player still gets pace.
-  double get _skillRamp => (_level / _kMaxLevel).clamp(0.0, 1.0);
-
-  double _timeRamp() {
-    final dur = widget.session.spec.durationSeconds;
-    if (dur <= 0) return 0.0;
-    final remS = widget.session.remaining.inMilliseconds / 1000.0;
-    return (1.0 - remS / dur).clamp(0.0, 1.0);
-  }
-
-  bool _finalBurst() {
-    if (!widget.session.isRunning) return false;
-    return widget.session.remaining.inMilliseconds / 1000.0 <= _kFinalBurstSecs;
-  }
-
-  double _ramp() {
-    var r = math.max(_skillRamp, _timeRamp());
-    if (_finalBurst()) r = math.max(r, 0.82); // floor the pace for the climax
-    return r.clamp(0.0, 1.0);
-  }
-
-  double get _period {
-    final r = _ramp();
-    var p = _kBasePeriod + (_kMinPeriod - _kBasePeriod) * r;
-    if (_finalBurst()) p *= 0.9; // extra crescendo kick
-    return p;
-  }
-
-  double get _window {
-    final r = _ramp();
-    return _kBaseWindow + (_kMinWindow - _kBaseWindow) * r;
-  }
 
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
-
-    // ATTRACT autopilot: this game knows how to fire on its own beat. The host
-    // calls it on the autopilot cadence (~250ms) while running; it is a no-op
-    // during hands-on play. See [_autoStep]. Registered always (harmless).
     widget.session.autoPilot = _autoStep;
   }
 
@@ -386,58 +447,94 @@ class _TwitchV2GameState extends State<TwitchV2Game>
     super.dispose();
   }
 
-  // ── ATTRACT autopilot ───────────────────────────────────────────────────
-  /// One competent hands-free FIRE per host tick (~250ms). This is a rhythm
-  /// game: the signal races continuously toward the junction on a recurring
-  /// beat, so it can sweep clean through the strike window between two ~250ms
-  /// ticks — a naive "fire if in-zone now" would land off-beat most beats.
-  /// Instead we read the beat's phase + rate and look exactly one tick ahead:
-  ///
-  ///   • Only ever fire when firing NOW already scores — i.e. the CURRENT phase
-  ///     is inside the on-beat window ([_window]) around the junction target
-  ///     ([_kTargetPhase]). [_handleTap] scores off the live `_phase`, and a
-  ///     fire outside the window wastes the signal (streak reset), so we never
-  ///     do it — never off-beat.
-  ///   • Among the in-window ticks, fire on the LOCAL MINIMUM of |phase −
-  ///     target|: only when NOW is at least as close to the beat as the NEXT
-  ///     tick will be (`errNow <= errNext`). If a tighter tick is still ahead we
-  ///     wait for it — this pulls each fire toward PERFECT.
-  ///
-  /// The [_beatResolved] latch means at most one fire per beat; it clears when
-  /// the signal wraps, so we keep firing across beats to build/hold tetanus.
-  void _autoStep() {
-    if (!widget.session.isRunning) return;
-    if (_beatResolved) return; // this beat already fired/missed.
+  void _applyDifficulty() {
+    final steps = _hits + _cycle * 4; // v2: protein cycles bite harder
+    _travelDur =
+        math.max(_kMinTravel, _kBaseTravel * math.pow(_kTravelDecay, steps));
+    _window = math.max(_kMinWindow, _kBaseWindow * math.pow(_kWindowDecay, steps));
+    _targetR =
+        math.max(_kMinTargetR, _kBaseTargetR * math.pow(_kTargetShrink, steps));
+    _preDelay = math.max(0.1, 0.55 - steps * 0.022);
+  }
 
-    // The signal advances at this rate while running; look one host tick ahead.
-    final phaseSpeed = 1.0 / _period;
-    const tick = 0.25; // host autopilot cadence, seconds.
+  void _placeArc() {
+    Offset rand() => Offset(0.16 + _rng.nextDouble() * 0.68,
+        0.20 + _rng.nextDouble() * 0.60);
+    _source = rand();
+    var t = rand();
+    var guard = 0;
+    while ((t - _source).distance < 0.34 && guard < 12) {
+      t = rand();
+      guard++;
+    }
+    _target = t;
+  }
 
-    final errNow = (_phase - _kTargetPhase).abs();
-    if (errNow > _window) return; // off-beat → a fire would waste it.
+  void _launchImpulse() {
+    _applyDifficulty();
+    _placeArc();
+    _travelT = 0.0;
+    _beatResolved = false;
+    _launched = true;
+  }
 
-    // Predict the beat one tick out; if a closer-to-target tick is still ahead,
-    // wait for it rather than settle for an off-center hit.
-    final errNext = (_phase + phaseSpeed * tick - _kTargetPhase).abs();
-    if (errNow > errNext) return;
+  void _startProtein() {
+    _mode = _Mode.protein;
+    _proteinLeft = _kProteinSeconds;
+    _bannerT = 1.0;
+    _dishes.clear();
+    for (var i = 0; i < _kProteinDishes; i++) {
+      _spawnDish();
+    }
+    HapticFeedback.mediumImpact();
+  }
 
-    _handleTap(_lastSize);
+  void _spawnDish() {
+    final r = 0.072 + _rng.nextDouble() * 0.028;
+    final p = Offset(0.16 + _rng.nextDouble() * 0.68,
+        0.24 + _rng.nextDouble() * 0.56);
+    _dishes.add(_Dish(p, r, _idle));
   }
 
   void _resetRun() {
-    _phase = 0.0;
-    _beatResolved = false;
-    _contraction = 0.0;
-    _fatigue = 0.0;
-    _level = 0;
+    _mode = _Mode.reflex;
     _hits = 0;
+    _sinceProtein = 0;
     _streak = 0;
-    _inTetanus = false;
-    _tetanusAcc = 0.0;
-    _tetanusGlow = 0.0;
+    _cycle = 0;
+    _muscle = 0.0;
+    _fireFlash = 0.0;
+    _missFlash = 0.0;
+    _bannerT = 0.0;
+    _launched = false;
+    _dishes.clear();
     _sparks.clear();
     _pops.clear();
+    _applyDifficulty();
+    _placeArc();
+    _preDelayLeft = 0.65;
+    _beatResolved = false;
   }
+
+  void _autoStep() {
+    if (!widget.session.isRunning) return;
+    if (_mode == _Mode.protein) {
+      final d = _dishes.firstWhere((d) => !d.eaten, orElse: () => _sentinel);
+      if (!identical(d, _sentinel)) _eatDish(d, _lastSize);
+      return;
+    }
+    if (!_launched || _beatResolved) return;
+    final prog = _travelDur <= 0 ? 1.0 : (_travelT / _travelDur);
+    final errNow = (prog - 1.0).abs();
+    if (errNow > _window) return;
+    const tick = 0.25;
+    final progNext = _travelDur <= 0 ? 1.0 : ((_travelT + tick) / _travelDur);
+    final errNext = (progNext - 1.0).abs();
+    if (errNow > errNext) return;
+    _tapTarget(_lastSize);
+  }
+
+  static final _Dish _sentinel = _Dish(Offset.zero, 0, 0);
 
   void _onTick(Duration elapsed) {
     final dt = ((elapsed - _lastElapsed).inMicroseconds / 1e6).clamp(0.0, 0.05);
@@ -449,54 +546,18 @@ class _TwitchV2GameState extends State<TwitchV2Game>
     _prevRunning = running;
 
     _idle += dt;
-
-    // Advance the signal along the nerve. Drift slowly in the calm ready state.
-    final phaseSpeed = running ? (1.0 / _period) : 0.28;
-    _phase += phaseSpeed * dt;
-    if (_phase >= 1.0) {
-      _phase -= 1.0;
-      // A signal arrived and left untapped while playing → wasted (relax).
-      if (running && !_beatResolved) _registerMiss(passive: true);
-      _beatResolved = false;
-    }
-
-    // Contraction always relaxes; rapid hits out-pace this (summation).
-    _contraction = math.max(0.0, _contraction - _kRelaxRate * dt);
-
-    if (running) {
-      if (_contraction >= _kTetanusThreshold) {
-        // Held in tetanus: bonus force, but the muscle FATIGUES, decaying it.
-        if (!_inTetanus) {
-          _inTetanus = true;
-          HapticFeedback.mediumImpact();
-        }
-        _tetanusGlow = math.min(1.0, _tetanusGlow + dt * 2.0);
-        _fatigue = math.min(1.0, _fatigue + _kFatigueRate * dt);
-        var drip = _kMaxDrip * (1.0 - _fatigue);
-        if (_finalBurst()) drip *= 1.5; // climax pays out for everyone
-        _tetanusAcc += drip * dt;
-        final whole = _tetanusAcc.floor();
-        if (whole > 0) {
-          widget.session.addScore(whole);
-          _tetanusAcc -= whole;
-        }
-      } else {
-        _inTetanus = false;
-        _tetanusGlow = math.max(0.0, _tetanusGlow - dt * 1.6);
-        // Rested muscle recovers its capacity to fuse again.
-        if (_contraction < _kRestLevel) {
-          _fatigue = math.max(0.0, _fatigue - _kRecoverRate * dt);
-        }
-      }
-    } else {
-      _tetanusGlow = math.max(0.0, _tetanusGlow - dt * 1.6);
-      _fatigue = math.max(0.0, _fatigue - _kRecoverRate * dt);
-      _inTetanus = false;
-    }
-
-    // Decay juice.
     _fireFlash = math.max(0.0, _fireFlash - dt * 3.0);
     _missFlash = math.max(0.0, _missFlash - dt * 3.5);
+    _bannerT = math.max(0.0, _bannerT - dt * 0.6);
+    _muscle = math.max(0.0, _muscle - dt * 2.2);
+
+    if (running) {
+      if (_mode == _Mode.reflex) {
+        _tickReflex(dt);
+      } else {
+        _tickProtein(dt);
+      }
+    }
 
     _sparks.removeWhere((p) => !p.step(dt));
     _pops.removeWhere((p) => !p.step(dt));
@@ -504,51 +565,107 @@ class _TwitchV2GameState extends State<TwitchV2Game>
     setState(() {});
   }
 
-  void _handleTap(Size size) {
-    if (!widget.session.isRunning) return;
+  void _tickReflex(double dt) {
+    if (!_launched) {
+      _preDelayLeft -= dt;
+      if (_preDelayLeft <= 0) _launchImpulse();
+      return;
+    }
+    _travelT += dt;
+    final prog = _travelDur <= 0 ? 1.0 : (_travelT / _travelDur);
+    if (!_beatResolved && prog > 1.0 + _window) {
+      _registerMiss(passive: true);
+    }
+    if (prog > 1.0 + _window + 0.35) {
+      _launched = false;
+      _preDelayLeft = _preDelay;
+    }
+  }
 
-    // Already resolved this signal → a wasted twitch (firing off-beat).
-    if (_beatResolved) {
+  void _tickProtein(double dt) {
+    _proteinLeft -= dt;
+    for (final d in _dishes) {
+      d.eatFlash = math.max(0.0, d.eatFlash - dt * 3.0);
+    }
+    if (_proteinLeft <= 0) {
+      _cycle++;
+      _sinceProtein = 0;
+      _mode = _Mode.reflex;
+      _launched = false;
+      _preDelayLeft = 0.5;
+      _applyDifficulty();
+    }
+  }
+
+  void _handleTap(Offset local, Size size) {
+    if (!widget.session.isRunning) return;
+    if (_mode == _Mode.protein) {
+      _Dish? best;
+      double bestD = double.infinity;
+      for (final d in _dishes) {
+        if (d.eaten) continue;
+        final c = Offset(d.pos.dx * size.width, d.pos.dy * size.height);
+        final dist = (local - c).distance;
+        if (dist <= d.r * size.shortestSide * 1.15 && dist < bestD) {
+          bestD = dist;
+          best = d;
+        }
+      }
+      if (best != null) _eatDish(best, size);
+      return;
+    }
+    _tapTarget(size, local: local);
+  }
+
+  void _tapTarget(Size size, {Offset? local}) {
+    if (!_launched || _beatResolved) {
       _registerMiss(passive: false);
       return;
     }
-
-    final err = (_phase - _kTargetPhase).abs();
+    final tc = Offset(_target.dx * size.width, _target.dy * size.height);
+    final rPx = _targetR * size.shortestSide;
+    if (local != null && (local - tc).distance > rPx * 1.6) {
+      _registerMiss(passive: false);
+      return;
+    }
+    final prog = _travelDur <= 0 ? 1.0 : (_travelT / _travelDur);
+    final err = (prog - 1.0).abs();
     if (err <= _window) {
-      _registerHit(quality: (1.0 - err / _window).clamp(0.0, 1.0), size: size);
+      _registerHit(quality: (1.0 - err / _window).clamp(0.0, 1.0), at: tc);
     } else {
       _registerMiss(passive: false);
     }
   }
 
-  void _registerHit({required double quality, required Size size}) {
+  void _registerHit({required double quality, required Offset at}) {
     _beatResolved = true;
     _hits++;
+    _sinceProtein++;
     _streak++;
     widget.session.noteStreak(_streak);
     HapticFeedback.lightImpact();
 
-    // Sliding filaments: the twitch summates onto the current contraction.
-    _contraction = math.min(1.0, _contraction + _kTwitchAmount);
+    _muscle = 1.0;
+    _fireFlash = 0.4 + 0.6 * quality;
 
-    // Streak multiplier is modest and resets on any miss — catch-up-able, not a
-    // runaway. The old uncatchable lead lived in the tetanus drip, now fatigued.
-    final mult = 1.0 + math.min(_streak * 0.06, 0.8); // up to 1.8×
-    var pts = ((9 + (quality * 13).round()) * mult).round();
-    if (_finalBurst()) pts = (pts * 1.5).round(); // climax bonus for all
+    final mult = 1.0 + (_streak * 0.06).clamp(0.0, 1.2);
+    final base = 12 + (quality * 18).round();
+    final pts = (base * mult).round();
     widget.session.addScore(pts);
 
-    if (_hits % _kHitsPerLevel == 0 && _level < _kMaxLevel) _level++;
-
-    _fireFlash = 0.4 + 0.6 * quality;
-    final c = Offset(size.width / 2, size.height * 0.34);
     if (_sparks.length < 90) {
-      _sparks.addAll(FxBurst.spawn(c, quality > 0.7 ? _kFused : _kSignal,
-          count: 9 + (quality * 13).round(), speed: 150, size: 3));
+      _sparks.addAll(FxBurst.spawn(at, quality > 0.7 ? _kFused : _kSignal,
+          count: 10 + (quality * 14).round(), speed: 160, size: 3));
     }
     if (_pops.length < 12) {
-      final tag = quality > 0.85 ? 'PERFECT +$pts' : '+$pts';
-      _pops.add(FxPop(c, tag, quality > 0.7 ? _kFused : _kMuscle));
+      _pops.add(FxPop(at, quality > 0.85 ? 'PERFECT +$pts' : '+$pts',
+          quality > 0.7 ? _kFused : _kMuscle));
+    }
+
+    _launched = false;
+    _preDelayLeft = math.max(0.08, _preDelay);
+    if (_sinceProtein >= _kHitsPerProtein) {
+      _startProtein();
     }
   }
 
@@ -557,14 +674,27 @@ class _TwitchV2GameState extends State<TwitchV2Game>
     _streak = 0;
     _missFlash = 0.7;
     if (!passive && _sparks.length < 90) {
-      _sparks.addAll(FxBurst.spawn(
-        Offset(MediaQuery.of(context).size.width * 0.5, 0),
-        _kRed,
-        count: 6,
-        speed: 90,
-        size: 2,
-      ));
+      final c = Offset(_lastSize.width * 0.5, _lastSize.height * 0.5);
+      _sparks.addAll(FxBurst.spawn(c, _kRed, count: 8, speed: 110, size: 2));
     }
+    _launched = false;
+    _preDelayLeft = math.max(0.1, _preDelay);
+  }
+
+  void _eatDish(_Dish d, Size size) {
+    if (d.eaten) return;
+    d.eaten = true;
+    d.eatFlash = 1.0;
+    _muscle = math.min(1.0, _muscle + 0.4);
+    const pts = _kProteinPointsPerDish;
+    widget.session.addScore(pts);
+    HapticFeedback.selectionClick();
+    final c = Offset(d.pos.dx * size.width, d.pos.dy * size.height);
+    if (_sparks.length < 90) {
+      _sparks.addAll(FxBurst.spawn(c, _kProtein, count: 12, speed: 150, size: 3));
+    }
+    if (_pops.length < 12) _pops.add(FxPop(c, '+$pts', _kProtein));
+    _spawnDish();
   }
 
   @override
@@ -574,24 +704,30 @@ class _TwitchV2GameState extends State<TwitchV2Game>
       _lastSize = size;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => _handleTap(size),
+        onTapDown: (d) => _handleTap(d.localPosition, size),
         child: ClipRect(
           child: CustomPaint(
             size: size,
             painter: _TwitchV2Painter(
-              phase: _phase,
-              targetPhase: _kTargetPhase,
+              mode: _mode,
+              source: _source,
+              target: _target,
+              travelProg: _travelDur <= 0 ? 0 : (_travelT / _travelDur),
+              launched: _launched,
               window: _window,
-              contraction: _contraction,
-              fatigue: _fatigue,
-              tetanusGlow: _tetanusGlow,
-              level: _level,
+              targetR: _targetR,
+              muscle: _muscle,
+              hits: _hits,
+              sinceProtein: _sinceProtein,
               streak: _streak,
+              proteinLeft: _proteinLeft,
+              proteinTotal: _kProteinSeconds,
+              dishes: _dishes,
+              bannerT: _bannerT,
               fireFlash: _fireFlash,
               missFlash: _missFlash,
               idle: _idle,
               running: widget.session.isRunning,
-              finalBurst: _finalBurst(),
               sparks: _sparks,
               pops: _pops,
             ),
@@ -602,49 +738,66 @@ class _TwitchV2GameState extends State<TwitchV2Game>
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
 
 class _TwitchV2Painter extends CustomPainter {
-  final double phase;
-  final double targetPhase;
+  final _Mode mode;
+  final Offset source;
+  final Offset target;
+  final double travelProg;
+  final bool launched;
   final double window;
-  final double contraction;
-  final double fatigue;
-  final double tetanusGlow;
-  final int level;
+  final double targetR;
+  final double muscle;
+  final int hits;
+  final int sinceProtein;
   final int streak;
+  final double proteinLeft;
+  final double proteinTotal;
+  final List<_Dish> dishes;
+  final double bannerT;
   final double fireFlash;
   final double missFlash;
   final double idle;
   final bool running;
-  final bool finalBurst;
   final List<FxParticle> sparks;
   final List<FxPop> pops;
 
   _TwitchV2Painter({
-    required this.phase,
-    required this.targetPhase,
+    required this.mode,
+    required this.source,
+    required this.target,
+    required this.travelProg,
+    required this.launched,
     required this.window,
-    required this.contraction,
-    required this.fatigue,
-    required this.tetanusGlow,
-    required this.level,
+    required this.targetR,
+    required this.muscle,
+    required this.hits,
+    required this.sinceProtein,
     required this.streak,
+    required this.proteinLeft,
+    required this.proteinTotal,
+    required this.dishes,
+    required this.bannerT,
     required this.fireFlash,
     required this.missFlash,
     required this.idle,
     required this.running,
-    required this.finalBurst,
     required this.sparks,
     required this.pops,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    GameFx.atmosphere(canvas, size, _kMuscle, idle, motes: finalBurst ? 30 : 22);
+    final accent = mode == _Mode.protein ? _kProtein : _kMuscle;
+    GameFx.atmosphere(canvas, size, accent, idle, motes: 22);
 
-    _paintSarcomere(canvas, size);
-    _paintNerve(canvas, size);
+    if (mode == _Mode.protein) {
+      _paintProtein(canvas, size);
+    } else {
+      _paintReflex(canvas, size);
+    }
+
     FxBurst.paint(canvas, sparks);
     for (final p in pops) {
       p.paint(canvas);
@@ -653,233 +806,155 @@ class _TwitchV2Painter extends CustomPainter {
     _paintFlash(canvas, size);
   }
 
-  // ── The sarcomere: actin sliding over myosin as it shortens ─────────────────
-  void _paintSarcomere(Canvas canvas, Size size) {
-    final cx = size.width / 2;
-    final cy = size.height * 0.34;
+  Offset _px(Offset norm, Size size) =>
+      Offset(norm.dx * size.width, norm.dy * size.height);
 
-    final breathe = running ? 0.0 : 0.04 * (0.5 + 0.5 * math.sin(idle * 1.6));
-    final shorten = (contraction + breathe).clamp(0.0, 1.0);
+  void _paintReflex(Canvas canvas, Size size) {
+    final src = _px(source, size);
+    final tgt = _px(target, size);
+    final rPx = targetR * size.shortestSide;
 
-    final restHalf = size.width * 0.31;
-    final contractedHalf = size.width * 0.165;
-    final half = restHalf + (contractedHalf - restHalf) * shorten;
-    final myosinHalf = size.width * 0.125; // myosin length is fixed
-    final rowGap = size.height * 0.052;
-    const rows = 3;
+    GameFx.glowLine(canvas, src, tgt, _kNerve.withValues(alpha: 0.45),
+        width: 3, progress: 1.0);
 
-    // Fused tetanus glows green; fatigue tints it amber to read "tiring".
-    final activeColor = Color.lerp(_kFused, _kFatigue, fatigue)!;
+    final preFire = launched ? (1.0 - travelProg.clamp(0.0, 1.0)) : 0.0;
+    _paintSoma(canvas, src, math.max(11.0, rPx * 0.62), preFire);
+    _paintJunction(canvas, tgt, rPx);
 
-    final glowR = size.width * 0.34;
-    canvas.drawCircle(
-      Offset(cx, cy),
-      glowR,
-      Paint()
-        ..shader = RadialGradient(colors: [
-          _kMuscle.withValues(alpha: 0.10 + 0.22 * shorten + 0.2 * tetanusGlow),
-          _kMuscle.withValues(alpha: 0.0),
-        ]).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: glowR)),
-    );
+    if (launched) {
+      final p = travelProg.clamp(0.0, 1.15);
+      for (var i = 1; i <= 6; i++) {
+        final tp = (p - i * 0.045).clamp(0.0, 1.0);
+        canvas.drawCircle(Offset.lerp(src, tgt, tp)!, 5.0 * (1 - i / 7),
+            Paint()..color = _kSignal.withValues(alpha: 0.16 * (1 - i / 7)));
+      }
+      final tip = Offset.lerp(src, tgt, p.clamp(0.0, 1.0))!;
+      final near = (travelProg - 1.0).abs() <= window;
+      GameFx.orb(canvas, tip, near ? 9.0 : 7.0, near ? _kFused : _kSignal,
+          glow: near ? 1.5 : 1.0);
 
-    // Z-discs — the boundaries that move inward as the muscle shortens.
-    final zColor = Color.lerp(_kZdisc, activeColor, 0.6 * tetanusGlow)!;
-    for (final dir in [-1.0, 1.0]) {
-      final zx = cx + dir * half;
-      canvas.drawLine(
-        Offset(zx, cy - rowGap * 1.7),
-        Offset(zx, cy + rowGap * 1.7),
+      final err = (travelProg - 1.0).abs();
+      final inWin = err <= window;
+      final approach = travelProg.clamp(0.0, 1.0);
+      final ringR = rPx + rPx * 1.9 * (1.0 - approach);
+      canvas.drawCircle(
+        tgt,
+        ringR,
         Paint()
-          ..color = zColor.withValues(alpha: 0.9)
-          ..strokeWidth = 4
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = MaskFilter.blur(
-              BlurStyle.normal, 1.5 + 3 * (shorten + tetanusGlow)),
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = inWin ? 3.2 : 2.0
+          ..color = (inWin ? _kFused : _kSignal)
+              .withValues(alpha: inWin ? 0.9 : 0.5),
       );
     }
 
-    for (var r = 0; r < rows; r++) {
-      final y = cy + (r - (rows - 1) / 2) * rowGap;
+    if (!running) {
+      GameFx.text(canvas, 'uhhh… TAP THE TARGET WHEN THE IMPULSE LANDS',
+          Offset(size.width / 2, size.height * 0.93), 12,
+          _kSignal.withValues(alpha: 0.75), weight: FontWeight.w800, glow: 0.3);
+    }
+  }
 
-      // Actin thin filaments — anchored at the Z-discs, sliding toward center.
-      for (final dir in [-1.0, 1.0]) {
-        final zx = cx + dir * half;
-        canvas.drawLine(
-          Offset(zx, y),
-          Offset(cx + dir * (myosinHalf * 0.35), y),
-          Paint()
-            ..color = _kActin.withValues(alpha: 0.85)
-            ..strokeWidth = 2.4
-            ..strokeCap = StrokeCap.round,
+  void _paintSoma(Canvas canvas, Offset c, double r, double preFire) {
+    twitchV2PaintSoma(canvas, c, r, idle, preFire: preFire);
+    GameFx.text(canvas, 'SOURCE', c.translate(0, -r * 1.7 - 12), 9,
+        _kSource.withValues(alpha: 0.75), weight: FontWeight.w800);
+  }
+
+  void _paintJunction(Canvas canvas, Offset c, double r) {
+    twitchV2PaintJunction(canvas, c, r, idle, muscle);
+    GameFx.text(canvas, 'TARGET', c.translate(0, -r * 1.7 - 12), 9,
+        _kMuscle.withValues(alpha: 0.85), weight: FontWeight.w800);
+  }
+
+  void _paintProtein(Canvas canvas, Size size) {
+    for (final d in dishes) {
+      final c = _px(d.pos, size);
+      final r = d.r * size.shortestSide;
+      final pop = ((idle - d.born) * 6).clamp(0.0, 1.0);
+      final rr = r * (0.6 + 0.4 * Curves.easeOutBack.transform(pop));
+      if (d.eaten) {
+        canvas.drawOval(
+          Rect.fromCenter(center: c.translate(0, rr * 0.3),
+              width: rr * 2.6, height: rr * 1.1),
+          Paint()..color = Colors.white.withValues(alpha: 0.06 * d.eatFlash),
+        );
+        continue;
+      }
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: c.translate(0, rr * 0.35), width: rr * 2.6, height: rr * 1.1),
+        Paint()..color = Colors.white.withValues(alpha: 0.16),
+      );
+      canvas.drawOval(
+        Rect.fromCenter(
+            center: c.translate(0, rr * 0.35), width: rr * 2.6, height: rr * 1.1),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = Colors.white.withValues(alpha: 0.4),
+      );
+      GameFx.orb(canvas, c, rr * 0.72, _kProtein, glow: 1.0);
+      for (var i = 0; i < 3; i++) {
+        final a = idle * 1.5 + i * 2.1;
+        canvas.drawCircle(
+          c + Offset(math.cos(a), -0.4 - 0.3 * (i + 1)) * rr * 0.5,
+          1.6,
+          Paint()..color = Colors.white.withValues(alpha: 0.25),
         );
       }
-
-      // Myosin thick filament — fixed in the center; actin overlaps it more
-      // as the muscle shortens (the sliding-filament idea, made visible).
-      canvas.drawLine(
-        Offset(cx - myosinHalf, y),
-        Offset(cx + myosinHalf, y),
-        Paint()
-          ..color = Color.lerp(_kMyosin, _kMuscle, 0.3 + 0.5 * shorten)!
-          ..strokeWidth = 7
-          ..strokeCap = StrokeCap.round,
-      );
-      for (var i = -2; i <= 2; i++) {
-        final hx = cx + i * (myosinHalf / 2.4);
-        canvas.drawCircle(Offset(hx, y), 1.6,
-            Paint()..color = _kActin.withValues(alpha: 0.5));
-      }
     }
   }
 
-  // ── The nerve: signal travels toward the junction; tap in the strike zone ───
-  void _paintNerve(Canvas canvas, Size size) {
-    final y = size.height * 0.74;
-    final left = size.width * 0.10;
-    final right = size.width * 0.90;
-    final span = right - left;
-
-    canvas.drawLine(
-      Offset(left, y),
-      Offset(right, y),
-      Paint()
-        ..color = Colors.white.withValues(alpha: 0.14)
-        ..strokeWidth = 3
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // Strike zone — the timing window around the junction.
-    final zoneHalfPx = window * span;
-    final targetX = left + targetPhase * span;
-    final zoneRect = Rect.fromLTRB(
-        targetX - zoneHalfPx, y - 22, targetX + zoneHalfPx, y + 22);
-    final zoneTint = missFlash > 0.05
-        ? _kRed
-        : (fireFlash > 0.05 ? _kFused : _kSignal);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(zoneRect, const Radius.circular(8)),
-      Paint()..color = zoneTint.withValues(alpha: 0.16 + 0.5 * fireFlash),
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(zoneRect, const Radius.circular(8)),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.6
-        ..color = zoneTint.withValues(alpha: 0.7),
-    );
-    canvas.drawLine(
-      Offset(targetX, y - 26),
-      Offset(targetX, y + 26),
-      Paint()
-        ..color = zoneTint.withValues(alpha: 0.85)
-        ..strokeWidth = 2,
-    );
-
-    // Axon terminal / neuromuscular junction at the muscle end.
-    final junctionX = left + span;
-    GameFx.orb(canvas, Offset(junctionX, y), 9,
-        Color.lerp(_kMuscleDeep, _kMuscle, 0.4 + 0.6 * contraction)!,
-        glow: 0.6 + contraction);
-    // Connector hinting cause (junction) → effect (muscle above).
-    canvas.drawLine(
-      Offset(targetX, y - 26),
-      Offset(size.width / 2, size.height * 0.46),
-      Paint()
-        ..color = _kSignal.withValues(alpha: 0.10 + 0.25 * fireFlash)
-        ..strokeWidth = 1.4,
-    );
-
-    // The travelling signal pulse (action potential).
-    final pulseX = left + phase * span;
-    final approaching = (phase - targetPhase).abs() <= window;
-    GameFx.orb(canvas, Offset(pulseX, y), approaching ? 8.5 : 6.5,
-        approaching ? _kFused : _kSignal,
-        glow: approaching ? 1.4 : 0.9);
-    for (var i = 1; i <= 5; i++) {
-      final tp = (phase - i * 0.02);
-      if (tp < 0) continue;
-      canvas.drawCircle(
-        Offset(left + tp * span, y),
-        4.5 * (1 - i / 6),
-        Paint()..color = _kSignal.withValues(alpha: 0.18 * (1 - i / 6)),
-      );
-    }
-
-    // Calm-state prompt — Russ-voiced, on-brand, still legible in <3s.
-    if (!running) {
-      GameFx.text(canvas, 'uhhh… FIRE ON THE BEAT',
-          Offset(size.width / 2, size.height * 0.88), 13,
-          _kSignal.withValues(alpha: 0.75), weight: FontWeight.w800, glow: 0.4);
-    }
-  }
-
-  // ── HUD: force bar, fatigue strip, level, streak, callouts ──────────────────
   void _paintHud(Canvas canvas, Size size) {
     const margin = 18.0;
     final barW = size.width - margin * 2;
 
-    // Force bar (contraction strength).
-    final barRect = Rect.fromLTWH(margin, 16, barW, 9);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(barRect, const Radius.circular(5)),
-      Paint()..color = Colors.white.withValues(alpha: 0.10),
-    );
-    final fillC = contraction >= _kTetanusThreshold
-        ? Color.lerp(_kFused, _kFatigue, fatigue)!
-        : _kMuscle;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-          Rect.fromLTWH(margin, 16, barW * contraction, 9),
-          const Radius.circular(5)),
-      Paint()..color = fillC.withValues(alpha: 0.92),
-    );
-    final tx = margin + barW * _kTetanusThreshold;
-    canvas.drawLine(Offset(tx, 12), Offset(tx, 29),
-        Paint()..color = _kFused.withValues(alpha: 0.7)..strokeWidth = 1.5);
-    GameFx.text(canvas, 'FORCE', Offset(margin + 22, 36), 9,
-        Colors.white.withValues(alpha: 0.45), weight: FontWeight.w700);
-
-    // Fatigue strip beneath — fills amber→red as the held muscle tires.
-    final fatRect = Rect.fromLTWH(margin, 30, barW, 4);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(fatRect, const Radius.circular(3)),
-      Paint()..color = Colors.white.withValues(alpha: 0.07),
-    );
-    if (fatigue > 0.01) {
+    if (mode == _Mode.reflex) {
       canvas.drawRRect(
         RRect.fromRectAndRadius(
-            Rect.fromLTWH(margin, 30, barW * fatigue, 4),
-            const Radius.circular(3)),
-        Paint()
-          ..color = Color.lerp(_kFatigue, _kRed, fatigue)!
-              .withValues(alpha: 0.85),
+            Rect.fromLTWH(margin, 16, barW, 8), const Radius.circular(4)),
+        Paint()..color = Colors.white.withValues(alpha: 0.10),
       );
+      final frac = (sinceProtein / _kHitsPerProtein).clamp(0.0, 1.0);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(margin, 16, barW * frac, 8),
+            const Radius.circular(4)),
+        Paint()..color = _kProtein.withValues(alpha: 0.9),
+      );
+      GameFx.text(
+          canvas,
+          'REFLEX ${sinceProtein.clamp(0, _kHitsPerProtein)}/$_kHitsPerProtein → PROTEIN',
+          const Offset(margin + 96, 36), 9,
+          Colors.white.withValues(alpha: 0.5), weight: FontWeight.w700);
+
+      GameFx.text(canvas, 'LV ${hits + 1}', Offset(size.width - 40, 40), 12,
+          _kMuscle.withValues(alpha: 0.95), weight: FontWeight.w800);
+      if (streak > 1) {
+        GameFx.text(canvas, '${streak}x', Offset(size.width - 40, 56), 11,
+            _kSignal.withValues(alpha: 0.9), weight: FontWeight.w700);
+      }
+    } else {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(margin, 16, barW, 8), const Radius.circular(4)),
+        Paint()..color = Colors.white.withValues(alpha: 0.10),
+      );
+      final frac = (proteinLeft / proteinTotal).clamp(0.0, 1.0);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(margin, 16, barW * frac, 8),
+            const Radius.circular(4)),
+        Paint()..color = _kProtein.withValues(alpha: 0.92),
+      );
+      GameFx.text(canvas, 'EAT! — GATHER PROTEIN', const Offset(margin + 96, 36), 9,
+          _kProtein.withValues(alpha: 0.85), weight: FontWeight.w800);
     }
 
-    // Level + streak.
-    GameFx.text(canvas, 'LV ${level + 1}', Offset(size.width - 40, 40), 12,
-        _kMuscle.withValues(alpha: 0.95), weight: FontWeight.w800);
-    if (streak > 1) {
-      GameFx.text(canvas, '${streak}x', Offset(size.width - 40, 56), 11,
-          _kSignal.withValues(alpha: 0.9), weight: FontWeight.w700);
-    }
-
-    // TETANUS / FATIGUED callouts above the muscle.
-    if (fatigue > 0.7 && contraction >= _kTetanusThreshold) {
-      GameFx.text(canvas, 'FATIGUED — RELAX',
-          Offset(size.width / 2, size.height * 0.20), 16,
-          _kFatigue.withValues(alpha: 0.95), display: true, glow: 0.6);
-    } else if (tetanusGlow > 0.4) {
-      GameFx.text(canvas, 'TETANUS', Offset(size.width / 2, size.height * 0.20),
-          18, _kFused.withValues(alpha: tetanusGlow), display: true, glow: 0.7);
-    }
-
-    // FINAL BURST crescendo banner — pulsing, brand-gold.
-    if (finalBurst) {
-      final pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(idle * 9.0));
-      GameFx.text(canvas, 'FINAL BURST',
-          Offset(size.width / 2, size.height * 0.62), 17,
-          _kSignal.withValues(alpha: pulse), display: true, glow: 0.7);
+    if (mode == _Mode.protein && bannerT > 0.02) {
+      final a = bannerT.clamp(0.0, 1.0);
+      GameFx.text(canvas, 'NOW EAT PROTEIN!',
+          Offset(size.width / 2, size.height * 0.16), 24,
+          _kProtein.withValues(alpha: a), display: true, glow: 0.7 * a);
     }
   }
 
@@ -890,12 +965,7 @@ class _TwitchV2Painter extends CustomPainter {
     }
     if (fireFlash > 0.4) {
       canvas.drawRect(Offset.zero & size,
-          Paint()..color = _kFused.withValues(alpha: (fireFlash - 0.4) * 0.22));
-    }
-    if (finalBurst) {
-      final p = 0.5 + 0.5 * math.sin(idle * 9.0);
-      canvas.drawRect(Offset.zero & size,
-          Paint()..color = _kSignal.withValues(alpha: 0.04 + 0.04 * p));
+          Paint()..color = _kFused.withValues(alpha: (fireFlash - 0.4) * 0.20));
     }
   }
 

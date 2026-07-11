@@ -164,6 +164,11 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
   double _resolveTime = 0.0; // brief celebration window after a pass resolves
   bool _lastMerged = false;
 
+  // The unmissable in-context HOW-TO: a big pulsing prompt shown until the
+  // player launches their FIRST pass, then it fades out for good.
+  bool _hasActed = false;
+  double _howToFade = 1.0; // 1 = fully shown, 0 = gone
+
   // ── live bodies ────────────────────────────────────────────────────────────
   final List<_Star> _stars = [];
   _Core _player = _Core(0, 0, 0, 0); // the intruder core (repositioned on spawn)
@@ -261,7 +266,7 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
 
     // Cued tail zones sit DOWNSTREAM of the host, offset to the side the spin
     // throws its tail — a graceful pass naturally sweeps stars through them.
-    final h = _kHostFrac;
+    const h = _kHostFrac;
     final away = (Offset(h.dx, h.dy) - start);
     final awayLen = away.distance == 0 ? 1.0 : away.distance;
     final dir = Offset(away.dx / awayLen, away.dy / awayLen);
@@ -370,6 +375,8 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
 
   void _decayJuice(double dt) {
     _flash = max(0.0, _flash - dt * 2.2);
+    // Once the player has launched a pass, fade the big how-to prompt away.
+    if (_hasActed) _howToFade = max(0.0, _howToFade - dt * 1.6);
     _fx.removeWhere((p) => !p.step(dt));
     _pops.removeWhere((p) => !p.step(dt));
     if (_factFlare != null) {
@@ -620,6 +627,7 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
     _player.vy = v.dy;
     _phase = _Phase.simulating;
     _simTime = 0.0;
+    _hasActed = true; // the how-to prompt begins fading out now
   }
 
   /// Direct-aim: direction = drag (start→current), speed = drag length × curve.
@@ -729,9 +737,11 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
             flash: _flash,
             phase: _phase,
             running: widget.session.isRunning,
+            spinHost: 1, // the host galaxy always spins prograde
+            spinPlayer: _round.spin, // the intruder's spin (pro-/retrograde)
           ),
           child: Stack(children: [
-            // Top HUD — spin + merge/flyby read-out. Score/timer owned by host.
+            // Top HUD — spin + live STARS meter + merge/flyby read-out.
             Positioned(
               top: 0,
               left: 0,
@@ -745,17 +755,32 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
                       _round.spin > 0 ? 'PROGRADE' : 'RETROGRADE',
                       _round.spin > 0 ? Potatuhs.airForce : Potatuhs.glaucous,
                     ),
+                    // Live SCORE-DRIVER meter: the running star count, so the
+                    // player sees the number tick up the moment they score.
+                    _starMeter(),
                     if (_phase == _Phase.aiming && _isDragging)
                       _chip(
                         merges ? 'MERGE' : 'FLYBY',
                         merges ? Potatuhs.gold : Potatuhs.copper,
                       )
                     else if (_streak >= 2)
-                      _chip('${_streak}x STREAK', Potatuhs.orange),
+                      _chip('${_streak}x STREAK', Potatuhs.orange)
+                    else
+                      const SizedBox(width: 1),
                   ],
                 ),
               ),
             ),
+            // Always-visible ONE-LINE OBJECTIVE — what to do + what scores.
+            Positioned(
+              top: 46,
+              left: 0,
+              right: 0,
+              child: Center(child: _objectiveStrip()),
+            ),
+            // The unmissable HOW-TO prompt, centered, fading after first launch.
+            if (_howToFade > 0.01 && widget.session.isRunning)
+              Positioned.fill(child: IgnorePointer(child: _howToPrompt())),
             // Bottom hint / fact banner.
             Positioned(
               bottom: 16,
@@ -785,6 +810,124 @@ class _GalaxyMergerGameState extends State<GalaxyMergerGame>
           fontWeight: FontWeight.w800,
           letterSpacing: 1.3,
           color: color,
+        ),
+      ),
+    );
+  }
+
+  /// Live STARS meter — the running score, so the winning behavior (scoring
+  /// stars) is discoverable: the number visibly jumps on every merge / sweep.
+  Widget _starMeter() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      decoration: BoxDecoration(
+        color: Potatuhs.inkPanel.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Potatuhs.gold.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('★ ',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Potatuhs.gold.withValues(alpha: 0.9))),
+          Text(
+            '${widget.session.score}',
+            style: const TextStyle(
+              fontFamily: Potatuhs.displayFont,
+              fontSize: 14,
+              color: Potatuhs.textPrimary,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const Text('  STARS',
+              style: TextStyle(
+                fontFamily: Potatuhs.bodyFont,
+                fontSize: 9,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.2,
+                color: Potatuhs.textFaint,
+              )),
+        ],
+      ),
+    );
+  }
+
+  /// The always-on ONE-LINE OBJECTIVE. Never disappears — the player can always
+  /// read what merging galaxies means and what scores.
+  Widget _objectiveStrip() {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 360),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: Potatuhs.inkDeep.withValues(alpha: 0.66),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Potatuhs.gold.withValues(alpha: 0.28)),
+      ),
+      child: const Text(
+        'MERGE the galaxy cores · sweep stars through gold zones for +stars',
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontFamily: Potatuhs.bodyFont,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.4,
+          height: 1.2,
+          color: Potatuhs.textSecondary,
+        ),
+      ),
+    );
+  }
+
+  /// The unmissable in-context HOW-TO. A big pulsing prompt over the play area
+  /// that the player cannot miss on the first turn; fades once they launch.
+  Widget _howToPrompt() {
+    final pulse = 0.5 + 0.5 * sin(_t * 3.2);
+    return Opacity(
+      opacity: (_howToFade * (0.6 + 0.4 * pulse)).clamp(0.0, 1.0),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              decoration: BoxDecoration(
+                color: Potatuhs.inkDeep.withValues(alpha: 0.8),
+                borderRadius: BorderRadius.circular(20),
+                border:
+                    Border.all(color: Potatuhs.glaucous.withValues(alpha: 0.7)),
+                boxShadow: Potatuhs.glow(Potatuhs.glaucous,
+                    strength: 0.35 * _howToFade, blur: 22),
+              ),
+              child: const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'DRAG the blue galaxy',
+                    style: TextStyle(
+                      fontFamily: Potatuhs.displayFont,
+                      fontSize: 18,
+                      color: Potatuhs.textPrimary,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'to aim a slow, grazing pass at the gold host',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontFamily: Potatuhs.bodyFont,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Potatuhs.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -842,6 +985,8 @@ class _GalaxyMergerPainter extends CustomPainter {
   final double flash;
   final _Phase phase;
   final bool running;
+  final int spinHost;
+  final int spinPlayer;
 
   _GalaxyMergerPainter({
     required this.hostPx,
@@ -862,6 +1007,8 @@ class _GalaxyMergerPainter extends CustomPainter {
     required this.flash,
     required this.phase,
     required this.running,
+    required this.spinHost,
+    required this.spinPlayer,
   });
 
   @override
@@ -869,8 +1016,15 @@ class _GalaxyMergerPainter extends CustomPainter {
     GameFx.atmosphere(canvas, size, Potatuhs.glaucous, t, motes: 40);
 
     _paintZones(canvas);
+    // Draw each galaxy's DISC (halo bloom + inclined glow + spiral arms) BEHIND
+    // the tracer stars so the whole object reads as a spiral galaxy, not a ball.
+    if (merged) {
+      _paintGalaxyDisc(canvas, mergedPx, 30, Potatuhs.gold, spinHost, elliptical: true);
+    } else {
+      _paintGalaxyDisc(canvas, hostPx, 26, Potatuhs.gold, spinHost);
+      _paintGalaxyDisc(canvas, playerPx, 20, Potatuhs.glaucous, spinPlayer);
+    }
     _paintStars(canvas);
-    _paintCores(canvas);
     if (phase == _Phase.aiming && running) {
       _paintPreview(canvas);
       _paintAim(canvas);
@@ -947,37 +1101,126 @@ class _GalaxyMergerPainter extends CustomPainter {
     }
   }
 
-  void _paintCores(Canvas canvas) {
-    if (merged) {
-      // Fused remnant — a brighter, larger elliptical core.
-      GameFx.orb(canvas, mergedPx, 22, Potatuhs.gold,
-          glow: 2.2, rim: Potatuhs.orange, specular: true);
-      _paintCoreRing(canvas, mergedPx, 22, Potatuhs.gold, 0.36);
-      return;
-    }
-    // Host core.
-    GameFx.orb(canvas, hostPx, 17, Potatuhs.gold,
-        glow: 1.8, rim: Potatuhs.sienna, specular: true);
-    _paintCoreRing(canvas, hostPx, 17, Potatuhs.gold, 0.30);
-    // Intruder core.
-    GameFx.orb(canvas, playerPx, 13, Potatuhs.glaucous,
-        glow: 1.7, rim: Colors.white, specular: true);
-    _paintCoreRing(canvas, playerPx, 13, Potatuhs.glaucous, 0.28);
-  }
+  /// A galaxy's DISC: the halo bloom, the inclined luminous disc, and the
+  /// winding spiral arms of dust + stars. This is what makes the object read
+  /// as a GALAXY (a flat pinwheel of stars) rather than a planet sphere. The
+  /// tracer stars are drawn on top; this is the coherent structure they live in.
+  /// [elliptical] renders the fused remnant as a smooth featureless bulge (a
+  /// merged spiral becomes an elliptical galaxy — the science payoff).
+  void _paintGalaxyDisc(Canvas canvas, Offset c, double r, Color color, int spin,
+      {bool elliptical = false}) {
+    // Inclination: a fixed tilt so the disc reads as a plane seen at an angle,
+    // never a flat face-on sticker. Slow rotation gives it life.
+    const incline = 0.42; // vertical squash (disc seen edge-ward)
+    final rot = t * 0.10 * spin; // the whole pinwheel turns slowly
 
-  void _paintCoreRing(
-      Canvas canvas, Offset c, double r, Color color, double alpha) {
-    final p = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.4
-      ..color = color.withValues(alpha: alpha);
+    // 1. Halo bloom — a soft, wide glow far larger than any planet's, the
+    // galaxy's diffuse light. Blurred so it never reads as a hard edge.
+    canvas.drawCircle(
+      c,
+      r * 3.4,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          color.withValues(alpha: 0.16),
+          color.withValues(alpha: 0.0),
+        ]).createShader(Rect.fromCircle(center: c, radius: r * 3.4))
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+    );
+
     canvas.save();
     canvas.translate(c.dx, c.dy);
-    canvas.rotate(t * 0.3);
-    canvas.scale(1.0, 0.32);
-    canvas.drawCircle(Offset.zero, r * 1.7, p);
+    canvas.rotate(rot);
+    canvas.scale(1.0, incline); // tilt the plane
+
+    // 2. Disc glow — a bright inner sheet fading to the rim (stars + gas),
+    // drawn in the inclined frame so it's an ellipse, not a circle.
+    canvas.drawCircle(
+      Offset.zero,
+      r * 2.4,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          Color.lerp(color, Colors.white, 0.25)!.withValues(alpha: 0.30),
+          color.withValues(alpha: 0.14),
+          color.withValues(alpha: 0.0),
+        ], stops: const [0.0, 0.45, 1.0])
+            .createShader(Rect.fromCircle(center: Offset.zero, radius: r * 2.4)),
+    );
+
+    if (!elliptical) {
+      // 3. Spiral arms — two logarithmic arms of dust + stars winding out from
+      // the core. Drawn as tapering luminous strokes; this is the pinwheel that
+      // says "spiral galaxy". Signed by spin so it winds the right way.
+      _paintSpiralArms(canvas, r, color, spin);
+    }
     canvas.restore();
+
+    // 4. Core bulge — a compact, blindingly bright nucleus. NOT a shaded ball:
+    // an additive white-hot center that blooms outward (a billion stars), with
+    // no dark bottom edge (a planet has a shadow; a galactic core glows all
+    // round). This is the single biggest fix vs. the old planet orbs.
+    final bulgeR = elliptical ? r * 1.15 : r * 0.9;
+    canvas.drawCircle(
+      c,
+      bulgeR * 1.9,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          Colors.white.withValues(alpha: 0.9),
+          Color.lerp(color, Colors.white, 0.6)!.withValues(alpha: 0.7),
+          color.withValues(alpha: 0.0),
+        ], stops: const [0.0, 0.28, 1.0])
+            .createShader(Rect.fromCircle(center: c, radius: bulgeR * 1.9)),
+    );
+    canvas.drawCircle(
+      c,
+      bulgeR * 0.5,
+      Paint()..color = Colors.white.withValues(alpha: 0.95),
+    );
   }
+
+  /// Two winding logarithmic spiral arms of dust + stars, drawn in the disc's
+  /// already-inclined/rotated canvas frame. Each arm is a dotted taper so it
+  /// reads as a stream of stars, not a solid noodle.
+  void _paintSpiralArms(Canvas canvas, double r, Color color, int spin) {
+    const arms = 2;
+    const pts = 44;
+    final s = spin.toDouble();
+    for (var arm = 0; arm < arms; arm++) {
+      final phase = arm * pi; // arms opposite each other
+      Offset? prev;
+      for (var i = 0; i < pts; i++) {
+        final f = i / (pts - 1);
+        // Logarithmic spiral: radius grows, angle winds ~1.4 turns.
+        final rad = r * (0.55 + f * 2.15);
+        final ang = phase + s * f * 4.4;
+        final p = Offset(cos(ang) * rad, sin(ang) * rad);
+        final a = (1.0 - f) * 0.7; // arms fade outward
+        // Dust lane (darker, leading) + star lane (bright).
+        if (prev != null) {
+          canvas.drawLine(
+            prev,
+            p,
+            Paint()
+              ..strokeCap = StrokeCap.round
+              ..strokeWidth = (3.0 - f * 2.0).clamp(0.8, 3.0)
+              ..color = Color.lerp(color, Colors.white, 0.35)!
+                  .withValues(alpha: 0.42 * a),
+          );
+        }
+        // A few star knots along the arm.
+        if (i.isEven) {
+          canvas.drawCircle(
+            p,
+            (1.6 - f).clamp(0.5, 1.6),
+            Paint()
+              ..color = Color.lerp(color, Colors.white, 0.55)!
+                  .withValues(alpha: 0.6 * a),
+          );
+        }
+        prev = p;
+      }
+    }
+  }
+
 
   void _paintPreview(Canvas canvas) {
     if (preview.isEmpty) return;

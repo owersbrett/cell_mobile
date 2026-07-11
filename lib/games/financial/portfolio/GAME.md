@@ -46,13 +46,27 @@ A **shock** fires on a timer that accelerates as the clock runs down (~7.5s apar
 - **Correlated crash** (late, ramp > 0.55): two sectors crash **together** — naive spreading across
   correlated stocks helps less, nudging you toward the steadier ETF.
 
+## Comprehension layer (what makes the point unmissable)
+Portfolio is about **allocation**, not single-asset timing (that's Market Trader). Four cues make the
+difference legible in the first three seconds:
+- **Always-visible objective line** under the value: *"SPREAD RISK — SET THE MIX ACROSS 5 HOLDINGS."*
+- **Allocation DONUT** in the header — a live pie of the five weights (the ETF slice carries a bright
+  inner rim / shield). This is the signature visual: a *mix of holdings*, which a single-price trading
+  desk cannot show. Its hole reads the RISK SPREAD word (CONCENTR. → BALANCED → SPREAD, red→green,
+  Herfindahl-based).
+- **Coach hint** — a bright, centered *"Tap − + to set each weight · SPREAD EVENLY to diversify"* strip
+  that **pulses until the player's first allocation move**, then fades over ~0.9s (auto-dismisses after
+  ~7s if the player never touches a control, so it never covers the chart).
+- **Score-driver +N pops** — the portfolio's net rise is banked and a green **+N** floats every ~0.5s of
+  gain; weathering a sector crash with < 10% drawdown fires a **DIVERSIFIED! ×N** pop + burst, so the
+  winning behaviour (a spread book shrugging off a crash) is *rewarded on screen*, not just in the score.
+
 ## Make the smoothing visible
 The chart draws **three lines** against the $1,000 baseline:
 - **YOU** — your live portfolio (bright teal / red when underwater).
 - **1 STOCK** — what all-in on a single stock (FRYZ) would have done (thin red, wild).
 - **BASKET** — what holding only the ETF would have done (thin teal, smooth).
-A **RISK SPREAD gauge** (Herfindahl-based) reads CONCENTRATED → BALANCED → DIVERSIFIED, and a live
-market strip shows each ticker's % change since open.
+A live market strip shows each ticker's % change since open.
 
 ## Scoring / win
 Score = **current portfolio value** in points, synced every tick (`session.addScore(target − current)`;
@@ -72,4 +86,12 @@ Self-contained in `PortfolioGame` (`portfolio/portfolio_game.dart`). Constructor
 `_tick` (sim, gated on `session.isRunning`) and three `CustomPainter`s (background, HUD/chart, FX) that
 repaint off the ticker — the widget tree only rebuilds on allocation taps (no per-frame `setState`).
 State: `_assets` (weights/prices), `_value`, `_shocks`, `_hist` (3-line chart samples). `_syncScore`
-pushes the value delta to the session each tick.
+pushes the value delta to the session each tick. Comprehension state: `_acted`/`_hintAlpha` (coach hint),
+`_gainAccum`/`_gainClock`/`_lastValue` (+N pop banking). The allocation donut is drawn in `_HudPainter.
+_paintAllocationDonut`; static labels (objective line, coach hint) are cached `TextPainter`s laid out once
+(no per-frame `GameFx.text` for static text).
+
+**ATTRACT autopilot** demonstrates the lesson by cycling the game's own controls (deterministic 3-stage
+loop): SPREAD EVENLY (calm diversified book) → ALL-IN on one stock (a concentrated book takes a crash on
+the chin) → SPREAD EVENLY to recover. It calls the same methods the player's buttons do — no synthetic
+taps, no flailing.

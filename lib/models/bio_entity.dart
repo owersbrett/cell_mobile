@@ -1,4 +1,5 @@
 import 'package:cell_mobile/blocs/cell/cell_states.dart';
+import 'package:cell_mobile/models/lesson_section.dart';
 
 enum BioScale {
   nothings,
@@ -40,6 +41,17 @@ class BioEntity {
   final List<String> relatedIds;
   final Organelle? organelleEnum;
 
+  /// The module this entity belongs to within its scale (see [LearnModule]).
+  /// Null ⇒ the scale's Introductory module — this is how all pre-module seed
+  /// entities migrate in without touching a single entity file. New breadth /
+  /// potato entities carry an explicit module id (e.g. `'atoms_periodic_table'`).
+  final String? moduleId;
+
+  /// Structured lesson blocks rendered after [longDescription] — tables,
+  /// think-then-reveal questions, landmark facts (see lesson_section.dart).
+  /// The 10x-engagement surface: content lives here, not in longer prose.
+  final List<LessonSection> sections;
+
   const BioEntity({
     required this.id,
     required this.scale,
@@ -54,5 +66,7 @@ class BioEntity {
     this.zoomOutIds = const [],
     this.relatedIds = const [],
     this.organelleEnum,
+    this.moduleId,
+    this.sections = const [],
   });
 }

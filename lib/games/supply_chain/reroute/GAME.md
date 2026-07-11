@@ -57,13 +57,22 @@ leaning on a single fast farm is fragile. Keeping diverse backups ready is the w
 `CustomPainter` on one ticker — no raster assets.
 
 Visual language:
+- **Objective strip** — a persistent one-line band along the very top naming the score driver:
+  *"REROUTE around the blockage — keep the SILO full · fuller silo = points faster."* Always visible
+  in play (cached static painter, drawn once — not per frame).
+- **How-to hint** — a green pointer line at the bottom, *"◀ TAP a healthy source (blue = READY) to
+  reroute the line,"* that eases to invisible after the player's **first successful reroute**.
 - **Sources** — orbs on the left; teal = feeding, blue-grey = ready backup, red = down/empty. A
   ring arc shows each source's remaining **stock**; a label reads FEEDING / READY / DOWN / EMPTY.
 - **Active route** — bright teal flowing beam with travelling goods dots.
 - **Idle route** — dim line (a backup standing ready).
 - **Down route** — dashed red with a ✕ break and a storm spark.
-- **Factory** — orange orb on the right with a **SILO** gauge (green → sienna → red as it drains);
-  turns red and shows STARVING when the silo empties.
+- **Factory** — orange orb on the right with a **SILO** gauge (green → sienna → red as it drains) AND
+  an **OUTPUT meter** below it — a horizontal bar + live `+N.N/s` readout that rises green as the silo
+  fills, so the score-driver ("full silo → faster points") is directly observable. Factory turns red
+  and shows STARVING when the silo empties.
+- **Score pops** — floating `+N` rises off the factory each production tick; a `LINE OPEN` pop +
+  a spray of delivery particles travel the newly-live route on every successful reroute.
 - **Banner** — transient line near the top ("Storm closes River Port!", "Rerouted to Highland Farm").
 
 ---

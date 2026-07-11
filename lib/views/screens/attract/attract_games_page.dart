@@ -31,15 +31,35 @@ class AttractGamesPage extends StatefulWidget {
   /// walk resumes from the session cursor [AttractState.cursor].
   final int? startIndex;
 
-  const AttractGamesPage({super.key, this.startIndex});
+  /// Optional review queue: a list of [MiniGameSpec] ids to walk instead of the
+  /// full enabled set (ATTRACT → QUEUED GAMES). Order is play order; unknown
+  /// ids are skipped. When null, the walk is every enabled game.
+  final List<String>? queueIds;
+
+  const AttractGamesPage({super.key, this.startIndex, this.queueIds});
 
   @override
   State<AttractGamesPage> createState() => _AttractGamesPageState();
 }
 
 class _AttractGamesPageState extends State<AttractGamesPage> {
-  late final List<MiniGameSpec> _games =
-      MiniGameRegistry.specs.where((s) => s.enabled).toList();
+  late final List<MiniGameSpec> _games = _buildGames();
+
+  /// The walk list. Default = every enabled game. With [queueIds], only those
+  /// specs, in queue order (skipping ids that don't resolve). The queue path
+  /// deliberately does NOT require `enabled`, so a game under review can be
+  /// watched even while it's toggled off in the main catalog.
+  List<MiniGameSpec> _buildGames() {
+    final ids = widget.queueIds;
+    if (ids == null) {
+      return MiniGameRegistry.specs.where((s) => s.enabled).toList();
+    }
+    final byId = {for (final s in MiniGameRegistry.specs) s.id: s};
+    return [
+      for (final id in ids)
+        if (byId[id] != null) byId[id]!,
+    ];
+  }
 
   late int _cursor;
   bool _running = true;
@@ -60,6 +80,17 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
     setState(() {
       _cursor = (_cursor + 1) % _games.length;
       AttractState.cursor = _cursor;
+    });
+  }
+
+  /// Manual reel navigation: jump to the next (+1) or previous (-1) game and
+  /// remount it fresh. Keeps the current autoplay/paused mode. Wraps around.
+  void _skip(int dir) {
+    if (_games.isEmpty) return;
+    setState(() {
+      _cursor = (_cursor + dir + _games.length) % _games.length;
+      AttractState.cursor = _cursor;
+      _mountToken++; // fresh host mount so the new game starts clean
     });
   }
 
@@ -101,38 +132,73 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
     final spec = _games[_cursor];
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Listener(
-        // Fires for the bot's taps too, but those are kAutoTapKind — only a real
-        // touch/mouse/trackpad tap ejects. The event still reaches the game, so
-        // your ejecting tap also counts as your first move.
-        onPointerDown: (e) {
-          if (_running && e.kind != kAutoTapKind) _eject();
-        },
-        child: Stack(
-          children: [
-            MiniGameHost(
+      body: Stack(
+        children: [
+          // Eject-on-tap wraps ONLY the game, so the reel controls (a sibling
+          // layer above) can be tapped without pausing. Fires for the bot's
+          // taps too, but those are kAutoTapKind — only a real touch ejects.
+          // The event still reaches the game, so your ejecting tap also counts
+          // as your first move.
+          Listener(
+            onPointerDown: (e) {
+              if (_running && e.kind != kAutoTapKind) _eject();
+            },
+            child: MiniGameHost(
               key: ValueKey('attract-$_cursor-$_mountToken'),
               spec: spec,
               autoPlay: _running,
               onAutoAdvance: _advance,
               onExit: () => Navigator.of(context).maybePop(),
             ),
-            // Small progress chip, tucked in the bottom-right so it stays clear
-            // of the HUD. Hidden while paused (the paused bar owns the bottom).
-            if (_running)
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 10, bottom: 10),
-                    child: _progressChip(spec),
-                  ),
+          ),
+          // Reel controls: ◀ prev · N/total · next ▶ — tucked bottom-right,
+          // clear of the HUD. Shown while autoplaying; when paused, the paused
+          // bar owns the bottom and carries its own PREV/NEXT.
+          if (_running)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 10, bottom: 10),
+                  child: _reelControls(spec),
                 ),
               ),
-            if (!_running) _pausedBar(),
-          ],
+            ),
+          if (!_running) _pausedBar(),
+        ],
+      ),
+    );
+  }
+
+  /// ◀ prev · N/total · next ▶ — manual reel navigation over the walk.
+  Widget _reelControls(MiniGameSpec spec) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _reelButton(Icons.skip_previous, () => _skip(-1), spec.accent),
+        const SizedBox(width: 6),
+        _progressChip(spec),
+        const SizedBox(width: 6),
+        _reelButton(Icons.skip_next, () => _skip(1), spec.accent),
+      ],
+    );
+  }
+
+  Widget _reelButton(IconData icon, VoidCallback onTap, Color accent) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: 36,
+        height: 36,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.6),
+          shape: BoxShape.circle,
+          border: Border.all(color: accent.withValues(alpha: 0.6)),
         ),
+        child: Icon(icon, size: 20, color: accent),
       ),
     );
   }
@@ -183,12 +249,22 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
             ),
             child: Row(
               children: [
-                const Icon(Icons.pause_circle_filled,
-                    size: 18, color: Colors.white70),
-                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: () => _skip(-1),
+                  tooltip: 'Previous game',
+                  icon: const Icon(Icons.skip_previous,
+                      size: 20, color: Colors.white70),
+                ),
+                IconButton(
+                  onPressed: () => _skip(1),
+                  tooltip: 'Next game',
+                  icon: const Icon(Icons.skip_next,
+                      size: 20, color: Colors.white70),
+                ),
+                const SizedBox(width: 4),
                 const Expanded(
                   child: Text(
-                    'AUTOPLAY PAUSED — the round is yours',
+                    'PAUSED — the round is yours',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(

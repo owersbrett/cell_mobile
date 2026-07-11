@@ -8,9 +8,10 @@ import 'package:cell_mobile/games/play_config.dart';
 import 'package:cell_mobile/games/quick_match/quick_match_page.dart';
 import 'package:cell_mobile/games/rank_store.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/theme/hpg_kit.dart';
+import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/mini_game_page.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 enum _Sort { rankWorst, rankBest, nameAsc, nameDesc }
@@ -27,10 +28,11 @@ extension on _Sort {
 /// Master list of EVERY game in the catalog, across all scales — the home
 /// GAMES door, and THE QA/triage surface: search by name, sort by rank
 /// (worst- or best-first) or name, filter to games that have feedback, group
-/// by scale, jump straight in to test, rate/comment in place, and copy all
-/// feedback out in one block. Always full-fat — grades/RATE/v2 twins are
-/// essential for QAing the whole catalog (Brett 2026-07-04); the player-clean
-/// treatment ([DevMode] off) applies only to the LEARN-path per-scale picker.
+/// by scale, jump straight in to test, and rate/comment in place. Always
+/// full-fat — grades/RATE/v2 twins are essential for QAing the whole catalog
+/// (Brett 2026-07-04); the player-clean treatment ([DevMode] off) applies only
+/// to the LEARN-path per-scale picker. Rendering composes the HPG kit
+/// (`lib/theme/hpg_kit.dart`) — the design system's GameCard/GameList.
 class GamesDebugPage extends StatefulWidget {
   const GamesDebugPage({super.key});
 
@@ -89,7 +91,7 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF15131C),
+      backgroundColor: Potatuhs.inkPanel,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -117,15 +119,11 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
     Navigator.pop(context);
   }
 
-  Future<void> _copyAll() async {
-    await Clipboard.setData(ClipboardData(text: RankStore.allFeedback()));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Copied feedback for ${RankStore.notedCount} game(s)'),
-        duration: const Duration(seconds: 1),
-        behavior: SnackBarBehavior.floating,
-      ),
+  void _quickMatch(CatalogGame game) {
+    final spec = MiniGameRegistry.byId(game.specId!);
+    if (spec == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => QuickMatchPage.host(spec: spec)),
     );
   }
 
@@ -133,7 +131,7 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
   Widget build(BuildContext context) {
     final games = _filtered;
     return Scaffold(
-      backgroundColor: const Color(0xFF0B0A10),
+      backgroundColor: Potatuhs.inkDeep,
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -143,57 +141,30 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
               padding: const EdgeInsets.fromLTRB(8, 8, 12, 0),
               child: Row(
                 children: [
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                  HpgIconButton(
+                    icon: Icons.arrow_back,
+                    onTap: () => Navigator.pop(context),
                   ),
-                  const Text(
-                    'GAMES',
-                    style: TextStyle(
-                      fontFamily: 'Avenir',
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.5,
-                      color: Colors.white,
-                    ),
-                  ),
+                  Text('GAMES', style: Potatuhs.display(size: 18, spacing: 1.5)),
                   const Spacer(),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).push(
+                  HpgIconButton(
+                    icon: Icons.group_add_outlined,
+                    color: HpgKit.gold,
+                    onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(
                           builder: (_) => const QuickMatchPage.join()),
                     ),
-                    icon: const Icon(Icons.group_add, color: Colors.white70),
                     tooltip: 'Join a friends room',
-                  ),
-                  TextButton.icon(
-                    onPressed: RankStore.notedCount == 0 ? null : _copyAll,
-                    icon: const Icon(Icons.copy_all, size: 16),
-                    label: Text('COPY ALL (${RankStore.notedCount})'),
                   ),
                 ],
               ),
             ),
             // Search
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-              child: TextField(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+              child: HpgSearchField(
+                hint: 'Search games by name',
                 onChanged: (v) => setState(() => _search = v),
-                style: const TextStyle(
-                    fontFamily: 'Avenir', fontSize: 14, color: Colors.white),
-                decoration: InputDecoration(
-                  isDense: true,
-                  prefixIcon: const Icon(Icons.search, size: 18, color: Colors.white38),
-                  hintText: 'Search games by name',
-                  hintStyle: const TextStyle(
-                      fontFamily: 'Avenir', fontSize: 13, color: Colors.white38),
-                  filled: true,
-                  fillColor: Colors.white.withValues(alpha: 0.05),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
               ),
             ),
             // Sort + filters
@@ -205,50 +176,39 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
                   for (final s in _Sort.values)
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
-                      child: ChoiceChip(
-                        label: Text(s.label),
+                      child: HpgChip(
+                        label: s.label,
                         selected: _sort == s,
-                        onSelected: (_) => setState(() => _sort = s),
-                        labelStyle: const TextStyle(
-                            fontFamily: 'Avenir', fontSize: 11),
+                        onTap: () => setState(() => _sort = s),
                       ),
                     ),
                   Container(
-                    width: 1,
-                    height: 28,
+                    width: 1.5,
+                    height: 24,
                     margin: const EdgeInsets.symmetric(horizontal: 6),
-                    color: Colors.white12,
+                    color: Colors.white.withValues(alpha: 0.12),
                   ),
                   Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: FilterChip(
-                      label: const Text('HAS FEEDBACK'),
+                    padding: const EdgeInsets.only(left: 8, right: 8),
+                    child: HpgChip(
+                      label: 'Has feedback',
                       selected: _onlyNoted,
-                      onSelected: (v) => setState(() => _onlyNoted = v),
-                      labelStyle: const TextStyle(
-                          fontFamily: 'Avenir', fontSize: 11),
+                      onTap: () => setState(() => _onlyNoted = !_onlyNoted),
                     ),
                   ),
-                  FilterChip(
-                    label: const Text('GROUP BY SCALE'),
+                  HpgChip(
+                    label: 'Group by scale',
                     selected: _groupByScale,
-                    onSelected: (v) => setState(() => _groupByScale = v),
-                    labelStyle:
-                        const TextStyle(fontFamily: 'Avenir', fontSize: 11),
+                    onTap: () => setState(() => _groupByScale = !_groupByScale),
                   ),
                 ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
               child: Text(
-                '${games.length} games',
-                style: TextStyle(
-                  fontFamily: 'Avenir',
-                  fontSize: 11,
-                  letterSpacing: 1.0,
-                  color: Colors.white.withValues(alpha: 0.4),
-                ),
+                '${games.length} GAMES',
+                style: Potatuhs.label(size: 10, color: Potatuhs.textFaint),
               ),
             ),
             Expanded(
@@ -275,16 +235,10 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
       final inScale = games.where((g) => g.scale == scale).toList();
       if (inScale.isEmpty) continue;
       children.add(Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+        padding: const EdgeInsets.fromLTRB(12, 14, 12, 6),
         child: Text(
-          scale.name.toUpperCase(),
-          style: TextStyle(
-            fontFamily: 'Avenir',
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            letterSpacing: 1.5,
-            color: Colors.white.withValues(alpha: 0.55),
-          ),
+          HpgKit.humanize(scale.name).toUpperCase(),
+          style: Potatuhs.label(size: 11, color: HpgKit.gold),
         ),
       ));
       children.addAll(inScale.map(_row));
@@ -296,111 +250,15 @@ class _GamesDebugPageState extends State<GamesDebugPage> {
   }
 
   Widget _row(CatalogGame game) {
-    final accent = game.accent;
-    final rank = RankStore.rankFor(game);
-    final hasNote = RankStore.hasNote(game.id);
-    // Tapping anywhere on the tile launches the game — same as the play button.
-    // The nested rank-badge / RATE / play gesture handlers win the gesture
-    // arena, so they keep rating/playing with no double-trigger; only the
-    // previously-dead name/scale area now also launches play.
-    return GestureDetector(
-      onTap: () => _play(game),
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.03),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
-      ),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: () => _rate(game),
-            behavior: HitTestBehavior.opaque,
-            child: Container(
-              width: 34,
-              height: 34,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: accent.withValues(alpha: 0.6)),
-              ),
-              child: Text(
-                rank.label,
-                style: TextStyle(
-                  fontFamily: 'Avenir',
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: accent,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        game.name,
-                        style: const TextStyle(
-                          fontFamily: 'Avenir',
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                    if (hasNote) ...[
-                      const SizedBox(width: 6),
-                      Icon(Icons.mode_comment,
-                          size: 12, color: accent.withValues(alpha: 0.85)),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  game.scale.name,
-                  style: TextStyle(
-                    fontFamily: 'Avenir',
-                    fontSize: 11,
-                    color: Colors.white.withValues(alpha: 0.45),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          TextButton(
-            onPressed: () => _rate(game),
-            child: const Text('RATE'),
-          ),
-          if (game.specId != null)
-            IconButton(
-              onPressed: () {
-                final spec = MiniGameRegistry.byId(game.specId!);
-                if (spec == null) return;
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                      builder: (_) => QuickMatchPage.host(spec: spec)),
-                );
-              },
-              icon: Icon(Icons.group, color: accent.withValues(alpha: 0.8)),
-              tooltip: 'Play with friends',
-            ),
-          IconButton(
-            onPressed: () => _play(game),
-            icon: Icon(Icons.play_circle_fill, color: accent),
-            tooltip: 'Play',
-          ),
-        ],
-      ),
-      ),
+    return HpgGameCard(
+      title: game.name,
+      subtitle: HpgKit.humanize(game.scale.name),
+      rankLabel: RankStore.rankFor(game).label,
+      accent: game.accent,
+      hasNote: RankStore.hasNote(game.id),
+      onPlay: () => _play(game),
+      onRate: () => _rate(game),
+      onQuickMatch: game.specId != null ? () => _quickMatch(game) : null,
     );
   }
 }

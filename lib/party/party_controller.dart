@@ -24,7 +24,8 @@ enum PartyInputKind {
   chooseCardOption, // pick option A/B on a decision card (value = option index)
   buyItem, // buy an item at the market (value = PowerUp.index)
   confirmResults, // advance past the round ceremony (local tap / online host)
-  wheelStop, // the current spinner stops the wheel (outcome = tape draw)
+  wheelStop, // spinner stops the wheel (value = segment under pointer + 1;
+  // 0 = legacy tape draw)
   useItemOn, // targeted item (value = PowerUp.index * 16 + target seat)
   confirmSpace, // walker confirms the landing beat (COMPLETE TURN)
   beginMiniGame, // leave the round's game-reveal screen (host/local)
@@ -149,12 +150,19 @@ class WheelResult {
   final int spinner; // seat index
   final int segmentIndex; // into wheelTableFor(tier)
   final String summary; // narrator-ready outcome line
+
+  /// The item actually granted (null for non-item prizes, and for item spins
+  /// that paid cash because the pack was full). Lets the host explain what
+  /// the thing does after the wheel settles.
+  final PowerUp? item;
+
   const WheelResult({
     required this.seq,
     required this.tier,
     required this.spinner,
     required this.segmentIndex,
     required this.summary,
+    this.item,
   });
 }
 
@@ -658,8 +666,8 @@ class PartyController extends ChangeNotifier {
       if (landed.jumpTo != null) {
         final to = landed.jumpTo!;
         turnLog.add(to > p.position
-            ? '${p.name} rode a lift up to ${to}!'
-            : '${p.name} slipped back to ${to}.');
+            ? '${p.name} rode a lift up to $to!'
+            : '${p.name} slipped back to $to.');
         p.position = to;
       }
       final beforeDiamonds = p.diamonds, beforePotatoes = p.potatoes;
@@ -1006,31 +1014,35 @@ class PartyController extends ChangeNotifier {
 
   // ----------------------------------------------------------------- cards
 
-  /// Draws from the common (Tater) or wild (Void) deck and applies it. A
-  /// decision card pauses in [PartyPhase.cardDecision] for the player's A/B
-  /// pick; every other card resolves immediately. The draw index comes off the
-  /// tape so host and clients land on the same card.
+  /// Draws from the common (Tater) or wild (Void) deck and HOLDS it. Every
+  /// card — decision or not — pauses in [PartyPhase.cardDecision] so the
+  /// player sees what they drew before anything executes (PARTY UX LAW: the
+  /// card is revealed, then the player plays it). The draw index comes off
+  /// the tape so host and clients land on the same card.
   void _drawCard(PartyPlayer p, CardDeck deck, List<String> log) {
     final cards = deck == CardDeck.wild ? kWildDeck : kCommonDeck;
     final card = cards[_tape.next(cards.length)];
     currentCard = card;
     final deckName = deck == CardDeck.wild ? 'VOID CARD' : 'TATER CARD';
     log.add('$deckName — ${card.title}: ${card.text}');
-    if (card.isDecision) {
-      phase = PartyPhase.cardDecision; // _finishStep leaves this in place
-      return;
-    }
-    _applyCardEffects(p, card.effects, log);
+    phase = PartyPhase.cardDecision; // _finishStep leaves this in place
   }
 
-  /// Resolves a decision card: the player chose option [i].
+  /// Resolves the held card: the player picked option [i] (decision cards),
+  /// or played the card as drawn (common cards — [i] is ignored).
   void chooseCardOption(int i) {
     assert(phase == PartyPhase.cardDecision);
     final card = currentCard;
-    if (card == null || i < 0 || i >= card.options.length) return;
-    inputLog.add(PartyInput(PartyInputKind.chooseCardOption, i));
-    turnLog.add('${currentPlayer.name} chose: ${card.options[i].label}.');
-    _applyCardEffects(currentPlayer, card.options[i].effects, turnLog);
+    if (card == null) return;
+    if (card.isDecision) {
+      if (i < 0 || i >= card.options.length) return;
+      inputLog.add(PartyInput(PartyInputKind.chooseCardOption, i));
+      turnLog.add('${currentPlayer.name} chose: ${card.options[i].label}.');
+      _applyCardEffects(currentPlayer, card.options[i].effects, turnLog);
+    } else {
+      inputLog.add(const PartyInput(PartyInputKind.chooseCardOption));
+      _applyCardEffects(currentPlayer, card.effects, turnLog);
+    }
     phase = PartyPhase.spaceResolved;
     notifyListeners();
   }
@@ -1169,17 +1181,34 @@ class PartyController extends ChangeNotifier {
 
   void _cardMove(PartyPlayer p, int delta, List<String> log) {
     if (delta >= 0) {
+      var eaten = 0;
       for (var i = 0; i < delta; i++) {
         final n = board[p.position].nexts;
         if (n.isEmpty) break;
         p.position = n.first;
+        // Card moves are still traversal — the Pac-Man economy applies to
+        // every space moved through, exactly like a walked step.
+        if (diamondOn(p.position)) {
+          eatenDiamonds.add(p.position);
+          p.diamonds += 1;
+          eaten++;
+        }
+        if (wheels &&
+            ((gameMap != null && p.position == board.length - 1) ||
+                (gameMap == null && p.position == 0))) {
+          eatenDiamonds.clear();
+          log.add('${p.name} completed the traversal — the diamonds respawn!');
+        }
       }
+      log.add(eaten > 0
+          ? '${p.name} moves forward ${delta.abs()} (+$eaten diamonds).'
+          : '${p.name} moves forward ${delta.abs()}.');
     } else {
       p.position = gameMap == null
           ? (p.position + delta + kMainLoopLength) % kMainLoopLength
           : max(0, p.position + delta);
+      log.add('${p.name} moves back ${delta.abs()}.');
     }
-    log.add('${p.name} moves ${delta >= 0 ? 'forward' : 'back'} ${delta.abs()}.');
   }
 
   /// Buys one held item at the market (alongside the potato purchase), then the
@@ -1448,23 +1477,27 @@ class PartyController extends ChangeNotifier {
     phase = PartyPhase.wheelSpin;
   }
 
-  /// The current spinner stops the wheel. The stop is the logged input; the
-  /// landed segment comes off the random tape, so every client agrees while
-  /// the tap still feels like the player's own.
-  void wheelStop() {
+  /// The current spinner stops the wheel. The stop is a SKILL input: the
+  /// spinner's client passes the [segment] under the pointer at the moment of
+  /// the press, and that segment IS the outcome — logged as value = segment+1
+  /// so every client replays the same landing. value 0 (legacy logs, and any
+  /// caller that omits the segment) falls back to the old tape draw.
+  void wheelStop([int segment = -1]) {
     assert(phase == PartyPhase.wheelSpin);
     final w = wheel!;
-    inputLog.add(const PartyInput(PartyInputKind.wheelStop));
     final table = wheelTableFor(w.tier);
-    final idx = _drawSegment(table);
+    final skill = segment >= 0 && segment < table.length;
+    inputLog.add(PartyInput(PartyInputKind.wheelStop, skill ? segment + 1 : 0));
+    final idx = skill ? segment : _drawSegment(table);
     final p = players[w.currentSpinner];
-    final summary = _applyWheelPrize(p, table[idx]);
+    final (summary, granted) = _applyWheelPrize(p, table[idx]);
     lastWheelResult = WheelResult(
       seq: ++_wheelSeq,
       tier: w.tier,
       spinner: w.currentSpinner,
       segmentIndex: idx,
       summary: summary,
+      item: granted,
     );
     turnLog.add(summary);
     w.queue.removeAt(0);
@@ -1509,7 +1542,7 @@ class PartyController extends ChangeNotifier {
     return table.length - 1;
   }
 
-  String _applyWheelPrize(PartyPlayer p, WheelSegment seg) {
+  (String, PowerUp?) _applyWheelPrize(PartyPlayer p, WheelSegment seg) {
     switch (seg.kind) {
       case WheelPrizeKind.item:
         return _wheelGrantItem(p, seg.item!);
@@ -1518,35 +1551,39 @@ class PartyController extends ChangeNotifier {
         return _wheelGrantItem(p, item);
       case WheelPrizeKind.diamonds:
         p.diamonds += seg.amount;
-        return '${p.name} spun +${seg.amount} diamonds!';
+        return ('${p.name} spun +${seg.amount} diamonds!', null);
       case WheelPrizeKind.loseDiamonds:
         p.diamonds = max(0, p.diamonds - seg.amount);
-        return '${p.name} spun −${seg.amount} diamonds. Brutal.';
+        return ('${p.name} spun −${seg.amount} diamonds. Brutal.', null);
       case WheelPrizeKind.atp:
         p.atp += seg.amount;
-        return '${p.name} spun +${seg.amount} ATP!';
+        return ('${p.name} spun +${seg.amount} ATP!', null);
       case WheelPrizeKind.potatoes:
         p.potatoes += seg.amount;
-        return seg.amount > 1
-            ? '${p.name} spun ${seg.amount} WHOLE POTATOES!!'
-            : '${p.name} spun a WHOLE POTATO!';
+        return (
+          seg.amount > 1
+              ? '${p.name} spun ${seg.amount} WHOLE POTATOES!!'
+              : '${p.name} spun a WHOLE POTATO!',
+          null
+        );
       case WheelPrizeKind.dropItem:
         if (p.items.isEmpty) {
           p.diamonds = max(0, p.diamonds - 3);
-          return '${p.name} had no item to drop — −3 diamonds instead.';
+          return ('${p.name} had no item to drop — −3 diamonds instead.', null);
         }
         final dropped = p.items.removeAt(0);
-        return '${p.name} dropped ${dropped.label}!';
+        return ('${p.name} dropped ${dropped.label}!', null);
     }
   }
 
-  String _wheelGrantItem(PartyPlayer p, PowerUp item) {
+  (String, PowerUp?) _wheelGrantItem(PartyPlayer p, PowerUp item) {
     if (p.items.length >= kMaxItems) {
       p.diamonds += 5;
-      return "${p.name}'s pack is full — ${item.label} became +5 diamonds.";
+      return ("${p.name}'s pack is full — ${item.label} became +5 diamonds.",
+          null);
     }
     p.items.add(item);
-    return '${p.name} won ${item.label} — ${item.description}.';
+    return ('${p.name} won ${item.label} — ${item.description}.', item);
   }
 
   // ---------------------------------------------------------------- results
@@ -1593,6 +1630,15 @@ class PartyController extends ChangeNotifier {
     // later input while we're holding, auto-run the hold first (re-logging
     // the synthetic input identically on every replayer). Order matters —
     // each shim can land on the next held phase.
+    // Common (non-decision) cards used to auto-apply; they now hold for the
+    // player's play-it tap. Old logs present their next input while we hold —
+    // play the card through first (this can land on spaceResolved, so it runs
+    // before that shim).
+    if (phase == PartyPhase.cardDecision &&
+        !(currentCard?.isDecision ?? true) &&
+        input.kind != PartyInputKind.chooseCardOption) {
+      chooseCardOption(0);
+    }
     if (phase == PartyPhase.spaceResolved &&
         input.kind != PartyInputKind.confirmSpace) {
       confirmSpace();
@@ -1641,7 +1687,7 @@ class PartyController extends ChangeNotifier {
         confirmMiniGameResults();
         break;
       case PartyInputKind.wheelStop:
-        wheelStop();
+        wheelStop(input.value - 1);
         break;
       case PartyInputKind.useItemOn:
         useItemOn(PowerUp.values[input.value ~/ 16], input.value % 16);

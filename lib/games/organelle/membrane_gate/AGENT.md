@@ -24,8 +24,9 @@
 - The host owns the outer 60 s timer, the countdown, the live score readout, and
   the final results screen. Do NOT reimplement any of these.
 - `widget.session.isRunning` gates gameplay. When false (intro / countdown /
-  finished) the game must NOT spawn-for-score, resolve at the membrane, or accept
-  taps — it shows the calm ready state and drifts molecules cosmetically.
+  finished) the game must NOT spawn-for-score, apply pull/repel fields, resolve
+  at the membrane, or accept input — it shows the calm ready state and drifts
+  molecules cosmetically, with the active gate released.
 - Report points only through `session.addScore`; report the success streak
   through `session.noteStreak`. Never set the clock or end the round yourself
   (no `endEarly` — there is no fail state).
@@ -39,17 +40,26 @@
 ## Architecture
 
 One `Ticker` → one `_RepaintNotifier` → one `_MembraneGatePainter`. The
-`State` holds all simulation data (`_mols`, `_particles`, `_pops`,
-`_channelGlow`, `_streak`, `_vitality`). The painter reads that state and has
+`State` holds all simulation data (`_mols` with per-molecule velocity,
+`_particles`, `_pops`, `_gateGlow`, `_gateReject`, `_activeGate`, `_repelPulse`,
+`_streak`, `_vitality`). The painter reads that state and has
 `shouldRepaint => false` (the notifier drives repaints). **No per-frame
 setState** — `setState`-free; `_size` is captured in `LayoutBuilder`.
+
+The interaction is a **continuous field model**: HOLD a gate → `_activeGate`
+set → a radial PULL accelerates molecules toward that gate's mouth in `_update`.
+RELEASE → `_activeGate = -1` → a HISTAMINE REPEL field pushes molecules up and
+away from the membrane band (intruders hard, wanted lightly). Molecules resolve
+by reaching an active gate (`_resolveAtGate`), leaving the top (`_leaveTop` —
+repel win), or crossing the membrane un-pulled (`_resolveAtMembrane`).
 
 ```
 MembraneGateGame (StatefulWidget)
   _MembraneGateGameState  (Ticker, sim state, gestures)
-    _onTick → _update(dt)   // gated on session.isRunning
-    _onTapUp                 // hit-test molecules above the membrane
-  _MembraneGatePainter      // atmosphere → cytoplasm → membrane → molecules → fx → hud
+    _onTick → _update(dt)          // gated on session.isRunning; integrates fields
+    _onTapDown/_onPanStart/Update  // set _activeGate to the nearest gate column
+    _onTapUp/_onPanEnd             // release → repel/histamine
+  _MembraneGatePainter  // atmosphere → cytoplasm → field(pull|repel) → membrane → mols → fx → hud
 ```
 
 Data: `_MolDef` (label/color/wanted/glyph/transport/channel) + two const lists
@@ -61,15 +71,18 @@ Data: `_MolDef` (label/color/wanted/glyph/transport/channel) + two const lists
 
 | Constant | Value | Effect |
 |---|---|---|
-| `_kMembraneFrac` | 0.64 | Membrane y as a fraction of height |
+| `_kMembraneFrac` | 0.72 | Membrane y as a fraction of height |
 | `_kMolRadius` | 17 | Molecule radius |
-| `_kHitPad` | 24 | Tap forgiveness around a molecule |
-| `_kSpawnEarly` / `_kSpawnLate` | 1.05 / 0.42 | Arrival interval ramp (s) |
-| `_kFallEarly` / `_kFallLate` | 74 / 184 | Descent speed ramp (px/s) |
+| `_kGateHalfW` | 30 | Horizontal reach of a gate's touch column |
+| `_kSpawnEarly` / `_kSpawnLate` | 1.15 / 0.5 | Arrival interval ramp (s) |
+| `_kDriftEarly` / `_kDriftLate` | 30 / 66 | Baseline downward drift ramp (px/s) |
+| `_kMaxMoleculesEarly/Late` | 5 / 10 | On-screen cap ramp (perf + crowding) |
+| `_kPullRange` / `_kPullAccel` | 320 / 900 | Active-gate pull reach & strength |
+| `_kRepelAccel` / `_kRepelBand` | 640 / 200 | Histamine push strength & band height |
 | `_kGoodScore` | 10 | Base points per correct import |
-| `_kToxinPenalty` | 8 | Penalty for importing a toxin |
-| `_kMaxMolecules` | 14 | On-screen cap (perf guard) |
-| wanted share | 0.62 → 0.46 | In `_spawn`, ramps with progress |
+| `_kWrongGatePenalty` | 6 | Penalty for wrong-gate pull / breach |
+| `_kIntruderReject` | 4 | Reward for repelling an intruder off-screen |
+| wanted share | 0.64 → 0.46 | In `_spawn`, ramps with progress |
 
 ---
 

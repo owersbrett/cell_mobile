@@ -134,25 +134,51 @@ class GameFx {
 
   /// Crisp centered text with an optional colored glow. Use the brand fonts:
   /// [display] = Bowlby One SC (callouts), else Outfit (UI).
+  ///
+  /// Pass [maxWidth] to fit a label to a box — it lays out on one line and
+  /// ellipsizes if it can't fit (the fix for the canvas-text OVERFLOW class of
+  /// bug). Layout results are CACHED by (text, size, colour, style, maxWidth),
+  /// so drawing the same static label every frame no longer re-shapes glyphs —
+  /// the fix for the per-frame TextPainter STUTTER class of bug. A `TextPainter`
+  /// can be re-painted at any offset, so re-use across frames/positions is safe.
+  static final Map<String, TextPainter> _textCache = {};
+  static const int _kTextCacheMax = 128;
+
   static void text(Canvas canvas, String s, Offset center, double size,
       Color color,
-      {bool display = false, FontWeight weight = FontWeight.w700, double glow = 0}) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: s,
-        style: TextStyle(
-          fontFamily: display ? Potatuhs.displayFont : Potatuhs.bodyFont,
-          fontSize: size,
-          fontWeight: weight,
-          color: color,
-          shadows: glow > 0
-              ? [Shadow(color: color.withValues(alpha: glow), blurRadius: 12)]
-              : null,
+      {bool display = false,
+      FontWeight weight = FontWeight.w700,
+      double glow = 0,
+      double? maxWidth}) {
+    final key =
+        '$s|$size|${color.toARGB32()}|$display|${weight.value}|$glow|$maxWidth';
+    var tp = _textCache[key];
+    if (tp == null) {
+      tp = TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            fontFamily: display ? Potatuhs.displayFont : Potatuhs.bodyFont,
+            fontSize: size,
+            fontWeight: weight,
+            color: color,
+            shadows: glow > 0
+                ? [Shadow(color: color.withValues(alpha: glow), blurRadius: 12)]
+                : null,
+          ),
         ),
-      ),
-      textAlign: TextAlign.center,
-      textDirection: TextDirection.ltr,
-    )..layout();
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+        maxLines: maxWidth != null ? 1 : null,
+        ellipsis: maxWidth != null ? '…' : null,
+      )..layout(maxWidth: maxWidth ?? double.infinity);
+      // Bounded LRU-ish: evict the oldest entry when full (Map keeps insertion
+      // order). Keeps dynamic strings (scores) from growing the cache unbounded.
+      if (_textCache.length >= _kTextCacheMax) {
+        _textCache.remove(_textCache.keys.first);
+      }
+      _textCache[key] = tp;
+    }
     tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
   }
 }

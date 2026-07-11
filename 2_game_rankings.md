@@ -1,0 +1,7 @@
+# MID GAMES
+1. slingshot game, and other games with planets, we need to have a conversation on how to fix their styles 
+2. reroute is still a remarkably cojnfusing game. what does silo mean. also, it overflows wheere it says route around the blockage - keep the silo ... it overflows and cant see whats going on. i dont get it
+3. Build the chain i think there should be things that happen to parts of the chain, that the user has to address while it happens. maybe wash, there's like dirty water. maybe qc, the operator gets a new job. for pack, must negotiate boxing prices, etc. i feel like when one occurs / appears you have to start tap to match to make sure that it continues to flow 
+4. spiral galaxy is cool but i feel like there should be some component that involves drawing a spiral in the game. maybe like, the rings at first are coming down very slow, and you have to spin it or unspin it to control it's speed, initially starting by doing a lot of spinning in the beginning, but if it starts going to fast and you start missing the taps you slow down
+5. trace the constrelations - the constellation name should be at the bottom of the screen, and persist while the constelation is being made. also, whati s figure 8 9 10 11 12? why arent we using real constellations? it might take research to get right but you can do it 
+5. galaxy merger is cool but it needs work it is unclear to me what's going on here

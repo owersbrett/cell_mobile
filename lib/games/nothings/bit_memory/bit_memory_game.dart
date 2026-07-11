@@ -530,8 +530,12 @@ class _BitMemoryGameState extends State<BitMemoryGame> {
   // ── Education milestone card (event-driven, dismissible) ────────────────
   Widget _milestoneStage() {
     final m = _milestoneFor(_pendingMilestone);
+    // Fixed max width: the card's size comes from the layout, not from
+    // whichever body paragraph happens to be longest.
     return Center(
       child: Container(
+        constraints: const BoxConstraints(maxWidth: 340),
+        margin: const EdgeInsets.symmetric(horizontal: 16),
         decoration: Potatuhs.surface(
           fill: Potatuhs.inkPanel,
           borderColor: _kAccent.withValues(alpha: 0.5),
@@ -539,23 +543,23 @@ class _BitMemoryGameState extends State<BitMemoryGame> {
           glowStrength: 0.3,
           radius: 18,
         ),
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(24, 26, 24, 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(m.headline,
                 textAlign: TextAlign.center,
                 style: Potatuhs.display(size: 24, color: _kAccent)),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Text(m.subhead,
                 textAlign: TextAlign.center,
                 style: Potatuhs.label(size: 11, color: Potatuhs.textSecondary)),
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
             Text(m.body,
                 textAlign: TextAlign.center,
                 style: Potatuhs.body(size: 14, color: Potatuhs.textPrimary)),
             if (m.table.isNotEmpty) ...[
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
               Wrap(
                 alignment: WrapAlignment.center,
                 spacing: 8,
@@ -563,7 +567,7 @@ class _BitMemoryGameState extends State<BitMemoryGame> {
                 children: [for (final t in m.table) _tableChip(t)],
               ),
             ],
-            const SizedBox(height: 20),
+            const SizedBox(height: 24),
             PotatuhsButton(
               label: 'GOT IT',
               icon: Icons.bolt,

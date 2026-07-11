@@ -1,4 +1,5 @@
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/models/lesson_section.dart';
 
 const tissueEntities = <BioEntity>[
   BioEntity(
@@ -9,12 +10,52 @@ const tissueEntities = <BioEntity>[
     title: 'The Transport Network',
     shortDescription: 'The interconnected system of xylem and phloem that moves water, minerals, and sugars throughout the plant.',
     longDescription:
-        'Vascular tissue is the plant\'s circulatory system — a continuous network of specialized cells that extends from root tips to leaf margins, connecting every part of the plant. It comprises two main tissue types: xylem (which carries water and dissolved minerals upward from the roots) and phloem (which distributes sugars and other organic compounds from photosynthetic tissues to the rest of the plant).\n\n'
-        'In stems, vascular tissue is arranged in bundles. In dicots like tomatoes and soybeans, these bundles form a ring, with the vascular cambium (a meristematic tissue) between the xylem and phloem, allowing the stem to grow wider over time. In monocots like corn, wheat, and rice, the bundles are scattered throughout the stem, and there is no vascular cambium — which is why monocots don\'t produce wood.\n\n'
-        'The evolution of vascular tissue was one of the most important innovations in plant history, allowing plants to grow tall and colonize dry land. In agriculture, vascular health determines how effectively nutrients and water reach developing fruits and seeds. Vascular wilt diseases (caused by fungi like Fusarium and Verticillium) are devastating because they block the xylem, cutting off water supply to the upper plant.',
+        'Vascular tissue is the plant\'s circulatory system — a continuous network of specialized cells reaching from root tips to leaf margins. It splits into two plumbing systems: xylem carries water and dissolved minerals upward from the roots, and phloem distributes sugars made in photosynthetic tissues to wherever the plant is growing or storing.\n\n'
+        'The evolution of vascular tissue was one of the great turning points in plant history: it let plants stiffen, grow tall, and colonize dry land. In stems the tissue runs in bundles whose arrangement separates the two great flowering-plant lineages, and its health decides how well water and nutrients reach developing fruit — which is why xylem-clogging wilt diseases are so deadly.',
     zoomInIds: ['cell_xylem_vessel', 'cell_phloem_sieve_tube'],
     zoomOutIds: ['organ_stem', 'organ_root', 'organ_leaf'],
     relatedIds: ['tissue_ground', 'tissue_dermal', 'organ_stem'],
+    sections: [
+      LessonSection.table(
+        title: 'Two pipelines, opposite jobs',
+        headers: ['', 'Xylem', 'Phloem'],
+        rows: [
+          ['Carries', 'Water + minerals', 'Sugars + organics'],
+          ['Direction', 'Mostly upward', 'Source to sink (either way)'],
+          ['Cells at maturity', 'Dead, hollow', 'Living (no nucleus)'],
+          ['Driven by', 'Transpiration pull', 'Active pressure-flow'],
+        ],
+      ),
+      LessonSection.table(
+        title: 'Stem layout: dicot vs monocot',
+        headers: ['Trait', 'Dicot', 'Monocot'],
+        rows: [
+          ['Bundle pattern', 'Ring', 'Scattered'],
+          ['Vascular cambium', 'Present', 'Absent'],
+          ['Makes wood', 'Yes', 'No'],
+          ['Examples', 'Tomato, soybean', 'Corn, wheat, rice'],
+        ],
+      ),
+      LessonSection.thinkReveal(
+        title: 'The wilt paradox',
+        question:
+            'A fungus like Fusarium clogs only the xylem, never the phloem. Why does the whole plant wilt and die anyway?',
+        answer:
+            'Xylem is the only water pipeline the plant has. Block it and the leaves keep transpiring but get no replacement water, so they lose turgor and collapse. The plant effectively dies of thirst even though its sugar-carrying phloem is completely intact — cutting the water line starves everything above the blockage.',
+      ),
+      LessonSection.thinkReveal(
+        title: 'Why one dies and one must live',
+        question:
+            'Xylem does its job dead and hollow; phloem has to stay alive. Why the opposite requirement?',
+        answer:
+            'Xylem is passive plumbing — water is pulled through it by evaporation at the leaves, so empty dead tubes with no cytoplasm in the way move water fastest. Phloem instead pushes sugars using active, energy-hungry pressure-flow, so its sieve tubes must stay alive, leaning on neighboring companion cells for the metabolism they gave up.',
+      ),
+      LessonSection.fact(
+        title: 'Pumpless climb',
+        body:
+            'Water can rise more than ~100 m up the xylem of the tallest trees — with no pump at all, driven purely by evaporation from the leaves.',
+      ),
+    ],
   ),
   BioEntity(
     id: 'tissue_dermal',
@@ -24,12 +65,51 @@ const tissueEntities = <BioEntity>[
     title: 'The Outer Shield',
     shortDescription: 'The protective outer layer of the plant that controls water loss, gas exchange, and defense against pathogens.',
     longDescription:
-        'Dermal tissue forms the outer covering of every plant organ — the epidermis of leaves, stems, and roots, and the periderm (bark) of woody plants. In its simplest form, the epidermis is a single layer of cells coated with a waxy cuticle that prevents water loss. But this simple-sounding tissue contains a remarkable diversity of specialized cells.\n\n'
-        'Guard cells and their stomata control gas exchange. Trichomes (leaf hairs) deter herbivores, reduce water loss, and in some species secrete aromatic oils or sticky substances. Root hairs extend the absorptive surface of roots. In older woody plants, the epidermis is replaced by periderm — layers of cork cells (dead at maturity) that protect the plant from desiccation, mechanical damage, and pathogens.\n\n'
-        'In agriculture, dermal tissue properties directly influence crop performance. Cuticle thickness affects drought tolerance. Trichome density influences insect resistance — some tomato varieties have been bred with dense, sticky trichomes that trap small insect pests. The waxy bloom on grapes and blueberries is a cuticle modification that protects the fruit. Understanding dermal tissue helps breeders develop crops that are naturally more resistant to environmental stress.',
+        'Dermal tissue is the plant\'s outer covering — the epidermis of leaves, stems, and roots, and the periderm (bark) of woody plants. At its simplest the epidermis is a single layer of cells sealed by a waxy cuticle that blocks water loss, but that thin skin hides a surprising diversity of specialized cells.\n\n'
+        'Guard cells, trichomes, root hairs, and cork cells each turn the covering into an active organ — regulating gas exchange, fending off herbivores, drinking in water, and armoring old wood. Its exact properties, from cuticle thickness to trichome density, translate directly into how well a crop tolerates drought and resists pests.',
     zoomInIds: ['cell_guard', 'cell_root_hair'],
     zoomOutIds: ['organ_leaf', 'organ_stem', 'organ_root'],
     relatedIds: ['tissue_vascular', 'tissue_ground'],
+    sections: [
+      LessonSection.table(
+        title: 'Specialists in the skin',
+        headers: ['Cell / structure', 'Job'],
+        rows: [
+          ['Guard cells', 'Open and close stomata for gas exchange'],
+          ['Trichomes (hairs)', 'Deter herbivores, cut water loss'],
+          ['Root hairs', 'Extend the absorptive surface of roots'],
+          ['Cork (periderm)', 'Waterproof, dead armor on woody stems'],
+        ],
+      ),
+      LessonSection.table(
+        title: 'Dermal trait to crop payoff',
+        headers: ['Feature', 'Crop effect'],
+        rows: [
+          ['Thick cuticle', 'Drought tolerance'],
+          ['Dense sticky trichomes', 'Insect resistance'],
+          ['Waxy bloom', 'Protected fruit (grapes, blueberries)'],
+        ],
+      ),
+      LessonSection.thinkReveal(
+        title: 'The sealed leaf that still breathes',
+        question:
+            'The cuticle blocks water from escaping the leaf. So how does the leaf still take in the CO2 it needs for photosynthesis?',
+        answer:
+            'Through stomata — adjustable pores flanked by guard cells that punch through the otherwise sealed epidermis. This forces a constant trade-off: open the stomata to admit CO2 and the plant loses water; close them to conserve water and photosynthesis stalls. Guard cells manage that dilemma minute by minute.',
+      ),
+      LessonSection.thinkReveal(
+        title: 'Armor made of corpses',
+        question:
+            'Cork cells are dead at maturity, yet they are the plant\'s best defense. How can dead cells protect anything?',
+        answer:
+            'Their protection is structural, not active. As cork cells die they leave behind walls soaked in suberin, a waxy waterproof polymer. Stacked in dense layers, these dead husks form a barrier against water loss, pathogens, and physical damage — armor does not need to be alive to work.',
+      ),
+      LessonSection.fact(
+        title: 'One cell thick',
+        body:
+            'The epidermis is often just a single cell thick — one layer of cells standing between the plant\'s entire interior and the outside world.',
+      ),
+    ],
   ),
   BioEntity(
     id: 'tissue_ground',
@@ -39,12 +119,52 @@ const tissueEntities = <BioEntity>[
     title: 'The Versatile Matrix',
     shortDescription: 'The bulk tissue that fills the space between dermal and vascular tissues, performing photosynthesis, storage, and support.',
     longDescription:
-        'Ground tissue makes up the majority of a plant\'s body — everything that isn\'t dermal or vascular tissue. It comprises three cell types: parenchyma (the most common, with thin walls and living cytoplasm), collenchyma (with unevenly thickened walls for flexible support), and sclerenchyma (with thick, lignified walls for rigid support — usually dead at maturity).\n\n'
-        'Parenchyma cells are the Swiss army knife of the plant kingdom. In leaves, they form the mesophyll where photosynthesis occurs. In stems and roots, they store starch and other reserves. In fruits, they fill with water and sugars to create the fleshy tissue we eat. They can even de-differentiate and become meristematic again, enabling wound healing and vegetative propagation. Collenchyma provides the flexible support found in celery stalks and leaf petioles. Sclerenchyma forms the hard shells of nuts, the gritty texture in pears, and the fibers in jute and hemp.\n\n'
-        'In agriculture, ground tissue is often what we\'re actually harvesting. The starchy parenchyma of potatoes, the fleshy parenchyma of apples and tomatoes, the fiber sclerenchyma of cotton — these are all ground tissue. Understanding how these cells develop, fill with storage products, and respond to environmental conditions is central to improving crop quality and yield.',
+        'Ground tissue is everything that isn\'t dermal or vascular — the bulk of the plant body. It is built from three cell types: parenchyma (thin-walled and living), collenchyma (unevenly thickened for flexible support), and sclerenchyma (thick, lignified, and usually dead at maturity).\n\n'
+        'Parenchyma is the versatile workhorse: it runs photosynthesis in leaves, stockpiles starch in roots and tubers, and swells with water and sugar in fruit. Much of what we actually harvest — potato flesh, apple pulp, cotton fiber — is simply ground tissue, so how these cells develop and fill sits at the center of crop quality and yield.',
     zoomInIds: ['cell_mesophyll'],
     zoomOutIds: ['organ_leaf', 'organ_stem', 'organ_root'],
     relatedIds: ['tissue_vascular', 'tissue_dermal', 'tissue_meristematic'],
+    sections: [
+      LessonSection.table(
+        title: 'The three ground-tissue cells',
+        headers: ['Cell type', 'Wall', 'Alive?', 'Job'],
+        rows: [
+          ['Parenchyma', 'Thin', 'Yes', 'Photosynthesis, storage'],
+          ['Collenchyma', 'Unevenly thick', 'Yes', 'Flexible support'],
+          ['Sclerenchyma', 'Thick, lignified', 'No', 'Rigid support'],
+        ],
+      ),
+      LessonSection.table(
+        title: 'What we eat is ground tissue',
+        headers: ['Crop / product', 'Tissue'],
+        rows: [
+          ['Potato flesh', 'Storage parenchyma'],
+          ['Apple, tomato flesh', 'Fleshy parenchyma'],
+          ['Celery strings', 'Collenchyma'],
+          ['Pear grit, nut shell', 'Sclerenchyma'],
+          ['Cotton, hemp fiber', 'Sclerenchyma fibers'],
+        ],
+      ),
+      LessonSection.thinkReveal(
+        title: 'Strength through dying',
+        question:
+            'Sclerenchyma gives the strongest support of the three cell types, yet it is dead. Why is dying part of its job?',
+        answer:
+            'Its strength comes from thick walls hardened with lignin. Once those walls are fully built, the living cytoplasm inside would only get in the way, so the cell dissolves it and dies, leaving a hollow rigid box. Wood, nut shells, and plant fibers are all these dead reinforced husks — support engineered to outlast the cell that made it.',
+      ),
+      LessonSection.thinkReveal(
+        title: 'The potato that becomes a plant',
+        question:
+            'Cut a potato, keep a piece with an eye, plant it, and a whole new plant grows. Which property of ground tissue makes that possible?',
+        answer:
+            'Parenchyma cells stay alive and keep a full nucleus, so unlike specialized dead cells they can de-differentiate — revert to a dividing, meristem-like state. That is what lets them heal wounds and regrow entire plants, and it is exactly why seed potatoes, cuttings, and grafts work at all.',
+      ),
+      LessonSection.fact(
+        title: 'Mostly one humble cell',
+        body:
+            'Most of the mass of a potato, an apple, or a tomato is a single unglamorous cell type: parenchyma.',
+      ),
+    ],
   ),
   BioEntity(
     id: 'tissue_meristematic',
@@ -54,10 +174,49 @@ const tissueEntities = <BioEntity>[
     title: 'The Growth Engine',
     shortDescription: 'Perpetually dividing stem cells at growth points that generate all other tissues throughout the plant\'s life.',
     longDescription:
-        'Meristematic tissue is the source of all plant growth — populations of undifferentiated, actively dividing cells that produce all the specialized tissues of the plant body. Unlike animals, which largely stop growing after reaching maturity, plants grow continuously from meristems throughout their lives. This is why a tree can keep getting taller and wider for centuries.\n\n'
-        'There are several types of meristems. Apical meristems at the tips of roots and shoots drive primary growth (elongation). Lateral meristems (vascular cambium and cork cambium) drive secondary growth (widening) in woody plants. Intercalary meristems at the bases of grass leaves and stems allow grasses to regrow after being grazed or mowed — the biological basis of lawn mowing and livestock grazing.\n\n'
-        'In agriculture, understanding meristems is critical for crop management. Pruning fruit trees manipulates apical dominance to promote lateral branching and fruit production. The fact that grasses grow from intercalary meristems (at the base, not the tip) is why cereals like wheat and rice can recover from grazing or hail damage that would kill dicot crops. Tissue culture and clonal propagation — techniques essential for producing virus-free seed potatoes and identical fruit tree rootstocks — rely on the ability of meristematic cells to regenerate entire plants.',
+        'Meristematic tissue is the source of all plant growth — populations of undifferentiated, endlessly dividing cells that manufacture every specialized tissue in the plant. Unlike animals, which mostly stop growing at maturity, plants keep growing from their meristems for as long as they live.\n\n'
+        'Different meristems do different jobs: apical meristems at root and shoot tips drive elongation, lateral meristems widen woody plants, and intercalary meristems at the base of grass leaves let cereals and lawns regrow after cutting. Understanding them underpins pruning, grazing recovery, and the tissue culture that produces virus-free seed potatoes and identical rootstocks.',
     zoomOutIds: ['organ_root', 'organ_stem'],
     relatedIds: ['tissue_ground', 'tissue_vascular', 'tissue_dermal'],
+    sections: [
+      LessonSection.table(
+        title: 'Types of meristem',
+        headers: ['Meristem', 'Location', 'Growth it drives'],
+        rows: [
+          ['Apical', 'Root & shoot tips', 'Primary (longer, taller)'],
+          ['Lateral (cambium)', 'Cylinders in stem/root', 'Secondary (wider, wood)'],
+          ['Intercalary', 'Base of grass leaves', 'Regrowth after grazing'],
+        ],
+      ),
+      LessonSection.table(
+        title: 'Meristems at work on the farm',
+        headers: ['Practice', 'Meristem principle'],
+        rows: [
+          ['Pruning fruit trees', 'Break apical dominance for more branches'],
+          ['Mowing / grazing', 'Intercalary regrowth survives cutting'],
+          ['Tissue culture', 'Meristem cells regrow whole plants'],
+          ['Virus-free seed potato', 'Clean meristem tip is cultured out'],
+        ],
+      ),
+      LessonSection.thinkReveal(
+        title: 'Why the lawn wins',
+        question:
+            'Mow a lawn and the grass grows back; snip a tomato plant\'s tip and that shoot stops growing taller. Why the difference?',
+        answer:
+            'Grasses keep their growth zone (the intercalary meristem) at the base of the leaf, below the mower blade, so cutting the top removes only mature tissue and the plant regrows from underneath. A dicot\'s growth zone is the apical meristem at the very tip — cut that off and you have removed the growth engine itself.',
+      ),
+      LessonSection.thinkReveal(
+        title: 'Growth without end',
+        question:
+            'Animals reach an adult size and stop; a redwood keeps getting bigger for a thousand years. What lets plants grow indefinitely?',
+        answer:
+            'Plants hold permanent reserves of undifferentiated dividing cells — meristems — at their tips and in their cambium, so there is always a fresh supply of cells to add. Most animals commit nearly all their cells to specialized roles and retire their stem cells to repair duty, which caps growth at maturity.',
+      ),
+      LessonSection.fact(
+        title: 'The engine that outlives the planter',
+        body:
+            'A single apical meristem can keep dividing for centuries — the growth engine behind trees that outlive the humans who planted them.',
+      ),
+    ],
   ),
 ];

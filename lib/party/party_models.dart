@@ -600,8 +600,8 @@ const List<WheelSegment> kWheelOpening = [
       item: PowerUp.mitochondria),
 ];
 
-/// Checkpoint + winner spins: mostly small money, sometimes an item,
-/// sometimes a sting, rarely a whole potato.
+/// Checkpoint spins: mostly small money, sometimes an item, sometimes a
+/// sting, rarely a whole potato.
 const List<WheelSegment> kWheelMiddle = [
   WheelSegment('+5 💎', 5, WheelPrizeKind.diamonds, amount: 5),
   WheelSegment('+10 💎', 3, WheelPrizeKind.diamonds, amount: 10),
@@ -609,6 +609,19 @@ const List<WheelSegment> kWheelMiddle = [
   WheelSegment('MYSTERY ITEM', 4, WheelPrizeKind.randomItem),
   WheelSegment('−5 💎', 3, WheelPrizeKind.loseDiamonds, amount: 5),
   WheelSegment('DROP AN ITEM', 2, WheelPrizeKind.dropItem),
+  WheelSegment('A POTATO!', 1, WheelPrizeKind.potatoes, amount: 1),
+];
+
+/// Winner's spin: winning a round must ALWAYS pay — no stings on this table
+/// (a prize wheel that can punish the round winner disincentivizes trying to
+/// win). Every segment is a positive result; the skill press only picks HOW
+/// GOOD the reward is.
+const List<WheelSegment> kWheelWinner = [
+  WheelSegment('+5 💎', 5, WheelPrizeKind.diamonds, amount: 5),
+  WheelSegment('+10 💎', 4, WheelPrizeKind.diamonds, amount: 10),
+  WheelSegment('+15 💎', 2, WheelPrizeKind.diamonds, amount: 15),
+  WheelSegment('+10 ATP', 3, WheelPrizeKind.atp, amount: 10),
+  WheelSegment('MYSTERY ITEM', 4, WheelPrizeKind.randomItem),
   WheelSegment('A POTATO!', 1, WheelPrizeKind.potatoes, amount: 1),
 ];
 
@@ -627,8 +640,9 @@ List<WheelSegment> wheelTableFor(WheelTier tier) {
     case WheelTier.opening:
       return kWheelOpening;
     case WheelTier.checkpoint:
-    case WheelTier.winner:
       return kWheelMiddle;
+    case WheelTier.winner:
+      return kWheelWinner;
     case WheelTier.finale:
       return kWheelFinale;
   }

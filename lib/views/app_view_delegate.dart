@@ -9,6 +9,7 @@ import 'package:cell_mobile/party/screens/party_lobby_page.dart';
 import 'package:cell_mobile/views/screens/game_page/game_page.dart';
 import 'package:cell_mobile/views/screens/mini_game_page/mini_game_page.dart';
 import 'package:cell_mobile/views/screens/scale_explorer_page/scale_explorer_page.dart';
+import 'package:cell_mobile/views/screens/scale_modules_page/scale_modules_page.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/scale_overview_page.dart';
 import 'package:cell_mobile/views/screens/home_page/home_page.dart';
 import 'package:flutter/material.dart';
@@ -26,6 +27,8 @@ class AppViewDelegate extends StatelessWidget {
             return HomePage();
           case AppScreen.scaleOverview:
             return const ScaleOverviewPage();
+          case AppScreen.scaleModules:
+            return const ScaleModulesPage();
           case AppScreen.scaleExplorer:
             return const ScaleExplorerPage();
           case AppScreen.entityDetail:

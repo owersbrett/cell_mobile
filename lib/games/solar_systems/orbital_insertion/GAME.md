@@ -75,6 +75,24 @@ Computed analytically from the launch state relative to the planet (mu = G·M):
   from World 4 the planet **drifts** (you must lead it) · from World 6 a **debris hazard** sits on
   the approach path to thread.
 
+## Legibility (the in-game HUD — what the player is told, when)
+Comprehension is a first-class rule here; the physics is only fun once the player knows what
+they're doing. On-screen, at all times / at the right moment:
+- **Always-visible objective** (top bar): *"GOAL · settle the moon into a steady orbit to score."*
+  Never disappears — the answer to "what am I doing?" is always on screen.
+- **How-to (teaching window, first 2 shots):** bottom banner reads *"DRAG ANYWHERE TO AIM · LET GO
+  TO FLING"*; a pulsing ring + up-arrow + **DRAG TO AIM** call-out sits on the launcher until the
+  first fling; the gold ring is labelled **AIM FOR THIS RING**. All of it fades after 2 launches so
+  the field stays clean once understood. After that the banner becomes the balance reminder
+  (*"AIM FOR THE GOLD RING · TOO SLOW CRASHES, TOO FAST FLIES OFF"*).
+- **Live aim preview (score-driver):** the trajectory dots + label classify the shot before release
+  as **ORBIT! LET GO** (gold, scores), **TOO SLOW · CRASH** (orange), or **TOO FAST · LOST**
+  (glaucous). This is the direct action→outcome→reward link.
+- **On capture:** `+N` pop, plus a reason pop — **STABLE ORBIT +70** when it hugs the ring, or
+  **ROUNDER = MORE** on a wobbly capture — and an **Nx STREAK** pop; banner **CIRCULAR ORBIT!** /
+  **CAPTURED!**. Per-lap `+N` pops keep showing the orbit paying out. So the player always sees
+  *why* the number moved.
+
 ## Educational blocks engaged
 solarSystems — **orbital velocity / "falling around"**: the balance of gravity vs tangential speed,
 why too slow falls in and too fast flies off, and why a circular orbit is a specific speed. Full

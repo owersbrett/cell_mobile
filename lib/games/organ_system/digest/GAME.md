@@ -33,9 +33,24 @@ Food travels left → right through five stages, each with its own action:
 5. **Mis-actions stall it:** pressing a button when its stage isn't ripe (`TOO SOON`) or has no food
    (`NOTHING HERE`) breaks your streak and knocks the bolus's progress back.
 
+## On-screen feedback (clarity + juice)
+- **Always-visible objective (top-left):** `FEED THE BODY: glow → tap that organ's action` — swaps to a
+  live `FEED THE BODY · N processed` count once food starts exiting.
+- **Nutrient meter (top band):** a green→gold gauge that **rises on every correct action** (hardest on
+  the small-intestine NUTRIENTS absorb, and topped up by WATER at the exit) and **drains slowly** — a
+  live "am I winning?" read independent of the host score HUD.
+- **In-context how-to** shows on the intro and through the first few seconds of play, with a bobbing
+  **TAP! arrow** over whichever stage is currently ripe; it **fades out after the player's first correct
+  action** (WarioWare teach-then-vanish).
+- **Correct action:** particle burst (scaling with streak) + floating `+N` pop + green success vignette
+  flash. **Mis-action / FULL:** button shake + red vignette flash.
+- **Streak badge (top-right)** appears at 3+, pulsing, and shows the live streak bonus.
+
 ## Scoring
 - CHEW / SWALLOW: +4 each · CHURN: +6 · **ABSORB NUTRIENTS: +16** · **ABSORB WATER: +10**
-- Fully processed (exits the large intestine): **+8 completion bonus**.
+- Fully processed (exits the large intestine): **+8 completion bonus** (pop reads `PROCESSED +N`).
+- **Streak bonus:** every correct action adds `+floor(min(streak,10)/2)` on top — a hot streak visibly
+  compounds the score (up to +5/action). Any mis-action resets the streak.
 - **Streak:** consecutive correct actions; any mis-action resets it. Reported via `noteStreak`.
 - `scoreUnit`: "processed".
 

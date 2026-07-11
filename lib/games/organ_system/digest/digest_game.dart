@@ -65,6 +65,10 @@ const List<int> _kStagePoints = [4, 4, 6, 16, 10];
 /// Bonus when a bolus exits the large intestine fully processed.
 const int _kCompleteBonus = 8;
 
+/// Height of the always-visible top header band (objective line + nutrient
+/// meter). Everything below (stage labels, tube) is laid out under it.
+const double _kHeaderH = 38.0;
+
 // ── Palette (digestive tract) ─────────────────────────────────────────────────
 const Color _kBg = Potatuhs.inkDeep;
 const Color _kTube = Color(0xFF2C201C);
@@ -114,6 +118,19 @@ class _Bolus {
   bool get ready => !moving && ripe >= 1.0;
 }
 
+/// A fading ghost dot left behind a sliding bolus — cheap "rush" motion trail.
+class _Trail {
+  Offset pos;
+  final Color color;
+  final double radius;
+  double life = 1.0;
+  _Trail(this.pos, this.color, this.radius);
+  bool step(double dt) {
+    life -= dt / 0.35;
+    return life > 0;
+  }
+}
+
 class _DigestGameState extends State<DigestGame>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
@@ -133,6 +150,24 @@ class _DigestGameState extends State<DigestGame>
   double _bgClock = 0; // atmosphere drift
   int _kindCounter = 0;
   double _idleT = 0; // idle auto-advance timer
+
+  // ── Feedback / juice state ────────────────────────────────────────────────
+  /// Nutrient meter (0..1): fills on correct actions (esp. absorption), drains
+  /// slowly. A live "am I winning?" gauge, independent of the host score HUD.
+  double _nutrient = 0;
+  /// Green success flash (1→0) painted on a correct action; red on a mis-action.
+  double _goodFlash = 0;
+  double _badFlash = 0;
+  /// Streak-pulse ring under the bolus that just advanced (1→0).
+  double _streakPulse = 0;
+  /// Objective/how-to banner opacity. Starts fully visible; fades after the
+  /// player's first correct action so the biology reads, then gets out of
+  /// the way (WarioWare-style teach-then-vanish).
+  double _hintAlpha = 1.0;
+  bool _actedOnce = false;
+  int _processed = 0; // boluses fully processed (exited large intestine)
+  /// Micro "rush" trail spawned behind a sliding bolus for a sense of motion.
+  final List<_Trail> _trails = [];
 
   // Last layout, for hit-testing taps → button index.
   double _w = 1, _h = 1;
@@ -192,17 +227,37 @@ class _DigestGameState extends State<DigestGame>
     for (var i = 0; i < _kStages; i++) {
       _shake[i] = math.max(0, _shake[i] - dt * 3.5);
     }
-    // Advance moving boluses (shared by play + idle).
+    // Feedback flashes decay.
+    _goodFlash = math.max(0, _goodFlash - dt * 2.6);
+    _badFlash = math.max(0, _badFlash - dt * 3.2);
+    _streakPulse = math.max(0, _streakPulse - dt * 2.4);
+    // Objective banner fades out once the player has acted correctly.
+    if (_actedOnce) _hintAlpha = math.max(0, _hintAlpha - dt * 0.9);
+    // Nutrient meter drains slowly (keep processing to keep it up).
+    if (widget.session.isRunning) {
+      _nutrient = math.max(0, _nutrient - dt * 0.05);
+    }
+    // Advance moving boluses (shared by play + idle). Leave a rush trail.
     for (final b in _boluses) {
       if (b.moving) {
+        final beforeCx = b.stage + 0.5 + b.slide;
         b.slide += dt / _kMoveTime;
         if (b.slide >= 0) {
           b.slide = 0;
           b.moving = false;
           b.ripe = 0;
         }
+        // Spawn a faint trail dot at the previous position (in stage units;
+        // converted to px in the painter frame is overkill — store px here).
+        final colW = _w / _kStages;
+        _trails.add(_Trail(
+          Offset(colW * beforeCx, _midY()),
+          _kFoodColors[b.kind],
+          math.min(colW * 0.2, 15.0),
+        ));
       }
     }
+    _trails.removeWhere((t) => !t.step(dt));
     for (final p in _particles) {
       p.step(dt);
     }
@@ -328,6 +383,7 @@ class _DigestGameState extends State<DigestGame>
 
     // Mis-action.
     _shake[i] = 1.0;
+    _badFlash = 1.0;
     if (unripe != null) {
       // Acted too soon — the stage's work isn't finished. It stalls.
       unripe.ripe = math.max(0, unripe.ripe - 0.4);
@@ -345,40 +401,61 @@ class _DigestGameState extends State<DigestGame>
 
     if (i >= _kStages - 1) {
       // Large intestine: absorb water + the bolus exits fully processed.
-      final pts = _kStagePoints[i] + _kCompleteBonus;
+      var pts = _kStagePoints[i] + _kCompleteBonus;
+      pts += _streakBonus();
       widget.session.addScore(pts);
-      _streak += 1;
-      widget.session.noteStreak(_streak);
+      _onGood();
+      _processed += 1;
+      _nutrient = math.min(1.0, _nutrient + 0.16); // water reclaim tops it up
       _boluses.remove(b);
-      _particles.addAll(FxBurst.spawn(at, _kStageDefs[i].tint, count: 14));
-      _pops.add(FxPop(Offset(at.dx, at.dy - 18), 'WATER +$pts', _kReady));
+      _particles.addAll(FxBurst.spawn(at, _kStageDefs[i].tint, count: 22));
+      _particles.addAll(FxBurst.spawn(at, _kReady, count: 10, speed: 180));
+      _pops.add(FxPop(Offset(at.dx, at.dy - 18), 'PROCESSED +$pts', _kReady));
       return;
     }
 
     if (_stageOccupied(i + 1, except: b)) {
       // Downstream stage is full — can't move yet. Clear the front first.
       _shake[i + 1] = 1.0;
+      _badFlash = math.max(_badFlash, 0.6);
       _pops.add(FxPop(Offset(colW * (i + 1.5), _midY() - 16), 'FULL', _kBlock));
       return;
     }
 
-    final pts = _kStagePoints[i];
+    var pts = _kStagePoints[i];
+    pts += _streakBonus();
     widget.session.addScore(pts);
-    _streak += 1;
-    widget.session.noteStreak(_streak);
+    _onGood();
+    // Absorption stages feed the nutrient meter hardest — that's the lesson.
+    _nutrient = math.min(1.0, _nutrient + (i == 3 ? 0.22 : 0.06));
     b.stage = i + 1;
     b.slide = -1;
     b.moving = true;
     b.ripe = 0;
-    _particles.addAll(FxBurst.spawn(at, _kStageDefs[i].tint, count: 9));
+    final burstCount = 9 + (_streak.clamp(0, 8));
+    _particles.addAll(FxBurst.spawn(at, _kStageDefs[i].tint, count: burstCount));
     final label = i == 3 ? 'NUTRIENTS +$pts' : '+$pts';
     _pops.add(FxPop(Offset(at.dx, at.dy - 16), label,
         i == 3 ? _kStageDefs[3].tint : _kReady));
   }
 
+  /// Consecutive-correct bonus so a hot streak visibly compounds the score.
+  int _streakBonus() => (_streak.clamp(0, 10) ~/ 2);
+
+  /// Shared bookkeeping for any correct action: streak, juice, hint-fade.
+  void _onGood() {
+    _streak += 1;
+    widget.session.noteStreak(_streak);
+    _goodFlash = 1.0;
+    _streakPulse = 1.0;
+    if (!_actedOnce) {
+      _actedOnce = true; // begins the objective-banner fade
+    }
+  }
+
   double _midY() {
-    final labelTop = 26.0;
-    final tubeTop = labelTop + 34 + 6;
+    const labelTop = _kHeaderH + 6;
+    const tubeTop = labelTop + 34 + 6;
     final tubeBottom = _footerTop - 10;
     return (tubeTop + tubeBottom) / 2;
   }
@@ -413,19 +490,30 @@ class _DigestPainter extends CustomPainter {
     GameFx.atmosphere(canvas, size, _kStageDefs[2].tint, s._bgClock, motes: 22);
 
     final colW = size.width / _kStages;
-    const labelTop = 26.0;
+    const labelTop = _kHeaderH + 6;
     const labelH = 34.0;
     final footerTop = size.height - 64;
-    final tubeTop = labelTop + labelH + 6;
+    const tubeTop = labelTop + labelH + 6;
     final tubeBottom = footerTop - 10;
     final tubeMid = (tubeTop + tubeBottom) / 2;
     final tubeH = math.max(28.0, tubeBottom - tubeTop);
 
-    _paintTitle(canvas, size);
+    _paintHeader(canvas, size); // always-visible objective + nutrient meter
     _paintTube(canvas, size, tubeTop, tubeH, colW);
 
     for (var i = 0; i < _kStages; i++) {
       _paintStageLabel(canvas, i, colW * (i + 0.5), labelTop, colW);
+    }
+
+    // Rush trails ride under the food.
+    for (final t in s._trails) {
+      canvas.drawCircle(
+        t.pos,
+        t.radius * (0.5 + 0.5 * t.life),
+        Paint()
+          ..color = t.color.withValues(alpha: 0.28 * t.life)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+      );
     }
 
     // Food rides the tract.
@@ -439,24 +527,74 @@ class _DigestPainter extends CustomPainter {
       _paintButton(canvas, i, colW * (i + 0.5), footerTop, colW);
     }
 
-    if (!running) _paintReadyHint(canvas, size, footerTop);
+    // Always-visible in-context how-to; fades out after the first correct act.
+    _paintHowTo(canvas, size, footerTop, running);
 
     for (final p in s._pops) {
       _paintPop(canvas, p);
     }
+
+    // Screen-edge success/failure flashes (subtle vignette).
+    _paintFlash(canvas, size);
   }
 
-  // ── Title / streak ──────────────────────────────────────────────────────────
-  void _paintTitle(Canvas canvas, Size size) {
-    _text(canvas, 'DIGESTIVE TRACT', Offset(14, 13),
-        size: 11,
-        color: Colors.white.withValues(alpha: 0.5),
+  // ── Header: ALWAYS-VISIBLE objective + nutrient meter + streak ───────────────
+  void _paintHeader(Canvas canvas, Size size) {
+    // The one-line objective — the first thing the player reads, always on.
+    final objective = s._processed > 0
+        ? 'FEED THE BODY · ${s._processed} processed'
+        : 'FEED THE BODY: glow → tap that organ\'s action';
+    _text(canvas, objective, const Offset(14, 11),
+        size: 10.5,
+        color: Colors.white.withValues(alpha: 0.62),
         align: -1,
         bold: true);
+
+    // Streak badge (right).
     if (s._streak >= 3) {
-      _text(canvas, 'STREAK ${s._streak}', Offset(size.width - 14, 13),
-          size: 12, color: _kReady, align: 1, bold: true);
+      final pulse = 0.6 + 0.4 * math.sin(s._bgClock * 8);
+      _text(canvas, 'STREAK ${s._streak}  +${s._streakBonus()}',
+          Offset(size.width - 14, 11),
+          size: 11.5,
+          color: Color.lerp(_kReady, Colors.white, s._streakPulse * 0.6 * pulse)!,
+          align: 1,
+          bold: true);
     }
+
+    // NUTRIENT METER — a live gauge of how well you're feeding the body.
+    const barLeft = 14.0;
+    final barRight = size.width - 14.0;
+    const barY = 30.0;
+    final barW = barRight - barLeft;
+    const trackH = 6.0;
+    final track = RRect.fromRectAndRadius(
+      Rect.fromLTWH(barLeft, barY, barW, trackH),
+      const Radius.circular(3),
+    );
+    canvas.drawRRect(track, Paint()..color = Colors.white.withValues(alpha: 0.08));
+    final fillW = (barW * s._nutrient).clamp(0.0, barW);
+    if (fillW > 1) {
+      final fillRect = Rect.fromLTWH(barLeft, barY, fillW, trackH);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(fillRect, const Radius.circular(3)),
+        Paint()
+          ..shader = LinearGradient(colors: [
+            _kStageDefs[3].tint, // nutrients green
+            _kReady, // gold
+          ]).createShader(fillRect),
+      );
+      // Leading glow bead.
+      canvas.drawCircle(
+        Offset(barLeft + fillW, barY + trackH / 2),
+        4,
+        Paint()
+          ..color = _kReady.withValues(alpha: 0.8)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+      );
+    }
+    _text(canvas, 'NUTRIENT', const Offset(barLeft, barY - 8),
+        size: 7.5, color: _kStageDefs[3].tint.withValues(alpha: 0.75),
+        align: -1, bold: true);
   }
 
   // ── The tract tube + per-stage tinted zones ─────────────────────────────────
@@ -609,15 +747,64 @@ class _DigestPainter extends CustomPainter {
         size: 8.5, color: txtColor, align: 0, bold: true);
   }
 
-  void _paintReadyHint(Canvas canvas, Size size, double footerTop) {
+  /// In-context how-to. Full strength before the round and until the player's
+  /// first correct action, then fades away (WarioWare teach-then-vanish). A
+  /// pointer nudges the currently-ready stage so the control is unmissable.
+  void _paintHowTo(Canvas canvas, Size size, double footerTop, bool running) {
+    final a = running ? s._hintAlpha : 1.0;
+    if (a <= 0.01) return;
+
+    // Highlight arrow over a ready stage's button (points at what to press).
+    final colW = size.width / _kStages;
+    for (var i = 0; i < _kStages; i++) {
+      final ready = s._boluses.any((b) => b.stage == i && b.ready);
+      if (!ready) continue;
+      final cx = colW * (i + 0.5);
+      final bob = math.sin(s._bgClock * 5) * 3;
+      final tip = Offset(cx, footerTop + 4 + bob);
+      final path = Path()
+        ..moveTo(tip.dx - 7, tip.dy - 8)
+        ..lineTo(tip.dx + 7, tip.dy - 8)
+        ..lineTo(tip.dx, tip.dy)
+        ..close();
+      canvas.drawPath(path, Paint()..color = _kReady.withValues(alpha: 0.85 * a));
+      _text(canvas, 'TAP!', Offset(cx, footerTop - 12),
+          size: 9, color: _kReady.withValues(alpha: a), align: 0, bold: true);
+      break;
+    }
+
     _text(
       canvas,
-      'Wait for food to glow, then tap its stage action — clear the FRONT first',
-      Offset(size.width / 2, footerTop - 22),
+      running
+          ? 'Wait for a morsel to GLOW GOLD, then tap that organ\'s button'
+          : 'Route food through 5 organs — glow, then tap · clear the FRONT first',
+      Offset(size.width / 2, footerTop - 24),
       size: 10.5,
-      color: Colors.white.withValues(alpha: 0.5),
+      color: Colors.white.withValues(alpha: 0.55 * a),
       align: 0,
       bold: true,
+    );
+  }
+
+  /// Soft full-screen success (green) / failure (red) vignette flash.
+  void _paintFlash(Canvas canvas, Size size) {
+    final good = s._goodFlash;
+    final bad = s._badFlash;
+    if (good <= 0.01 && bad <= 0.01) return;
+    final color = bad > good ? _kDeny : _kStageDefs[3].tint;
+    final strength = math.max(good, bad);
+    final rect = Offset.zero & size;
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = RadialGradient(
+          radius: 1.1,
+          colors: [
+            color.withValues(alpha: 0.0),
+            color.withValues(alpha: 0.16 * strength),
+          ],
+          stops: const [0.62, 1.0],
+        ).createShader(rect),
     );
   }
 
@@ -916,7 +1103,7 @@ void _legendJam(Canvas canvas, Size size) {
 /// The visual manual for Digest — wired into the registry spec.
 final List<LegendFrame> digestLegendFrames = [
   const LegendFrame(
-      caption: 'Route food left → right through 5 organ stages',
+      caption: 'FEED THE BODY — route food left → right through 5 organs',
       paint: _legendTract),
   const LegendFrame(
       caption: 'Wait for food to glow gold, then tap its stage action',

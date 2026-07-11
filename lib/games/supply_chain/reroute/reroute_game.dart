@@ -39,6 +39,10 @@ const Color _good = Color(0xFF66E08A); // healthy / rerouted green
 const Color _danger = Color(0xFFE5533D); // route down / starving red
 const Color _idleSrc = Color(0xFF8FA8B2); // a healthy-but-idle source
 
+// Full-silo production rate (mirror of _RerouteGameState._baseProd) — used by
+// the painter to scale the OUTPUT meter. Keep in sync with the tunable.
+const double _baseProdUi = 4.0;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Visual manual — the legend carousel cards, each drawn with the SAME
 // primitives the live game uses (source orbs + stock arc, the factory + silo
@@ -337,6 +341,9 @@ class _RerouteGameState extends State<RerouteGame>
   double _nextDisrupt = 4.0; // _clock at which the next shock fires
   double _factoryFlash = 0; // produced-bloom on the factory, 1 → 0
   double _starveFlash = 0; // pulsing alarm while starving, 0..1
+  double _rateShown = 0; // smoothed live output rate (units/s) for the meter
+  bool _everRerouted = false; // clears the standing how-to hint on first reroute
+  double _hintFade = 1.0; // how-to hint opacity, eases to 0 after first reroute
 
   // Transient on-board banner ("Storm hits Backyard Farm!").
   String _banner = '';
@@ -346,6 +353,23 @@ class _RerouteGameState extends State<RerouteGame>
   final List<FxParticle> _fx = [];
   final List<FxPop> _pops = [];
   double _w = 1, _h = 1; // last layout size (px), for fx placement
+
+  // Cached static label for the always-on objective strip — built once, not
+  // per frame (the design law forbids per-frame GameFx.text for static copy).
+  static final TextPainter _objectiveTp = TextPainter(
+    text: TextSpan(
+      text: 'REROUTE around the blockage — keep the SILO full · fuller silo = points faster',
+      style: TextStyle(
+        fontFamily: Potatuhs.bodyFont,
+        fontSize: 12.5,
+        fontWeight: FontWeight.w800,
+        color: Colors.white.withValues(alpha: 0.9),
+        letterSpacing: 0.2,
+      ),
+    ),
+    textAlign: TextAlign.center,
+    textDirection: TextDirection.ltr,
+  )..layout();
 
   @override
   void initState() {
@@ -432,6 +456,9 @@ class _RerouteGameState extends State<RerouteGame>
     _nextDisrupt = 4.0;
     _factoryFlash = 0;
     _starveFlash = 0;
+    _rateShown = 0;
+    _everRerouted = false;
+    _hintFade = 1.0;
     _banner = '';
     _bannerLife = 0;
     for (final s in _sources) {
@@ -456,6 +483,9 @@ class _RerouteGameState extends State<RerouteGame>
       s.flowPhase += dt;
     }
     if (_factoryFlash > 0) _factoryFlash = (_factoryFlash - dt * 2.2).clamp(0.0, 1.0);
+    // Ease the standing how-to hint away once the player has rerouted at least once.
+    final hintTarget = _everRerouted ? 0.0 : 1.0;
+    _hintFade += (hintTarget - _hintFade) * (1 - math.pow(0.001, dt)).toDouble();
 
     final running = widget.session.isRunning;
     if (!running) {
@@ -491,16 +521,31 @@ class _RerouteGameState extends State<RerouteGame>
     // Production scales with how full the silo is — keeping it topped (a strong
     // source) produces fast; limping along on a weak backup produces slowly;
     // an empty silo produces nothing (the factory has starved).
+    // The instantaneous production rate IS the score driver — a fuller silo pays
+    // out faster. Surface it as a smoothed number on the OUTPUT meter so the
+    // player can see "keep the silo topped = points come faster".
+    final liveRate = _buffer > 0.001 ? _baseProd * _buffer : 0.0;
+    _rateShown += (liveRate - _rateShown) * (1 - math.pow(0.002, dt)).toDouble();
+
     if (_buffer > 0.001) {
       if (_starved) _starveFlash = 0; // recovered
       _starved = false;
-      _prodAcc += _baseProd * _buffer * dt;
+      _prodAcc += liveRate * dt;
+      var produced = 0;
       while (_prodAcc >= 1.0) {
         _prodAcc -= 1.0;
         widget.session.addScore(1);
         _streak += 1;
         widget.session.noteStreak(_streak);
         _factoryFlash = 1.0;
+        produced += 1;
+      }
+      // Floating "+N" pop from the factory so the score-driver is legible on the
+      // field, not just in the host HUD. Batched per tick to stay cheap.
+      if (produced > 0 && _w > 1) {
+        final fp = _px(_factory);
+        _pops.add(FxPop(fp.translate(6, -34), '+$produced', _good));
+        if (_pops.length > 6) _pops.removeAt(0);
       }
     } else {
       if (!_starved) {
@@ -594,8 +639,21 @@ class _RerouteGameState extends State<RerouteGame>
     }
     if (hit == _active) return;
     _active = hit;
+    _everRerouted = true;
     _setBanner('Rerouted to ${s.name}', _good);
+    // Satisfying route-completion feedback: a burst at the source AND a spray of
+    // "delivery" particles along the newly-live line into the factory, so the
+    // reroute reads as supply physically reconnecting.
     _fx.addAll(FxBurst.spawn(_px(s.pos), _good, count: 12, speed: 120));
+    final a = _px(s.pos), b = _px(_factory);
+    for (var i = 1; i <= 5; i++) {
+      final p = Offset.lerp(a, b, i / 6)!;
+      _fx.addAll(FxBurst.spawn(p, _accent, count: 3, speed: 70, size: 2.4));
+    }
+    _fx.addAll(FxBurst.spawn(b, _good, count: 10, speed: 90));
+    _factoryFlash = 1.0;
+    _pops.add(FxPop(b.translate(0, -48), 'LINE OPEN', _good));
+    if (_pops.length > 6) _pops.removeAt(0);
   }
 
   Offset _px(Offset norm) => Offset(norm.dx * _w, norm.dy * _h);
@@ -667,14 +725,24 @@ class _ReroutePainter extends CustomPainter {
       _drawSource(canvas, px(s._sources[i].pos), s._sources[i], i == s._active);
     }
 
-    // ── Goal / ready hint ──────────────────────────────────────────────────────
-    if (!running) {
+    // ── Always-visible objective strip (the score driver, one line) ────────────
+    // A fuller silo pays out faster, so the standing objective names the driver:
+    // reroute around blockages to keep the silo full = points come faster.
+    _drawObjectiveStrip(canvas, size);
+
+    // ── Fading how-to hint (clears on first reroute) ───────────────────────────
+    final hint = running ? s._hintFade : 1.0;
+    if (hint > 0.02) {
+      final a = hint.clamp(0.0, 1.0);
+      // A pointing cue toward the sources on the left.
       GameFx.text(
         canvas,
-        'Keep the factory fed — tap a healthy source to reroute',
-        Offset(w / 2, h - 24),
-        13,
-        Colors.white.withValues(alpha: 0.62),
+        '◀ TAP a healthy source (blue = READY) to reroute the line',
+        Offset(w / 2, h - 26),
+        13.5,
+        _good.withValues(alpha: 0.9 * a),
+        weight: FontWeight.w800,
+        glow: 0.4 * a,
       );
     }
 
@@ -684,7 +752,7 @@ class _ReroutePainter extends CustomPainter {
       GameFx.text(
         canvas,
         s._banner,
-        Offset(w / 2, h * 0.10),
+        Offset(w / 2, math.max(h * 0.10, 46)),
         16,
         s._bannerColor.withValues(alpha: a),
         weight: FontWeight.w800,
@@ -754,6 +822,28 @@ class _ReroutePainter extends CustomPainter {
     }
   }
 
+  /// The persistent objective strip along the top — a gradient-faded band with
+  /// the one-line objective naming the score driver. Uses the cached painter.
+  void _drawObjectiveStrip(Canvas canvas, Size size) {
+    final w = size.width;
+    const stripH = 30.0;
+    final band = Rect.fromLTWH(0, 0, w, stripH);
+    canvas.drawRect(
+      band,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Potatuhs.inkDeep.withValues(alpha: 0.82),
+            Potatuhs.inkDeep.withValues(alpha: 0.0),
+          ],
+        ).createShader(band),
+    );
+    final tp = _RerouteGameState._objectiveTp;
+    tp.paint(canvas, Offset((w - tp.width) / 2, (stripH - tp.height) / 2 + 1));
+  }
+
   void _drawFactory(Canvas canvas, Offset c, Size size) {
     final flash = s._factoryFlash;
     final starve = s._starveFlash;
@@ -764,7 +854,7 @@ class _ReroutePainter extends CustomPainter {
         Colors.white.withValues(alpha: 0.75), weight: FontWeight.w800);
 
     // Input silo gauge — a vertical bar to the left of the factory.
-    final barH = 64.0, barW = 12.0;
+    const barH = 64.0, barW = 12.0;
     final left = c.dx - r - 26;
     final top = c.dy - barH / 2;
     final track = Rect.fromLTWH(left, top, barW, barH);
@@ -789,6 +879,43 @@ class _ReroutePainter extends CustomPainter {
     );
     GameFx.text(canvas, 'SILO', Offset(left + barW / 2, top - 10), 8,
         Colors.white.withValues(alpha: 0.5));
+
+    // ── OUTPUT rate meter (the score driver, made visible) ──────────────────────
+    // A short horizontal bar under the factory that rises with production speed.
+    // The number is units/second right now — the player watches it climb as the
+    // silo fills, so "keep the silo full = score faster" is directly observable.
+    if (running) {
+      final rate = s._rateShown; // 0.._baseProd
+      final frac = (rate / _baseProdUi).clamp(0.0, 1.0);
+      const mW = 76.0, mH = 7.0;
+      final mLeft = c.dx - mW / 2;
+      final mTop = c.dy + r + 30;
+      final mTrack = Rect.fromLTWH(mLeft, mTop, mW, mH);
+      final mrr = RRect.fromRectAndRadius(mTrack, const Radius.circular(4));
+      canvas.drawRRect(mrr, Paint()..color = Colors.black.withValues(alpha: 0.4));
+      final mColor = frac < 0.25 ? _danger : (frac < 0.6 ? Potatuhs.sienna : _good);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(mLeft, mTop, mW * frac, mH), const Radius.circular(4)),
+        Paint()..color = mColor,
+      );
+      canvas.drawRRect(
+        mrr,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0
+          ..color = Colors.white.withValues(alpha: 0.22),
+      );
+      GameFx.text(
+        canvas,
+        'OUTPUT  +${rate.toStringAsFixed(1)}/s',
+        Offset(c.dx, mTop + mH + 9),
+        10.5,
+        mColor.withValues(alpha: 0.95),
+        weight: FontWeight.w800,
+        glow: 0.3 * frac,
+      );
+    }
 
     if (s._starved && running) {
       GameFx.text(canvas, 'STARVING', c.translate(0, -r - 16), 13,

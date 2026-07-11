@@ -59,10 +59,11 @@ class MiniGameHost extends StatefulWidget {
   /// The strip's label, e.g. `12/126` (current game / total games).
   final String? hopLabel;
 
-  /// Fired once when the player leaves the intro (countdown begins). Lets a
-  /// wrapper (e.g. the party page's vote-to-skip pill) show intro-only chrome
-  /// without reaching into the host's state.
-  final VoidCallback? onStarted;
+  /// Optional compact action rendered on the intro screen's START row, to the
+  /// left of the START button — host-level chrome injected by a wrapper (e.g.
+  /// the party page's vote-to-skip button). Leaves with the intro, so it can
+  /// never sit over live gameplay.
+  final Widget? introAction;
 
   const MiniGameHost({
     super.key,
@@ -76,7 +77,7 @@ class MiniGameHost extends StatefulWidget {
     this.onAutoAdvance,
     this.onHopGame,
     this.hopLabel,
-    this.onStarted,
+    this.introAction,
   });
 
   bool get isParty => onComplete != null;
@@ -333,7 +334,6 @@ class _MiniGameHostState extends State<MiniGameHost> {
   }
 
   void _startCountdown() {
-    widget.onStarted?.call();
     setState(() => _countdown = 3);
     _session.hostSetPhase(MiniGamePhase.countdown);
     _countdownTimer?.cancel();
@@ -590,6 +590,7 @@ class _MiniGameHostState extends State<MiniGameHost> {
                   bestScore: widget.isParty ? null : _bestScore,
                   onStart: _startCountdown,
                   onExit: widget.onExit,
+                  action: widget.introAction,
                 ));
               case MiniGamePhase.countdown:
               case MiniGamePhase.playing:
@@ -713,12 +714,16 @@ class _IntroView extends StatelessWidget {
   final VoidCallback onStart;
   final VoidCallback onExit;
 
+  /// Compact wrapper-injected action sharing the START row (left of START).
+  final Widget? action;
+
   const _IntroView({
     required this.spec,
     required this.onStart,
     required this.onExit,
     this.playerLabel,
     this.bestScore,
+    this.action,
   });
 
   @override
@@ -905,30 +910,41 @@ class _IntroView extends StatelessWidget {
             ),
           ],
           const Spacer(),
-          GestureDetector(
-            onTap: onStart,
-            child: Container(
-              height: 56,
-              decoration: BoxDecoration(
-                color: accent,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                      color: accent.withValues(alpha: 0.45), blurRadius: 18)
-                ],
-              ),
-              child: const Center(
-                child: Text(
-                  'START',
-                  style: TextStyle(
-                      fontFamily: _kFont,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black,
-                      letterSpacing: 3),
+          Row(
+            children: [
+              if (action != null) ...[
+                action!,
+                const SizedBox(width: 10),
+              ],
+              Expanded(
+                child: GestureDetector(
+                  onTap: onStart,
+                  child: Container(
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: accent,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                            color: accent.withValues(alpha: 0.45),
+                            blurRadius: 18)
+                      ],
+                    ),
+                    child: const Center(
+                      child: Text(
+                        'START',
+                        style: TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                            letterSpacing: 3),
+                      ),
+                    ),
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
         ],
       ),

@@ -134,6 +134,16 @@ class GameCatalog {
       specId: 'whose_idea',
     ),
     CatalogGame(
+      id: 'say_what',
+      name: 'Say What?',
+      tagline: 'Read it out loud — it sounds like a real phrase',
+      scale: BioScale.somethings,
+      rank: GameRank.b,
+      accent: Color(0xFFE1C916),
+      icon: Icons.record_voice_over_rounded,
+      specId: 'say_what',
+    ),
+    CatalogGame(
       id: 'parse',
       name: 'Parse',
       tagline: 'Name the construct — read past the syntax',
@@ -540,12 +550,12 @@ class GameCatalog {
     // ---- cosmicStructures ----
     CatalogGame(
       id: 'cosmic_web',
-      name: 'Cosmic Web',
-      tagline: 'Trace the dark-matter filaments between superclusters',
+      name: 'Trace the Constellations',
+      tagline: 'Race to draw the figure in the stars — catch what streaks past',
       scale: BioScale.cosmicStructures,
       rank: GameRank.b,
       accent: Color(0xFF7C5CFF),
-      icon: Icons.hub,
+      icon: Icons.auto_awesome,
       specId: 'cosmic_web',
     ),
     CatalogGame(
@@ -563,7 +573,10 @@ class GameCatalog {
       name: 'Structure Formation',
       tagline: 'Seed tiny ripples; let gravity weave the cosmic web',
       scale: BioScale.cosmicStructures,
-      rank: GameRank.b,
+      // F — Brett, 2026-07-07: illegible as a game ("no idea what it's about"),
+      // fails to do anything right. Slated for re-implementation from a new
+      // spec (candidate: a shared-board round-robin — see GAME.md).
+      rank: GameRank.f,
       accent: Color(0xFF8E6BFF),
       icon: Icons.grain,
       specId: 'structure_formation',
@@ -676,8 +689,6 @@ class GameCatalog {
     // ── UX Refinement Pass — <id>_v2 alternatives (coexist for A/B; Brett judges) ──
     CatalogGame(id: 'tzimtzum_v2', name: 'Tzimtzum v2', tagline: 'Trace the steady withdrawal that makes space', scale: BioScale.nothings, rank: GameRank.b, accent: Color(0xFF9B7BF0), icon: Icons.adjust, specId: 'tzimtzum_v2'),
     CatalogGame(id: 'organelle_match_v2', name: 'Organelle Match v2', tagline: 'Know the worker AND the job — both ways', scale: BioScale.organelle, rank: GameRank.b, accent: Color(0xFF3DDC97), icon: Icons.hub_rounded, specId: 'organelle_match_v2'),
-    CatalogGame(id: 'membrane_gate_v2', name: 'Membrane Gate v2', tagline: 'Pull in what the cell needs — toxins get the ✕', scale: BioScale.organelle, rank: GameRank.b, accent: Color(0xFF4FC3F7), icon: Icons.sensor_door, specId: 'membrane_gate_v2'),
-    CatalogGame(id: 'powerhouse_v2', name: 'Powerhouse v2', tagline: 'Keep a self-breathing mitochondrion fed — fuel vs oxygen', scale: BioScale.organelle, rank: GameRank.b, accent: Color(0xFFE16416), icon: Icons.bolt, specId: 'powerhouse_v2'),
     CatalogGame(id: 'osmosis_v2', name: 'Osmosis v2', tagline: 'Drag the balance knob — hold the potato cell at firm turgor', scale: BioScale.cell, rank: GameRank.b, accent: Color(0xFFE19816), icon: Icons.water_drop, specId: 'osmosis_v2'),
     CatalogGame(id: 'half_life_v2', name: 'Halving Beat', tagline: 'Mark the glow at every halving — 50 · 25 · 12.5 · 6.25%', scale: BioScale.atoms, rank: GameRank.b, accent: Color(0xFF7DFB5A), icon: Icons.timelapse, specId: 'half_life_v2'),
     CatalogGame(id: 'skin_layers_v2', name: 'Skin Layers v2', tagline: 'Rebuild the skin, surface to deep — beat the tempo', scale: BioScale.tissue, rank: GameRank.b, accent: Color(0xFFFF8A65), icon: Icons.layers, specId: 'skin_layers_v2'),
@@ -708,7 +719,6 @@ class GameCatalog {
     CatalogGame(id: 'pattern_lock_v2', name: 'Pattern Lock v2', tagline: 'Read the rule. Lock in what comes next.', scale: BioScale.somethings, rank: GameRank.b, accent: Color(0xFFE1C916), icon: Icons.lock_outline_rounded, specId: 'pattern_lock_v2'),
     CatalogGame(id: 'standard_model', name: 'Standard Model', tagline: 'Sort every particle into its family — fast', scale: BioScale.particles, rank: GameRank.b, accent: Color(0xFF7C4DFF), icon: Icons.bubble_chart, specId: 'standard_model'),
     CatalogGame(id: 'decay_chain', name: 'Decay Chain', tagline: 'Catch real decay products — refuse the ✗ impostor', scale: BioScale.particles, rank: GameRank.b, accent: Color(0xFF7CFC2E), icon: Icons.scatter_plot, specId: 'decay_chain'),
-    CatalogGame(id: 'constants_v2', name: 'Constants v2', tagline: 'Hold the universe in the habitable band', scale: BioScale.universeAll, rank: GameRank.b, accent: Color(0xFF8B7CF6), icon: Icons.tune, specId: 'constants_v2'),
     CatalogGame(id: 'heartbeat_v2', name: 'Heartbeat v2', tagline: 'Pump in order, on the lub-dub', scale: BioScale.organ, rank: GameRank.b, accent: Color(0xFFE5484D), icon: Icons.favorite, specId: 'heartbeat_v2'),
     CatalogGame(id: 'tissue_type_v2', name: 'Tissue Type v2', tagline: 'Read the slide — name the tissue, no pauses', scale: BioScale.tissue, rank: GameRank.b, accent: Color(0xFFD81B60), icon: Icons.biotech_rounded, specId: 'tissue_type_v2'),
     CatalogGame(id: 'reflex_v2', name: 'Reflex Gate v2', tagline: 'React on orange, hold on teal', scale: BioScale.organSystem, rank: GameRank.b, accent: Color(0xFFC6FF00), icon: Icons.flash_on, specId: 'reflex_v2'),

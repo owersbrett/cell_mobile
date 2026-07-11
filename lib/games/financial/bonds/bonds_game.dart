@@ -103,6 +103,13 @@ class _BondsGameState extends State<BondsGame>
   // --- Sizing ---
   int _lot = 5;
 
+  // --- How-to coach: an unmissable in-context teach that fades after the
+  //     player's FIRST buy (bond finance is unfamiliar to most). While it's up
+  //     it explains the ONE core action; after a buy it's dismissed for good. ---
+  bool   _didBuy      = false;
+  double _coachAlpha  = 1.0; // 1 = fully shown; fades to 0 after first buy
+  double _coachPulse  = 0.0; // gentle breathing so it reads as "alive", not a modal
+
   // --- Chart: only the rate history is stored; bond prices are recomputed from
   //     it in the painter so every line is always consistent + truly inverse. ---
   final List<double> _rateHist = [_kRateStart];
@@ -279,6 +286,13 @@ class _BondsGameState extends State<BondsGame>
       }
 
       if (_flashAlpha > 0) _flashAlpha = (_flashAlpha - dt * 2.5).clamp(0, 1);
+
+      // Coach: breathe until the first buy, then fade out over ~0.6s.
+      _coachPulse += dt;
+      if (_didBuy && _coachAlpha > 0) {
+        _coachAlpha = (_coachAlpha - dt * 1.6).clamp(0.0, 1.0);
+      }
+
       _fx.removeWhere((p) => !p.step(dt));
       _pops.removeWhere((p) => !p.step(dt));
     });
@@ -301,6 +315,7 @@ class _BondsGameState extends State<BondsGame>
     final cost = price * qty;
     if (cost > _cash + 1e-6) return;
     setState(() {
+      _didBuy = true; // first buy dismisses the how-to coach
       _cash -= cost;
       final nt = h.qty + qty;
       h.avgCost = (h.avgCost * h.qty + price * qty) / nt;
@@ -408,6 +423,7 @@ class _BondsGameState extends State<BondsGame>
         SafeArea(
           child: Column(children: [
             _buildWalletBar(),
+            _buildObjectiveStrip(),
             _buildRatePanel(),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -446,8 +462,154 @@ class _BondsGameState extends State<BondsGame>
             child: CustomPaint(painter: _BdFxPainter(_fx, _pops)),
           ),
         ),
+        if (_coachAlpha > 0.01) _buildCoach(chartH),
       ]);
     });
+  }
+
+  // ─── How-to coach ───────────────────────────────────────────────────────────
+  /// Unmissable, in-context teach of the ONE core action. Sits over the chart
+  /// (where the eye already is), breathes gently, and fades for good on the
+  /// first buy. Pointer-transparent so it never traps a tap.
+  Widget _buildCoach(double chartH) {
+    // Position it just below the wallet/objective/rate stack, over the chart.
+    final pulse = 0.5 + 0.5 * sin(_coachPulse * 2.2);
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: IgnorePointer(
+        child: Opacity(
+          opacity: _coachAlpha.clamp(0.0, 1.0),
+          child: Align(
+            alignment: const Alignment(0, -0.14),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 24),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Potatuhs.inkPanel.withValues(alpha: 0.96),
+                    Potatuhs.inkDeep.withValues(alpha: 0.98),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: Potatuhs.gold.withValues(alpha: 0.4 + 0.35 * pulse),
+                  width: 1.6,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Potatuhs.gold
+                        .withValues(alpha: 0.14 + 0.14 * pulse),
+                    blurRadius: 22,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('HOW TO PLAY',
+                      style: Potatuhs.label(size: 9, color: Potatuhs.gold)),
+                  const SizedBox(height: 6),
+                  RichText(
+                    textAlign: TextAlign.center,
+                    text: TextSpan(
+                      style: Potatuhs.body(
+                          size: 13,
+                          weight: FontWeight.w700,
+                          color: Potatuhs.textPrimary),
+                      children: const [
+                        TextSpan(text: 'Rates '),
+                        TextSpan(
+                            text: 'HIGH', style: TextStyle(color: _kDown)),
+                        TextSpan(text: ' ⇒ bonds '),
+                        TextSpan(
+                            text: 'CHEAP', style: TextStyle(color: _kUp)),
+                        TextSpan(text: '.\nTap a bond, '),
+                        TextSpan(
+                            text: 'BUY', style: TextStyle(color: _kAccent)),
+                        TextSpan(text: ' — then when rates '),
+                        TextSpan(
+                            text: 'FALL', style: TextStyle(color: _kUp)),
+                        TextSpan(text: ', '),
+                        TextSpan(
+                            text: 'SELL', style: TextStyle(color: _kUp)),
+                        TextSpan(text: ' for profit.'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text('tap BUY to begin',
+                      style: Potatuhs.label(
+                          size: 9,
+                          color: Potatuhs.gold
+                              .withValues(alpha: 0.5 + 0.5 * pulse))),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ─── Always-visible objective strip ─────────────────────────────────────────
+  /// The one-line "what am I doing" that never leaves the screen — buy low vs
+  /// the rate, sell after it falls. Live: it names the CURRENT best move so the
+  /// finance abstraction always maps to a concrete action.
+  Widget _buildObjectiveStrip() {
+    // Is any held bond above its cost basis (a profit ready to bank)?
+    double bankable = 0;
+    for (int i = 0; i < _kBonds.length; i++) {
+      final h = _hold[i];
+      if (h.qty <= 1e-6) continue;
+      bankable += (_price(_kBonds[i], _rate) - h.avgCost) * h.qty;
+    }
+    final holding = _holdingsValue() > 0.5;
+
+    String msg;
+    Color col;
+    IconData icon;
+    if (bankable > 1) {
+      // Sitting on a gain — the actionable prompt: bank it.
+      msg = 'PROFIT READY — SELL to bank +\$${bankable.toStringAsFixed(0)}';
+      col = _kUp;
+      icon = Icons.savings_outlined;
+    } else if (holding) {
+      // Holding but underwater — wait for rates to fall.
+      msg = 'HOLDING — wait for rates to FALL, then SELL';
+      col = Potatuhs.gold;
+      icon = Icons.hourglass_bottom;
+    } else {
+      // Flat — the core buy instruction.
+      msg = 'BUY a bond cheap, SELL after rates fall';
+      col = _kAccent;
+      icon = Icons.flag_outlined;
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 5, 10, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: Potatuhs.surface(
+        fill: col.withValues(alpha: 0.12),
+        borderColor: col.withValues(alpha: 0.4),
+        radius: 10,
+      ),
+      child: Row(children: [
+        Icon(icon, size: 14, color: col),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(msg,
+              style: Potatuhs.label(size: 10, color: col),
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
+      ]),
+    );
   }
 
   // ─── Wallet bar ─────────────────────────────────────────────────────────────
@@ -757,6 +919,20 @@ class _BondsGameState extends State<BondsGame>
   Widget _buildTradeButtons() {
     final b = _selDef;
     final price = _price(b, _rate);
+    // Live P&L on the selected position — surfaced on the SELL button so the
+    // score-driver ("selling banks THIS much") is legible at the moment of action.
+    final selHold = _selHold;
+    final hasSelPos = selHold.qty > 1e-6;
+    final selUpnl =
+        hasSelPos ? (price - selHold.avgCost) * selHold.qty : 0.0;
+    final String sellSub;
+    if (!hasSelPos) {
+      sellSub = 'no bonds';
+    } else if (selUpnl >= 0) {
+      sellSub = 'bank +\$${selUpnl.toStringAsFixed(0)}';
+    } else {
+      sellSub = 'loss -\$${selUpnl.abs().toStringAsFixed(0)}';
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(children: [
@@ -775,7 +951,7 @@ class _BondsGameState extends State<BondsGame>
         Expanded(
           child: _bigBtn(
             top: 'SELL $_lot',
-            sub: _canSell ? 'realize gains' : 'no bonds',
+            sub: sellSub,
             enabled: _canSell,
             colorA: const Color(0xFF7F0000),
             colorB: const Color(0xFFC62828),
@@ -1004,6 +1180,48 @@ class _BdChartPainter extends CustomPainter {
 // once on the intro screen, never per frame.
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Width-constrained centered text for the legend cards. [GameFx.text] lays out
+/// at the string's natural width and can spill past its box on the narrow embeds
+/// the cell runs in (iframe on hotpotatogames.com), which is how the rate-gauge
+/// finance lingo ("5.00%" ↔ "⇒ PRICES ▼") collided. This shrinks the font toward
+/// [minSize] until the line fits [maxWidth], so a label never overruns its slot.
+/// Mirrors the shared-kit fix pattern in `tissue/skin_layers`, but local (the
+/// shared `GameFx.text` intentionally has no max-width and must not change).
+void _bdFit(Canvas canvas, String s, Offset center, double size, Color color,
+    double maxWidth,
+    {bool display = false,
+    FontWeight weight = FontWeight.w800,
+    double glow = 0,
+    double minSize = 6}) {
+  if (maxWidth <= 0 || s.isEmpty) return;
+  var fontSize = size;
+  TextPainter tp() => TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            fontFamily: display ? Potatuhs.displayFont : Potatuhs.bodyFont,
+            fontSize: fontSize,
+            fontWeight: weight,
+            color: color,
+            shadows: glow > 0
+                ? [Shadow(color: color.withValues(alpha: glow), blurRadius: 12)]
+                : null,
+          ),
+        ),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      );
+  var painter = tp()..layout();
+  while (painter.width > maxWidth && fontSize > minSize) {
+    fontSize = (fontSize - 0.5).clamp(minSize, size);
+    painter = tp()..layout();
+  }
+  painter = tp()..layout(maxWidth: maxWidth);
+  painter.paint(canvas, center - Offset(painter.width / 2, painter.height / 2));
+}
+
 /// Bond price = PV of fixed coupons + face, discounted at [ratePct] — the same
 /// formula the game trades on. Top-level copy so the legend needs no state.
 double _bdLegendPrice(_BondDef b, double ratePct) {
@@ -1038,21 +1256,28 @@ void _bdRateGauge(Canvas canvas, Rect r, {required bool ratesUp}) {
   final rateCol = ratesUp ? _kDown : _kUp; // rising rates read as bad (red)
   final priceCol = ratesUp ? _kDown : _kUp; // prices move the OTHER way
 
-  // Left: the live rate readout.
-  GameFx.text(canvas, 'INTEREST RATE', Offset(r.left + r.width * 0.30, r.top + 15),
-      9, Potatuhs.gold,
-      weight: FontWeight.w800);
-  GameFx.text(canvas, '5.00%', Offset(r.left + r.width * 0.24, r.center.dy + 8),
-      25, Potatuhs.gold,
+  // Split the strip into two non-overlapping columns with a gutter between, so
+  // the readout ("INTEREST RATE / 5.00%") can never collide with the lesson
+  // ("RATES ▲ ⇒ PRICES ▼") on a narrow embed. Each label is width-fit to its
+  // own column, so both stay legible instead of spilling across the divide.
+  const pad = 10.0;
+  const gutter = 12.0;
+  final colW = (r.width - pad * 2 - gutter) / 2;
+  final leftCx = r.left + pad + colW / 2;
+  final rightCx = r.right - pad - colW / 2;
+
+  // Left column: the live rate readout.
+  _bdFit(canvas, 'INTEREST RATE', Offset(leftCx, r.top + 15), 9, Potatuhs.gold,
+      colW);
+  _bdFit(canvas, '5.00%', Offset(leftCx, r.center.dy + 10), 24, Potatuhs.gold,
+      colW,
       display: true, glow: 0.5);
 
-  // Right: RATES ▲/▼  ⇒  PRICES ▼/▲ — the whole lesson, colour-coded.
-  GameFx.text(canvas, 'RATES ${ratesUp ? "▲" : "▼"}',
-      Offset(r.right - r.width * 0.20, r.center.dy - 12), 11, rateCol,
-      weight: FontWeight.w800);
-  GameFx.text(canvas, '⇒ PRICES ${ratesUp ? "▼" : "▲"}',
-      Offset(r.right - r.width * 0.20, r.center.dy + 10), 13, priceCol,
-      weight: FontWeight.w800);
+  // Right column: RATES ▲/▼  ⇒  PRICES ▼/▲ — the whole lesson, colour-coded.
+  _bdFit(canvas, 'RATES ${ratesUp ? "▲" : "▼"}',
+      Offset(rightCx, r.center.dy - 12), 11, rateCol, colW);
+  _bdFit(canvas, '⇒ PRICES ${ratesUp ? "▼" : "▲"}',
+      Offset(rightCx, r.center.dy + 10), 13, priceCol, colW);
 }
 
 /// One tradeable bond card — the maturity badge + coupon + live price + an
@@ -1089,20 +1314,24 @@ void _bdBondCard(Canvas canvas, Rect r, _BondDef b, double price,
       ..strokeWidth = 1.3
       ..color = b.color.withValues(alpha: 0.5),
   );
-  GameFx.text(canvas, b.label, badge.center.translate(0, -6), 13, b.color,
-      weight: FontWeight.w800);
-  GameFx.text(canvas, '${(b.couponRate * 100).toStringAsFixed(1)}%',
-      badge.center.translate(0, 9), 7, Potatuhs.textSecondary);
+  _bdFit(canvas, b.label, badge.center.translate(0, -6), 13, b.color,
+      badge.width - 6);
+  _bdFit(canvas, '${(b.couponRate * 100).toStringAsFixed(1)}%',
+      badge.center.translate(0, 9), 7, Potatuhs.textSecondary, badge.width - 6,
+      weight: FontWeight.w700);
 
-  // Live price (+ optional delta beneath).
-  final px = badge.right + 46;
-  GameFx.text(canvas, '\$${price.toStringAsFixed(2)}',
+  // Live price (+ optional delta beneath). Centre it in the space RIGHT of the
+  // maturity badge and fit to that width so "$1,234.56 / +$xx" never runs off
+  // the card or back over the badge on a narrow embed.
+  final priceLeft = badge.right + 10;
+  final priceW = (r.right - 10) - priceLeft;
+  final px = priceLeft + priceW / 2;
+  _bdFit(canvas, '\$${price.toStringAsFixed(2)}',
       Offset(px, r.center.dy + (delta != null ? -7 : 0)), 16,
-      Potatuhs.textPrimary,
-      weight: FontWeight.w800);
+      Potatuhs.textPrimary, priceW);
   if (delta != null) {
-    GameFx.text(canvas, delta, Offset(px, r.center.dy + 11), 11,
-        deltaColor ?? _kUp,
+    _bdFit(canvas, delta, Offset(px, r.center.dy + 11), 11,
+        deltaColor ?? _kUp, priceW,
         weight: FontWeight.w700);
   }
 }
@@ -1128,8 +1357,7 @@ void _bdTradePill(Canvas canvas, Rect r, String label, Color colorA,
       ..strokeWidth = 1.5
       ..color = accent.withValues(alpha: 0.8),
   );
-  GameFx.text(canvas, label, r.center, 18, accent,
-      display: true, weight: FontWeight.w800);
+  _bdFit(canvas, label, r.center, 18, accent, r.width - 12, display: true);
 }
 
 // ── Frame 1: the core object + verb — a bond, and BUY / SELL. ────────────────
@@ -1217,10 +1445,10 @@ void _legendDuration(Canvas canvas, Size size) {
         ..strokeWidth = 1.3
         ..color = b.color.withValues(alpha: 0.8),
     );
-    GameFx.text(canvas, b.label, Offset(cx, baseY - h - 12), 12, b.color,
-        weight: FontWeight.w800);
-    GameFx.text(canvas, '−${s.toStringAsFixed(1)}%',
-        Offset(cx, baseY + 14), 9, Potatuhs.textFaint);
+    _bdFit(canvas, b.label, Offset(cx, baseY - h - 12), 12, b.color, slot - 4);
+    _bdFit(canvas, '−${s.toStringAsFixed(1)}%', Offset(cx, baseY + 14), 9,
+        Potatuhs.textFaint, slot - 4,
+        weight: FontWeight.w700);
   }
 }
 

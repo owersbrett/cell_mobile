@@ -323,6 +323,12 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
   bool get _canLaunch => _flier == null && _pending == null;
   Size _canvasSize = Size.zero;
 
+  // Legibility: has the player ever launched? Until they do, we shout the
+  // "DRAG TO AIM" how-to and the world-element labels; both fade after the
+  // first shot so the field stays clean once the loop is understood.
+  int _shotsFired = 0;
+  bool get _teaching => _shotsFired < 2;
+
   // ── fx / clock ─────────────────────────────────────────────────────────────
   final List<FxParticle> _fx = [];
   final List<FxPop> _pops = [];
@@ -658,12 +664,22 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     _spawnBurst(o.pos, o.color, 12);
     final popAt = _toScreen(o.pos);
     _pops.add(FxPop(popAt, '+$pts', Potatuhs.gold));
+    // Name WHY the score moved so the player links action → reward: a round
+    // orbit hugging the ring pays the bonus; otherwise reinforce the circularity
+    // lesson, and surface the streak when it's building.
     if (hugsRing) {
-      _pops.add(FxPop(popAt.translate(0, -26), 'STABLE!', Potatuhs.gold));
-    } else if (_streak >= 2) {
-      _pops.add(FxPop(popAt.translate(0, -26), '${_streak}x', Potatuhs.orange));
+      _pops.add(FxPop(
+          popAt.translate(0, -26), 'STABLE ORBIT +$_kStableRingBonus',
+          Potatuhs.gold));
+    } else if (o.e >= 0.3) {
+      _pops.add(FxPop(
+          popAt.translate(0, -26), 'ROUNDER = MORE', Potatuhs.textSecondary));
     }
-    _banner = o.e < 0.12 ? 'CIRCULAR ORBIT' : 'CAPTURED';
+    if (_streak >= 2) {
+      _pops.add(
+          FxPop(popAt.translate(0, -46), '${_streak}x STREAK', Potatuhs.orange));
+    }
+    _banner = o.e < 0.12 ? 'CIRCULAR ORBIT!' : 'CAPTURED!';
     _bannerColor = Potatuhs.gold;
     _bannerAge = 1.2;
 
@@ -739,6 +755,7 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
     final fate = _judge(el, _containRadius(size));
 
     setState(() {
+      _shotsFired++;
       if (fate == _Outcome.capture) {
         // _judge guarantees apoapsis ≤ containment radius, so a capture can
         // never leave the visible arena.
@@ -857,6 +874,8 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
             pops: _pops,
             flash: _flash,
             showReadyMoon: !running,
+            teaching: running && _teaching,
+            promptDrag: running && _teaching && _canLaunch && !_isDragging,
             banner: _bannerAge > 0 ? _banner : '',
             bannerColor: _bannerColor,
             bannerAlpha: (_bannerAge).clamp(0.0, 1.0),
@@ -870,33 +889,55 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
               child: Padding(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Row(
-                      children: List.generate(
-                        _kCapturesPerPlanet,
-                        (i) => Padding(
-                          padding: const EdgeInsets.only(right: 5),
-                          child: Icon(
-                            i < _capturesThisPlanet
-                                ? Icons.brightness_1
-                                : Icons.brightness_1_outlined,
-                            size: 11,
-                            color: i < _capturesThisPlanet
-                                ? Potatuhs.gold
-                                : Colors.white24,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Row(
+                          children: List.generate(
+                            _kCapturesPerPlanet,
+                            (i) => Padding(
+                              padding: const EdgeInsets.only(right: 5),
+                              child: Icon(
+                                i < _capturesThisPlanet
+                                    ? Icons.brightness_1
+                                    : Icons.brightness_1_outlined,
+                                size: 11,
+                                color: i < _capturesThisPlanet
+                                    ? Potatuhs.gold
+                                    : Colors.white24,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
+                        Text(
+                          'World ${_systemIndex + 1}',
+                          style: const TextStyle(
+                            fontFamily: Potatuhs.bodyFont,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Potatuhs.textFaint,
+                          ),
+                        ),
+                      ],
                     ),
-                    Text(
-                      'World ${_systemIndex + 1}',
-                      style: const TextStyle(
-                        fontFamily: Potatuhs.bodyFont,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: Potatuhs.textFaint,
+                    // ALWAYS-VISIBLE OBJECTIVE — the one line that answers
+                    // "what am I doing?" It never disappears.
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Text(
+                        'GOAL · settle the moon into a steady orbit to score',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontFamily: Potatuhs.bodyFont,
+                          fontSize: 11.5,
+                          height: 1.2,
+                          fontWeight: FontWeight.w700,
+                          color: Potatuhs.textSecondary,
+                          letterSpacing: 0.2,
+                        ),
                       ),
                     ),
                   ],
@@ -917,14 +958,16 @@ class _OrbitalInsertionGameState extends State<OrbitalInsertionGame>
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    _canLaunch
-                        ? 'FLING A MOON · NOT TOO FAST, NOT TOO SLOW'
-                        : 'WATCHING THE ORBIT…',
+                    !_canLaunch
+                        ? 'WATCHING THE ORBIT…'
+                        : _teaching
+                            ? 'DRAG ANYWHERE TO AIM · LET GO TO FLING'
+                            : 'AIM FOR THE GOLD RING · TOO SLOW CRASHES, TOO FAST FLIES OFF',
                     style: const TextStyle(
                       fontFamily: Potatuhs.displayFont,
-                      fontSize: 11,
+                      fontSize: 10.5,
                       color: Potatuhs.gold,
-                      letterSpacing: 1.1,
+                      letterSpacing: 1.0,
                     ),
                   ),
                 ),
@@ -988,6 +1031,8 @@ class _OrbitPainter extends CustomPainter {
   final List<FxPop> pops;
   final double flash;
   final bool showReadyMoon;
+  final bool teaching; // early shots: draw world-element labels
+  final bool promptDrag; // pulsing "DRAG TO AIM" prompt (pre-first-drag)
   final String banner;
   final Color bannerColor;
   final double bannerAlpha;
@@ -1024,6 +1069,8 @@ class _OrbitPainter extends CustomPainter {
     required this.pops,
     required this.flash,
     required this.showReadyMoon,
+    required this.teaching,
+    required this.promptDrag,
     required this.banner,
     required this.bannerColor,
     required this.bannerAlpha,
@@ -1056,6 +1103,7 @@ class _OrbitPainter extends CustomPainter {
     if (showReadyMoon) _paintReadyMoon(canvas);
 
     _paintLauncher(canvas);
+    _paintDragPrompt(canvas);
     _paintPreview(canvas);
     _paintAim(canvas);
     _paintFlier(canvas);
@@ -1121,6 +1169,19 @@ class _OrbitPainter extends CustomPainter {
         a1 - a0,
         false,
         paint,
+      );
+    }
+    // Label the target ring during the teaching window so the player knows the
+    // gold circle IS the goal — this is where a clean orbit lives.
+    if (teaching) {
+      GameFx.text(
+        canvas,
+        'AIM FOR THIS RING',
+        planetCenter.translate(0, ringR + 14 * vs),
+        9 * vs,
+        Potatuhs.gold.withValues(alpha: 0.85),
+        display: true,
+        glow: 0.4,
       );
     }
   }
@@ -1285,6 +1346,43 @@ class _OrbitPainter extends CustomPainter {
         glow: 0.8, specular: true);
   }
 
+  // Unmissable "start dragging here" prompt at the launcher, shown only until
+  // the player has actually flung (promptDrag gates it) so it never nags.
+  // A pulsing ring + a curved-up arrow + a "DRAG TO AIM" call-out.
+  void _paintDragPrompt(Canvas canvas) {
+    if (!promptDrag) return;
+    final pulse = 0.5 + 0.5 * sin(t * 3.2);
+    // Breathing ring around the launcher chamber.
+    canvas.drawCircle(
+      launcher,
+      (24 + pulse * 8) * vs,
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.10 + 0.22 * (1 - pulse))
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2 * vs,
+    );
+    // Upward hint arrow (the direction you'd drag to launch).
+    final bob = sin(t * 3.2) * 5 * vs;
+    final tail = launcher.translate(0, -34 * vs + bob);
+    final tip = launcher.translate(0, -58 * vs + bob);
+    final ap = Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.85)
+      ..strokeWidth = 3 * vs
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(tail, tip, ap);
+    canvas.drawLine(tip, tip.translate(-6 * vs, 8 * vs), ap);
+    canvas.drawLine(tip, tip.translate(6 * vs, 8 * vs), ap);
+    GameFx.text(
+      canvas,
+      'DRAG TO AIM',
+      launcher.translate(0, 26 * vs),
+      10 * vs,
+      Potatuhs.gold,
+      display: true,
+      glow: 0.5,
+    );
+  }
+
   void _paintPreview(Canvas canvas) {
     if (preview.length < 2 || previewOutcome == null) return;
     final col = switch (previewOutcome!) {
@@ -1299,11 +1397,13 @@ class _OrbitPainter extends CustomPainter {
       canvas.drawCircle(
           preview[i], r, Paint()..color = col.withValues(alpha: alpha));
     }
-    // Outcome label near the end of the preview.
+    // Outcome label near the end of the preview. The capture case is spelled
+    // out as a reward ("ORBIT!") and the fail cases as warnings, so the live
+    // preview reads as: green-light vs don't-let-go.
     final label = switch (previewOutcome!) {
-      _Outcome.crash => 'CRASH',
-      _Outcome.escape => 'ESCAPE',
-      _Outcome.capture => 'ORBIT',
+      _Outcome.crash => 'TOO SLOW · CRASH',
+      _Outcome.escape => 'TOO FAST · LOST',
+      _Outcome.capture => 'ORBIT! LET GO',
     };
     final end = preview[(preview.length * 0.55).floor().clamp(0, preview.length - 1)];
     GameFx.text(canvas, label, end.translate(0, -14 * vs), 12 * vs, col,

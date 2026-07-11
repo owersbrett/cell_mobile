@@ -46,9 +46,14 @@ const Color _kTextPrimary = Potatuhs.textPrimary;
 const Color _kTextSub = Potatuhs.textSecondary;
 
 // -- Layout ------------------------------------------------------------------
+// The host stacks its own score/timer HUD ABOVE this widget (see
+// mini_game_host.dart: Column[_GameHud, Expanded(game)]), so our play area is
+// already below the score. We reserve a compact banner on top and a fixed panel
+// on the bottom; both are sized so 4 rule cards + header + footer fit a phone
+// without overflow, and the corridor keeps real height in the middle.
 const int _kRooms = 7; // visible rooms (the corridor continues to ∞)
-const double _kBottomPanel = 244; // reserved for the rule options / card
-const double _kBannerTop = 58; // top reserve for the arrival banner overlay
+const double _kBottomPanel = 214; // reserved for the rule options / card
+const double _kBannerTop = 52; // top reserve for the arrival banner overlay
 
 // -- Timing & scoring --------------------------------------------------------
 const double _kFeedbackDur = 2.2; // seconds the resolution + card stay up
@@ -730,24 +735,56 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
   Widget _buildOptions() {
     // The panel is a fixed [_kBottomPanel] high (the canvas reserves it).
     // Three cards fit at full size; when the round warms up to four, compact
-    // metrics keep the stack inside the panel instead of overflowing it.
+    // metrics shrink each card's padding/type so the header + 4 cards stay
+    // inside the 214px panel on a phone instead of overflowing it.
     final compact = _options.length >= 4;
+    // Objective line makes scoring legible: the number the host HUD shows is
+    // POINTS, and this says what a correct pick is worth right now.
+    final points = _arrival.base;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Text(
-            'TAP THE RULE THAT MAKES ROOM',
-            style: TextStyle(
-              fontFamily: _kFont,
-              fontSize: 11.5,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.2,
-              color: _kTextSub,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Flexible(
+                child: Text(
+                  'TAP THE RULE THAT MAKES ROOM',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.0,
+                    color: _kTextSub,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _kGood.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(color: _kGood.withValues(alpha: 0.5)),
+                ),
+                child: Text(
+                  '+$points pts',
+                  style: const TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                    color: _kGood,
+                  ),
+                ),
+              ),
+            ],
           ),
-          SizedBox(height: compact ? 6 : 8),
+          SizedBox(height: compact ? 5 : 7),
           for (final r in _options)
             Padding(
               padding: EdgeInsets.only(bottom: compact ? 5 : 7),

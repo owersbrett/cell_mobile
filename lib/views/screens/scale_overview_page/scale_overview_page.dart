@@ -5,6 +5,7 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/data/bio_entity_registry.dart';
 import 'package:cell_mobile/data/organelles.dart';
 import 'package:cell_mobile/data/scales/scale_meta.dart';
+import 'package:cell_mobile/learn/learn_progress.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
@@ -21,11 +22,11 @@ import 'widgets/galaxy_animation.dart';
 import 'widgets/molecular_animations.dart';
 import 'widgets/particles_animation.dart';
 import 'widgets/planets_animation.dart';
-import 'widgets/question_marks_animation.dart';
+import 'widgets/big_bang_zoom_animation.dart';
 import 'widgets/solar_system_animation.dart';
 import 'widgets/universe_animations.dart';
 import 'widgets/scale_animations.dart';
-import 'widgets/binary_nothing_animation.dart';
+import 'widgets/something_clusters_animation.dart';
 import 'widgets/scale_card.dart';
 import 'widgets/potato_mitosis_animation.dart';
 import 'widgets/companion_planting_animation.dart';
@@ -121,19 +122,29 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
 
   void _activateSelected() {
     if (_selectedIndex >= 0 && _selectedIndex < _scaleInfo.length) {
-      final info = _scaleInfo[_selectedIndex];
-      context.read<ScaleExplorerBloc>().add(SelectScale(info.scale));
-      context.read<NavigationBloc>().add(NavigateToScreen(AppScreen.scaleExplorer));
+      _openScale(_scaleInfo[_selectedIndex].scale);
     }
+  }
+
+  /// Open a scale into LEARN. When the scale has more than one module, route
+  /// through the module picker; otherwise go straight to the explorer so a
+  /// single-module scale never shows a one-option chooser.
+  void _openScale(BioScale scale) {
+    context.read<ScaleExplorerBloc>().add(SelectScale(scale));
+    final modules = BioEntityRegistry().modulesForScale(scale);
+    final target = modules.length > 1
+        ? AppScreen.scaleModules
+        : AppScreen.scaleExplorer;
+    context.read<NavigationBloc>().add(NavigateToScreen(target));
   }
 
   static Widget _animationForScale(BioScale scale, Color color) {
     switch (scale) {
       // Left side — nothingness to molecules
       case BioScale.nothings:
-        return QuestionMarksAnimation(color: color);
+        return BigBangZoomAnimation(color: color);
       case BioScale.somethings:
-        return BinaryNothingAnimation(color: color);
+        return SomethingClustersAnimation(color: color);
       case BioScale.particles:
         return ParticlesAnimation(color: color);
       case BioScale.atoms:
@@ -330,6 +341,8 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                               magnitude: info.magnitude,
                               learn: info.learn,
                               entityCount: registry.entityCount(info.scale),
+                              viewedCount: LearnProgress.instance
+                                  .viewedCountOf(registry.getByScale(info.scale)),
                               animation: info.hasInteractive
                                   ? _buildInteractiveAnimation()
                                   : _animationForScale(info.scale, info.color),
@@ -354,14 +367,12 @@ class _ScaleOverviewPageState extends State<ScaleOverviewPage> {
                                 context.read<NavigationBloc>().add(
                                     NavigateToScreen(AppScreen.miniGame));
                               },
+                              // LEARN button = same destination as tapping
+                              // the card (module picker or explorer).
+                              onLearnTap: () => _openScale(info.scale),
                               onTap: () {
                                 if (isSelected) {
-                                  context
-                                      .read<ScaleExplorerBloc>()
-                                      .add(SelectScale(info.scale));
-                                  context.read<NavigationBloc>().add(
-                                      NavigateToScreen(
-                                          AppScreen.scaleExplorer));
+                                  _openScale(info.scale);
                                 } else {
                                   _pageController.animateToPage(
                                     index,

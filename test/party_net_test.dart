@@ -91,8 +91,10 @@ Future<List<PartyNet>> _playNetworkedGame({
         }
         break;
       case PartyPhase.cardDecision:
+        // Common cards hold with no options — play them as drawn (value 0).
+        final cardOpts = c.currentCard!.options.length;
         nets[cur].act(PartyInputKind.chooseCardOption,
-            value: rng.nextInt(c.currentCard!.options.length));
+            value: cardOpts == 0 ? 0 : rng.nextInt(cardOpts));
         break;
       case PartyPhase.minigamePlaying:
       case PartyPhase.passPhone:
@@ -241,8 +243,10 @@ void main() {
                 : PartyInputKind.skipPotato);
             break;
           case PartyPhase.cardDecision:
+            // Common cards hold with no options — play them as drawn.
+            final cardOpts = c.currentCard!.options.length;
             nets[cur].act(PartyInputKind.chooseCardOption,
-                value: rng.nextInt(c.currentCard!.options.length));
+                value: cardOpts == 0 ? 0 : rng.nextInt(cardOpts));
             break;
           case PartyPhase.minigamePlaying:
           case PartyPhase.passPhone:

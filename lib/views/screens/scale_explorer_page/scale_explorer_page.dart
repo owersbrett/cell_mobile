@@ -4,9 +4,16 @@ import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_bloc.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_events.dart';
 import 'package:cell_mobile/blocs/scale_explorer/scale_explorer_states.dart';
 import 'package:cell_mobile/data/bio_entity_registry.dart';
+import 'package:cell_mobile/data/organelles.dart';
 import 'package:cell_mobile/data/scales/scale_meta.dart';
+import 'package:cell_mobile/learn/learn_progress.dart';
+import 'package:cell_mobile/blocs/cell/cell_states.dart';
 import 'package:cell_mobile/models/bio_entity.dart';
+import 'package:cell_mobile/models/organelle.dart';
+import 'package:cell_mobile/views/screens/cell_page/animations/cell_animation_delegate.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
+import 'package:cell_mobile/views/screens/scale_explorer_page/widgets/lesson_section_view.dart';
+import 'package:cell_mobile/views/screens/scale_explorer_page/widgets/person_linked_text.dart';
 import 'package:cell_mobile/views/widgets/scroll_fade.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,16 +22,16 @@ import 'package:cell_mobile/views/screens/scale_overview_page/widgets/atom_orbit
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/organ_system_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/dragon_curve_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/farm_cycle_animation.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/big_bang_zoom_animation.dart';
+import 'package:cell_mobile/views/screens/scale_overview_page/widgets/something_clusters_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/particles_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/financial_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/supply_chain_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/galaxy_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/planets_animation.dart';
-import 'package:cell_mobile/views/screens/scale_overview_page/widgets/question_marks_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/solar_system_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/universe_animations.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/molecular_animations.dart';
-import 'package:cell_mobile/views/screens/scale_overview_page/widgets/binary_nothing_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/scale_animations.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/potato_mitosis_animation.dart';
 import 'package:cell_mobile/views/screens/scale_overview_page/widgets/companion_planting_animation.dart';
@@ -65,7 +72,7 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     if (key == LogicalKeyboardKey.delete ||
         key == LogicalKeyboardKey.backspace ||
         key == LogicalKeyboardKey.escape) {
-      context.read<NavigationBloc>().add(NavigateToScreen(AppScreen.scaleOverview));
+      _goBack();
       return KeyEventResult.handled;
     }
 
@@ -112,6 +119,16 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     return KeyEventResult.ignored;
   }
 
+  /// Back retraces the way in: entered via the module picker (a module is
+  /// scoped) → return to the picker; entered straight from the carousel
+  /// (single-module scale or legacy zoom) → return to the carousel.
+  void _goBack() {
+    final cameFromModules =
+        context.read<ScaleExplorerBloc>().state.currentModuleId != null;
+    context.read<NavigationBloc>().add(NavigateToScreen(
+        cameFromModules ? AppScreen.scaleModules : AppScreen.scaleOverview));
+  }
+
   void _scrollBy(double delta) {
     if (!_scrollController.hasClients) return;
     _scrollController.animateTo(
@@ -142,6 +159,14 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
         final icon = meta.icon;
         final registry = BioEntityRegistry();
 
+        // Record progress: displaying a topic counts as viewing it. Post-frame
+        // so persistence/notify never fires mid-build.
+        if (entity != null) {
+          final viewedId = entity.id;
+          WidgetsBinding.instance.addPostFrameCallback(
+              (_) => LearnProgress.instance.markViewed(viewedId));
+        }
+
         return Focus(
           focusNode: _focusNode,
           autofocus: true,
@@ -153,15 +178,14 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
               children: [
                 ScaleIndicator(
                   scale: state.currentScale,
-                  onBack: () {
-                    context
-                        .read<NavigationBloc>()
-                        .add(NavigateToScreen(AppScreen.scaleOverview));
-                  },
+                  onBack: _goBack,
                 ),
                 // "WHAT YOU'LL LEARN" framing — the E layer made visible, so the
                 // explorer reads as a lesson, not a static wiki.
                 _buildLearnFraming(meta),
+                // How far through this module's topics you are.
+                if (entities.length > 1)
+                  _buildTopicProgress(state, entities.length, color),
                 Expanded(
                   child: entity == null
                       ? Center(
@@ -228,6 +252,34 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
         ),
         );
       },
+    );
+  }
+
+  /// Slim topic-position readout: "TOPIC n / total" + a progress bar, so the
+  /// lesson always shows how far through its topics you are.
+  Widget _buildTopicProgress(
+      ScaleExplorerState state, int total, Color color) {
+    final position = state.currentPosition + 1;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      child: Row(
+        children: [
+          Text('TOPIC $position / $total',
+              style: Potatuhs.label(size: 9, color: color)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: position / total,
+                minHeight: 3,
+                backgroundColor: color.withValues(alpha: 0.15),
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -338,8 +390,9 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
             ),
             const SizedBox(height: 12),
             // Short description
-            Text(
-              entity.shortDescription,
+            PersonLinkedText(
+              text: entity.shortDescription,
+              accent: color,
               style: Potatuhs.body(
                 size: 15,
                 weight: FontWeight.w500,
@@ -373,8 +426,9 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
             ],
             const SizedBox(height: 20),
             // Full description
-            Text(
-              entity.longDescription,
+            PersonLinkedText(
+              text: entity.longDescription,
+              accent: color,
               style: Potatuhs.body(
                 size: 15,
                 weight: FontWeight.w400,
@@ -382,6 +436,11 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
                 height: 1.6,
               ),
             ),
+            // Structured lesson blocks — tables, think-reveals, facts.
+            for (final s in entity.sections) ...[
+              const SizedBox(height: 20),
+              LessonSectionView(section: s, color: color),
+            ],
             const SizedBox(height: 24),
             // Zoom In
             if (entity.zoomInIds.isNotEmpty) ...[
@@ -464,6 +523,16 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     );
   }
 
+  /// Maps an organelle entity's enum to its rich [OrganelleInfo] (the record
+  /// that drives the per-organelle animation). Null if unmatched.
+  OrganelleInfo? _organelleInfoFor(Organelle? which) {
+    if (which == null) return null;
+    for (final o in organelles) {
+      if (o.organelle == which) return o;
+    }
+    return null;
+  }
+
   /// Returns the appropriate animated visual for an entity
   Widget _buildEntityVisual(BioEntity entity, Color color, IconData icon) {
     // Molecular scale — each entity gets its own animation
@@ -499,14 +568,20 @@ class _ScaleExplorerPageState extends State<ScaleExplorerPage> {
     // Other scales — use the scale-level animations
     switch (entity.scale) {
       case BioScale.nothings:
-        return BinaryNothingAnimation(color: color);
+        return BigBangZoomAnimation(color: color);
       case BioScale.somethings:
-        return QuestionMarksAnimation(color: color);
+        return SomethingClustersAnimation(color: color);
       case BioScale.particles:
         return ParticlesAnimation(color: color);
       case BioScale.atoms:
         return AtomOrbitalAnimation(color: color);
       case BioScale.organelle:
+        // Each organelle has its OWN structural animation (nucleolus, DNA,
+        // mitochondrion, ...) via CellAnimationDelegate — the same per-entity
+        // treatment molecular gets. Fall back to the generic field only when
+        // the entity carries no organelle enum.
+        final info = _organelleInfoFor(entity.organelleEnum);
+        if (info != null) return CellAnimationDelegate.organelle(info);
         return OrganelleAnimation(color: color);
       case BioScale.cell:
         return PotatoMitosisAnimation(color: color);
@@ -708,96 +783,109 @@ class _ScaleNavBarState extends State<_ScaleNavBar> {
             ),
           ),
           const SizedBox(height: 8),
-          // Prev / Next with mini animation previews
+          // Prev / Next with mini animation previews. Both sides are flexible
+          // so long entity names shrink to ellipsis instead of colliding with
+          // the corners or the center indicator on narrow screens.
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               // Previous
-              GestureDetector(
-                onTap: widget.onPrev,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.arrow_back_ios,
-                        size: 12, color: Potatuhs.textFaint),
-                    const SizedBox(width: 6),
-                    // Mini animation preview
-                    Container(
-                      width: 28,
-                      height: 28,
-                      decoration: BoxDecoration(
-                        color: widget.color.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: widget.color.withValues(alpha: 0.2)),
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: widget.buildVisual(prevEntity, widget.scaleColor, widget.scaleIcon),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 80),
-                      child: Text(
-                        prevEntity.name,
-                        style: Potatuhs.body(
-                          size: 11,
-                          weight: FontWeight.w500,
-                          color: Potatuhs.textFaint,
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: widget.onPrev,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.arrow_back_ios,
+                          size: 12, color: Potatuhs.textFaint),
+                      const SizedBox(width: 6),
+                      // Mini animation preview
+                      Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: widget.color.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: widget.color.withValues(alpha: 0.2)),
                         ),
-                        overflow: TextOverflow.ellipsis,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: widget.buildVisual(
+                              prevEntity, widget.scaleColor, widget.scaleIcon),
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          prevEntity.name,
+                          style: Potatuhs.body(
+                            size: 11,
+                            weight: FontWeight.w500,
+                            color: Potatuhs.textFaint,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               // Position indicator
-              Text(
-                '${widget.currentPosition + 1} / ${widget.entities.length}',
-                style: Potatuhs.body(
-                  size: 11,
-                  weight: FontWeight.w500,
-                  color: Potatuhs.textFaint,
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(
+                  '${widget.currentPosition + 1} / ${widget.entities.length}',
+                  style: Potatuhs.body(
+                    size: 11,
+                    weight: FontWeight.w500,
+                    color: Potatuhs.textFaint,
+                  ),
                 ),
               ),
               // Next
-              GestureDetector(
-                onTap: widget.onNext,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 80),
-                      child: Text(
-                        nextEntity.name,
-                        style: Potatuhs.body(
-                          size: 11,
-                          weight: FontWeight.w500,
-                          color: Potatuhs.textFaint,
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: widget.onNext,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          nextEntity.name,
+                          style: Potatuhs.body(
+                            size: 11,
+                            weight: FontWeight.w500,
+                            color: Potatuhs.textFaint,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.right,
                         ),
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.right,
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    // Mini animation preview
-                    Container(
-                      width: 28,
-                      height: 28,
-                      decoration: BoxDecoration(
-                        color: widget.color.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: widget.color.withValues(alpha: 0.2)),
+                      const SizedBox(width: 6),
+                      // Mini animation preview
+                      Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: widget.color.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: widget.color.withValues(alpha: 0.2)),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: widget.buildVisual(
+                              nextEntity, widget.scaleColor, widget.scaleIcon),
+                        ),
                       ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: widget.buildVisual(nextEntity, widget.scaleColor, widget.scaleIcon),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    const Icon(Icons.arrow_forward_ios,
-                        size: 12, color: Potatuhs.textFaint),
-                  ],
+                      const SizedBox(width: 6),
+                      const Icon(Icons.arrow_forward_ios,
+                          size: 12, color: Potatuhs.textFaint),
+                    ],
+                  ),
                 ),
               ),
             ],

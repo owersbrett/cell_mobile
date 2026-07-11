@@ -71,6 +71,330 @@ const double _kLoopMassGain = 0.18; // +18% body mass per completed loop
 const double _kLoopShrink = 0.10; // catcher shrinks 10% per loop
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PROCEDURAL PLANET RENDERER — the anti-flat-circle core of this game.
+//
+// A gravity well or a moon is NEVER a plain shaded disc. Every body is a
+// distinct WORLD: a lit hemisphere with a real day/night terminator, a banded
+// or mottled surface texture, drifting cloud swirl, an atmospheric limb glow,
+// and (for giants) a tilted ring. The look is derived deterministically from
+// the body's identity (its seed), so the same well always renders as the same
+// planet across attempts, and no two wells look alike.
+//
+// This is pure Canvas + dart:math — no raster assets, cheap enough to run every
+// frame. All geometry is generated once from the seed into a [_PlanetStyle];
+// only the light drift and cloud phase animate with the clock.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The kind of world a body renders as — drives which surface texture is drawn.
+enum _WorldKind { banded, rocky, cloudy, molten, icy }
+
+/// A deterministic visual identity for one planet, derived from a seed. Cached
+/// on the body so it is only computed once, not per frame.
+class _PlanetStyle {
+  final _WorldKind kind;
+  final Color base; // mid surface tone
+  final Color light; // sunlit highlight tone
+  final Color dark; // shadow / night tone
+  final Color atmosphere; // limb glow tone
+  final double bandTilt; // rotation of latitude bands / features
+  final int bandCount; // number of latitude bands
+  final double spotSeed; // seeds crater / storm placement
+  final bool hasRing; // giant ring plane
+  final double ringTilt;
+  final double surfaceSpin; // rad/s of the surface texture drift
+  const _PlanetStyle({
+    required this.kind,
+    required this.base,
+    required this.light,
+    required this.dark,
+    required this.atmosphere,
+    required this.bandTilt,
+    required this.bandCount,
+    required this.spotSeed,
+    required this.hasRing,
+    required this.ringTilt,
+    required this.surfaceSpin,
+  });
+
+  /// Build a world identity from a stable [seed] and the body's brand [color].
+  /// [ringy] permits a ring (giants only). The brand color anchors the palette
+  /// so worlds stay on-brand while reading as different planet types.
+  factory _PlanetStyle.fromSeed(int seed, Color color, {bool ringy = false}) {
+    final r = Random(seed & 0x7fffffff);
+    const kinds = _WorldKind.values;
+    final kind = kinds[r.nextInt(kinds.length)];
+
+    // Warm/cool secondary that co-tints the surface, kept from the brand set.
+    final tints = <Color>[
+      Potatuhs.sienna,
+      Potatuhs.copper,
+      Potatuhs.airForce,
+      Potatuhs.glaucous,
+      Potatuhs.gold,
+    ];
+    final tint = tints[r.nextInt(tints.length)];
+    final base = Color.lerp(color, tint, 0.28 + r.nextDouble() * 0.22)!;
+
+    return _PlanetStyle(
+      kind: kind,
+      base: base,
+      light: Color.lerp(base, Colors.white, 0.44)!,
+      dark: Color.lerp(base, const Color(0xFF0B0A09), 0.62)!,
+      atmosphere: Color.lerp(color, Potatuhs.gold, 0.25)!,
+      bandTilt: r.nextDouble() * pi,
+      bandCount: 4 + r.nextInt(4),
+      spotSeed: r.nextDouble() * 1000,
+      hasRing: ringy && r.nextBool(),
+      ringTilt: -0.5 + r.nextDouble(),
+      surfaceSpin: (0.05 + r.nextDouble() * 0.10) * (r.nextBool() ? 1 : -1),
+    );
+  }
+}
+
+/// The one entry point: paint a fully-realized planet of [radius] at [center].
+///
+/// Layers (back → front): atmospheric limb bloom → clipped surface (base
+/// gradient + kind-specific texture + drifting clouds) → day/night terminator
+/// shadow → bright sunlit crescent rim → optional tilted ring front arc.
+/// [light] is the sun direction (unit-ish); [t] the clock for drift.
+void _paintPlanet(
+  Canvas canvas,
+  Offset center,
+  double radius,
+  _PlanetStyle style,
+  Offset light,
+  double t, {
+  double glow = 1.0,
+}) {
+  if (radius <= 0) return;
+  final ll = light.distance;
+  final lightDir = ll < 1e-4 ? const Offset(-0.55, -0.6) : light / ll;
+
+  // ── Atmospheric limb bloom — soft colored halo, brighter on the sunlit side.
+  if (glow > 0) {
+    canvas.drawCircle(
+      center + lightDir * radius * 0.22,
+      radius + 7 * glow,
+      Paint()
+        ..color = style.atmosphere.withValues(alpha: 0.30 * glow)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.55 + 6),
+    );
+  }
+
+  final rect = Rect.fromCircle(center: center, radius: radius);
+  canvas.save();
+  canvas.clipPath(Path()..addOval(rect));
+
+  // ── Base sphere gradient — light gathers toward the sun, edges fall to night.
+  canvas.drawRect(
+    rect,
+    Paint()
+      ..shader = RadialGradient(
+        center: Alignment(-lightDir.dx * 0.7, -lightDir.dy * 0.7),
+        radius: 1.15,
+        colors: [style.light, style.base, style.dark],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(rect),
+  );
+
+  // ── Kind-specific surface texture, rotated on the body's spin.
+  final spin = t * style.surfaceSpin;
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  canvas.rotate(style.bandTilt + spin * 0.15);
+  switch (style.kind) {
+    case _WorldKind.banded:
+    case _WorldKind.molten:
+      _paintBands(canvas, radius, style, spin);
+      break;
+    case _WorldKind.cloudy:
+    case _WorldKind.icy:
+      _paintSwirls(canvas, radius, style, spin);
+      break;
+    case _WorldKind.rocky:
+      _paintCraters(canvas, radius, style);
+      break;
+  }
+  canvas.restore();
+
+  canvas.restore(); // end clip
+
+  // ── Day/night terminator — a big soft shadow offset opposite the sun. This is
+  // what makes the body read as a lit 3-D world instead of a flat disc.
+  canvas.save();
+  canvas.clipPath(Path()..addOval(rect));
+  canvas.drawCircle(
+    center - lightDir * radius * 1.02,
+    radius * 1.32,
+    Paint()
+      ..shader = RadialGradient(
+        colors: [
+          style.dark.withValues(alpha: 0.0),
+          style.dark.withValues(alpha: 0.55),
+          const Color(0xFF060504).withValues(alpha: 0.82),
+        ],
+        stops: const [0.0, 0.62, 1.0],
+      ).createShader(Rect.fromCircle(
+          center: center - lightDir * radius * 1.02, radius: radius * 1.32)),
+  );
+  canvas.restore();
+
+  // ── Ring (giants) — a tilted band, drawn as a back arc behind + front arc in
+  // front so it reads as encircling the world.
+  if (style.hasRing) {
+    _paintRing(canvas, center, radius, style);
+  }
+
+  // ── Sunlit crescent rim — a thin bright arc where the star grazes the limb.
+  final rimC = center + lightDir * radius * 0.03;
+  canvas.drawCircle(
+    rimC,
+    radius,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..shader = SweepGradient(
+        center: Alignment(lightDir.dx, lightDir.dy),
+        colors: [
+          style.light.withValues(alpha: 0.9),
+          style.light.withValues(alpha: 0.05),
+          style.dark.withValues(alpha: 0.0),
+          style.light.withValues(alpha: 0.05),
+          style.light.withValues(alpha: 0.9),
+        ],
+        stops: const [0.0, 0.22, 0.5, 0.78, 1.0],
+        transform: GradientRotation(atan2(lightDir.dy, lightDir.dx) - pi / 2),
+      ).createShader(rect),
+  );
+
+  // ── Tiny specular glint on the sunward shoulder.
+  canvas.drawCircle(
+    center + lightDir * radius * 0.55,
+    radius * 0.16,
+    Paint()
+      ..color = Colors.white.withValues(alpha: 0.42)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.12),
+  );
+}
+
+/// Latitude bands (gas-giant / molten belts) inside the clipped sphere.
+void _paintBands(Canvas canvas, double radius, _PlanetStyle style, double spin) {
+  final n = style.bandCount;
+  for (int i = 0; i < n; i++) {
+    final f = (i + 0.5) / n; // 0..1 top→bottom
+    final y = (-1 + 2 * f) * radius;
+    final h = radius * 2 / n * 1.15;
+    final wobble = sin(spin + i * 1.7) * radius * 0.05;
+    final even = i.isEven;
+    final c = even
+        ? Color.lerp(style.base, style.light, 0.25)!
+        : Color.lerp(style.base, style.dark, 0.30)!;
+    canvas.drawRect(
+      Rect.fromCenter(
+          center: Offset(wobble, y), width: radius * 2.4, height: h),
+      Paint()
+        ..color = c.withValues(alpha: style.kind == _WorldKind.molten ? 0.5 : 0.38)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
+    );
+  }
+  // Molten worlds get a couple of hot glowing seams.
+  if (style.kind == _WorldKind.molten) {
+    for (int i = 0; i < 2; i++) {
+      final y = sin(style.spotSeed + i * 2.3) * radius * 0.5;
+      canvas.drawRect(
+        Rect.fromCenter(
+            center: Offset(0, y), width: radius * 2.2, height: radius * 0.10),
+        Paint()
+          ..color = Potatuhs.orange.withValues(alpha: 0.55)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+      );
+    }
+  }
+}
+
+/// Cloud / ice swirls — soft curved streaks orbiting the pole.
+void _paintSwirls(Canvas canvas, double radius, _PlanetStyle style, double spin) {
+  final swirlC =
+      style.kind == _WorldKind.icy ? style.light : Color.lerp(style.light, Colors.white, 0.5)!;
+  final p = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+  const streaks = 7;
+  for (int i = 0; i < streaks; i++) {
+    final a0 = i / streaks * 2 * pi + spin;
+    final rr = radius * (0.30 + 0.62 * (i / streaks));
+    final sweep = 1.1 + 0.5 * sin(style.spotSeed + i);
+    final path = Path();
+    const seg = 10;
+    for (int s = 0; s <= seg; s++) {
+      final a = a0 + sweep * (s / seg);
+      final rad = rr * (1 - 0.12 * sin(a * 2 + i));
+      final pt = Offset(cos(a) * rad, sin(a) * rad * 0.9);
+      s == 0 ? path.moveTo(pt.dx, pt.dy) : path.lineTo(pt.dx, pt.dy);
+    }
+    p
+      ..color = swirlC.withValues(alpha: 0.10 + 0.05 * (i % 2))
+      ..strokeWidth = radius * (0.05 + 0.03 * (i % 2));
+    canvas.drawPath(path, p);
+  }
+  // A brighter polar cap for icy worlds.
+  if (style.kind == _WorldKind.icy) {
+    canvas.drawCircle(
+      Offset(0, -radius * 0.6),
+      radius * 0.42,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.22)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+  }
+}
+
+/// Cratered rocky surface — a scatter of soft rimmed pits.
+void _paintCraters(Canvas canvas, double radius, _PlanetStyle style) {
+  final r = Random((style.spotSeed * 1000).toInt() & 0x7fffffff);
+  final count = 6 + r.nextInt(5);
+  for (int i = 0; i < count; i++) {
+    final a = r.nextDouble() * 2 * pi;
+    final rad = r.nextDouble() * radius * 0.82;
+    final c = Offset(cos(a) * rad, sin(a) * rad);
+    final cr = radius * (0.10 + r.nextDouble() * 0.16);
+    canvas.drawCircle(
+        c, cr, Paint()..color = style.dark.withValues(alpha: 0.34));
+    canvas.drawCircle(
+      c.translate(-cr * 0.25, -cr * 0.25),
+      cr * 0.7,
+      Paint()..color = style.light.withValues(alpha: 0.18),
+    );
+  }
+}
+
+/// A tilted planetary ring: back half behind the globe, front half over it.
+void _paintRing(
+    Canvas canvas, Offset center, double radius, _PlanetStyle style) {
+  final ringPaint = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = radius * 0.16;
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  canvas.rotate(style.ringTilt);
+  canvas.scale(1.0, 0.32);
+  final rr = radius * 1.7;
+  final ovalRect = Rect.fromCircle(center: Offset.zero, radius: rr);
+  // Back arc (behind planet) — dimmer.
+  ringPaint.color = style.atmosphere.withValues(alpha: 0.28);
+  canvas.drawArc(ovalRect, pi, pi, false, ringPaint);
+  // Front arc (over planet) — brighter, with an inner hairline.
+  ringPaint.color = style.atmosphere.withValues(alpha: 0.5);
+  canvas.drawArc(ovalRect, 0, pi, false, ringPaint);
+  ringPaint
+    ..color = Colors.white.withValues(alpha: 0.16)
+    ..strokeWidth = radius * 0.04;
+  canvas.drawArc(ovalRect, 0, pi, false, ringPaint);
+  canvas.restore();
+}
+
 /// One gravity well in a generated layout. [pos] is a canvas fraction [0..1].
 /// [mass] scales [_kGravityConstant]; [radius] is the visual + collision size
 /// and is kept correlated with mass so the player can *read* pull from size.
@@ -80,13 +404,25 @@ class _GravBody {
   final Color color;
   final double radius;
   final String label; // 'GIANT' | 'MID' | 'SMALL' — communicates pull
-  const _GravBody({
+  _GravBody({
     required this.pos,
     required this.mass,
     required this.color,
     required this.radius,
     this.label = '',
   });
+
+  /// This body's world identity. Derived once (lazily) from a stable seed built
+  /// from position + size, so the same layout always renders the same planet and
+  /// no two wells look alike. Giants may carry a ring.
+  _PlanetStyle? _style;
+  _PlanetStyle get style => _style ??= _PlanetStyle.fromSeed(
+        (pos.dx * 9973).round() * 131 +
+            (pos.dy * 7919).round() * 17 +
+            (radius * 53).round(),
+        color,
+        ringy: label == 'GIANT',
+      );
 }
 
 /// A moving catcher. Its position is a closed elliptical path traced over time:
@@ -110,6 +446,18 @@ class _MovingTarget {
     required this.dir,
     required this.tilt,
   }) : caught = false;
+
+  /// The catcher's own world identity — gold-dominant (it IS the objective), but
+  /// a real lit body with a surface, not a flat token. Derived once from a stable
+  /// seed off the orbit geometry. Never rings (the crosshair must read cleanly).
+  _PlanetStyle? _style;
+  _PlanetStyle get style => _style ??= _PlanetStyle.fromSeed(
+        (center.dx * 8887).round() * 91 +
+            (rx * 6131).round() * 29 +
+            (phase * 100).round(),
+        Potatuhs.gold,
+        ringy: false,
+      );
 
   /// Position (canvas px) at absolute clock [time].
   Offset posAt(Size s, double time) {
@@ -494,8 +842,8 @@ Offset _legendQuad(Offset a, Offset b, Offset c, double u) {
   return a * (mu * mu) + b * (2 * mu * u) + c * (u * u);
 }
 
-/// A gravity well — influence gradient + rings + shaded orb + pull label,
-/// mirroring `_PursuitPainter._paintWell` with the pulse frozen.
+/// A gravity well — influence gradient + rings + the SAME procedural planet the
+/// live game draws (frozen light) + pull label. Mirrors `_paintWell`.
 void _legendWell(Canvas canvas, Offset c, double radius, double mass,
     Color color, String label) {
   final influence = radius + mass * 22;
@@ -519,15 +867,19 @@ void _legendWell(Canvas canvas, Offset c, double radius, double mass,
         ..strokeWidth = 0.9,
     );
   }
-  GameFx.orb(canvas, c, radius, color, glow: 1.4, specular: true);
+  final style = _PlanetStyle.fromSeed(
+      label.hashCode * 31 + (radius * 7).round(), color,
+      ringy: label == 'GIANT');
+  _paintPlanet(canvas, c, radius, style, const Offset(-0.6, -0.6), 0.6,
+      glow: 1.3);
   if (label.isNotEmpty) {
     GameFx.text(canvas, label, c.translate(0, radius + 14), 9,
         color.withValues(alpha: 0.8));
   }
 }
 
-/// The moving catcher — intake rings + gold orb + crosshair, exactly the
-/// grammar `_PursuitPainter._paintTarget` draws for the live target.
+/// The moving catcher — intake rings + the procedural golden moon + a corner
+/// crosshair, the grammar `_paintTarget` draws for the live target.
 void _legendTarget(Canvas canvas, Offset c, double radius) {
   for (int i = 0; i < 2; i++) {
     canvas.drawCircle(
@@ -539,14 +891,60 @@ void _legendTarget(Canvas canvas, Offset c, double radius) {
         ..strokeWidth = 1.5,
     );
   }
-  GameFx.orb(canvas, c, radius, Potatuhs.gold,
-      glow: 1.6, rim: Potatuhs.sienna, specular: true);
+  canvas.drawCircle(
+    c,
+    radius + 8,
+    Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.4)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.7 + 5),
+  );
+  final style = _PlanetStyle.fromSeed(
+      (c.dx * 13).round() + (c.dy * 7).round(), Potatuhs.gold);
+  _paintPlanet(canvas, c, radius, style, const Offset(-0.55, -0.6), 0.4,
+      glow: 0.0);
   final ch = Paint()
-    ..color = Potatuhs.gold.withValues(alpha: 0.6)
+    ..color = Potatuhs.gold.withValues(alpha: 0.75)
     ..strokeWidth = 1.3
     ..strokeCap = StrokeCap.round;
-  canvas.drawLine(c.translate(-11, 0), c.translate(11, 0), ch);
-  canvas.drawLine(c.translate(0, -11), c.translate(0, 11), ch);
+  canvas.drawLine(c.translate(-radius - 6, 0), c.translate(-radius + 2, 0), ch);
+  canvas.drawLine(c.translate(radius - 2, 0), c.translate(radius + 6, 0), ch);
+  canvas.drawLine(c.translate(0, -radius - 6), c.translate(0, -radius + 2), ch);
+  canvas.drawLine(c.translate(0, radius - 2), c.translate(0, radius + 6), ch);
+}
+
+/// The planetlet as the manual shows it — a small lit glaucous world, matching
+/// `_paintProjectile`.
+void _legendPlanetlet(Canvas canvas, Offset c) {
+  const r = _kProjectileRadius;
+  canvas.drawCircle(
+    c,
+    r + 6,
+    Paint()
+      ..color = Potatuhs.glaucous.withValues(alpha: 0.5)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+  );
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(0.5, 0.6),
+        colors: [
+          Color.lerp(Potatuhs.glaucous, Colors.white, 0.65)!,
+          Potatuhs.glaucous,
+          Color.lerp(Potatuhs.glaucous, Colors.black, 0.5)!,
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: c, radius: r)),
+  );
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = Colors.white.withValues(alpha: 0.8),
+  );
 }
 
 /// One "where it WILL be" ghost marker — a hollow gold ring + tiny core.
@@ -608,10 +1006,9 @@ void _legendLaunch(Canvas canvas, Size size) {
         p, r, Paint()..color = col.withValues(alpha: (1 - u) * 0.5 + 0.28));
   }
 
-  // Live planetlet leaving the barrel.
+  // Live planetlet leaving the barrel — a tiny lit glaucous world.
   final second = _legendQuad(cannon, ctrl, target, 0.10);
-  GameFx.orb(canvas, second, _kProjectileRadius, Potatuhs.glaucous,
-      glow: 1.6, rim: Colors.white, specular: true);
+  _legendPlanetlet(canvas, second);
 
   final aimDir = (ctrl - cannon);
   final adl = aimDir.distance;
@@ -1349,9 +1746,11 @@ class _PursuitPainter extends CustomPainter {
     }
   }
 
-  // Visible, animated gravity well: pulsing influence rings whose strength and
-  // count scale with mass, a soft accretion glow, the shaded orb, an orbiting
-  // ring for the giants, and a size label so pull is legible at a glance.
+  // Visible, animated gravity well rendered as a distinct WORLD: a pulsing
+  // influence field + rings (whose strength/count scale with mass, so pull stays
+  // readable at a glance) wrapping a fully procedural planet — lit terminator,
+  // banded/rocky/cloudy surface, atmospheric limb, giants ringed. A size label
+  // keeps pull legible even for the smallest wells.
   void _paintWell(Canvas canvas, Offset bPos, _GravBody body) {
     final influence = body.radius + body.mass * 26;
     final pulse = 0.5 + 0.5 * sin(t * 1.6 + body.pos.dx * 8);
@@ -1384,28 +1783,13 @@ class _PursuitPainter extends CustomPainter {
       );
     }
 
-    canvas.drawCircle(
-      bPos,
-      body.radius + 12,
-      Paint()
-        ..color = body.color.withValues(alpha: 0.26)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+    // The world itself. Sun sits toward the upper-left of the field; the light
+    // vector drifts very slightly so the terminator feels alive.
+    final light = Offset(
+      -0.6 + 0.06 * sin(t * 0.3 + body.pos.dx * 4),
+      -0.62 + 0.05 * cos(t * 0.27 + body.pos.dy * 4),
     );
-
-    GameFx.orb(canvas, bPos, body.radius, body.color, glow: 1.4, specular: true);
-
-    if (body.radius >= 40) {
-      final ringPaint = Paint()
-        ..color = body.color.withValues(alpha: 0.32)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.2;
-      canvas.save();
-      canvas.translate(bPos.dx, bPos.dy);
-      canvas.rotate(t * 0.25 + body.pos.dx);
-      canvas.scale(1.0, 0.30);
-      canvas.drawCircle(Offset.zero, body.radius * 1.55, ringPaint);
-      canvas.restore();
-    }
+    _paintPlanet(canvas, bPos, body.radius, body.style, light, t, glow: 1.3);
 
     if (body.label.isNotEmpty) {
       GameFx.text(
@@ -1502,14 +1886,32 @@ class _PursuitPainter extends CustomPainter {
           ..strokeWidth = 1.5,
       );
     }
-    GameFx.orb(canvas, now, targetRadius, Potatuhs.gold,
-        glow: 1.6 + pulse * 0.5 + flashGlow, rim: Potatuhs.sienna, specular: true);
+    // The catcher is its OWN small world — a lit, textured golden moon rather
+    // than a flat token — with an extra golden bloom (pulsing + intercept flash)
+    // so it stays the brightest, most catchable thing on screen.
+    canvas.drawCircle(
+      now,
+      targetRadius + 8,
+      Paint()
+        ..color = Potatuhs.gold
+            .withValues(alpha: 0.35 + pulse * 0.12 + flashGlow)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, targetRadius * 0.7 + 5),
+    );
+    final tLight = Offset(-0.55 + 0.08 * sin(t * 0.9), -0.6);
+    _paintPlanet(canvas, now, targetRadius, tgt.style, tLight, t, glow: 0.0);
+    // Crosshair — the "this is the objective" overlay, on top of the world.
     final ch = Paint()
-      ..color = Potatuhs.gold.withValues(alpha: 0.6)
+      ..color = Potatuhs.gold.withValues(alpha: 0.75)
       ..strokeWidth = 1.3
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(now.translate(-11, 0), now.translate(11, 0), ch);
-    canvas.drawLine(now.translate(0, -11), now.translate(0, 11), ch);
+    canvas.drawLine(now.translate(-targetRadius - 6, 0),
+        now.translate(-targetRadius + 2, 0), ch);
+    canvas.drawLine(now.translate(targetRadius - 2, 0),
+        now.translate(targetRadius + 6, 0), ch);
+    canvas.drawLine(now.translate(0, -targetRadius - 6),
+        now.translate(0, -targetRadius + 2), ch);
+    canvas.drawLine(now.translate(0, targetRadius - 2),
+        now.translate(0, targetRadius + 6), ch);
   }
 
   Offset _ellipsePoint(Size s, _MovingTarget tgt, double ang) {
@@ -1641,8 +2043,54 @@ class _PursuitPainter extends CustomPainter {
     }
     if (projectile!.alive) {
       final mPos = Offset(projectile!.x, projectile!.y);
-      GameFx.orb(canvas, mPos, _kProjectileRadius, Potatuhs.glaucous,
-          glow: 1.9, rim: Colors.white, specular: true);
+      // The planetlet — a tiny lit world, not a flat marble: hot glowing core,
+      // shaded body with a single dark equatorial band + a night crescent, and a
+      // bright leading rim. Cheap enough to redraw every frame.
+      canvas.drawCircle(
+        mPos,
+        _kProjectileRadius + 6,
+        Paint()
+          ..color = Potatuhs.glaucous.withValues(alpha: 0.55)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+      );
+      canvas.drawCircle(
+        mPos,
+        _kProjectileRadius,
+        Paint()
+          ..shader = RadialGradient(
+            center: const Alignment(0.5, 0.6),
+            colors: [
+              Color.lerp(Potatuhs.glaucous, Colors.white, 0.65)!,
+              Potatuhs.glaucous,
+              Color.lerp(Potatuhs.glaucous, Colors.black, 0.5)!,
+            ],
+            stops: const [0.0, 0.55, 1.0],
+          ).createShader(
+              Rect.fromCircle(center: mPos, radius: _kProjectileRadius)),
+      );
+      // Dark equatorial band for a bit of surface.
+      canvas.save();
+      canvas.clipPath(Path()
+        ..addOval(Rect.fromCircle(center: mPos, radius: _kProjectileRadius)));
+      canvas.drawRect(
+        Rect.fromCenter(
+            center: mPos,
+            width: _kProjectileRadius * 2.4,
+            height: _kProjectileRadius * 0.5),
+        Paint()
+          ..color = Color.lerp(Potatuhs.glaucous, Colors.black, 0.35)!
+              .withValues(alpha: 0.5),
+      );
+      canvas.restore();
+      // Bright leading rim.
+      canvas.drawCircle(
+        mPos,
+        _kProjectileRadius,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = Colors.white.withValues(alpha: 0.8),
+      );
     }
   }
 

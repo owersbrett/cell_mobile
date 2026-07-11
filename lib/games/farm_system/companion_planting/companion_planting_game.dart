@@ -41,26 +41,64 @@ enum _Crop {
   lettuce,
 }
 
-class _CropInfo {
-  final String label;
-  final String glyph; // 1–2 char badge initial
-  final Color color;
-  const _CropInfo(this.label, this.glyph, this.color);
+/// The procedural silhouette each crop draws as. Drives [_drawCrop] so every
+/// tile reads as a distinct PLANT (stalk/vine/fruit/bulb/tuber/frond/head), not
+/// a lettered orb. Purely visual — never referenced by scoring or the palette.
+enum _Form {
+  cornStalk, // tall stalk, blade leaves, a cob + tassel
+  beanVine, // climbing vine, heart leaves, hanging pods
+  squashSprawl, // low broad lobed leaves + a round gourd
+  flower, // marigold — layered petal bloom on a stem
+  fruitBush, // tomato — bushy stem with hanging round fruit
+  herb, // basil — paired ovate leaves up a stem
+  tuber, // potato — leafy top + earthy tuber in the soil
+  bulb, // onion — layered bulb with green shoots
+  frond, // fennel — feathery umbel fronds (the loner)
+  taproot, // carrot — ferny top + orange root down into soil
+  leafHead, // cabbage — tight rosette of wrapped leaves
+  looseLeaf, // lettuce — open ruffled rosette
 }
 
+class _CropInfo {
+  final String label;
+  final String glyph; // 1–2 char badge initial (kept for at-a-glance ID)
+  final Color color; // signature crop colour (fruit/flower/root)
+  final Color leaf; // foliage colour for this crop's greens
+  final _Form form; // how it's drawn
+  const _CropInfo(this.label, this.glyph, this.color, this.leaf, this.form);
+}
+
+// Foliage greens, warm and varied so beds don't read as one flat green.
+const Color _leafDeep = Color(0xFF3E7D3A);
+const Color _leafMid = Color(0xFF5FA24B);
+const Color _leafBright = Color(0xFF8ABF5A);
+const Color _leafBlue = Color(0xFF4E8C6A); // cabbage / cool greens
+
 const Map<_Crop, _CropInfo> _kCrops = {
-  _Crop.corn: _CropInfo('Corn', 'Co', Color(0xFFFFD54F)),
-  _Crop.bean: _CropInfo('Beans', 'Be', Color(0xFF66BB6A)),
-  _Crop.squash: _CropInfo('Squash', 'Sq', Color(0xFFFF8A65)),
-  _Crop.marigold: _CropInfo('Marigold', 'Mg', Color(0xFFFFB300)),
-  _Crop.tomato: _CropInfo('Tomato', 'To', Color(0xFFEF5350)),
-  _Crop.basil: _CropInfo('Basil', 'Ba', Color(0xFF26A69A)),
-  _Crop.potato: _CropInfo('Potato', 'Po', Color(0xFFBCAAA4)),
-  _Crop.onion: _CropInfo('Onion', 'On', Color(0xFFCE93D8)),
-  _Crop.fennel: _CropInfo('Fennel', 'Fe', Color(0xFFC0CA33)),
-  _Crop.carrot: _CropInfo('Carrot', 'Ca', Color(0xFFFFA726)),
-  _Crop.cabbage: _CropInfo('Cabbage', 'Cb', Color(0xFF4DB6AC)),
-  _Crop.lettuce: _CropInfo('Lettuce', 'Le', Color(0xFF9CCC65)),
+  _Crop.corn:
+      _CropInfo('Corn', 'Co', Color(0xFFFFD54F), _leafBright, _Form.cornStalk),
+  _Crop.bean:
+      _CropInfo('Beans', 'Be', Color(0xFF66BB6A), _leafMid, _Form.beanVine),
+  _Crop.squash: _CropInfo(
+      'Squash', 'Sq', Color(0xFFFF8A65), _leafDeep, _Form.squashSprawl),
+  _Crop.marigold:
+      _CropInfo('Marigold', 'Mg', Color(0xFFFFB300), _leafMid, _Form.flower),
+  _Crop.tomato:
+      _CropInfo('Tomato', 'To', Color(0xFFEF5350), _leafDeep, _Form.fruitBush),
+  _Crop.basil:
+      _CropInfo('Basil', 'Ba', Color(0xFF3FB98C), _leafMid, _Form.herb),
+  _Crop.potato:
+      _CropInfo('Potato', 'Po', Color(0xFFC9A98F), _leafMid, _Form.tuber),
+  _Crop.onion:
+      _CropInfo('Onion', 'On', Color(0xFFCE93D8), _leafBright, _Form.bulb),
+  _Crop.fennel:
+      _CropInfo('Fennel', 'Fe', Color(0xFFC0CA33), Color(0xFF9CB84A), _Form.frond),
+  _Crop.carrot:
+      _CropInfo('Carrot', 'Ca', Color(0xFFFF8A26), _leafBright, _Form.taproot),
+  _Crop.cabbage:
+      _CropInfo('Cabbage', 'Cb', Color(0xFF6FB98C), _leafBlue, _Form.leafHead),
+  _Crop.lettuce:
+      _CropInfo('Lettuce', 'Le', Color(0xFF9CCC65), _leafBright, _Form.looseLeaf),
 };
 
 // Friendly companion pairs (symmetric). Real companion-planting relationships:
@@ -171,20 +209,423 @@ class _Dot {
   _Dot(this.x, this.y, this.vx, this.vy, this.life, this.size, this.color);
 }
 
+/// An expanding celebratory ring — fired when a clean friendly pairing lands,
+/// so a good companion match reads as a satisfying "pop". Cosmetic only.
+class _Ring {
+  final double x, y;
+  double age;
+  final Color color;
+  _Ring(this.x, this.y, this.color) : age = 0;
+}
+
 enum _Phase { placing, growth }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROCEDURAL PLANT ART — the visual heart of the game.
+//
+// Every crop draws as a distinct, characterful plant grown FROM the soil: a
+// stalk/vine/bush/bulb/tuber/frond with real leaves and fruit, gently swaying,
+// sprouting in on placement and swelling/browning in the growth phase. No
+// raster assets — pure Canvas. All paints/paths are built per call (cheap: a
+// handful of fills per plant) but sway/pulse phase is derived from a shared
+// clock so motion is continuous without any per-frame allocation growth.
+//
+// Contract: purely cosmetic. `crop`, scoring and geometry are untouched — this
+// only changes how a planted/held crop LOOKS.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const Color _kHelpGreen = Color(0xFF8BE58B); // "+helps" link + thrive glow
+const Color _kHurtRed = Color(0xFFFF6B6B); // "−hurts" link + wilt cue
+const Color _kThriveTint = Color(0xFFB9F6CA); // healthy leaf tint (growth)
+const Color _kWiltTint = Color(0xFF6D4C41); // browned wilt tint (growth)
+
+/// A single crop leaf: a tapered blade with a centre vein, drawn from [base]
+/// out to [tip] with a given [width] and [color].
+void _leaf(Canvas canvas, Offset base, Offset tip, double width, Color color,
+    {double curl = 0.0}) {
+  final dir = tip - base;
+  final len = dir.distance;
+  if (len < 0.5) return;
+  final ux = dir.dx / len, uy = dir.dy / len;
+  final nx = -uy, ny = ux; // perpendicular
+  final mid = Offset(base.dx + ux * len * 0.5 + nx * curl * len,
+      base.dy + uy * len * 0.5 + ny * curl * len);
+  final path = Path()
+    ..moveTo(base.dx, base.dy)
+    ..quadraticBezierTo(
+        mid.dx + nx * width, mid.dy + ny * width, tip.dx, tip.dy)
+    ..quadraticBezierTo(
+        mid.dx - nx * width, mid.dy - ny * width, base.dx, base.dy)
+    ..close();
+  canvas.drawPath(
+    path,
+    Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color.lerp(color, Colors.white, 0.28)!, color],
+      ).createShader(Rect.fromPoints(base, tip)),
+  );
+  // Centre vein.
+  canvas.drawLine(
+    base,
+    Offset.lerp(base, tip, 0.9)!,
+    Paint()
+      ..color = Color.lerp(color, Colors.black, 0.25)!.withValues(alpha: 0.4)
+      ..strokeWidth = 0.9,
+  );
+}
+
+/// A soft round fruit/gourd/bulb body (mini-orb, cheaper than GameFx.orb, no
+/// per-call glow) with a specular dot.
+void _berry(Canvas canvas, Offset c, double r, Color color) {
+  canvas.drawCircle(
+    c,
+    r,
+    Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.4, -0.5),
+        colors: [
+          Color.lerp(color, Colors.white, 0.5)!,
+          color,
+          Color.lerp(color, Colors.black, 0.35)!,
+        ],
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(Rect.fromCircle(center: c, radius: r)),
+  );
+  canvas.drawCircle(c.translate(-r * 0.3, -r * 0.34), r * 0.22,
+      Paint()..color = Colors.white.withValues(alpha: 0.6));
+}
+
+/// Draw crop [crop] centred at [center], sized to [scale] (roughly the plant's
+/// half-height). [sway] radians drives idle motion; [sprout] 0→1 grows it in;
+/// [thrive] >0 healthy-swell/glow, <0 wilt/brown. This is the ONE routine every
+/// planted plant, tray tile and legend card renders through.
+void _drawCrop(Canvas canvas, Offset center, _Crop crop, double scale,
+    {double sway = 0, double sprout = 1, double thrive = 0}) {
+  final info = _kCrops[crop]!;
+  final s = scale * (0.55 + 0.45 * Curves.easeOutBack.transform(sprout.clamp(0, 1)));
+  // Health response.
+  var leaf = info.leaf;
+  var fruit = info.color;
+  double vigor = 1.0;
+  if (thrive > 0) {
+    vigor = 1.14;
+    leaf = Color.lerp(leaf, _kThriveTint, 0.30)!;
+    fruit = Color.lerp(fruit, _kThriveTint, 0.15)!;
+  } else if (thrive < 0) {
+    vigor = 0.8;
+    leaf = Color.lerp(leaf, _kWiltTint, 0.55)!;
+    fruit = Color.lerp(fruit, _kWiltTint, 0.4)!;
+  }
+  final h = s * vigor; // plant reach upward
+  final swayX = sin(sway) * s * 0.10;
+
+  // Soil mound the plant rises from (grounds it in the bed).
+  canvas.drawOval(
+    Rect.fromCenter(
+        center: center.translate(0, h * 0.72), width: s * 1.7, height: s * 0.5),
+    Paint()..color = const Color(0xFF2A1B13).withValues(alpha: 0.55),
+  );
+
+  final baseY = center.dy + h * 0.62; // where stems emerge from soil
+  Offset stemBase = Offset(center.dx, baseY);
+  Offset top = Offset(center.dx + swayX, center.dy - h * 0.7);
+
+  void stem(Color c, double w) {
+    final path = Path()
+      ..moveTo(stemBase.dx - w, stemBase.dy)
+      ..quadraticBezierTo(
+          center.dx + swayX * 0.5, center.dy, top.dx, top.dy)
+      ..quadraticBezierTo(
+          center.dx + swayX * 0.5, center.dy, stemBase.dx + w, stemBase.dy)
+      ..close();
+    canvas.drawPath(path, Paint()..color = c);
+  }
+
+  switch (info.form) {
+    case _Form.cornStalk:
+      stem(const Color(0xFF7CB342), s * 0.14);
+      for (int i = 0; i < 4; i++) {
+        final f = i / 3.0;
+        final anchor = Offset.lerp(stemBase, top, 0.25 + f * 0.55)!;
+        final side = i.isEven ? 1.0 : -1.0;
+        _leaf(canvas, anchor,
+            anchor.translate(side * s * (0.9 - f * 0.3), -s * (0.2 + f * 0.4)),
+            s * 0.14, leaf,
+            curl: side * 0.25);
+      }
+      // The cob.
+      _berry(canvas, Offset.lerp(stemBase, top, 0.62)!.translate(s * 0.22, 0),
+          s * 0.26, fruit);
+      // Tassel.
+      for (int i = -1; i <= 1; i++) {
+        canvas.drawLine(
+            top,
+            top.translate(i * s * 0.16, -s * 0.28),
+            Paint()
+              ..color = const Color(0xFFE9C46A)
+              ..strokeWidth = 1.6
+              ..strokeCap = StrokeCap.round);
+      }
+      break;
+
+    case _Form.beanVine:
+      // A curling climbing vine.
+      final vine = Path()..moveTo(stemBase.dx, stemBase.dy);
+      for (double t = 0; t <= 1.0; t += 0.1) {
+        final p = Offset.lerp(stemBase, top, t)!
+            .translate(sin(t * 8 + sway) * s * 0.16, 0);
+        vine.lineTo(p.dx, p.dy);
+      }
+      canvas.drawPath(
+          vine,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = s * 0.1
+            ..strokeCap = StrokeCap.round
+            ..color = const Color(0xFF6B9B3F));
+      for (int i = 0; i < 4; i++) {
+        final f = 0.2 + i * 0.22;
+        final a = Offset.lerp(stemBase, top, f)!
+            .translate(sin(f * 8 + sway) * s * 0.16, 0);
+        final side = i.isEven ? 1.0 : -1.0;
+        _leaf(canvas, a, a.translate(side * s * 0.55, -s * 0.3), s * 0.16, leaf);
+      }
+      // Hanging pods.
+      for (int i = 0; i < 2; i++) {
+        final a = Offset.lerp(stemBase, top, 0.5 + i * 0.25)!;
+        canvas.drawLine(a, a.translate(-s * 0.1, s * 0.4),
+            Paint()..color = fruit..strokeWidth = s * 0.14..strokeCap = StrokeCap.round);
+      }
+      break;
+
+    case _Form.squashSprawl:
+      // Low, broad sprawling lobed leaves + a gourd sitting in them.
+      for (int i = 0; i < 5; i++) {
+        final ang = pi + (i / 4.0) * pi; // fan across the top of soil
+        final dir = Offset(cos(ang), sin(ang) * 0.7);
+        final anchor = center.translate(0, h * 0.2);
+        _leaf(
+            canvas,
+            anchor,
+            anchor + dir * s * 1.05,
+            s * 0.3,
+            Color.lerp(leaf, Colors.black, i.isOdd ? 0.12 : 0)!,
+            curl: (i - 2) * 0.12);
+      }
+      _berry(canvas, center.translate(swayX, h * 0.28), s * 0.42, fruit);
+      // Ribs on the gourd.
+      for (int i = -1; i <= 1; i++) {
+        canvas.drawLine(
+            center.translate(swayX + i * s * 0.14, h * 0.28 - s * 0.36),
+            center.translate(swayX + i * s * 0.18, h * 0.28 + s * 0.36),
+            Paint()
+              ..color = Color.lerp(fruit, Colors.black, 0.3)!.withValues(alpha: 0.4)
+              ..strokeWidth = 1.2);
+      }
+      break;
+
+    case _Form.flower:
+      stem(const Color(0xFF5FA24B), s * 0.09);
+      for (int i = 0; i < 2; i++) {
+        final a = Offset.lerp(stemBase, top, 0.4 + i * 0.2)!;
+        final side = i.isEven ? 1.0 : -1.0;
+        _leaf(canvas, a, a.translate(side * s * 0.45, -s * 0.1), s * 0.12, leaf);
+      }
+      // Layered petal bloom.
+      final bloom = top.translate(0, -s * 0.05);
+      for (int layer = 0; layer < 2; layer++) {
+        final pr = s * (0.5 - layer * 0.16);
+        final petalC = layer == 0
+            ? fruit
+            : Color.lerp(fruit, Colors.deepOrange, 0.45)!;
+        const n = 8;
+        for (int i = 0; i < n; i++) {
+          final ang = i / n * 2 * pi + layer * 0.4 + sway * 0.3;
+          _berry(canvas, bloom + Offset(cos(ang), sin(ang)) * pr * 0.7,
+              pr * 0.42, petalC);
+        }
+      }
+      _berry(canvas, bloom, s * 0.2, const Color(0xFF6D4C22));
+      break;
+
+    case _Form.fruitBush:
+      stem(const Color(0xFF4E7A38), s * 0.11);
+      for (int i = 0; i < 4; i++) {
+        final f = 0.25 + i * 0.2;
+        final a = Offset.lerp(stemBase, top, f)!;
+        final side = i.isEven ? 1.0 : -1.0;
+        _leaf(canvas, a, a.translate(side * s * 0.55, -s * 0.2), s * 0.14, leaf);
+      }
+      // Hanging tomatoes.
+      _berry(canvas, center.translate(-s * 0.28 + swayX, s * 0.1), s * 0.24, fruit);
+      _berry(canvas, center.translate(s * 0.3 + swayX, s * 0.28), s * 0.2, fruit);
+      _berry(canvas, center.translate(swayX, h * 0.0), s * 0.26, fruit);
+      break;
+
+    case _Form.herb:
+      stem(const Color(0xFF4E9C6A), s * 0.09);
+      for (int i = 0; i < 3; i++) {
+        final f = 0.3 + i * 0.22;
+        final a = Offset.lerp(stemBase, top, f)!;
+        _leaf(canvas, a, a.translate(-s * 0.5, -s * 0.18), s * 0.17, leaf);
+        _leaf(canvas, a, a.translate(s * 0.5, -s * 0.18), s * 0.17, leaf);
+      }
+      // Top pair.
+      _leaf(canvas, top, top.translate(-s * 0.28, -s * 0.4), s * 0.13, leaf);
+      _leaf(canvas, top, top.translate(s * 0.28, -s * 0.4), s * 0.13, leaf);
+      break;
+
+    case _Form.tuber:
+      // Earthy tuber half-buried, leafy top.
+      _berry(canvas, center.translate(swayX * 0.5, h * 0.5), s * 0.44, fruit);
+      // "Eyes" on the potato.
+      for (int i = 0; i < 3; i++) {
+        final ang = -0.6 + i * 0.6;
+        canvas.drawCircle(
+            center.translate(swayX * 0.5 + cos(ang) * s * 0.24,
+                h * 0.5 + sin(ang) * s * 0.2),
+            s * 0.05,
+            Paint()..color = Color.lerp(fruit, Colors.black, 0.4)!);
+      }
+      for (int i = 0; i < 4; i++) {
+        final side = (i - 1.5);
+        final base = center.translate(swayX * 0.3, h * 0.1);
+        _leaf(canvas, base,
+            base.translate(side * s * 0.4, -s * (0.7 - side.abs() * 0.15)),
+            s * 0.14, leaf);
+      }
+      break;
+
+    case _Form.bulb:
+      // Layered onion bulb with green shoots.
+      final bulbC = center.translate(swayX * 0.5, h * 0.45);
+      _berry(canvas, bulbC, s * 0.4, fruit);
+      for (int i = -1; i <= 1; i++) {
+        canvas.drawLine(
+            bulbC.translate(0, -s * 0.36),
+            bulbC.translate(i * s * 0.22, -s * 0.36 + s * 0.7),
+            Paint()
+              ..color = Color.lerp(fruit, Colors.black, 0.35)!.withValues(alpha: 0.5)
+              ..strokeWidth = 1.0);
+      }
+      for (int i = 0; i < 4; i++) {
+        final side = (i - 1.5);
+        final base = bulbC.translate(0, -s * 0.34);
+        _leaf(canvas, base,
+            base.translate(side * s * 0.28, -s * (0.9 - side.abs() * 0.1)),
+            s * 0.09, leaf);
+      }
+      break;
+
+    case _Form.frond:
+      // Feathery fennel — the allelopathic loner. Wispy umbel.
+      const rng = 5;
+      for (int i = 0; i < rng; i++) {
+        final ang = -pi / 2 + (i - (rng - 1) / 2) * 0.5;
+        final tip = center + Offset(cos(ang), sin(ang)) * h * 0.95 +
+            Offset(swayX, 0);
+        canvas.drawLine(
+            stemBase, tip,
+            Paint()
+              ..color = leaf
+              ..strokeWidth = s * 0.06
+              ..strokeCap = StrokeCap.round);
+        // Feather barbs.
+        for (double t = 0.4; t < 1.0; t += 0.2) {
+          final p = Offset.lerp(stemBase, tip, t)!;
+          _leaf(canvas, p, p.translate(-s * 0.14, -s * 0.16), s * 0.05,
+              Color.lerp(leaf, Colors.white, 0.15)!);
+          _leaf(canvas, p, p.translate(s * 0.14, -s * 0.16), s * 0.05,
+              Color.lerp(leaf, Colors.white, 0.15)!);
+        }
+      }
+      // Yellow umbel flower dots.
+      for (int i = 0; i < 5; i++) {
+        final ang = -pi / 2 + (i - 2) * 0.4;
+        _berry(canvas, center + Offset(cos(ang), sin(ang)) * h * 0.85,
+            s * 0.08, fruit);
+      }
+      break;
+
+    case _Form.taproot:
+      // Orange root plunging into soil, ferny top.
+      final rootTop = center.translate(swayX * 0.3, h * 0.12);
+      final rootTip = center.translate(swayX * 0.1, h * 0.85);
+      final rootPath = Path()
+        ..moveTo(rootTop.dx - s * 0.26, rootTop.dy)
+        ..quadraticBezierTo(rootTip.dx - s * 0.02, (rootTop.dy + rootTip.dy) / 2,
+            rootTip.dx, rootTip.dy)
+        ..quadraticBezierTo(rootTip.dx + s * 0.02, (rootTop.dy + rootTip.dy) / 2,
+            rootTop.dx + s * 0.26, rootTop.dy)
+        ..close();
+      canvas.drawPath(
+          rootPath,
+          Paint()
+            ..shader = LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color.lerp(fruit, Colors.white, 0.25)!, fruit],
+            ).createShader(Rect.fromPoints(rootTop, rootTip)));
+      for (double ry = 0.3; ry < 0.9; ry += 0.2) {
+        final p = Offset.lerp(rootTop, rootTip, ry)!;
+        canvas.drawLine(p.translate(-s * 0.18 * (1 - ry), 0),
+            p.translate(s * 0.18 * (1 - ry), 0),
+            Paint()..color = Color.lerp(fruit, Colors.black, 0.3)!.withValues(alpha: 0.4)..strokeWidth = 0.8);
+      }
+      for (int i = 0; i < 5; i++) {
+        final side = (i - 2);
+        _leaf(canvas, rootTop,
+            rootTop.translate(side * s * 0.28, -s * (0.85 - side.abs() * 0.12)),
+            s * 0.07, leaf);
+      }
+      break;
+
+    case _Form.leafHead:
+      // Cabbage — tight wrapped rosette.
+      final headC = center.translate(swayX * 0.4, h * 0.28);
+      for (int layer = 3; layer >= 0; layer--) {
+        final lr = s * (0.42 + layer * 0.13);
+        final lc = Color.lerp(leaf, Colors.black, layer * 0.08)!;
+        for (int i = 0; i < 6; i++) {
+          final ang = i / 6 * 2 * pi + layer * 0.5;
+          _berry(canvas, headC + Offset(cos(ang), sin(ang) * 0.8) * lr * 0.5,
+              lr * 0.4, Color.lerp(lc, fruit, 0.3)!);
+        }
+      }
+      _berry(canvas, headC, s * 0.34, Color.lerp(fruit, Colors.white, 0.2)!);
+      break;
+
+    case _Form.looseLeaf:
+      // Lettuce — open ruffled rosette of upright leaves.
+      final baseC = center.translate(swayX * 0.4, h * 0.4);
+      for (int i = 0; i < 7; i++) {
+        final ang = -pi / 2 + (i - 3) * 0.42;
+        final tip = baseC + Offset(cos(ang), sin(ang)) * h * 0.9;
+        _leaf(canvas, baseC, tip, s * 0.2,
+            Color.lerp(leaf, Colors.white, (i.isEven ? 0.18 : 0.0))!,
+            curl: (i - 3) * 0.06);
+      }
+      break;
+  }
+
+  // Thrive/wilt glow overlay (kept subtle, drawn last so it reads on top).
+  if (thrive > 0) {
+    canvas.drawCircle(
+        center,
+        s * 1.1,
+        Paint()
+          ..color = _kHelpGreen.withValues(alpha: 0.18)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Visual manual — the legend carousel cards, each drawn with the REAL garden
 // components (the same soil beds, crop orbs and help/hurt links the live game
 // renders). Static and cheap: painted once on the intro screen.
 // ═══════════════════════════════════════════════════════════════════════════
-
-// The game's own link/thrive/wilt palette (matches the inline colours the
-// _GardenPainter uses in play — named here, not invented).
-const Color _kHelpGreen = Color(0xFF8BE58B); // "+helps" link + thrive glow
-const Color _kHurtRed = Color(0xFFFF6B6B); // "−hurts" link + wilt cue
-const Color _kThriveTint = Color(0xFFB9F6CA); // healthy leaf tint (growth)
-const Color _kWiltTint = Color(0xFF6D4C41); // browned wilt tint (growth)
 
 /// One rounded soil bed, mirroring `_GardenPainter._drawGrid`. [tint] draws the
 /// green/red/neutral hover ring; otherwise a faint white edge.
@@ -216,31 +657,18 @@ void _legendCell(Canvas canvas, Rect rect,
   }
 }
 
-/// One planted crop orb + badge, mirroring `_GardenPainter._drawPlants`.
-/// [thrive] > 0 swells + green-glows it; < 0 shrinks + browns it.
+/// One planted crop, mirroring `_GardenPainter._drawPlants`: the real
+/// procedural plant + its badge. [thrive] > 0 swells + green-glows it; < 0
+/// shrinks + browns it.
 void _legendPlant(Canvas canvas, Offset center, _Crop crop, double radius,
     {double thrive = 0}) {
   final info = _kCrops[crop]!;
-  var r = radius;
-  Color body = info.color;
-  if (thrive > 0) {
-    r *= 1.18;
-    body = Color.lerp(info.color, _kThriveTint, 0.25)!;
-    canvas.drawCircle(
-      center,
-      r + 5,
-      Paint()
-        ..color = _kHelpGreen.withValues(alpha: 0.25)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
-    );
-  } else if (thrive < 0) {
-    r *= 0.78;
-    body = Color.lerp(info.color, _kWiltTint, 0.55)!;
-  }
-  GameFx.orb(canvas, center, r, body, glow: 0.5);
-  GameFx.text(canvas, info.glyph, center, r * 0.7,
-      Colors.white.withValues(alpha: 0.95),
-      weight: FontWeight.w800);
+  _drawCrop(canvas, center.translate(0, radius * 0.5), crop, radius * 1.7,
+      thrive: thrive);
+  // Small ID badge tucked at the base so first-timers can name the crop.
+  GameFx.text(canvas, info.glyph, center.translate(0, radius * 0.95),
+      radius * 0.5, Colors.white.withValues(alpha: 0.9),
+      weight: FontWeight.w800, glow: 0.4);
 }
 
 /// A help/hurt relationship beam, mirroring `_GardenPainter._drawLinks`.
@@ -424,6 +852,7 @@ class _CompanionPlantingGameState extends State<CompanionPlantingGame>
   final List<_Link> _links = [];
   final List<_Pop> _pops = [];
   final List<_Dot> _fx = [];
+  final List<_Ring> _rings = [];
 
   // ---- geometry ----
   Size _sz = Size.zero;
@@ -554,6 +983,7 @@ class _CompanionPlantingGameState extends State<CompanionPlantingGame>
     _palette = _paletteForLevel(_level);
     _hand.clear();
     _links.clear();
+    _rings.clear();
     _phase = _Phase.placing;
     _growthAge = 0;
     _growthAwarded = false;
@@ -576,7 +1006,7 @@ class _CompanionPlantingGameState extends State<CompanionPlantingGame>
 
   void _computeGrid() {
     if (_sz == Size.zero) return;
-    final top = 64.0;
+    const top = 64.0;
     final trayTop = _sz.height * 0.66;
     final areaW = _sz.width - 32;
     final areaH = (trayTop - top - 12).clamp(40.0, double.infinity);
@@ -663,6 +1093,10 @@ class _CompanionPlantingGameState extends State<CompanionPlantingGame>
         d.life -= dt;
       }
       _fx.removeWhere((d) => d.life <= 0);
+      for (final rg in _rings) {
+        rg.age += dt;
+      }
+      _rings.removeWhere((rg) => rg.age > 0.6);
 
       if (_phase == _Phase.growth) {
         _growthAge += dt;
@@ -708,6 +1142,15 @@ class _CompanionPlantingGameState extends State<CompanionPlantingGame>
     if (pts > 0) {
       widget.session.addScore(pts);
       _burst(here, _kCrops[tile.crop]!.color, 10);
+    }
+    // Extra juice for a CLEAN companion match (friends, no foes): a green
+    // celebratory ring + a sparkle of leafy motes — the "good pairing" moment.
+    if (foes == 0 && friends > 0) {
+      _rings.add(_Ring(here.dx, here.dy, _kHelpGreen));
+      _burst(here, const Color(0xFFB9F6CA), 6);
+    } else if (foes > 0) {
+      // A small red pulse so a bad neighbour reads as a jolt.
+      _rings.add(_Ring(here.dx, here.dy, _kHurtRed));
     }
 
     // Learnable cue.
@@ -869,6 +1312,7 @@ class _CompanionPlantingGameState extends State<CompanionPlantingGame>
               links: _links,
               pops: _pops,
               fx: _fx,
+              rings: _rings,
               combo: _combo,
               level: _level,
               plots: _plotsCompleted,
@@ -900,6 +1344,7 @@ class _GardenPainter extends CustomPainter {
   final List<_Link> links;
   final List<_Pop> pops;
   final List<_Dot> fx;
+  final List<_Ring> rings;
   final int combo;
   final int level;
   final int plots;
@@ -921,6 +1366,7 @@ class _GardenPainter extends CustomPainter {
     required this.links,
     required this.pops,
     required this.fx,
+    required this.rings,
     required this.combo,
     required this.level,
     required this.plots,
@@ -934,10 +1380,12 @@ class _GardenPainter extends CustomPainter {
     GameFx.atmosphere(canvas, size, const Color(0xFF4C7A2F), clock, motes: 22);
 
     _drawGrid(canvas);
-    _drawLinks(canvas);
+    _drawBonds(canvas); // persistent companion tendrils / foe rifts at rest
+    _drawLinks(canvas); // transient flash on a fresh placement
     _drawPlants(canvas);
     if (phase == _Phase.placing) _drawHand(canvas);
     _drawParticles(canvas);
+    _drawRings(canvas);
     _drawPops(canvas);
     _drawHud(canvas, size);
     if (!running) _drawReady(canvas, size);
@@ -948,6 +1396,21 @@ class _GardenPainter extends CustomPainter {
   void _drawGrid(Canvas canvas) {
     if (cellSize <= 0) return;
     const inset = 3.0;
+    // A whole-plot raised garden frame behind the beds (warm timber edge).
+    final plotRect = Rect.fromLTWH(origin.dx - 4, origin.dy - 4,
+        cols * cellSize + 8, rows * cellSize + 8);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(plotRect, const Radius.circular(12)),
+      Paint()..color = const Color(0xFF4A3122).withValues(alpha: 0.55),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(plotRect, const Radius.circular(12)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = const Color(0xFF63432C).withValues(alpha: 0.7),
+    );
+
     for (int i = 0; i < cols * rows; i++) {
       final c = i % cols, r = i ~/ cols;
       final rect = Rect.fromLTWH(
@@ -958,38 +1421,130 @@ class _GardenPainter extends CustomPainter {
       );
       final rr = RRect.fromRectAndRadius(rect, const Radius.circular(7));
       final occupied = grid[i] != null;
-      // Soil bed.
+      // Tilled soil bed — a warm vertical gradient (top lighter, bottom dark),
+      // reading as a real earth mound rather than a flat panel.
       canvas.drawRRect(
         rr,
         Paint()
-          ..color = _soil.withValues(alpha: occupied ? 0.85 : 0.5),
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: occupied
+                ? [const Color(0xFF4A3221), const Color(0xFF2C1D13)]
+                : [const Color(0xFF3E2C22), const Color(0xFF261912)],
+          ).createShader(rect),
       );
+      // Furrow grain: a few horizontal tilled lines (static, cheap).
+      final furrow = Paint()
+        ..color = Colors.black.withValues(alpha: 0.16)
+        ..strokeWidth = 1;
+      for (int f = 1; f <= 3; f++) {
+        final fy = rect.top + rect.height * f / 4;
+        canvas.drawLine(Offset(rect.left + 4, fy),
+            Offset(rect.right - 4, fy), furrow);
+      }
       // Hover tint: green if net friendly, red if net hostile.
       if (i == hoverCell) {
         final hint = hoverNet > 0
-            ? const Color(0xFF8BE58B)
+            ? _kHelpGreen
             : hoverNet < 0
-                ? const Color(0xFFFF6B6B)
+                ? _kHurtRed
                 : Colors.white;
-        canvas.drawRRect(rr, Paint()..color = hint.withValues(alpha: 0.18));
+        canvas.drawRRect(rr, Paint()..color = hint.withValues(alpha: 0.2));
         canvas.drawRRect(
           rr,
           Paint()
-            ..color = hint.withValues(alpha: 0.8)
+            ..color = hint.withValues(alpha: 0.85)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 2,
+            ..strokeWidth = 2.4,
         );
+        // Corner ticks so the drop target pops even at speed.
+        if (hoverNet != 0) {
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(rect.inflate(3), const Radius.circular(9)),
+            Paint()
+              ..color = hint.withValues(alpha: 0.35)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.4
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+          );
+        }
       } else {
         canvas.drawRRect(
           rr,
           Paint()
-            ..color = Colors.white.withValues(alpha: occupied ? 0.05 : 0.09)
+            ..color = const Color(0xFF6B4A32).withValues(alpha: occupied ? 0.3 : 0.5)
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1,
         );
       }
     }
   }
+
+  /// Persistent companion "tendrils" between adjacent PLANTED crops: a soft
+  /// green tendril where two friends touch (they visibly help each other, at
+  /// rest — the Three Sisters read as a helping trio), a faint red rift where
+  /// two foes touch. Each edge drawn once. Purely cosmetic overlay.
+  void _drawBonds(Canvas canvas) {
+    if (cellSize <= 0) return;
+    final pulse = 0.5 + 0.5 * sin(clock * 2.2);
+    for (int i = 0; i < grid.length; i++) {
+      final a = grid[i];
+      if (a == null) continue;
+      final c = i % cols, r = i ~/ cols;
+      // Only look right + down so each edge is handled once.
+      final right = (c < cols - 1) ? i + 1 : -1;
+      final down = (r < rows - 1) ? i + cols : -1;
+      for (final n in [right, down]) {
+        if (n < 0) continue;
+        final b = grid[n];
+        if (b == null) continue;
+        final rel = _relation(a.crop, b.crop);
+        if (rel == 0) continue;
+        final pa = _center(i), pb = _center(n);
+        final mid = Offset.lerp(pa, pb, 0.5)!;
+        if (rel > 0) {
+          // Curved tendril arcing between the two plants.
+          final perp = (pb - pa);
+          final nrm = Offset(-perp.dy, perp.dx);
+          final len = perp.distance;
+          final ctrl = mid + nrm / (len == 0 ? 1 : len) * (6 + 4 * pulse);
+          final path = Path()
+            ..moveTo(pa.dx, pa.dy)
+            ..quadraticBezierTo(ctrl.dx, ctrl.dy, pb.dx, pb.dy);
+          canvas.drawPath(
+            path,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.2
+              ..strokeCap = StrokeCap.round
+              ..color = _kHelpGreen.withValues(alpha: 0.28 + 0.18 * pulse)
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+          );
+          // A little sprouting node at the midpoint.
+          canvas.drawCircle(ctrl, 2.0 + pulse,
+              Paint()..color = _kHelpGreen.withValues(alpha: 0.5));
+        } else {
+          // Foe rift: a jagged faint red spark.
+          canvas.drawLine(
+            pa,
+            pb,
+            Paint()
+              ..color = _kHurtRed.withValues(alpha: 0.16 + 0.1 * pulse)
+              ..strokeWidth = 1.6
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5),
+          );
+          canvas.drawCircle(mid, 2.2,
+              Paint()..color = _kHurtRed.withValues(alpha: 0.35));
+        }
+      }
+    }
+  }
+
+  Offset _center(int idx) => Offset(
+        origin.dx + (idx % cols + 0.5) * cellSize,
+        origin.dy + (idx ~/ cols + 0.5) * cellSize,
+      );
 
   // ---- relationship links --------------------------------------------------
 
@@ -1020,42 +1575,31 @@ class _GardenPainter extends CustomPainter {
         origin.dx + (i % cols + 0.5) * cellSize,
         origin.dy + (i ~/ cols + 0.5) * cellSize,
       );
-      final pop = (cell.age / 0.25).clamp(0.0, 1.0);
-      var radius = cellSize * 0.30 * Curves.easeOutBack.transform(pop);
+      // Sprout-in on placement; idle sway phase-shifted per cell.
+      final sprout = (cell.age / 0.35).clamp(0.0, 1.0);
+      final sway = clock * 1.4 + i * 1.3;
 
-      // Growth-phase thrive/wilt response.
-      Color body = info.color;
+      // Growth-phase thrive/wilt drives the plant's health look.
+      double thrive = 0;
       if (phase == _Phase.growth && growthAge > 0.15) {
         final g = ((growthAge - 0.15) / 0.6).clamp(0.0, 1.0);
-        if (cell.thrive > 0) {
-          radius *= 1 + 0.18 * g;
-          body = Color.lerp(info.color, const Color(0xFFB9F6CA), 0.25 * g)!;
-          canvas.drawCircle(
-            center,
-            radius + 5,
-            Paint()
-              ..color = const Color(0xFF8BE58B).withValues(alpha: 0.25 * g)
-              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
-          );
-        } else if (cell.thrive < 0) {
-          radius *= 1 - 0.22 * g;
-          body = Color.lerp(info.color, const Color(0xFF6D4C41), 0.55 * g)!;
-        }
+        thrive = cell.thrive.sign * g;
       }
 
-      GameFx.orb(canvas, center, radius, body, glow: 0.5);
-      GameFx.text(canvas, info.glyph, center, cellSize * 0.20,
-          Colors.white.withValues(alpha: 0.95),
-          weight: FontWeight.w800);
-      if (cellSize > 54) {
-        GameFx.text(
-          canvas,
-          info.label,
-          center.translate(0, radius + cellSize * 0.16),
-          cellSize * 0.13,
-          Colors.white.withValues(alpha: 0.6),
-          weight: FontWeight.w600,
-        );
+      // Plant sits ~centred, sized to the cell. _drawCrop grounds it in soil.
+      _drawCrop(canvas, center.translate(0, cellSize * 0.06), cell.crop,
+          cellSize * 0.34,
+          sway: sway, sprout: sprout, thrive: thrive);
+
+      // A compact ID badge in a soil-dark chip at the plant's base — keeps the
+      // learnable crop label without covering the artwork.
+      if (sprout > 0.7) {
+        final badgeC = center.translate(0, cellSize * 0.40);
+        canvas.drawCircle(badgeC, cellSize * 0.13,
+            Paint()..color = Colors.black.withValues(alpha: 0.4));
+        GameFx.text(canvas, info.glyph, badgeC, cellSize * 0.16,
+            Colors.white.withValues(alpha: 0.92),
+            weight: FontWeight.w800);
       }
     }
   }
@@ -1067,25 +1611,51 @@ class _GardenPainter extends CustomPainter {
       final t = hand[i];
       final info = _kCrops[t.crop]!;
       final dragging = i == dragIndex;
-      final r = dragging ? cellSize * 0.32 : 22.0;
-      final radius = r.clamp(18.0, 30.0);
+      final pos = Offset(t.x, t.y);
+      final r = dragging ? cellSize * 0.34 : 24.0;
+      final radius = r.clamp(20.0, 32.0);
+
+      // A little terracotta seedling pot the crop grows out of, so tray tiles
+      // read as "ready to plant" rather than floating orbs.
+      final potTop = pos.translate(0, radius * 0.5);
+      final potPath = Path()
+        ..moveTo(potTop.dx - radius * 0.7, potTop.dy)
+        ..lineTo(potTop.dx - radius * 0.5, potTop.dy + radius * 0.7)
+        ..lineTo(potTop.dx + radius * 0.5, potTop.dy + radius * 0.7)
+        ..lineTo(potTop.dx + radius * 0.7, potTop.dy)
+        ..close();
       if (dragging) {
-        canvas.drawCircle(
-          Offset(t.x, t.y),
-          radius + 8,
-          Paint()..color = info.color.withValues(alpha: 0.2),
-        );
+        canvas.drawCircle(pos, radius + 10,
+            Paint()..color = info.color.withValues(alpha: 0.2));
       }
-      GameFx.orb(canvas, Offset(t.x, t.y), radius, info.color, glow: 0.6);
-      GameFx.text(canvas, info.glyph, Offset(t.x, t.y), radius * 0.7,
-          Colors.white, weight: FontWeight.w800);
+      canvas.drawPath(
+          potPath,
+          Paint()
+            ..shader = const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFFB86F4B), Color(0xFF7A4527)],
+            ).createShader(potPath.getBounds()));
+      canvas.drawLine(
+          potTop.translate(-radius * 0.68, 0),
+          potTop.translate(radius * 0.68, 0),
+          Paint()
+            ..color = const Color(0xFF3E2116).withValues(alpha: 0.6)
+            ..strokeWidth = radius * 0.14);
+
+      // The plant itself, gently swaying.
+      final sway = clock * 1.4 + i * 0.9;
+      _drawCrop(canvas, pos.translate(0, -radius * 0.15), t.crop, radius * 0.95,
+          sway: sway, sprout: 1);
+
+      // Badge + name below the pot.
       GameFx.text(
         canvas,
         info.label,
-        Offset(t.x, t.y + radius + 11),
-        10,
-        Colors.white.withValues(alpha: 0.65),
-        weight: FontWeight.w600,
+        Offset(t.x, potTop.dy + radius * 0.9 + 8),
+        11,
+        Colors.white.withValues(alpha: 0.75),
+        weight: FontWeight.w700,
       );
     }
   }
@@ -1097,6 +1667,23 @@ class _GardenPainter extends CustomPainter {
       final a = d.life.clamp(0.0, 1.0);
       canvas.drawCircle(Offset(d.x, d.y), d.size * a,
           Paint()..color = d.color.withValues(alpha: a));
+    }
+  }
+
+  void _drawRings(Canvas canvas) {
+    for (final rg in rings) {
+      final t = (rg.age / 0.6).clamp(0.0, 1.0);
+      final radius = cellSize * (0.3 + 0.6 * Curves.easeOut.transform(t));
+      final alpha = (1 - t) * 0.7;
+      canvas.drawCircle(
+        Offset(rg.x, rg.y),
+        radius,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3 * (1 - t) + 1
+          ..color = rg.color.withValues(alpha: alpha)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+      );
     }
   }
 
@@ -1114,11 +1701,11 @@ class _GardenPainter extends CustomPainter {
   void _drawHud(Canvas canvas, Size size) {
     // Phase / plot label (top-left). Host draws the run timer + score.
     final label = phase == _Phase.growth ? 'GROWING…' : 'PLANT THE PLOT';
-    GameFx.text(canvas, label, Offset(64, 22), 11,
+    GameFx.text(canvas, label, const Offset(64, 22), 11,
         Colors.white.withValues(alpha: 0.45),
         weight: FontWeight.w700);
     if (plots > 0) {
-      GameFx.text(canvas, '×$plots harvested', Offset(70, 40), 10,
+      GameFx.text(canvas, '×$plots harvested', const Offset(70, 40), 10,
           Colors.white.withValues(alpha: 0.3),
           weight: FontWeight.w600);
     }

@@ -54,9 +54,13 @@ const Color _kTextPrimary = Potatuhs.textPrimary;
 const Color _kTextSub = Potatuhs.textSecondary;
 
 // -- Layout ------------------------------------------------------------------
-const int _kRooms = 12; // visible rooms (the corridor continues to ∞)
-const double _kBottomPanel = 92; // reserved for the coach / streak strip
-const double _kBannerTop = 60; // top reserve for the arrival banner overlay
+// The host stacks its own score/timer HUD ABOVE this widget, so the play area
+// is already below the score. 8 rooms keep the potato guests readable at phone
+// widths (12 made them tiny dots and crowded the `→ ∞` label); the corridor
+// still fades into ∞, so the paradox reads. Painter uses the same constants.
+const int _kRooms = 8; // visible rooms (the corridor continues to ∞)
+const double _kBottomPanel = 78; // reserved for the coach / legend strip
+const double _kBannerTop = 56; // top reserve for the arrival banner overlay
 
 // -- Timing & scoring --------------------------------------------------------
 const double _kShiftRate = 7.5; // how fast guests slide to their new rooms
@@ -209,7 +213,6 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
 
   // Scoring.
   int _streak = 0;
-  int _checkIns = 0;
 
   final List<_Spark> _sparks = [];
   Size _fieldSize = Size.zero;
@@ -278,7 +281,6 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
   void _startGame() {
     _started = true;
     _streak = 0;
-    _checkIns = 0;
     _newDemand();
   }
 
@@ -432,7 +434,6 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
     if (gain > 0) {
       widget.session.addScore(gain);
       widget.session.noteStreak(_streak);
-      _checkIns += seats;
     }
 
     // Inline, non-blocking consequence — teaches the under-house, no read-gate.
@@ -726,8 +727,12 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
 
   Widget _buildCoach() {
     final running = widget.session.isRunning && _started;
+    // The host HUD already shows the live SCORE up top — this strip stays a
+    // control legend + one-line objective, never a second (contradicting)
+    // number. Scoring is legible: each guest you legally check in adds points,
+    // and matching the arrival's canonical swipe pays a bonus.
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
@@ -741,16 +746,18 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
               _legendDot('←', 'evict', danger: true),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           Text(
             running
-                ? 'CHECK-INS  $_checkIns'
+                ? 'SWIPE THE GOLD ARROW — SCORE PER GUEST CHECKED IN'
                 : 'SWIPE TO ENACT THE BIJECTION',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontFamily: _kFont,
-              fontSize: 11,
+              fontSize: 10.5,
               fontWeight: FontWeight.w800,
-              letterSpacing: 1.2,
+              letterSpacing: 0.8,
               color: _kTextSub.withValues(alpha: 0.85),
             ),
           ),
@@ -1059,15 +1066,32 @@ class _HotelPainter extends CustomPainter {
 
   void _paintToast(Canvas canvas, Size size) {
     final a = toastT.clamp(0.0, 1.0);
-    final y = _bottom + 2;
-    _label(
-      canvas,
-      toast,
-      Offset(size.width / 2, y),
-      toastColor.withValues(alpha: a),
-      size: 12.5,
-      weight: FontWeight.w800,
+    // Sit the consequence line just INSIDE the play field, above the coach strip
+    // — never over the legend row below `_bottom`.
+    final y = _bottom - 12;
+    // A soft plate so the one-liner stays readable over the corridor.
+    final tp = TextPainter(
+      text: TextSpan(
+        text: toast,
+        style: TextStyle(
+          fontFamily: _kFont,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w800,
+          color: toastColor.withValues(alpha: a),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: size.width - 40);
+    final plate = Rect.fromCenter(
+      center: Offset(size.width / 2, y),
+      width: tp.width + 22,
+      height: tp.height + 10,
     );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(plate, const Radius.circular(9)),
+      Paint()..color = _kBg.withValues(alpha: 0.72 * a),
+    );
+    tp.paint(canvas, plate.center - Offset(tp.width / 2, tp.height / 2));
   }
 
   void _label(Canvas canvas, String text, Offset center, Color color,
