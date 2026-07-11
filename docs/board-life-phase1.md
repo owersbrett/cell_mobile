@@ -204,6 +204,15 @@ controller work + Brett's design sign-off):**
   the visual half.
 - Shader warmup pass at MVP for first-animation jank.
 
+**Round 6 — 2026-07-10:** circle board "rocked". Added on request: entry
+flyover (once per match: zoomed-out left→right pan, then dive to the player
+at 0.72 zoom — kEntryPanMs/kEntryDiveMs/kEntrySettleZoom); inspector
+back-links (yumutsu'd: fork/jump DESTINATIONS show "← FORK/LIFT/SLIDE n"
+chips navigating to the origin — pure view layer); round ceremony reworked
+to an animated all-player BAR CHART (rank-ordered, height ∝ score, staggered
+rise, count-up, crown at the banner beat) starting almost immediately
+(3.0 s reveal, was 4.2 s with ~600 ms dead air).
+
 ## Stage 2 — Strata atmosphere — NOT STARTED
 
 ## Stage 3 — Dwellers — NOT STARTED
