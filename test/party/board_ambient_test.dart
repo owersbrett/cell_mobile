@@ -34,6 +34,7 @@ void main() {
         nodeRadius: 24 / zoom,
         transform: transform,
         viewport: const Size(390, 844),
+        diamondIndices: [for (var i = 1; i < map.spaces.length; i += 3) i],
       );
       final rec = ui.PictureRecorder();
       painter.paint(Canvas(rec), world);

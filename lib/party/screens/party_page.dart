@@ -2642,6 +2642,13 @@ class _BoardView extends StatelessWidget {
           tokensAt.putIfAbsent(positionOf(p), () => []).add(p);
         }
 
+        // Remaining path diamonds — shared by the path painter (the gem
+        // markers) and the ambient painter (their glints).
+        final diamondIndices = [
+          for (var i = 0; i < controller.board.length; i++)
+            if (controller.diamondOn(i)) i
+        ];
+
         final startCenter = geo.nodeCenter(0);
 
         // Pinch to zoom + drag to pan the board; nodes, links and tokens scale
@@ -2685,6 +2692,7 @@ class _BoardView extends StatelessWidget {
                       nodeRadius: geo.nodeRadius,
                       transform: transformController,
                       viewport: viewport,
+                      diamondIndices: diamondIndices,
                     ),
                   ),
                 ),
@@ -2698,10 +2706,7 @@ class _BoardView extends StatelessWidget {
               child: CustomPaint(
                   painter: _BoardPathPainter(geo,
                       sections: controller.gameMap?.sections,
-                      diamondIndices: [
-                        for (var i = 0; i < controller.board.length; i++)
-                          if (controller.diamondOn(i)) i
-                      ])),
+                      diamondIndices: diamondIndices)),
             ),
             for (var i = 0; i < controller.board.length; i++)
               _node(geo, i),
@@ -3325,34 +3330,119 @@ class _BoardPathPainter extends CustomPainter {
     }
   }
 
-  /// Renders a [GameMap] topology: thin links along the path, plus accented
-  /// strokes for ladders (green, forward) and snakes/back-slides (red).
+  /// Renders a [GameMap] topology as THE RIBBON (board-life Stage 1): one
+  /// smooth road through the walk order — a dark groove with a soft inner
+  /// glow that blends section colors along the path — plus thin curved
+  /// tributaries for fork arms and arcing slides for ladders/snakes.
   void _paintTopology(Canvas canvas) {
     final spaces = geo.spaces;
     final z = geo.viewScale; // counter-scale strokes to constant on-screen width
     final secs = sections;
-    final link = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3 / z
-      ..strokeCap = StrokeCap.round;
-    for (final s in spaces) {
-      final from = geo.nodeCenter(s.order);
-      // Region-tinted links so the territories read as territories.
-      final tint = secs != null && s.sectionIndex < secs.length
+    final r = geo.nodeRadius;
+    final n = spaces.length;
+    final pts = [for (var i = 0; i < n; i++) geo.nodeCenter(i)];
+
+    Color colorOf(int i) {
+      final s = spaces[i];
+      return secs != null && s.sectionIndex < secs.length
           ? secs[s.sectionIndex].color
           : Colors.white;
-      link.color = Color.alphaBlend(
-          tint.withValues(alpha: 0.30), Colors.white.withValues(alpha: 0.10));
-      for (final n in s.nexts) {
-        canvas.drawLine(from, geo.nodeCenter(n), link);
+    }
+
+    Offset mid(Offset a, Offset b) =>
+        Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
+
+    // The full smoothed road (midpoint smoothing: quads through each node) —
+    // one dark groove pass so the path reads as a carved bed.
+    final road = Path()..moveTo(pts[0].dx, pts[0].dy);
+    if (n > 2) {
+      final m0 = mid(pts[0], pts[1]);
+      road.lineTo(m0.dx, m0.dy);
+      for (var i = 1; i < n - 1; i++) {
+        final m = mid(pts[i], pts[i + 1]);
+        road.quadraticBezierTo(pts[i].dx, pts[i].dy, m.dx, m.dy);
       }
     }
-    // Direction-of-travel chevrons: every third link points the way forward,
-    // so "which way do I go" is answered by the path itself.
+    road.lineTo(pts[n - 1].dx, pts[n - 1].dy);
+    canvas.drawPath(
+      road,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * kRibbonGrooveWidthFactor
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..color = const Color(0xFF16161F),
+    );
+
+    // Per-node colored pieces on top: the glow + core, each piece a quad
+    // from midpoint to midpoint with a linear gradient so section colors
+    // BLEND across band boundaries instead of seaming. This painter repaints
+    // rarely (size/diamond changes only), so per-piece shaders are fine.
+    final glow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = r * kRibbonGlowWidthFactor
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.14);
+    final core = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = r * kRibbonCoreWidthFactor
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < n - 1; i++) {
+      final a = i == 0 ? pts[0] : mid(pts[i - 1], pts[i]);
+      final b = i == n - 2 ? pts[n - 1] : mid(pts[i], pts[i + 1]);
+      final piece = Path()
+        ..moveTo(a.dx, a.dy)
+        ..quadraticBezierTo(pts[i].dx, pts[i].dy, b.dx, b.dy);
+      final ca = colorOf(i);
+      final cb = colorOf(i + 1);
+      final shader = ui.Gradient.linear(a, b, [
+        ca.withValues(alpha: kRibbonGlowAlpha),
+        cb.withValues(alpha: kRibbonGlowAlpha),
+      ]);
+      glow.shader = shader;
+      canvas.drawPath(piece, glow);
+      core.shader = ui.Gradient.linear(a, b, [
+        ca.withValues(alpha: kRibbonCoreAlpha),
+        cb.withValues(alpha: kRibbonCoreAlpha),
+      ]);
+      canvas.drawPath(piece, core);
+    }
+
+    // Fork arms — thin dashed tributaries curving off the main road and
+    // rejoining it downstream, visually subordinate to the ribbon.
+    for (final s in spaces) {
+      for (final nx in s.nexts) {
+        if (nx == s.order + 1) continue; // the main road
+        final a = pts[s.order];
+        final b = pts[nx];
+        final d = b - a;
+        final len = d.distance;
+        if (len == 0) continue;
+        final perp = Offset(-d.dy, d.dx) / len;
+        final c = mid(a, b) + perp * (len * 0.22);
+        final trib = Path()
+          ..moveTo(a.dx, a.dy)
+          ..quadraticBezierTo(c.dx, c.dy, b.dx, b.dy);
+        final col = colorOf(s.order);
+        _dashed(
+          canvas,
+          trib,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.2 / z
+            ..strokeCap = StrokeCap.round
+            ..color = Color.alphaBlend(
+                col.withValues(alpha: 0.55), Colors.white24),
+        );
+        _arrow(canvas, _quad(a, c, b, 0.82), b - c, col, 6 / z);
+      }
+    }
+
+    // Direction-of-travel chevrons ride the road, aligned to its tangent.
     for (final s in spaces) {
       if (s.order % 3 != 1 || s.nexts.isEmpty) continue;
-      final from = geo.nodeCenter(s.order);
-      final to = geo.nodeCenter(s.nexts.first);
+      final from = pts[s.order];
+      final to = pts[s.nexts.first];
       _arrow(canvas, Offset.lerp(from, to, 0.5)!, to - from,
           Colors.white.withValues(alpha: 0.5), 5 / z);
     }
@@ -3385,6 +3475,8 @@ class _BoardPathPainter extends CustomPainter {
       _label(canvas, 'MARKET', const Color(0xFFD7A86E),
           geo.nodeCenter(s.order) + Offset(0, geo.nodeRadius * 2.2), 10 / z);
     }
+    // Jumps (ladders / snakes / rainbow slides) — arcing slide curves, kept
+    // visually distinct from both the ribbon and the fork tributaries.
     for (final s in spaces) {
       final j = s.jumpTo;
       if (j == null) continue;
@@ -3393,16 +3485,24 @@ class _BoardPathPainter extends CustomPainter {
           : const Color(0xFFE57373); // snake back
       final a = geo.nodeCenter(s.order);
       final b = geo.nodeCenter(j);
-      canvas.drawLine(
-        a,
-        b,
+      final d = b - a;
+      final len = d.distance;
+      if (len == 0) continue;
+      final perp = Offset(-d.dy, d.dx) / len;
+      final c = Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2) +
+          perp * (len * 0.18);
+      final slide = Path()
+        ..moveTo(a.dx, a.dy)
+        ..quadraticBezierTo(c.dx, c.dy, b.dx, b.dy);
+      canvas.drawPath(
+        slide,
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2.5 / z
           ..strokeCap = StrokeCap.round
           ..color = col.withValues(alpha: 0.75),
       );
-      _arrow(canvas, Offset.lerp(a, b, 0.85)!, b - a, col, 6 / z);
+      _arrow(canvas, _quad(a, c, b, 0.85), b - c, col, 6 / z);
     }
   }
 

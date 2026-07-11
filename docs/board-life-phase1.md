@@ -136,7 +136,15 @@ the movements seem accurate"). Fix: the canvas now derives from
 `MediaQuery.sizeOf` (the screen), which is constant for the whole match;
 panel changes no longer touch board geometry at all.
 
-## Stage 1 — Ribbon + breathing tiles — NOT STARTED
+**Checkpoint round 4 — 2026-07-10 — STAGE 0 PASSED**
+
+Verbatim: "much better now" (world-stability fix) · "i cut that in half and
+it's a lot better now" (walk camera zoom — user tuned kWalkCameraZoom to
+0.3 directly in board_life_tuning.dart; the tuning-file-as-dial workflow
+works as designed). Glow passed in round 2 ("massive improvement"). Gate
+closed: ambient spine live and visible, board-game walk confirmed.
+
+## Stage 1 — Ribbon + breathing tiles — IN PROGRESS
 
 ## Stage 2 — Strata atmosphere — NOT STARTED
 

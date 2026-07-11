@@ -43,6 +43,45 @@ const double kTilePulseAlphaAmp = 0.30;
 /// Softness of the glow edge: blur sigma as a fraction of node radius.
 const double kTilePulseBlurFactor = 0.35;
 
+// --- Stage 1: the ribbon — one smooth road through the walk order --------
+
+/// Dark groove width (× node radius) — the road bed under the glow.
+const double kRibbonGrooveWidthFactor = 0.85;
+
+/// Soft colored glow stroke width (× node radius) and its alpha.
+const double kRibbonGlowWidthFactor = 0.50;
+const double kRibbonGlowAlpha = 0.30;
+
+/// Crisp core line width (× node radius) and alpha, on top of the glow.
+const double kRibbonCoreWidthFactor = 0.14;
+const double kRibbonCoreAlpha = 0.75;
+
+/// The traveling pulse: seconds for one full run START → DESTINATION
+/// (direction of play — INWARD on Down the Hole), window length as a
+/// fraction of the whole path, stroke width (× node radius), peak alpha.
+const double kRibbonPulsePeriodSec = 12.0;
+const double kRibbonPulseWindowFrac = 0.035;
+const double kRibbonPulseWidthFactor = 0.26;
+const double kRibbonPulseAlpha = 0.85;
+
+// --- Stage 1: breathing variants ------------------------------------------
+
+/// Power-up (⚡) tiles breathe faster and brighter than ordinary tiles.
+const double kPowerPulsePeriodSec = 2.1;
+const double kPowerPulseAlphaBoost = 1.35;
+
+/// The anchor's heartbeat: slow, deep, gold — the gravitational landmark.
+const double kAnchorHeartbeatPeriodSec = 2.9;
+const double kAnchorGlowAlphaMax = 0.55;
+const double kAnchorGlowRadiusFactor = 1.35; // extra radius on top of 2.1×
+
+// --- Stage 1: gem glints ---------------------------------------------------
+
+/// A diamond glints once per period (phase-offset per gem); the glint lasts
+/// this fraction of the period.
+const double kGemGlintPeriodSec = 6.5;
+const double kGemGlintWidthFrac = 0.06;
+
 // --- Walk feel: the board-game hop (checkpoint 2026-07-10, PARTY UX LAW) ---
 // The token HOPS node-to-node and visibly SETTLES on each node before the
 // next hop; the camera glides in lockstep with every hop and rests with the
