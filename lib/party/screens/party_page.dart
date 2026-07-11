@@ -911,11 +911,12 @@ class _BoardScreenState extends State<_BoardScreen>
           setState(() => _diceSettled = true);
         }
       });
-    // Matches the token's AnimatedPositioned slide (230ms easeInOut) so the
-    // camera arrives at the node exactly when the character does.
+    // Matches the token's AnimatedPositioned hop ([kWalkHopMs], easeInOut) so
+    // the camera arrives at the node exactly when the character does, then
+    // RESTS with it for the remainder of the step period (board-game feel).
     _camCtrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 230),
+      duration: const Duration(milliseconds: kWalkHopMs),
     );
     _camEase = CurvedAnimation(parent: _camCtrl, curve: Curves.easeInOut);
     _camCtrl.addListener(() {
@@ -971,8 +972,15 @@ class _BoardScreenState extends State<_BoardScreen>
       // By the time we're walking the dice have settled (locked face shown).
       if (!_diceCtrl.isCompleted) _diceCtrl.value = 1.0;
       _diceSettled = true;
+      // Bring the camera to the walker BEFORE the first hop, so the walk
+      // starts with the camera settled on the character (PARTY UX LAW: the
+      // player watches a journey, not a chase). The first timer tick lands a
+      // full step period later — the glide has finished by then.
+      if (entering) {
+        _centerOn(controller.currentPlayer.position, animate: true);
+      }
       _stepTimer ??= Timer.periodic(
-          const Duration(milliseconds: 240), _onStepTick);
+          const Duration(milliseconds: kWalkStepPeriodMs), _onStepTick);
     } else {
       _stepTimer?.cancel();
       _stepTimer = null;
@@ -3013,9 +3021,10 @@ class _BoardView extends StatelessWidget {
       final frozen = p.frozenTurns > 0;
       widgets.add(AnimatedPositioned(
         key: ValueKey('token_${p.index}'),
-        // Matches the per-step walk cadence so the character visibly slides
-        // node-to-node toward its next location.
-        duration: const Duration(milliseconds: 230),
+        // One node-to-node HOP per step tick; the step period exceeds this so
+        // the character visibly settles on each node before the next hop
+        // (kWalkHopMs / kWalkStepPeriodMs — the board-game walk).
+        duration: const Duration(milliseconds: kWalkHopMs),
         curve: Curves.easeInOut,
         left: center.dx + off.dx - tr,
         top: center.dy + off.dy - tr,

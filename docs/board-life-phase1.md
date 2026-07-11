@@ -55,7 +55,44 @@
   on-device frame times are the user's checkpoint (run in `--profile`,
   DevTools → Performance overlay / debug paint).
 
-**Checkpoint answers (Q1–Q10)** — PENDING
+**Checkpoint answers (Q1–Q10), round 1 — 2026-07-10 — FAILED, fixes applied**
+
+Verbatim: (1) "when the board is idle, nothing appears to be happening."
+(2) "no idle ambient motion - also, massive issue when i roll dice, which was
+apparent before this - the camera and the movement of dice are not together.
+when a character moves, the camera should follow the character, and settle
+with the character, on each node, like how a board game would play, going one
+node by one node at a time. i am not sure if that was in the deposition but
+it is necessary to fix." (3) "returns fine but no ambient motion" (4) "there's
+no way to 'navigate to a menu'. if i try to go back, i am asked if i am ready
+to quit the game." (5) "still no ambient motion" (6) "no ambient motion"
+(7) "token slide and camera tracking are still awful." (8) "legacy 52 space
+ring board? how ?" (9) "no online mode yet - not until we figure out what this
+phase was even for."
+
+**Root causes + fixes (same day):**
+
+- *Invisible ambient (Q1–Q6):* wiring was live (clock ticking, layer mounted
+  — every `PartyController` construction passes a non-null `gameMap`, and the
+  spiral rendered), but the placeholder glow peaked at alpha 0.15 through a
+  0.55-radius blur on a near-black board — below the perceptual floor
+  (~RGB 6,25,23 over black). Tuning boost: alpha 0.10–0.40, glow 2.1×,
+  blur 0.35, period 3.6 s.
+- *Walk feel (Q2/Q7):* pre-existing, now in scope by user order. The 240 ms
+  step timer vs 230 ms slide left ZERO settle — continuous gliding, "a chase,
+  not a journey" (PARTY UX LAW violation). Fix: `kWalkHopMs = 240` (token hop
+  + camera glide, started same tick, arrive together) inside
+  `kWalkStepPeriodMs = 520` (each node gets a visible ~280 ms rest), plus the
+  camera now glides to the walker when the moving phase BEGINS, before the
+  first hop.
+- *Q4:* not a defect — the board screen has no side menu by design; it
+  unmounts on mini-game entry (that transition is the visibility test).
+- *Q8:* the legacy ring is UNREACHABLE from the UI (all construction sites
+  pass `gameMapById(...)`, never null); its regression coverage is the
+  automated `board_play_test.dart` guard, not a manual check.
+- *Q9:* deferred by user until the phase proves itself.
+
+**Checkpoint answers, round 2** — PENDING
 
 ## Stage 1 — Ribbon + breathing tiles — NOT STARTED
 
