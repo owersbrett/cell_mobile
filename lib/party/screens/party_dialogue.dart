@@ -364,7 +364,7 @@ DialogueBeat _openingLineFor(int character) {
     case kCharWaffle:
       return const DialogueBeat(
         kCharWaffle,
-        "Rolls, rounds, checkpoints, destination. I've gridded the whole "
+        "Rolls, rounds, checkpoints, the Shack. I've gridded the whole "
         'board. Every square has a purpose.',
         CharacterMood.neutral,
       );
@@ -411,8 +411,8 @@ List<DialogueBeat> openingBanterFor(List<PartyPlayer> players, String mapName) {
   final beats = <DialogueBeat>[
     DialogueBeat(
       kCharButter,
-      "Welcome to $mapName. Everything you need to know is on the board "
-      'behind me — it was always on the board. Take a moment.',
+      "Welcome to $mapName. Everything you need is on the board behind me. "
+      "Let's find out where this goes.",
       CharacterMood.smug,
     ),
   ];
@@ -426,8 +426,8 @@ List<DialogueBeat> openingBanterFor(List<PartyPlayer> players, String mapName) {
   }
   beats.add(const DialogueBeat(
     kCharButter,
-    "That's the spirit. Now — everyone spins the wheel, everyone leaves "
-    "holding something. We've always been here. Don't worry about it.",
+    "That's the spirit. Everyone spins, everyone leaves holding something. "
+    "Then we clock in — the Shack won't open itself.",
     CharacterMood.neutral,
   ));
   return beats;
@@ -440,7 +440,7 @@ DialogueBeat wheelHostBeatFor(WheelSegment seg, PowerUp? granted) {
     return DialogueBeat(
       kCharButter,
       '${_titleCase(granted.label)}. ${granted.description}. Hold it until '
-      "the moment is right — you'll know the moment. You always know.",
+      "the moment is right — you'll know.",
       CharacterMood.smug,
     );
   }
@@ -449,14 +449,14 @@ DialogueBeat wheelHostBeatFor(WheelSegment seg, PowerUp? granted) {
       return DialogueBeat(
         kCharButter,
         '+${seg.amount} diamonds, straight into your pocket. Spend them at '
-        'a market, or save for the destination — potatoes live there.',
+        'a market, or save for the shack — potatoes live there.',
         CharacterMood.smug,
       );
     case WheelPrizeKind.loseDiamonds:
       return DialogueBeat(
         kCharButter,
         '−${seg.amount} diamonds. The wheel gives and the wheel takes. '
-        'It evens out. It always evens out.',
+        'It evens out.',
         CharacterMood.neutral,
       );
     case WheelPrizeKind.atp:
@@ -478,8 +478,7 @@ DialogueBeat wheelHostBeatFor(WheelSegment seg, PowerUp? granted) {
     case WheelPrizeKind.dropItem:
       return const DialogueBeat(
         kCharButter,
-        'An item, gone. The wheel wanted it more than you did. '
-        "Don't worry about it.",
+        'An item, gone. The wheel wanted it more.',
         CharacterMood.neutral,
       );
     case WheelPrizeKind.item:

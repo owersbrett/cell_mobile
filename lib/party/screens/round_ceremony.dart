@@ -77,11 +77,19 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
 
   void _onRevealStatus(AnimationStatus status) {
     if (status != AnimationStatus.completed) return;
-    if (widget.autoAdvance && _autoTimer == null) {
-      _autoTimer = Timer(_autoAdvanceDwell, () {
-        if (mounted) _confirm();
-      });
-    }
+    _maybeArmAutoAdvance();
+  }
+
+  /// PARTY UX LAW: the machine never plunges. Auto-advance (online-host
+  /// pacing) may only arm once the human here has NOTHING pending — the
+  /// thumbs feedback prompt counts as pending input (checkpoint 2026-07-11:
+  /// the ceremony advanced before CONTINUE / thumbs could be tapped).
+  void _maybeArmAutoAdvance() {
+    if (!widget.autoAdvance) return;
+    if (widget.showFeedback && !_feedbackDone) return;
+    _autoTimer ??= Timer(_autoAdvanceDwell, () {
+      if (mounted) _confirm();
+    });
   }
 
   @override
@@ -222,8 +230,11 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                             gameId: spec.id,
                             gameName: spec.name,
                             source: 'party',
-                            onDone: () =>
-                                setState(() => _feedbackDone = true),
+                            onDone: () {
+                              setState(() => _feedbackDone = true);
+                              // Feedback answered — pacing may resume.
+                              _maybeArmAutoAdvance();
+                            },
                           ),
                         ),
                       const SizedBox(height: 12),

@@ -23,15 +23,18 @@ Landing on a spot in a scale-region triggers that scale's mini-game chooser.
 - **Paydirt / ATP** (current engine) stay as in-round spending — roll boosts and
   the potato purchase below.
 
-**Buying potatoes in-game.** Reaching a map's **destination anchor** (the final
-spot, `order 87`) lets you **buy a potato with paydirt** — one climactic buy
-point per map:
-- Down the Hole → the **spiral center**.
-- Into the Void → the **exit**.
-- Through the Aether → the **end**.
+**THE POTATO SHACK (amended 2026-07-11, Brett).** The anchor (the final spot,
+`order 87`) is **the Potato Shack — where every character works**. The three
+maps are three different commutes to it; the game is about getting to work.
+- **Clocking in:** reaching the Shack **always pays +1 potato** — a potato for
+  showing up.
+- **Buying:** you can also buy potatoes there with diamonds, as before.
+- One Shack per map: Down the Hole → the **spiral center** · Into the Void →
+  the **exit** · Through the Aether → the **end**.
 
-The anchor is both the race target and the potato shop; diamonds respawn when a
-player reaches it (completes the traversal).
+The Shack is both the race target and the potato source; diamonds respawn when
+a player reaches it (completes the traversal). (The pre-amendment name for
+this spot was "the destination anchor" — retired: uninspired.)
 
 **Rounds.** Players take board turns; **after every full turn-cycle (all players
 have moved), a mini-game round fires**, drawn from the map's 8 scales. Round

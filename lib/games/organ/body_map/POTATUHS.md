@@ -43,4 +43,5 @@
 - **S — Systems (what makes the world feel alive):** a body that fills in organ by organ as you
   map it · a climb that adds the trickier small organs only once the landmarks are anchored · the
   Potatuhs through-line that organs are specialized parts with a place and a job — true of a human
-  and, one scale over in Organ Rush, true of a potato. "We've always been here. Don't worry about it."
+  and, one scale over in Organ Rush, true of a potato. Every organ has an origin story; mapping it
+  is how you learn yours.

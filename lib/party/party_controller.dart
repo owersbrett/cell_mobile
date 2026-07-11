@@ -671,6 +671,13 @@ class PartyController extends ChangeNotifier {
         p.position = to;
       }
       final beforeDiamonds = p.diamonds, beforePotatoes = p.potatoes;
+      // CLOCKING IN (Brett, 2026-07-11): reaching the Potato Shack — the
+      // anchor, where everyone works — always pays one potato. You get a
+      // potato for showing up; buying more with diamonds is separate.
+      if (gameMap != null && p.position == board.length - 1) {
+        p.potatoes += 1;
+        turnLog.add('${p.name} clocked in at the Potato Shack: +1 potato!');
+      }
       // Landing on a ghost's space costs diamonds before the space resolves
       // (folded into the same landing pop via the delta below).
       _hauntCheck(p, p.position, turnLog);

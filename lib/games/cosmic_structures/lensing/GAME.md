@@ -161,10 +161,10 @@ matter**. Full write-up in EDUCATION.md.
 
 ## Potato angle
 
-Dark matter is the thing that's always there, shaping everything, that you can never
-quite see — pure Hot Potato Games "we've always been here, we always will be"
-energy. You're not throwing a spud at the cosmos; you're bending the light of a
-faraway potato-star home with a lump of the invisible. Don't worry about it.
+Dark matter is the thing that shapes everything and has never once been seen — the
+universe's biggest unanswered "where did you come from?" You're not throwing a spud
+at the cosmos; you're bending the light of a faraway potato-star home with a lump
+of the invisible, and interrogating the dark by watching what it does to light.
 
 ---
 

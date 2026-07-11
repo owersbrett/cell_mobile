@@ -48,5 +48,5 @@
 - **S — Systems (what makes the world feel alive):** an unseen mass that warps an
   entire beam of light · galaxies smeared into arcs and rings · the moment two
   sources snap into one ring (the Einstein-ring payoff) · a sky you map by its
-  distortions, never by sight — the dark-matter fantasy, "we've always been here, we
-  always will be," made of light you can only watch bend.
+  distortions, never by sight — the dark-matter fantasy: an origin you can only
+  interrogate by watching the light it bends.

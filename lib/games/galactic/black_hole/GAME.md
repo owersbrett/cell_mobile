@@ -136,10 +136,10 @@ EDUCATION.md.
 
 ## Potato angle
 
-Sgr A* is the still, silent heart everything in the galaxy turns around — Hot
-Potato Games' "we've always been here, we always will be" energy, scaled to four
-million suns. The stars you fling are spuds flung at the abyss; the disk is the
-galaxy's slow boil. Don't worry about it.
+Sgr A* is the still, silent heart everything in the galaxy turns around — the
+oldest question in the sky: where did THIS come from? Four million suns of it.
+The stars you fling are spuds flung at the abyss; the disk is the galaxy's slow
+boil, and every orbit is a chance to look the origin in the eye.
 
 ---
 

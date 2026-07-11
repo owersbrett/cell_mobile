@@ -10,9 +10,9 @@ organism — the cycle closes from tuber back to seed potato. Walking the Potato
 thing the player does with their thumb, not a thing they read.
 
 ## Voice fit
-- **Butter (CMO):** *"It was always going to come back around. We've always been here. We always will
-  be. Don't worry about it."* — the loop is the brand promise. The wheel literally returns to where it
-  started.
+- **Butter (CMO):** *"It comes back around. Watch."* — brief, certain, and quietly obsessed with
+  where the loop STARTS. The wheel literally returns to its origin; that's the part Butter can't
+  stop looking at.
 - **Russ (CEO):** *"uhhh... so the potato is the seed? And the plant? At the same time? ...yeah."* —
   the cycle-as-identity puzzle is exactly his kind of idea.
 

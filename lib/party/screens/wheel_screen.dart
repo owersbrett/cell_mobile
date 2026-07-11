@@ -402,7 +402,8 @@ class _WheelScreenState extends State<WheelScreen>
     (
       Icons.emoji_events,
       'WIN',
-      'Most POTATOES wins. Buy them with diamonds at the DESTINATION — '
+      'Most POTATOES wins. Show up at the POTATO SHACK for one, buy more '
+      'with diamonds — '
           'and you eat every diamond you walk over.',
     ),
     (

@@ -1978,13 +1978,17 @@ class _BoardScreenState extends State<_BoardScreen>
   Widget _shopOffer(PartyPlayer p) {
     final potatoAfford = p.diamonds >= kPotatoPrice;
     final packFull = p.items.length >= kMaxItems;
+    // The anchor's buy point IS the workplace: the Potato Shack. Ordinary
+    // mid-path markets keep their market identity.
+    final atShack = controller.gameMap != null &&
+        p.position == controller.board.length - 1;
     return Column(
       key: const ValueKey('shop'),
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Text(
-          '🥔  THE MARKET  🥔',
-          style: TextStyle(
+        Text(
+          atShack ? '🥔  THE POTATO SHACK  🥔' : '🥔  THE MARKET  🥔',
+          style: const TextStyle(
               fontFamily: _kFont,
               fontSize: 16,
               fontWeight: FontWeight.bold,
@@ -2358,9 +2362,9 @@ _SpaceInfo _inspectSpace(PartyController c, BoardSpace space, int index) {
   if (isAnchor) {
     return (
       region: region,
-      title: 'The Anchor',
-      effect: 'The finish line + potato market — buy a potato for '
-          '$kPotatoPrice diamonds.',
+      title: 'The Potato Shack',
+      effect: 'Where everyone works. Show up: +1 potato. Buy more for '
+          '$kPotatoPrice diamonds each.',
       icon: Icons.flag,
       color: const Color(0xFFD7A86E),
     );
@@ -3622,10 +3626,11 @@ class _BoardPathPainter extends CustomPainter {
             tracking: kStrataLabelTracking / z);
       });
     }
-    // The destination anchor gets a name.
+    // The anchor gets its name: THE POTATO SHACK — where everyone works,
+    // and every map is a different commute to it.
     if (spaces.isNotEmpty) {
       final anchor = geo.nodeCenter(spaces.length - 1);
-      _label(canvas, 'DESTINATION', const Color(0xFFFFD54F),
+      _label(canvas, 'THE POTATO SHACK', const Color(0xFFFFD54F),
           anchor + Offset(0, 26 / z), 10 / z);
     }
     // Every market is named too — the potato buy points must be identifiable

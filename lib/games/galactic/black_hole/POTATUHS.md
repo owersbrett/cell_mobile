@@ -47,4 +47,4 @@
   bends every path · a disk that boils and pulses · a horizon that flares each time
   it feeds · orbits that whip and precess up close · periodic kicks that shake the
   whole field · the Sgr A\* fantasy — the silent four-million-Sun heart the galaxy
-  turns around, "we've always been here, we always will be."
+  turns around, the origin nobody has seen up close. Yet.
