@@ -385,7 +385,11 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
           _awardChip(s.award),
           if (_bossDelta(s) != 0) _potatoChip(_bossDelta(s)),
           const SizedBox(height: 4),
-          Container(
+          // Flexible: the header stack above (crown/portrait/name/chips) is
+          // taller than the reserved estimate on some layouts — the bar
+          // yields rather than overflowing the column.
+          Flexible(
+              child: Container(
             height: h,
             margin: const EdgeInsets.symmetric(horizontal: 5),
             decoration: BoxDecoration(
@@ -419,7 +423,7 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                     ),
                   )
                 : null,
-          ),
+          )),
         ],
       ),
     );

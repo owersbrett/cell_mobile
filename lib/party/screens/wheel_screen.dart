@@ -257,7 +257,8 @@ class _WheelScreenState extends State<WheelScreen>
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  r != null
+                  // "LANDED…" only once the wheel has actually settled.
+                  settled
                       ? '${spinner.name.toUpperCase()} LANDED…'
                       : "${spinner.name.toUpperCase()}'S SPIN",
                   textAlign: TextAlign.center,
@@ -324,18 +325,14 @@ class _WheelScreenState extends State<WheelScreen>
                   SizedBox(
                     height: 64,
                     child: Center(
+                      // NO SPOILERS: while the wheel is still decelerating
+                      // (r landed but the easing hasn't settled), the prize
+                      // stays secret — the wheel itself is the reveal.
                       child: r != null
-                          ? Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 24),
-                              child: Text(
-                                r.summary,
-                                textAlign: TextAlign.center,
-                                maxLines: 2,
-                                style: Potatuhs.body(
-                                        size: 15, color: Potatuhs.gold)
-                                    .copyWith(fontWeight: FontWeight.bold),
-                              ),
+                          ? Text(
+                              '…',
+                              style: Potatuhs.display(
+                                  size: 22, color: Potatuhs.textSecondary),
                             )
                           : Text(
                               _canStop
