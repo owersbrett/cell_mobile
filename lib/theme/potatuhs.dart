@@ -218,16 +218,25 @@ class _PotatuhsButtonState extends State<PotatuhsButton>
                         Icon(widget.icon, color: widget.textColor, size: 22),
                         const SizedBox(width: 10),
                       ],
-                      Text(
-                        widget.label,
-                        style: TextStyle(
-                          fontFamily: widget.display
-                              ? Potatuhs.displayFont
-                              : Potatuhs.bodyFont,
-                          fontSize: widget.display ? 18 : 17,
-                          fontWeight: FontWeight.w800,
-                          color: widget.textColor,
-                          letterSpacing: 2,
+                      // Loose-flex + scale-down: the label renders at natural
+                      // size when it fits and shrinks (never overflows) when
+                      // the button is narrower than the text.
+                      Flexible(
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            widget.label,
+                            maxLines: 1,
+                            style: TextStyle(
+                              fontFamily: widget.display
+                                  ? Potatuhs.displayFont
+                                  : Potatuhs.bodyFont,
+                              fontSize: widget.display ? 18 : 17,
+                              fontWeight: FontWeight.w800,
+                              color: widget.textColor,
+                              letterSpacing: 2,
+                            ),
+                          ),
                         ),
                       ),
                     ],
