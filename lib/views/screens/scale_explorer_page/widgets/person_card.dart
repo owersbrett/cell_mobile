@@ -132,7 +132,7 @@ class _PersonCard extends StatelessWidget {
                   ),
                 ),
               const SizedBox(height: 8),
-              _LearnMoreButton(accent: accent, onTap: () => _launch(context)),
+              _LearnMoreButton(onTap: () => _launch(context)),
             ],
           ),
         ),
@@ -141,11 +141,12 @@ class _PersonCard extends StatelessWidget {
   }
 }
 
-/// The learn-more CTA — gradient-tinted in the scale accent, browser icon.
+/// The learn-more CTA — solid house green with an ink border and glyph (the
+/// PotatuhsButton sticker language), so it reads as a live action rather than
+/// the washed-out accent tint that looked disabled.
 class _LearnMoreButton extends StatelessWidget {
-  final Color accent;
   final VoidCallback onTap;
-  const _LearnMoreButton({required this.accent, required this.onTap});
+  const _LearnMoreButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -157,19 +158,20 @@ class _LearnMoreButton extends StatelessWidget {
         child: Container(
           height: 52,
           decoration: BoxDecoration(
-            color: accent.withValues(alpha: 0.16),
+            color: Potatuhs.go,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: accent.withValues(alpha: 0.5)),
+            border: Border.all(color: Potatuhs.ink, width: 2),
+            boxShadow: Potatuhs.glow(Potatuhs.go, strength: 0.35),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.open_in_new, size: 18, color: accent),
+              const Icon(Icons.open_in_new, size: 18, color: Potatuhs.ink),
               const SizedBox(width: 10),
               Text(
                 'LEARN MORE',
                 style: Potatuhs.body(
-                        size: 14, weight: FontWeight.w700, color: accent)
+                        size: 14, weight: FontWeight.w800, color: Potatuhs.ink)
                     .copyWith(letterSpacing: 2),
               ),
             ],

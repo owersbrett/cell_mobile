@@ -29,6 +29,11 @@ class Potatuhs {
   static const Color airForce = Color(0xFF6690A3);
   static const Color glaucous = Color(0xFF7272AB);
 
+  /// The house green — the "go / live action" color (external links, positive
+  /// CTAs). Already the app's de-facto green across the games; named here so
+  /// UI chrome stops re-declaring the hex.
+  static const Color go = Color(0xFF66BB6A);
+
   // ── Text on dark ──
   static const Color textPrimary = Color(0xFFFDF5EB); // warm white
   static const Color textSecondary = Color(0xFFB9B2A8); // warm grey
