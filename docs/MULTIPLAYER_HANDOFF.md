@@ -7,9 +7,9 @@ needs to expose data the board requires (e.g. a live score feed).
 
 ## Repos, paths, deploy
 
-- **Canonical cell app:** `~/Potatuhs/hpg/cell_mobile` (Flutter, branch
+- **Canonical cell app:** `~/Potatuhs/hotpotatogames/cell_mobile` (Flutter, branch
   `feature/online`). NOT `~/Development/cell_mobile` (stale) or `~/Potatuhs/cell_mobile` (absent).
-- **HPG site:** `~/Potatuhs/hpg/hotpotatogames/frontend` (Angular 19 + Firebase).
+- **HPG site:** `~/Potatuhs/hotpotatogames/hotpotatogames-web/frontend` (Angular 19 + Firebase).
 - **Firebase project:** `hot-potato-games` (shared). Cell hosting site:
   `explore-the-cell` → `explore-the-cell.web.app`. HPG → `hotpotatogames.com`.
 - **Build/deploy cell:** `flutter build web && firebase deploy --only hosting --project hot-potato-games`.
@@ -25,7 +25,7 @@ needs to expose data the board requires (e.g. a live score feed).
 - `lib/party/party_controller.dart` (32KB) — turn/phase machine
   (`PartyPhase`: turnStart→rollResult→moving→chooseBranch→shopOffer→spaceResolved
   →minigameIntro→passPhone→minigamePlaying→minigameResults→gameOver), dice/ATP,
-  paydirt, items, board generation, input log (deterministic replay).
+  diamonds, items, board generation, input log (deterministic replay).
 - `lib/party/screens/party_page.dart` — full party flow UI + board render +
   save/resume (`PartySessionStore`). `party_setup_page.dart` — mode/player setup
   (renders sticker portraits; slot 0 shows the authed VIPotato). `play_lobby_page.dart` — online lobby.
@@ -42,8 +42,9 @@ Three boards, **88 spots each**, distinct topologies:
 - **Through the Aether** — Candyland S-curve with rainbow slides.
 
 Economy: **potatoes** (win metric) + **diamonds** (Pac-Man, eaten on every space
-traveled, respawn on full traversal) + **paydirt** (buy a potato at the
-destination anchor). After every full turn-cycle a **mini-game round** fires.
+traveled, respawn on full traversal; also buy a potato at the destination
+anchor) + **ATP** (roll boosts). After every full turn-cycle a **mini-game
+round** fires.
 End-game **superlative potato awards: 3 / 6 / 9** by map (Round Wins, Diamonds,
 Stolen-From, Taps, Swipes, L's, Items Used, Items Held, Fewest Steps). Two card
 decks (**Tater** common / **Void** wild). Exact placements (shops, anchors,
@@ -128,7 +129,7 @@ network variance, or five separate devices) — it's the fast regression check.
 A single human must be able to play a **full 1v1v1v1 board session vs 3 CPUs**
 (no other humans). CPU players take **real board turns** in `party_controller`:
 roll (+ATP decisions), move, choose branches at forks, hit shops (buy potatoes
-with paydirt), draw/resolve cards, use items/disruption, and **play each round's
+with diamonds), draw/resolve cards, use items/disruption, and **play each round's
 mini-game producing a bot score** (reuse the existing AI scoring — bot score
 scaled to `MiniGameSpec.humanMax`, see the host system below). CPUs feed the same
 per-player stats the end-game awards read (diamonds, round wins, etc.).
@@ -226,3 +227,32 @@ the whole turn server-style. Now:
   round's escape hatch is the vote. Known trade-off: a genuinely vanished
   WALKER mid-board still stalls the room (same class as a vanished roller,
   pre-existing); presence-based handling is future work.
+
+## MINIGAME MADNESS (third room kind, 2026-07-16)
+
+`lib/party/madness/` — the rapid-fire party format: no board, no dice, no
+items. Three wheels (CATEGORY → SCALE → GAME, skill-stop like the party
+wheel) pick each round's mini-game — the 22 scales decompose into 7 fat
+categories (`madness_categories.dart`) so wheel #1 always reads in flight.
+Everyone plays locally at once; placement points (1st = P … last = 1, ties
+share) accrue in `meta/totals`; ceremonies render as a left-to-right podium
+of bars (`madness_bars.dart`, 1st on the left, horizontally scrollable);
+up to **16 players**.
+
+- **Rooms share `cell_games/$id`**, distinguished by `meta.kind == 'madness'`
+  (party = `mode`/`rounds`, quick = `specId`). The PARTY lobby join probes
+  madness meta first and routes to `MadnessPage`, else falls through to the
+  party join — a code works from either lobby tab.
+- **No lockstep** — quick-match-style score broadcast (`MadnessNet` over
+  `MadnessTransport`). RTDB rules only let the HOST uid write `meta`, so a
+  non-host spinner publishes the landed spin through the append-only
+  `requests` queue and the host device validates + applies it (pool check:
+  no repeats, no excluded games).
+- **Host config** (lobby MADNESS tab, `MadnessHostCard`): enabled scales,
+  search-to-exclude games, spins-per-player (free number input; rounds =
+  spins × players; start requires spins × players ≤ pool — no game repeats).
+- Games run through `MiniGameHost` inside a `QuickRoomScope`
+  (seed = `meta.seed + round`) — game internals untouched.
+- Stuck-round escape hatch: the host can "call the round" with the scores
+  that made it in (unscored players place last).
+- Tests: `test/party/madness_net_test.dart` (in-memory transport, 11).

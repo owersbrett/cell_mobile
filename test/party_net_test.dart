@@ -98,7 +98,17 @@ Future<List<PartyNet>> _playNetworkedGame({
         break;
       case PartyPhase.minigamePlaying:
       case PartyPhase.passPhone:
-        // Simultaneous play: whichever player hasn't scored yet submits.
+        // READY CHECK first (READY_UP_SPEC.md): the host rejects scores
+        // until every seat has readied. Then simultaneous play — whichever
+        // player hasn't scored yet submits.
+        if (c.phase == PartyPhase.passPhone && !c.allSeatsReady) {
+          var r = 0;
+          while (r < n && c.readySeats.contains(r)) {
+            r++;
+          }
+          nets[r].act(PartyInputKind.readyUp);
+          break;
+        }
         var s = 0;
         while (s < n && c.hasSubmittedMiniScore(s)) {
           s++;
@@ -113,6 +123,15 @@ Future<List<PartyNet>> _playNetworkedGame({
       case PartyPhase.wheelSpin:
         // Only the seat whose wheel is up may stop it.
         nets[c.wheel!.currentSpinner].act(PartyInputKind.wheelStop);
+        break;
+      case PartyPhase.orderRoll:
+        // The opening order: each pending seat throws over the wire; the
+        // host taps out of the resolved ceremony.
+        if (c.orderResolved) {
+          nets[0].act(PartyInputKind.beginMatch);
+        } else {
+          nets[c.orderPendingSeat!].act(PartyInputKind.orderRoll);
+        }
         break;
       default:
         fail('host settled on a non-decision phase: ${c.phase}');
@@ -250,6 +269,15 @@ void main() {
             break;
           case PartyPhase.minigamePlaying:
           case PartyPhase.passPhone:
+            // Ready check first (READY_UP_SPEC.md), then scores.
+            if (c.phase == PartyPhase.passPhone && !c.allSeatsReady) {
+              var r = 0;
+              while (r < 2 && c.readySeats.contains(r)) {
+                r++;
+              }
+              nets[r].act(PartyInputKind.readyUp);
+              break;
+            }
             var s = 0;
             while (s < 2 && c.hasSubmittedMiniScore(s)) {
               s++;
@@ -263,6 +291,13 @@ void main() {
             break;
           case PartyPhase.wheelSpin:
             nets[c.wheel!.currentSpinner].act(PartyInputKind.wheelStop);
+            break;
+          case PartyPhase.orderRoll:
+            if (c.orderResolved) {
+              nets[0].act(PartyInputKind.beginMatch);
+            } else {
+              nets[c.orderPendingSeat!].act(PartyInputKind.orderRoll);
+            }
             break;
           default:
             fail('host settled on a non-decision phase: ${c.phase}');
@@ -395,25 +430,44 @@ void main() {
       await host.startGame();
 
       final c = host.controller!;
-      // The opening wheel is up first: seat 0 spins. A stop from the wrong
+      // The opening ORDER comes first (rules ≥ 6): seat 0 throws. An
+      // out-of-seat throw must be rejected like everything else.
+      expect(c.phase, PartyPhase.orderRoll);
+      p2.act(PartyInputKind.orderRoll);
+      expect(c.orderDice, isEmpty, reason: 'out-of-seat throw ignored');
+      var guard = 0;
+      while (!c.orderResolved && guard++ < 20) {
+        (c.orderPendingSeat == 0 ? host : p2).act(PartyInputKind.orderRoll);
+      }
+      p2.act(PartyInputKind.beginMatch);
+      expect(c.phase, PartyPhase.orderRoll,
+          reason: 'only the room host may leave the resolved ceremony');
+      host.act(PartyInputKind.beginMatch);
+      final ceremonyInputs = c.inputLog.length;
+
+      // The opening wheel is up next: seat 0 spins. A stop from the wrong
       // seat must be rejected, exactly like an out-of-turn roll.
       expect(c.phase, PartyPhase.wheelSpin);
       p2.act(PartyInputKind.wheelStop);
       expect(c.wheel!.currentSpinner, 0, reason: 'out-of-seat stop ignored');
-      expect(c.inputLog, isEmpty);
+      expect(c.inputLog.length, ceremonyInputs);
       host.act(PartyInputKind.wheelStop);
       p2.act(PartyInputKind.wheelStop);
       expect(c.phase, PartyPhase.turnStart);
-      expect(c.currentPlayerIndex, 0);
+      expect(c.currentPlayerIndex, c.turnOrder[0]);
       final wheelInputs = c.inputLog.length; // the two legal stops
 
-      // Player 2 tries to roll on player 1's turn — must be rejected.
-      p2.act(PartyInputKind.roll);
+      // The earned order decides who rolls first now — the OTHER seat's
+      // roll must be rejected.
+      final first = c.turnOrder[0];
+      final rightful = first == 0 ? host : p2;
+      final intruder = first == 0 ? p2 : host;
+      intruder.act(PartyInputKind.roll);
       expect(c.phase, PartyPhase.turnStart, reason: 'out-of-turn roll ignored');
       expect(c.inputLog.length, wheelInputs);
 
       // The rightful player rolls — accepted.
-      host.act(PartyInputKind.roll);
+      rightful.act(PartyInputKind.roll);
       expect(c.phase, PartyPhase.rollResult);
       expect(c.inputLog.last.kind, PartyInputKind.roll);
     });

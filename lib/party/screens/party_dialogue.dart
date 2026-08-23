@@ -439,7 +439,7 @@ DialogueBeat wheelHostBeatFor(WheelSegment seg, PowerUp? granted) {
   if (granted != null) {
     return DialogueBeat(
       kCharButter,
-      '${_titleCase(granted.label)}. ${granted.description}. Hold it until '
+      '${granted.label}. ${granted.description}. Hold it until '
       "the moment is right — you'll know.",
       CharacterMood.smug,
     );
@@ -490,13 +490,19 @@ DialogueBeat wheelHostBeatFor(WheelSegment seg, PowerUp? granted) {
         'The wheel is nothing if not reasonable.',
         CharacterMood.neutral,
       );
+    case WheelPrizeKind.bossLastPotato:
+      return const DialogueBeat(
+        kCharButter,
+        'You heard the decree. Finish last and a potato leaves with the big '
+        'one. Play like you mean it.',
+        CharacterMood.worried,
+      );
+    case WheelPrizeKind.bossRedistribution:
+      return const DialogueBeat(
+        kCharButter,
+        'Every diamond on this board just became one pot. Top finishers '
+        'split it — the rest stays with the big one. Go get yours.',
+        CharacterMood.worried,
+      );
   }
-}
-
-String _titleCase(String allCaps) {
-  return allCaps
-      .split(' ')
-      .map((w) =>
-          w.isEmpty ? w : w[0] + w.substring(1).toLowerCase())
-      .join(' ');
 }

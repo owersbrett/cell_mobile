@@ -30,5 +30,5 @@ holding the perf and fairness guardrails.
 `humanMax`/`starThresholds` in the registry spec if the ceiling moves.
 
 ## Status board
-Keep `~/Potatuhs/hpg/_status/cell_mobile.md` current on goal/milestone/blocker
+Keep `~/Potatuhs/hotpotatogames/_status/cell_mobile.md` current on goal/milestone/blocker
 changes per the repo CLAUDE.md broadcast protocol.

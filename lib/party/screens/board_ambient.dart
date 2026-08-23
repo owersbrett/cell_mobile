@@ -52,6 +52,30 @@ class BoardAmbientClock extends ChangeNotifier {
   }
 }
 
+/// The midpoint-smoothed road through the walk order — quads through each
+/// node, straight caps at the ends. SSOT for the road's geometry: the ribbon
+/// (_BoardPathPainter) strokes this shape and the ambient comet rides its
+/// PathMetric, so traveling effects hug the drawn road exactly instead of
+/// chord-cutting corners on the raw polyline.
+Path smoothedRoadPath(List<Offset> pts) {
+  final road = Path();
+  if (pts.isEmpty) return road;
+  road.moveTo(pts[0].dx, pts[0].dy);
+  final n = pts.length;
+  if (n > 2) {
+    Offset mid(Offset a, Offset b) =>
+        Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
+    final m0 = mid(pts[0], pts[1]);
+    road.lineTo(m0.dx, m0.dy);
+    for (var i = 1; i < n - 1; i++) {
+      final m = mid(pts[i], pts[i + 1]);
+      road.quadraticBezierTo(pts[i].dx, pts[i].dy, m.dx, m.dy);
+    }
+  }
+  if (n > 1) road.lineTo(pts[n - 1].dx, pts[n - 1].dy);
+  return road;
+}
+
 /// One strata band of the descent: a radial annulus derived from the ACTUAL
 /// node positions of a section (never hardcoded radii — the spiral may be
 /// retuned).
@@ -187,13 +211,17 @@ class BoardAmbientPainter extends CustomPainter {
           ..strokeCap = StrokeCap.round
           ..strokeWidth = nodeRadius * kRibbonPulseWidthFactor,
         _glint = Paint()..strokeCap = StrokeCap.round,
-        _mote = Paint(),
-        // Cumulative arc length along the walk-order polyline, for the
-        // traveling ribbon pulse. Computed once per painter (rebuilds are
-        // rare); index i = distance from START to centers[i].
-        _cum = List<double>.filled(centers.length, 0) {
-    for (var i = 1; i < centers.length; i++) {
-      _cum[i] = _cum[i - 1] + (centers[i] - centers[i - 1]).distance;
+        _mote = Paint() {
+    // Metric of the SAME smoothed road the ribbon strokes, for the traveling
+    // pulse. Computed once per painter (rebuilds are rare); riding the metric
+    // keeps the comet ON the drawn road — sampling the raw polyline made it
+    // chord-cut curves and float beside the ribbon as a detached gray streak.
+    if (centers.length > 1) {
+      final it = smoothedRoadPath(centers).computeMetrics().iterator;
+      if (it.moveNext()) {
+        _roadMetric = it.current;
+        _roadLen = it.current.length;
+      }
     }
     // Band radial bounds for the motes (same derivation as the strata layer:
     // real node positions, anchor = spiral center).
@@ -238,7 +266,8 @@ class BoardAmbientPainter extends CustomPainter {
   final Paint _pulse;
   final Paint _glint;
   final Paint _mote;
-  final List<double> _cum;
+  ui.PathMetric? _roadMetric;
+  double _roadLen = 0;
   final List<_StrataBand> _moteBands = [];
 
   /// Same size hierarchy _node() applies (anchor 2.1× / shop 1.6× /
@@ -356,12 +385,14 @@ class BoardAmbientPainter extends CustomPainter {
     }
   }
 
-  /// A bright window traveling along the walk-order polyline in the
-  /// direction of play (START → DESTINATION; inward on Down the Hole),
-  /// drawn as three fading slices so it reads as a comet, not a dash.
+  /// A bright window traveling along the smoothed road in the direction of
+  /// play (START → DESTINATION; inward on Down the Hole), drawn as three
+  /// fading slices so it reads as a comet, not a dash. Each slice is a
+  /// sub-path extracted from the road metric, so it follows every curve.
   void _ribbonPulse(Canvas canvas, double t, Rect cull) {
-    final total = _cum.last;
-    if (total <= 0) return;
+    final metric = _roadMetric;
+    final total = _roadLen;
+    if (metric == null || total <= 0) return;
     final window = total * kRibbonPulseWindowFrac;
     const slices = 3;
     for (var k = 0; k < kRibbonPulseCount; k++) {
@@ -370,29 +401,19 @@ class BoardAmbientPainter extends CustomPainter {
           (t / kRibbonPulsePeriodSec * total + k * total / kRibbonPulseCount) %
               total;
       for (var s = 0; s < slices; s++) {
-        final a = head - window * (s + 1) / slices;
+        final a = (head - window * (s + 1) / slices).clamp(0.0, total);
         final b = head - window * s / slices;
-        if (b <= 0) continue;
-        final pA = _pointAt(a < 0 ? 0 : a);
-        final pB = _pointAt(b);
+        if (b <= a) continue;
+        final pA = metric.getTangentForOffset(a)?.position;
+        final pB = metric.getTangentForOffset(b)?.position;
+        if (pA == null || pB == null) continue;
         // Cheap cull: skip a slice whose endpoints are both offscreen.
         if (!cull.contains(pA) && !cull.contains(pB)) continue;
         _pulse.color = Colors.white
             .withValues(alpha: kRibbonPulseAlpha * (slices - s) / slices);
-        canvas.drawLine(pA, pB, _pulse);
+        canvas.drawPath(metric.extractPath(a, b), _pulse);
       }
     }
-  }
-
-  /// Position at arc distance [d] along the centers polyline.
-  Offset _pointAt(double d) {
-    var lo = 0;
-    while (lo < _cum.length - 2 && _cum[lo + 1] < d) {
-      lo++;
-    }
-    final seg = _cum[lo + 1] - _cum[lo];
-    final f = seg <= 0 ? 0.0 : ((d - _cum[lo]) / seg).clamp(0.0, 1.0);
-    return Offset.lerp(centers[lo], centers[lo + 1], f)!;
   }
 
   /// Periodic treasure glint on each remaining path diamond: a brief bright

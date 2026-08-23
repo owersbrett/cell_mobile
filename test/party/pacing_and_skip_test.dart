@@ -12,6 +12,7 @@ void main() {
         totalRounds: rounds,
         playerNames: const ['A', 'B'],
         seed: seed,
+      rules: 5,
       );
 
   /// Through the opening wheel to the first turn.
@@ -191,6 +192,16 @@ void main() {
           break;
         case PartyPhase.wheelSpin:
           c.wheelStop();
+          break;
+        case PartyPhase.gamePick:
+          c.pickMiniGame(0);
+          break;
+        case PartyPhase.orderRoll:
+          if (c.orderResolved) {
+            c.beginMatch();
+          } else {
+            c.rollForOrder();
+          }
           break;
         case PartyPhase.gameOver:
           break;

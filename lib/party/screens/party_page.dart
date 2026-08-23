@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:cell_mobile/games/mini_game_host.dart';
 import 'package:cell_mobile/games/mini_game_registry.dart';
+import 'package:cell_mobile/games/opponent_config.dart';
 import 'package:cell_mobile/telemetry/cell_telemetry.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -166,6 +167,10 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
         return const Duration(milliseconds: 7000);
       case PartyPhase.wheelSpin:
         return const Duration(milliseconds: 1600);
+      case PartyPhase.gamePick:
+        return const Duration(milliseconds: 1400);
+      case PartyPhase.orderRoll:
+        return const Duration(milliseconds: 1200);
       case PartyPhase.gameOver:
         return const Duration(milliseconds: 4000);
       case PartyPhase.moving:
@@ -238,6 +243,17 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       case PartyPhase.wheelSpin:
         a.wheelStop(-1); // autoplay has no eyes on the wheel: tape draw
         break;
+      case PartyPhase.gamePick:
+        a.pickMiniGame(0); // the bot takes the first offered game
+        break;
+      case PartyPhase.orderRoll:
+        // The opening ceremony: throw for the pending seat, then leave.
+        if (c.orderResolved) {
+          a.beginMatch();
+        } else {
+          a.rollForOrder();
+        }
+        break;
       case PartyPhase.gameOver:
         setState(_startAutoGame); // endless: restart the board
         break;
@@ -258,10 +274,134 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   }
 
   /// Start persisting [c]: save whenever a new decision is recorded, and clear
-  /// the save once the game ends.
+  /// the save once the game ends. Solo games also get their CPU driver.
   void _bind(PartyController c) {
     _savedInputCount = c.inputLog.length;
     c.addListener(_persist);
+    if (c.mode == PartyMode.solo) {
+      c.addListener(_cpuOnChange);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _cpuOnChange();
+      });
+    }
+  }
+
+  // ── SOLO CPU driver (ORDER_AND_SOLO_SPEC §2) ─────────────────────────────
+  // Seats 1–3 are CPU characters: their board decisions act on the attract
+  // pacing table (watchable beats, no taps), and their mini-game attempts are
+  // banked as fabricated scores calibrated like MiniGameHost's opponents.
+  // Every CPU decision is an ordinary logged input — replay-safe.
+
+  Timer? _cpuPending;
+  final Random _cpuRng = Random();
+
+  /// Which seat owns the pending decision (null = not a single seat's call:
+  /// walking, the human's own screens, results the human taps through).
+  int? _decisionSeat(PartyController c) {
+    switch (c.phase) {
+      case PartyPhase.turnStart:
+      case PartyPhase.rollResult:
+      case PartyPhase.chooseBranch:
+      case PartyPhase.shopOffer:
+      case PartyPhase.cardDecision:
+      case PartyPhase.spaceResolved:
+        return c.currentPlayerIndex;
+      case PartyPhase.orderRoll:
+        return c.orderPendingSeat; // null once resolved: the human begins
+      case PartyPhase.wheelSpin:
+        return c.wheel?.currentSpinner;
+      case PartyPhase.gamePick:
+        return c.gamePickerSeat;
+      case PartyPhase.passPhone:
+        return c.miniPlayerIndex;
+      case PartyPhase.moving:
+      case PartyPhase.minigameIntro:
+      case PartyPhase.minigamePlaying:
+      case PartyPhase.minigameResults:
+      case PartyPhase.gameOver:
+        return null;
+    }
+  }
+
+  void _cpuOnChange() {
+    final c = _controller;
+    if (c == null || !mounted || widget.autoPilot) return;
+    if (c.mode != PartyMode.solo || _cpuPending != null) return;
+    final seat = _decisionSeat(c);
+    if (seat == null || !c.isCpuSeat(seat)) return;
+    final scheduledPhase = c.phase;
+    _cpuPending = Timer(
+        _autoDelayFor(c.phase) ?? const Duration(milliseconds: 900), () {
+      _cpuPending = null;
+      final cur = _controller;
+      if (cur == null || !mounted || widget.autoPilot) return;
+      if (cur.phase != scheduledPhase) {
+        _cpuOnChange(); // phase moved underneath us: re-evaluate
+        return;
+      }
+      final s = _decisionSeat(cur);
+      if (s == null || !cur.isCpuSeat(s)) return;
+      _cpuAct(cur, s);
+    });
+  }
+
+  void _cpuAct(PartyController c, int seat) {
+    final a = LocalActions(c);
+    switch (c.phase) {
+      case PartyPhase.turnStart:
+        a.roll();
+        break;
+      case PartyPhase.rollResult:
+        a.beginWalk();
+        break;
+      case PartyPhase.chooseBranch:
+        final opts = c.branchOptions;
+        a.choosePath(opts[_cpuRng.nextInt(opts.length)]);
+        break;
+      case PartyPhase.shopOffer:
+        // Same policy as attract: potatoes are the win condition.
+        if (c.currentPlayer.diamonds >= kPotatoPrice) {
+          a.buyPotato();
+        } else {
+          a.skipPotato();
+        }
+        break;
+      case PartyPhase.cardDecision:
+        a.chooseCardOption(0);
+        break;
+      case PartyPhase.spaceResolved:
+        a.confirmSpace();
+        break;
+      case PartyPhase.orderRoll:
+        a.rollForOrder();
+        break;
+      case PartyPhase.wheelSpin:
+        a.wheelStop(-1); // tape draw — the bot has no eyes on the wheel
+        break;
+      case PartyPhase.gamePick:
+        a.pickMiniGame(0);
+        break;
+      case PartyPhase.passPhone:
+        _bankCpuScore(c, seat);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /// A CPU's mini-game attempt isn't played out: bank a score drawn from the
+  /// character's difficulty band against the game's realistic human ceiling —
+  /// the same calibration MiniGameHost uses for solo LEARN opponents.
+  void _bankCpuScore(PartyController c, int seat) {
+    final spec = c.currentSpec;
+    if (spec == null) return;
+    final ceiling = spec.humanMax > 0 ? spec.humanMax : 120;
+    final (lo, hi) =
+        OpponentRoster.configFor(c.players[seat].name).difficulty.band;
+    final skill = lo + _cpuRng.nextDouble() * (hi - lo);
+    final noise = (_cpuRng.nextDouble() - 0.5) * 0.08;
+    final score = (ceiling * (skill + noise)).round().clamp(0, ceiling);
+    c.recordMiniScore(score, player: seat);
   }
 
   void _persist() {
@@ -278,6 +418,9 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
 
   void _backToSetup() {
     _controller?.removeListener(_persist);
+    _controller?.removeListener(_cpuOnChange);
+    _cpuPending?.cancel();
+    _cpuPending = null;
     PartySessionStore.clear();
     setState(() => _controller = null);
   }
@@ -298,7 +441,9 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
   @override
   void dispose() {
     _autoPending?.cancel();
+    _cpuPending?.cancel();
     _controller?.removeListener(_autoOnChange);
+    _controller?.removeListener(_cpuOnChange);
     _controller?.removeListener(_persist);
     // _net is owned by PartySession; we don't dispose it here (the user might
     // navigate back and reconnect). Only PartySession.clear() disposes it.
@@ -498,6 +643,8 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
       return RoundFlairScreen(
         key: ValueKey('flair_${c.round}'),
         controller: c,
+        // Tap-to-drive law: beats hold for the tap; only ATTRACT self-paces.
+        auto: widget.autoPilot,
         onDone: () => setState(() => _flairDoneRound = c.round),
       );
     }
@@ -531,25 +678,28 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
         );
       case PartyPhase.minigameIntro:
         // Held for its moment (SPEC: a dialog beat before the game): local
-        // taps through; online the room host taps or auto-advances.
-        final intro = _MiniGameIntroScreen(
+        // taps through; online the room host taps. TAP-TO-DRIVE LAW
+        // (ORDER_AND_SOLO_SPEC §1): no auto-dwell — the reveal leads only to
+        // the ready check, which holds for everyone anyway.
+        return _MiniGameIntroScreen(
           controller: c,
           actions: actions,
           interactive: !isOnline || net.isHost,
         );
-        return isOnline && net.isHost
-            ? _AutoAdvanceAfter(
-                key: ValueKey('mg_intro_${c.round}'),
-                delay: const Duration(seconds: 6),
-                onFire: actions.beginMiniGameRound,
-                child: intro,
-              )
-            : intro;
       case PartyPhase.passPhone:
+        if (isOnline && !c.allSeatsReady) {
+          // THE READY CHECK (READY_UP_SPEC.md): the round holds here until
+          // every seat confirms — no timer can push anyone into gameplay.
+          return _ReadyCheckScreen(
+            controller: c,
+            actions: actions,
+            mySeat: mySlot,
+          );
+        }
         return _PassPhoneScreen(
           controller: c,
           actions: actions,
-          interactive: !isOnline, // host auto-advances online
+          interactive: !isOnline, // pumped through online once all are ready
         );
       case PartyPhase.minigamePlaying:
         final spec = c.currentSpec!;
@@ -582,24 +732,31 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           onExit: () => actions.recordMiniScore(0),
           // Attract: the bot plays each player's attempt and auto-submits.
           autoPlay: widget.autoPilot,
+          // Online: the READY CHECK already served as reading time and every
+          // seat starts together — skip the local intro straight into the
+          // shared countdown (READY_UP_SPEC §2.5).
+          autoStart: isOnline,
           // VOTE TO SKIP — the table's escape hatch (majority skips the
           // round; replaces both the debug skip and the old auto-bank
           // watchdog). Rides the intro's START row and leaves with it —
-          // never over live gameplay.
-          introAction: _VoteSkipButton(
-            controller: c,
-            actions: actions,
-            mySeat: isOnline ? mySlot : c.miniPlayerIndex,
-          ),
+          // never over live gameplay. Online the skip window is the ready
+          // check screen instead (the local intro is skipped).
+          introAction: isOnline
+              ? null
+              : _VoteSkipButton(
+                  controller: c,
+                  actions: actions,
+                  mySeat: c.miniPlayerIndex,
+                ),
         );
       case PartyPhase.minigameResults:
         // The round ceremony: everyone watches the same podium reveal; the
-        // host (or the local player) advances it, with an auto-dwell online.
+        // host (or the local player) advances it BY TAP — no auto-dwell
+        // (tap-to-drive law; ATTRACT confirms via its own autopilot).
         return RoundCeremonyScreen(
           controller: c,
           actions: actions,
           interactive: !isOnline || net.isHost,
-          autoAdvance: isOnline && net.isHost,
           // The feedback prompt is for humans — attract's bots don't rate.
           showFeedback: !widget.autoPilot,
         );
@@ -610,12 +767,28 @@ class _PartyFlowPageState extends State<PartyFlowPage> {
           onPlayAgain: isOnline ? widget.onExit : _backToSetup,
           onExit: widget.onExit,
         );
+      case PartyPhase.orderRoll:
+        return _OrderRollScreen(
+          controller: c,
+          actions: actions,
+          isOnline: isOnline,
+          mySlot: mySlot,
+          isHost: isOnline && net.isHost,
+        );
       case PartyPhase.wheelSpin:
         return WheelScreen(
           controller: c,
           actions: actions,
           mySlot: mySlot,
           isOnline: isOnline,
+        );
+      case PartyPhase.gamePick:
+        // GAME RIGGER: its holder picks the round's game; everyone else
+        // watches the rig happen.
+        return _GamePickScreen(
+          controller: c,
+          actions: actions,
+          interactive: !isOnline || mySlot == c.gamePickerSeat,
         );
     }
   }
@@ -779,6 +952,11 @@ class _BoardScreenState extends State<_BoardScreen>
   // paces the walk and pauses automatically at forks / the market.
   Timer? _stepTimer;
   bool _diceSettled = false;
+
+  /// A targeted item (freeze ray / swapper / warp potato) tapped on the turn
+  /// panel, awaiting its target choice. Presentation-only: nothing is spent
+  /// until the target chip fires useItemOn.
+  PowerUp? _pendingTargetItem;
 
   /// Drives the dice TUMBLE — a presentation-only roll animation. The rolled
   /// value is fixed by the controller's host-authoritative tape; this just
@@ -1540,7 +1718,23 @@ class _BoardScreenState extends State<_BoardScreen>
                 letterSpacing: 1,
                 color: p.color),
           ),
-          if (p.items.isNotEmpty)
+          // Prowl rounds: the threat is announced where the routing decision
+          // gets made — before the roll (PARTY UX LAW: looming, not silent).
+          if (controller.opsProwling)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                '⚠ THE CREW IS PROWLING — cross their tile and they may rob you',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 10.5,
+                    letterSpacing: 1,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFE5484D)),
+              ),
+            ),
+          if (p.items.isNotEmpty && _pendingTargetItem == null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Column(
@@ -1556,17 +1750,29 @@ class _BoardScreenState extends State<_BoardScreen>
                     alignment: WrapAlignment.center,
                     children: [
                       for (final item in p.items)
-                        _itemChip(item, () => actions.useItem(item)),
+                        _itemChip(
+                            item,
+                            item.isTargeted
+                                // Targeted items pick their mark first —
+                                // nothing fires until the target chip is hit.
+                                ? () => setState(
+                                    () => _pendingTargetItem = item)
+                                : () => actions.useItem(item)),
                     ],
                   ),
                 ],
               ),
             ),
+          if (_pendingTargetItem != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: _targetPicker(p, _pendingTargetItem!),
+            ),
           if (p.armedPowerUps.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
               child: Text(
-                'ARMED · ${p.armedPowerUps.map((pu) => pu.label).join(' · ')}',
+                'ARMED · ${p.armedPowerUps.map((pu) => pu.label.toUpperCase()).join(' · ')}',
                 style: const TextStyle(
                     fontFamily: _kFont,
                     fontSize: 10.5,
@@ -1808,13 +2014,123 @@ class _BoardScreenState extends State<_BoardScreen>
           children: [
             Icon(item.icon, size: 15, color: Potatuhs.gold),
             const SizedBox(width: 5),
-            Text(item.label,
+            Text(item.label.toUpperCase(),
                 style: const TextStyle(
                     fontFamily: _kFont,
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.5,
                     color: Colors.white)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Target chooser for a pending targeted item: rival seats for the freeze
+  /// ray / swapper, warp nodes for the warp potato. CANCEL backs out free —
+  /// nothing is spent until a target chip fires.
+  Widget _targetPicker(PartyPlayer p, PowerUp item) {
+    final isWarp = item == PowerUp.warpPotato;
+    final targets = <Widget>[];
+    if (isWarp) {
+      final nodes = controller.warpNodes;
+      for (var i = 0; i < nodes.length; i++) {
+        final space = controller.board[nodes[i]];
+        final section = controller.sectionOf(space);
+        final isShop = space.type == SpaceType.shop;
+        final delta = nodes[i] - p.position;
+        targets.add(_targetChip(
+          label: isShop ? 'MARKET' : section.name,
+          sub: delta >= 0 ? '+$delta' : '$delta',
+          color: isShop ? const Color(0xFFD7A86E) : section.color,
+          icon: isShop ? Icons.storefront : section.icon,
+          onTap: () {
+            final slot = i;
+            setState(() => _pendingTargetItem = null);
+            actions.useItemOn(item, slot);
+          },
+        ));
+      }
+    } else {
+      for (final t in controller.players) {
+        if (t.index == p.index) continue;
+        targets.add(_targetChip(
+          label: t.name.toUpperCase(),
+          color: t.color,
+          icon: Icons.person,
+          onTap: () {
+            final seat = t.index;
+            setState(() => _pendingTargetItem = null);
+            actions.useItemOn(item, seat);
+          },
+        ));
+      }
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          isWarp
+              ? 'WARP POTATO — WHERE TO?'
+              : '${item.label.toUpperCase()} — ON WHO?',
+          style: Potatuhs.label(size: 9.5, color: Potatuhs.gold),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          alignment: WrapAlignment.center,
+          children: [
+            ...targets,
+            _targetChip(
+              label: 'CANCEL',
+              color: Colors.white38,
+              icon: Icons.close,
+              onTap: () => setState(() => _pendingTargetItem = null),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _targetChip({
+    required String label,
+    required Color color,
+    required IconData icon,
+    required VoidCallback onTap,
+    String? sub,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: Potatuhs.inkPanel,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color.withValues(alpha: 0.7), width: 1.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 5),
+            Text(label,
+                style: const TextStyle(
+                    fontFamily: _kFont,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
+                    color: Colors.white)),
+            if (sub != null) ...[
+              const SizedBox(width: 4),
+              Text(sub,
+                  style: TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 10,
+                      color: color)),
+            ],
           ],
         ),
       ),
@@ -1891,22 +2207,48 @@ class _BoardScreenState extends State<_BoardScreen>
     IconData icon;
     if (controller.gameMap != null) {
       // xy maps carry their own forks and never set [isShortcut] (so the legacy
-      // [kBoardBranches] lookup below would throw). Label by order delta from
-      // the fork instead: the main path advances one step; a cut-through jumps
-      // ahead; a bail-up doubles back toward safety.
-      final delta = next - p.position;
-      if (delta <= 1) {
-        label = 'PRESS ON';
-        sub = 'The main path onward';
-        icon = Icons.arrow_forward;
-      } else if (next > p.position) {
+      // [kBoardBranches] lookup below would throw). The copy NAMES the trade
+      // (PARTY UX LAW — TODO_strategy.md): what each branch is worth is
+      // computed live from the board via [PartyController.previewBranch].
+      final pv = controller.previewBranch(next);
+      if (pv.isCut) {
+        // What the cut skips = whatever the long way around still offers.
+        final skipped = controller.previewBranch(p.position + 1);
+        final miss = <String>[
+          if (skipped.market) 'the market',
+          if (skipped.diamonds > 0) '${skipped.diamonds} 💎',
+          if (skipped.powerUp) 'a power-up',
+        ];
         label = 'CUT-THROUGH';
-        sub = 'Skip ahead — riskier ground';
+        sub = 'Skip ${skipped.spots} spots'
+            '${miss.isEmpty ? '' : ' — miss ${miss.join(', ')}'}'
+            '${pv.risky ? ' · rough ground on the far arm' : ''}';
         icon = Icons.fast_forward;
-      } else {
-        label = 'BAIL OUT';
-        sub = 'Double back toward safety';
+      } else if (pv.isBail) {
+        label = 'BAIL UP';
+        sub = pv.heatThere < pv.heatHere
+            ? 'Up a band — the water cools to '
+                '${pv.heatThere == 0 ? 'nothing' : '−${pv.heatThere} 💎 a landing'}'
+            : 'Back up one band — walked ground'
+                '${pv.diamonds > 0 ? ', ${pv.diamonds} 💎 left behind' : ''}';
         icon = Icons.u_turn_left;
+      } else if (controller.branchOptions.any((n) => n > p.position + 1)) {
+        // The long way around a cut-through: the diamond road.
+        final worth = <String>[
+          if (pv.diamonds > 0) '${pv.diamonds} 💎 on the trail',
+          if (pv.market) 'THE MARKET',
+          if (pv.powerUp) 'a power-up',
+        ];
+        label = 'THE LONG WAY';
+        sub = worth.isEmpty ? 'Every spot of the spiral' : worth.join(' · ');
+        icon = Icons.arrow_forward;
+      } else {
+        // Deeper past a descent checkpoint: press your luck against the heat.
+        label = 'PRESS ON';
+        sub = pv.heatThere > 0
+            ? 'Deeper — the Vat skims −${pv.heatThere} 💎 a landing down here'
+            : 'Down the spiral — the water heats up below';
+        icon = Icons.arrow_forward;
       }
     } else if (!space.isShortcut) {
       label = 'STAY THE COURSE';
@@ -1976,12 +2318,18 @@ class _BoardScreenState extends State<_BoardScreen>
   }
 
   Widget _shopOffer(PartyPlayer p) {
-    final potatoAfford = p.diamonds >= kPotatoPrice;
+    final potatoPrice = controller.potatoPriceFor(p);
+    final potatoAfford = p.diamonds >= potatoPrice;
     final packFull = p.items.length >= kMaxItems;
     // The anchor's buy point IS the workplace: the Potato Shack. Ordinary
     // mid-path markets keep their market identity.
     final atShack = controller.gameMap != null &&
         p.position == controller.board.length - 1;
+    // Catalog games sell today's tape-drawn shelf; legacy replays keep the
+    // fixed 9-item list their logs were recorded on.
+    final shelf = controller.bazaar ? controller.marketShelf : kItemShop;
+    final hasExotic = controller.bazaar &&
+        shelf.any((i) => i.rarity == ItemRarity.exotic);
     return Column(
       key: const ValueKey('shop'),
       mainAxisSize: MainAxisSize.min,
@@ -2001,6 +2349,30 @@ class _BoardScreenState extends State<_BoardScreen>
           style: const TextStyle(
               fontFamily: _kFont, fontSize: 12, color: Colors.white60),
         ),
+        if (controller.bazaar && p.coupon)
+          const Padding(
+            padding: EdgeInsets.only(top: 3),
+            child: Text(
+              'COUPON ACTIVE — NEXT BUY HALF PRICE',
+              style: TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 10,
+                  letterSpacing: 1,
+                  color: Potatuhs.gold),
+            ),
+          ),
+        if (hasExotic)
+          Padding(
+            padding: const EdgeInsets.only(top: 3),
+            child: Text(
+              '✦ AN EXOTIC IS ON THE SHELF TODAY ✦',
+              style: TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 10,
+                  letterSpacing: 1,
+                  color: ItemRarity.exotic.color),
+            ),
+          ),
         const SizedBox(height: 10),
         // The win-condition buy: a potato.
         GestureDetector(
@@ -2014,10 +2386,10 @@ class _BoardScreenState extends State<_BoardScreen>
                 color: const Color(0xFFD7A86E),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: const Center(
+              child: Center(
                 child: Text(
-                  'BUY POTATO  ·  $kPotatoPrice 💎',
-                  style: TextStyle(
+                  'BUY POTATO  ·  $potatoPrice 💎',
+                  style: const TextStyle(
                       fontFamily: _kFont,
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -2032,7 +2404,9 @@ class _BoardScreenState extends State<_BoardScreen>
         Align(
           alignment: Alignment.centerLeft,
           child: Text(
-            packFull ? 'ITEMS · pack full' : 'ITEMS',
+            packFull
+                ? "TODAY'S WARES · pack full"
+                : "TODAY'S WARES",
             style: const TextStyle(
                 fontFamily: _kFont,
                 fontSize: 11,
@@ -2046,7 +2420,18 @@ class _BoardScreenState extends State<_BoardScreen>
           runSpacing: 7,
           alignment: WrapAlignment.center,
           children: [
-            for (final item in kItemShop) _shopItemButton(p, item, packFull),
+            for (final item in shelf) _shopItemButton(p, item, packFull),
+            if (controller.bazaar && shelf.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  'Shelf cleaned out — come back next pass.',
+                  style: TextStyle(
+                      fontFamily: _kFont,
+                      fontSize: 11,
+                      color: Colors.white54),
+                ),
+              ),
           ],
         ),
         const SizedBox(height: 12),
@@ -2076,34 +2461,59 @@ class _BoardScreenState extends State<_BoardScreen>
     );
   }
 
-  /// A buyable item pill: icon, label, diamond price. Dimmed and inert when the
-  /// player can't afford it or their pack is full.
+  /// A buyable item pill: icon, label, diamond price, tinted by catalog
+  /// rarity (silver / gold / violet). Dimmed and inert when the player can't
+  /// afford it or their pack is full — but always VISIBLE: perusing is free.
   Widget _shopItemButton(PartyPlayer p, PowerUp item, bool packFull) {
-    final price = kItemPrices[item] ?? 999;
+    final price = controller.shelfPriceOf(item, p);
     final enabled = !packFull && p.diamonds >= price;
+    final rarity = item.rarity;
+    final tint = controller.bazaar ? rarity.color : Potatuhs.gold;
+    final exotic = controller.bazaar && rarity == ItemRarity.exotic;
     return GestureDetector(
       onTap: enabled ? () => actions.buyItem(item) : null,
       child: Opacity(
         opacity: enabled ? 1 : 0.4,
         child: Container(
+          constraints: const BoxConstraints(maxWidth: 108),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
             color: Potatuhs.inkPanel,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-                color: Potatuhs.gold.withValues(alpha: 0.6), width: 1.3),
+                color: tint.withValues(alpha: exotic ? 0.9 : 0.6),
+                width: exotic ? 1.8 : 1.3),
+            boxShadow: exotic
+                ? Potatuhs.glow(tint, strength: 0.25, blur: 10)
+                : null,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(item.icon, size: 18, color: Potatuhs.gold),
+              if (exotic)
+                Text(rarity.label,
+                    style: TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 7.5,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.5,
+                        color: tint)),
+              Icon(item.icon, size: 18, color: tint),
               const SizedBox(height: 3),
-              Text(item.label,
+              Text(item.label.toUpperCase(),
+                  textAlign: TextAlign.center,
                   style: const TextStyle(
                       fontFamily: _kFont,
                       fontSize: 9,
                       fontWeight: FontWeight.w700,
                       color: Colors.white)),
+              if (controller.bazaar)
+                Text(item.description,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 7.5,
+                        color: Colors.white54)),
               Text('$price 💎',
                   style: const TextStyle(
                       fontFamily: _kFont, fontSize: 9, color: Colors.white60)),
@@ -2531,7 +2941,7 @@ class _SpaceInspector extends StatelessWidget {
                               _chip(p.name, p.color, Icons.person),
                             for (final t in opsHere)
                               _chip(
-                                  t.op.name,
+                                  t.op.name.toUpperCase(),
                                   const Color(0xFFE5484D),
                                   Icons.theater_comedy),
                             if (ghostsHere > 0)
@@ -2971,6 +3381,9 @@ class _BoardView extends StatelessWidget {
     final r = geo.nodeRadius * 0.9;
     const danger = Color(0xFFE5484D);
     final loot = op.hasLoot;
+    // Prowl rounds the whole crew reads hostile — red ring + glow on every
+    // op, robbed loot or not, so the board itself telegraphs the threat.
+    final hot = loot || controller.opsProwling;
     return AnimatedPositioned(
       key: ValueKey('op_${op.op.id}'),
       duration: const Duration(milliseconds: 280),
@@ -2991,13 +3404,13 @@ class _BoardView extends StatelessWidget {
                 color: Colors.black,
                 shape: BoxShape.circle,
                 border: Border.all(
-                    color: loot ? danger : Colors.white54,
-                    width: loot ? 2.5 : 1.5),
+                    color: hot ? danger : Colors.white54,
+                    width: hot ? 2.5 : 1.5),
                 boxShadow: [
                   BoxShadow(
-                      color: (loot ? danger : Colors.black)
-                          .withValues(alpha: loot ? 0.8 : 0.5),
-                      blurRadius: loot ? 10 : 4),
+                      color: (hot ? danger : Colors.black)
+                          .withValues(alpha: hot ? 0.8 : 0.5),
+                      blurRadius: hot ? 10 : 4),
                 ],
               ),
               child: ClipOval(
@@ -3009,6 +3422,27 @@ class _BoardView extends StatelessWidget {
                 ),
               ),
             ),
+            if (controller.opsProwling && !loot)
+              Positioned(
+                right: -4,
+                top: -4,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: danger,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    '⚠',
+                    style: TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 8,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white),
+                  ),
+                ),
+              ),
             if (loot)
               Positioned(
                 right: -4,
@@ -3510,17 +3944,9 @@ class _BoardPathPainter extends CustomPainter {
         Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
 
     // The full smoothed road (midpoint smoothing: quads through each node) —
-    // one dark groove pass so the path reads as a carved bed.
-    final road = Path()..moveTo(pts[0].dx, pts[0].dy);
-    if (n > 2) {
-      final m0 = mid(pts[0], pts[1]);
-      road.lineTo(m0.dx, m0.dy);
-      for (var i = 1; i < n - 1; i++) {
-        final m = mid(pts[i], pts[i + 1]);
-        road.quadraticBezierTo(pts[i].dx, pts[i].dy, m.dx, m.dy);
-      }
-    }
-    road.lineTo(pts[n - 1].dx, pts[n - 1].dy);
+    // one dark groove pass so the path reads as a carved bed. Built by the
+    // shared smoothedRoadPath so the ambient comet's metric matches exactly.
+    final road = smoothedRoadPath(pts);
     canvas.drawPath(
       road,
       Paint()
@@ -3830,6 +4256,13 @@ class _MiniGameIntroScreen extends StatelessWidget {
                 const SizedBox(height: 14),
                 _bossBanner(controller.currentBoss!),
               ],
+              // The Big Bad's decree, armed by the wheel: the stakes are
+              // announced BEFORE anyone plays (PARTY UX LAW — no invisible
+              // rule may decide the round).
+              if (controller.armedBossRule != null) ...[
+                const SizedBox(height: 14),
+                _decreeBanner(controller),
+              ],
               const SizedBox(height: 14),
               Center(
                 child: Container(
@@ -3849,7 +4282,7 @@ class _MiniGameIntroScreen extends StatelessWidget {
                       // overflow phone widths — ellipsize, never overflow.
                       Flexible(
                         child: Text(
-                          "LEADER'S TERRITORY: ${section.name}",
+                          "LEADER'S TERRITORY: ${section.name.toUpperCase()}",
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
@@ -3976,6 +4409,52 @@ class _MiniGameIntroScreen extends StatelessWidget {
 
   /// The boss showdown header — the op's portrait, name, and a "BOSS ROUND"
   /// flag. Shown only on the final round when the map fields a boss.
+  /// The armed decree, spelled out on the game-reveal screen so everyone
+  /// plays the round knowing exactly what's riding on it.
+  Widget _decreeBanner(PartyController c) {
+    const danger = Color(0xFFE5484D);
+    final rule = c.armedBossRule!;
+    final text = switch (rule) {
+      BossRule.lastLosesPotato =>
+        'Whoever comes LAST in this game LOSES A POTATO.',
+      BossRule.greatRedistribution =>
+        "Every diamond goes into one pot — winner takes 50%, 2nd takes 25%, "
+            'last takes 12.5%. The Big Bad keeps the rest.',
+    };
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: danger.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: danger.withValues(alpha: 0.7)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              "⚔ ${(c.bigBad?.name ?? 'THE BIG BAD').toUpperCase()} DECREES ⚔",
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                  color: danger),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              text,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontFamily: _kFont, fontSize: 12.5, color: Colors.white),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _bossBanner(Op boss) {
     const danger = Color(0xFFE5484D);
     return Center(
@@ -4130,6 +4609,10 @@ class _PassPhoneScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = controller.miniPlayer;
     final teams = controller.mode.isTeams;
+    // Solo: nobody hands a phone anywhere — it's YOUR TURN, or a CPU beat
+    // (the driver banks its score; no START button to tap for it).
+    final solo = controller.mode == PartyMode.solo;
+    final cpu = solo && controller.isCpuSeat(p.index);
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
@@ -4139,10 +4622,12 @@ class _PassPhoneScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
-              const Center(
+              Center(
                 child: Text(
-                  'PASS THE PHONE TO',
-                  style: TextStyle(
+                  solo
+                      ? (cpu ? 'NOW PLAYING' : 'YOUR TURN')
+                      : 'PASS THE PHONE TO',
+                  style: const TextStyle(
                       fontFamily: _kFont,
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -4203,7 +4688,7 @@ class _PassPhoneScreen extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              if (interactive)
+              if (interactive && !cpu)
                 GestureDetector(
                   onTap: actions.startMiniGameAttempt,
                   child: Container(
@@ -4219,7 +4704,7 @@ class _PassPhoneScreen extends StatelessWidget {
                     ),
                     child: Center(
                       child: Text(
-                        "I'M ${p.name.toUpperCase()} — READY",
+                        solo ? 'START' : "I'M ${p.name.toUpperCase()} — READY",
                         style: const TextStyle(
                             fontFamily: _kFont,
                             fontSize: 16,
@@ -4233,7 +4718,9 @@ class _PassPhoneScreen extends StatelessWidget {
               else
                 Center(
                   child: Text(
-                    'Waiting for ${p.name}…',
+                    cpu
+                        ? '${p.name} takes their shot…'
+                        : 'Waiting for ${p.name}…',
                     style:
                         Potatuhs.body(size: 14, color: Potatuhs.textSecondary),
                   ),
@@ -4670,38 +5157,547 @@ class _VoteSkipButton extends StatelessWidget {
   }
 }
 
-/// Fires [onFire] once after [delay] — used by the online host to auto-pace
-/// held dialog beats (game reveal) so a distracted host can't stall the room.
-class _AutoAdvanceAfter extends StatefulWidget {
-  final Duration delay;
-  final VoidCallback onFire;
-  final Widget child;
-  const _AutoAdvanceAfter({
-    super.key,
-    required this.delay,
-    required this.onFire,
-    required this.child,
+// _AutoAdvanceAfter is GONE (tap-to-drive law, ORDER_AND_SOLO_SPEC §1): no
+// timer advances a held dialog beat, online host included.
+
+/// THE OPENING ORDER (ORDER_AND_SOLO_SPEC §3) — the match's first screen on
+/// rules ≥ 6: every character throws double dice for their ordinal, ties
+/// re-roll, and the resolved order is revealed before the match begins.
+/// Tap-driven throughout; online, each seat throws on its own device and the
+/// host taps out of the resolved ceremony.
+class _OrderRollScreen extends StatelessWidget {
+  final PartyController controller;
+  final PartyActions actions;
+  final bool isOnline;
+  final int mySlot;
+  final bool isHost;
+  const _OrderRollScreen({
+    required this.controller,
+    required this.actions,
+    required this.isOnline,
+    required this.mySlot,
+    required this.isHost,
   });
 
   @override
-  State<_AutoAdvanceAfter> createState() => _AutoAdvanceAfterState();
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final c = controller;
+        final pending = c.orderPendingSeat;
+        final resolved = c.orderResolved;
+        // Display order: resolved ceremonies show the earned ordinals;
+        // mid-ceremony everyone sits in seat order.
+        final seats = resolved
+            ? c.turnOrder
+            : [for (var i = 0; i < c.players.length; i++) i];
+        final lastLine = c.turnLog.isEmpty ? null : c.turnLog.last;
+        final myThrow = !isOnline || pending == mySlot;
+        final mayBegin = resolved && (!isOnline || isHost);
+        return Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Spacer(),
+                  const Center(
+                    child: Text(
+                      'THE OPENING ORDER',
+                      style: TextStyle(
+                          fontFamily: _kFont,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 3,
+                          color: Potatuhs.gold),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Center(
+                    child: Text(
+                      'Double dice decide who goes first.',
+                      style: TextStyle(
+                          fontFamily: _kFont,
+                          fontSize: 13,
+                          color: Colors.white70),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  for (var i = 0; i < seats.length; i++)
+                    _seatRow(c, seats[i], ordinal: resolved ? i : null,
+                        pending: pending),
+                  const SizedBox(height: 18),
+                  if (lastLine != null)
+                    Center(
+                      child: Text(
+                        lastLine,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 12,
+                            color: Colors.white54),
+                      ),
+                    ),
+                  const Spacer(),
+                  if (!resolved)
+                    _bigButton(
+                      enabled: myThrow && pending != null,
+                      label: pending == null
+                          ? '…'
+                          : myThrow
+                              ? 'THROW FOR ${c.players[pending].name.toUpperCase()}'
+                              : 'WAITING FOR ${c.players[pending].name.toUpperCase()}…',
+                      onTap: actions.rollForOrder,
+                    )
+                  else
+                    _bigButton(
+                      enabled: mayBegin,
+                      label: mayBegin
+                          ? 'BEGIN THE MATCH'
+                          : 'THE HOST BEGINS THE MATCH…',
+                      onTap: actions.beginMatch,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _seatRow(PartyController c, int seat,
+      {int? ordinal, int? pending}) {
+    final p = c.players[seat];
+    final dice = c.orderDice[seat];
+    final isUp = pending == seat;
+    const ordinals = ['1ST', '2ND', '3RD', '4TH', '5TH', '6TH', '7TH', '8TH'];
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: isUp
+            ? p.color.withValues(alpha: 0.18)
+            : Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: isUp ? p.color : Colors.white24),
+      ),
+      child: Row(
+        children: [
+          if (ordinal != null) ...[
+            Text(
+              ordinals[ordinal],
+              style: const TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: Potatuhs.gold),
+            ),
+            const SizedBox(width: 10),
+          ],
+          Expanded(
+            child: Text(
+              p.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontFamily: _kFont,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: p.color),
+            ),
+          ),
+          Text(
+            dice == null
+                ? (isUp ? 'THROWING…' : '—')
+                : '${dice[0]} + ${dice[1]} = ${dice[0] + dice[1]}',
+            style: TextStyle(
+                fontFamily: _kFont,
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: dice == null ? Colors.white38 : Colors.white),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bigButton({
+    required bool enabled,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        height: 56,
+        decoration: BoxDecoration(
+          color: enabled
+              ? Potatuhs.gold
+              : Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: enabled
+              ? [
+                  BoxShadow(
+                      color: Potatuhs.gold.withValues(alpha: 0.45),
+                      blurRadius: 18)
+                ]
+              : null,
+        ),
+        child: Center(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontFamily: _kFont,
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.5,
+              color: enabled ? Colors.black : Colors.white54,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
-class _AutoAdvanceAfterState extends State<_AutoAdvanceAfter> {
-  Timer? _timer;
+/// THE READY CHECK (READY_UP_SPEC.md) — online only. The round holds at
+/// passPhone until EVERY seat confirms: the reveal is tap-advanced by the
+/// host, and only the players can move the room into gameplay. Doubles as the
+/// round's reading time (the local MiniGameHost intro is skipped online) and
+/// hosts the vote-skip escape hatch.
+class _ReadyCheckScreen extends StatelessWidget {
+  final PartyController controller;
+  final PartyActions actions;
+  final int mySeat; // -1 = spectating replica edge: pips only, no button
+  const _ReadyCheckScreen({
+    required this.controller,
+    required this.actions,
+    required this.mySeat,
+  });
 
   @override
-  void initState() {
-    super.initState();
-    _timer = Timer(widget.delay, widget.onFire);
+  Widget build(BuildContext context) {
+    // Listen directly so ready pips repaint live (same pattern as
+    // _VoteSkipButton — the net layer owns this subtree's outer rebuilds).
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final c = controller;
+        final spec = c.currentSpec!;
+        final ready = c.readySeats;
+        final iAmReady = mySeat >= 0 && ready.contains(mySeat);
+        final decree = c.armedBossRule;
+        return Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Spacer(),
+                  const Center(
+                    child: Text(
+                      'READY CHECK',
+                      style: TextStyle(
+                          fontFamily: _kFont,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 3,
+                          color: Colors.white54),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Center(child: Icon(spec.icon, color: spec.accent, size: 44)),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: Text(
+                      spec.name.toUpperCase(),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: _kFont,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        letterSpacing: 2,
+                        shadows: [Shadow(color: spec.accent, blurRadius: 16)],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Center(
+                    child: Text(
+                      spec.howToWin,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontFamily: _kFont,
+                          fontSize: 13,
+                          color: spec.accent),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  for (final rule in spec.rules)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '•  $rule',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 13,
+                            color: Colors.white70),
+                      ),
+                    ),
+                  if (decree != null) ...[
+                    const SizedBox(height: 12),
+                    Center(
+                      child: Text(
+                        decree == BossRule.lastLosesPotato
+                            ? 'DECREE: last place forfeits a potato!'
+                            : 'DECREE: every diamond is pooled and '
+                                'redistributed by placement!',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontFamily: _kFont,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFFFB4A2)),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 22),
+                  Center(
+                    child: Text(
+                      'READY ${ready.length}/${c.players.length}',
+                      style: const TextStyle(
+                          fontFamily: _kFont,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 2,
+                          color: Colors.white54),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final p in c.players)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: ready.contains(p.index)
+                                ? p.color.withValues(alpha: 0.22)
+                                : Colors.white.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: ready.contains(p.index)
+                                    ? p.color
+                                    : Colors.white24),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                ready.contains(p.index)
+                                    ? Icons.check_circle
+                                    : Icons.hourglass_empty,
+                                size: 14,
+                                color: ready.contains(p.index)
+                                    ? p.color
+                                    : Colors.white38,
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                p.name,
+                                style: TextStyle(
+                                    fontFamily: _kFont,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: ready.contains(p.index)
+                                        ? Colors.white
+                                        : Colors.white54),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                  const Spacer(),
+                  Row(
+                    children: [
+                      _VoteSkipButton(
+                        controller: c,
+                        actions: actions,
+                        mySeat: mySeat,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: (mySeat >= 0 && !iAmReady)
+                              ? actions.readyUp
+                              : null,
+                          child: Container(
+                            height: 56,
+                            decoration: BoxDecoration(
+                              color: iAmReady
+                                  ? Colors.white.withValues(alpha: 0.08)
+                                  : Potatuhs.gold,
+                              borderRadius: BorderRadius.circular(16),
+                              boxShadow: iAmReady
+                                  ? null
+                                  : [
+                                      BoxShadow(
+                                          color: Potatuhs.gold
+                                              .withValues(alpha: 0.45),
+                                          blurRadius: 18)
+                                    ],
+                            ),
+                            child: Center(
+                              child: Text(
+                                iAmReady ? 'WAITING FOR OTHERS…' : 'READY',
+                                style: TextStyle(
+                                  fontFamily: _kFont,
+                                  fontSize: iAmReady ? 13 : 18,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1.5,
+                                  color: iAmReady
+                                      ? Colors.white54
+                                      : Colors.black,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
+}
+
+// ---------------------------------------------------------------------------
+// GAME RIGGER — the pick-the-next-game screen (PartyPhase.gamePick)
+// ---------------------------------------------------------------------------
+
+/// Full-screen moment for the GAME RIGGER item: its holder chooses the
+/// round's mini-game from the tape-drawn hand; everyone else watches the rig
+/// happen. The pick is a genuine logged input (PARTY UX LAW: the player
+/// drives — nothing advances until the rigger taps a game).
+class _GamePickScreen extends StatelessWidget {
+  final PartyController controller;
+  final PartyActions actions;
+  final bool interactive;
+
+  const _GamePickScreen({
+    required this.controller,
+    required this.actions,
+    required this.interactive,
+  });
 
   @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+  Widget build(BuildContext context) {
+    final seat = controller.gamePickerSeat;
+    final picker = seat != null ? controller.players[seat] : null;
+    final choices = controller.gamePickChoices;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(PowerUp.gameRigger.icon,
+                  size: 42, color: ItemRarity.exotic.color),
+              const SizedBox(height: 10),
+              Text(
+                'THE ROUND IS RIGGED',
+                style: TextStyle(
+                    fontFamily: _kDisplay,
+                    fontSize: 24,
+                    letterSpacing: 1,
+                    color: ItemRarity.exotic.color),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                interactive
+                    ? 'Pick the next mini-game, ${picker?.name ?? 'rigger'}.'
+                    : '${picker?.name ?? 'The rigger'} is choosing the '
+                        'next mini-game…',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontFamily: _kFont, fontSize: 13, color: Colors.white70),
+              ),
+              const SizedBox(height: 18),
+              for (var i = 0; i < choices.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: GestureDetector(
+                    onTap:
+                        interactive ? () => actions.pickMiniGame(i) : null,
+                    child: Opacity(
+                      opacity: interactive ? 1 : 0.55,
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Potatuhs.inkPanel,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                              color: (picker?.color ?? Potatuhs.gold)
+                                  .withValues(alpha: 0.6),
+                              width: 1.4),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              choices[i].name.toUpperCase(),
+                              style: const TextStyle(
+                                  fontFamily: _kFont,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                  color: Colors.white),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              choices[i].rules.isEmpty
+                                  ? ''
+                                  : choices[i].rules.first,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontFamily: _kFont,
+                                  fontSize: 11,
+                                  color: Colors.white54),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
 }

@@ -1,9 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Visual manual for ORBITAL INSERTION — the legend carousel cards shown by
 // MiniGameHost on the intro screen. Each frame draws the LITERAL in-game
-// components (the gold dashed STABLE-ORBIT ring, the planet orb + gravity glow,
-// the launcher, a captured moon, and the CRASH / ESCAPE trajectory tells) in the
-// game's own style, using GameFx + the exact game palette from Potatuhs.
+// components (the gold dashed STABLE-ORBIT ring, the PlanetArt planet + gravity
+// glow, the launcher, orbiting moons, the CRASH / ESCAPE trajectory tells, and
+// the v2 collision + escalation beats) in the game's own style, using GameFx +
+// PlanetArt + the exact game palette from Potatuhs.
 //
 // Static + cheap: they render once in the intro, never per frame. Self-contained
 // (no access to the game file's private state) — geometry is synthesised, but the
@@ -16,6 +17,7 @@ import 'package:flutter/material.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
+import 'package:cell_mobile/games/planet_art.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 
 const double _kMoonR = 6.0;
@@ -57,7 +59,9 @@ void _boundary(Canvas canvas, Offset c, double r) {
   }
 }
 
-/// The planet — gravity-well glow, faint pull rings, and the glossy orb.
+/// The planet — gravity-well glow, faint pull rings, and the shared PlanetArt
+/// body (identical renderer to the live game and Orbit Catch). Seeded from a
+/// fixed fraction + the accent color so every card shows the same world.
 void _planet(Canvas canvas, Offset c, double r, Color color,
     {bool drift = false}) {
   if (r <= 0) return;
@@ -83,7 +87,9 @@ void _planet(Canvas canvas, Offset c, double r, Color color,
         ..strokeWidth = 0.9,
     );
   }
-  GameFx.orb(canvas, c, r, color, glow: 1.4, specular: true);
+  final skin =
+      PlanetArt.skin(PlanetArt.seed(const Offset(0.5, 0.4), color), color, r);
+  PlanetArt.paint(canvas, c, r, color, skin, 0.0);
   if (drift) {
     final ax = Paint()
       ..color = color.withValues(alpha: 0.5)
@@ -126,7 +132,7 @@ void _trajectory(Canvas canvas, List<Offset> pts, Color color) {
   }
 }
 
-/// Copper debris hazard cluster — the obstacle to thread on later worlds.
+/// Copper debris hazard cluster — the late-round obstacle on the approach lane.
 void _hazard(Canvas canvas, Offset c, double r) {
   if (r <= 0) return;
   canvas.drawCircle(
@@ -186,6 +192,18 @@ void _orbitEllipse(
   );
 }
 
+/// The lap ring-pulse a moon flashes each completed revolution.
+void _lapPulse(Canvas canvas, Offset c, Color color) {
+  canvas.drawCircle(
+    c,
+    _kMoonR + 9,
+    Paint()
+      ..color = color.withValues(alpha: 0.55)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2,
+  );
+}
+
 /// Sample a quadratic bezier — used to synthesise the illustrative flight paths.
 List<Offset> _bezier(Offset a, Offset ctrl, Offset b, int n) {
   final pts = <Offset>[];
@@ -202,7 +220,7 @@ List<Offset> _bezier(Offset a, Offset ctrl, Offset b, int n) {
 
 // ── frames ───────────────────────────────────────────────────────────────────
 
-/// FRAME 1 — core object + verb: aim the launcher and fling a moon at the planet.
+/// FRAME 1 — core object + verb: fling moons at the planet, back-to-back.
 void _legendFling(Canvas canvas, Size size) {
   if (size.width < 8 || size.height < 8) return;
   final w = size.width, h = size.height;
@@ -214,53 +232,60 @@ void _legendFling(Canvas canvas, Size size) {
   _ring(canvas, pc, ringR);
   _planet(canvas, pc, r, Potatuhs.airForce);
 
-  // Curved lead-in from the launcher into the ring (gold = a capture).
+  // Curved lead-in from the launcher into the ring (gold = a capture) — with
+  // a second moon already orbiting: launching never pauses.
   final target = pc + Offset(-ringR * 0.92, -ringR * 0.15);
   final ctrl = pc + Offset(-ringR * 1.35, ringR * 0.85);
   _trajectory(canvas, _bezier(launcher, ctrl, target, 26), Potatuhs.gold);
   _moon(canvas, target, Potatuhs.gold);
+  _moon(canvas, pc + Offset(ringR * 0.8, -ringR * 0.45), Potatuhs.glaucous);
 
   // Launcher with a gold aim beam pointing up-left (the drag direction).
   final aimTip = launcher + Offset(-ringR * 0.36, -ringR * 0.30);
   _launcher(canvas, launcher, aimTo: aimTip);
 }
 
-/// FRAME 2 — scoring: land a STABLE orbit; rounder orbits score more each lap.
+/// FRAME 2 — scoring: every completed lap pays; crowd the sky with moons.
 void _legendScore(Canvas canvas, Size size) {
   if (size.width < 8 || size.height < 8) return;
   final w = size.width, h = size.height;
   final pc = Offset(w * 0.5, h * 0.44);
   final r = (min(w, h) * 0.11).clamp(16.0, 34.0);
 
-  // Wobbly elliptical orbit — dim, scores little.
+  // Wobbly elliptical orbit — dim, pays less per lap.
   final aEll = min(w, h) * 0.34;
   const ecc = 0.5;
   final pEll = aEll * (1 - ecc * ecc);
   _orbitEllipse(canvas, pc, pEll, ecc, -0.5, Potatuhs.glaucous, alpha: 0.16);
 
-  // Round orbit hugging the stable ring — bright, scores big.
+  // Round orbit hugging the stable ring — bright, pays big every lap.
   final rc = min(w * 0.30, h * 0.26).clamp(28.0, 1e9);
   _ring(canvas, pc, rc);
   _orbitEllipse(canvas, pc, rc, 0.0, 0.0, Potatuhs.gold, alpha: 0.30);
 
   _planet(canvas, pc, r, Potatuhs.airForce);
 
-  // A moon on each, with its per-lap payoff.
+  // A small constellation, each moon paying per lap; the circular one flashes
+  // its lap ring-pulse — the visible "this orbit is stable".
   final circMoon = pc + Offset(cos(-0.7) * rc, sin(-0.7) * rc);
   final rEll = pEll / (1 + ecc * cos(2.4));
   final ellMoon = pc + Offset(cos(-0.5 + 2.4) * rEll, sin(-0.5 + 2.4) * rEll);
+  final thirdMoon = pc + Offset(cos(2.4) * rc, sin(2.4) * rc);
   _moon(canvas, ellMoon, Potatuhs.glaucous);
+  _moon(canvas, thirdMoon, Potatuhs.sienna);
+  _lapPulse(canvas, circMoon, Potatuhs.gold);
   _moon(canvas, circMoon, Potatuhs.gold);
 
-  GameFx.text(canvas, '+95', ellMoon.translate(0, -16), 12,
-      Potatuhs.textFaint,
+  GameFx.text(canvas, '+31', ellMoon.translate(0, -16), 12, Potatuhs.textFaint,
       weight: FontWeight.w800);
-  GameFx.text(canvas, '+260', circMoon.translate(22, -8), 15, Potatuhs.gold,
+  GameFx.text(canvas, '+60', circMoon.translate(24, -8), 15, Potatuhs.gold,
       display: true, glow: 0.7);
+  GameFx.text(canvas, '3 ALOFT', pc.translate(0, -rc - 16), 11, Potatuhs.gold,
+      display: true, glow: 0.5);
 }
 
-/// FRAME 3 — the danger: too slow CRASHES, too fast is LOST past the dashed
-/// deep-space boundary (the containment edge of the live arena).
+/// FRAME 3 — the launch danger: too slow CRASHES, too fast is LOST past the
+/// dashed deep-space boundary (the containment edge of the live arena).
 void _legendMiss(Canvas canvas, Size size) {
   if (size.width < 8 || size.height < 8) return;
   final w = size.width, h = size.height;
@@ -294,12 +319,52 @@ void _legendMiss(Canvas canvas, Size size) {
   _launcher(canvas, launcher);
 }
 
-/// FRAME 4 — escalation: later worlds shrink, DRIFT, and add a debris hazard.
-void _legendWorlds(Canvas canvas, Size size) {
+/// FRAME 4 — the crowding cost: moons whose orbits cross DESTROY each other.
+void _legendCollide(Canvas canvas, Size size) {
+  if (size.width < 8 || size.height < 8) return;
+  final w = size.width, h = size.height;
+  final pc = Offset(w * 0.5, h * 0.44);
+  final r = (min(w, h) * 0.11).clamp(16.0, 34.0);
+
+  // Two crossing ellipses — every orbit passes back through the launch side,
+  // so crowded skies WILL meet unless the launches are phased apart.
+  final aA = min(w, h) * 0.30;
+  const eA = 0.35;
+  final pA = aA * (1 - eA * eA);
+  final aB = min(w, h) * 0.32;
+  const eB = 0.45;
+  final pB = aB * (1 - eB * eB);
+  _orbitEllipse(canvas, pc, pA, eA, 0.6, Potatuhs.gold, alpha: 0.24);
+  _orbitEllipse(canvas, pc, pB, eB, 2.2, Potatuhs.glaucous, alpha: 0.24);
+
+  _planet(canvas, pc, r, Potatuhs.airForce);
+
+  // The meeting point: two moons touching, a burst of collision sparks.
+  final hit = pc + Offset(min(w, h) * 0.20, min(w, h) * 0.22);
+  _moon(canvas, hit.translate(-_kMoonR, 0), Potatuhs.gold);
+  _moon(canvas, hit.translate(_kMoonR, 0), Potatuhs.glaucous);
+  final rng = Random(3);
+  for (int i = 0; i < 10; i++) {
+    final a = i / 10 * 2 * pi;
+    final d = 12 + rng.nextDouble() * 14;
+    canvas.drawCircle(
+      hit + Offset(cos(a) * d, sin(a) * d),
+      1.4 + rng.nextDouble() * 1.6,
+      Paint()..color = Potatuhs.orange.withValues(alpha: 0.8),
+    );
+  }
+  GameFx.text(canvas, '-60 COLLISION', hit.translate(0, -22), 13,
+      Potatuhs.orange,
+      display: true, glow: 0.7);
+}
+
+/// FRAME 5 — escalation: late round the planet accretes mass (gravity swells),
+/// starts to DRIFT, and debris arrives on the approach lane.
+void _legendEscalate(Canvas canvas, Size size) {
   if (size.width < 8 || size.height < 8) return;
   final w = size.width, h = size.height;
   final pc = Offset(w * 0.5, h * 0.32);
-  final r = (min(w, h) * 0.085).clamp(12.0, 26.0); // shrunken planet
+  final r = (min(w, h) * 0.12).clamp(14.0, 32.0);
   final ringR = (min(w * 0.34, h * 0.42)).clamp(30.0, 1e9);
   final launcher = pc + Offset(0, ringR);
 
@@ -311,18 +376,21 @@ void _legendWorlds(Canvas canvas, Size size) {
   _hazard(canvas, hz, (min(w, h) * 0.06).clamp(12.0, 22.0));
 
   _launcher(canvas, launcher);
-  GameFx.text(canvas, 'DRIFTS', pc.translate(0, -r - 16), 10, Potatuhs.sienna,
+  GameFx.text(canvas, 'GRAVITY SWELLS', pc.translate(0, -r - 26), 10,
+      Potatuhs.orange,
+      display: true, glow: 0.5);
+  GameFx.text(canvas, 'DRIFTS', pc.translate(0, -r - 13), 10, Potatuhs.sienna,
       display: true, glow: 0.5);
 }
 
 /// The visual manual for Orbital Insertion — wired into the registry spec.
 final List<LegendFrame> orbitalInsertionLegendFrames = [
   const LegendFrame(
-    caption: 'Drag to fling a moon at the planet',
+    caption: 'Drag to fling moons — keep launching, no waiting',
     paint: _legendFling,
   ),
   const LegendFrame(
-    caption: 'Land a stable orbit — rounder scores more each lap',
+    caption: 'Every completed lap pays — crowd the sky with stable orbits',
     paint: _legendScore,
   ),
   const LegendFrame(
@@ -330,7 +398,11 @@ final List<LegendFrame> orbitalInsertionLegendFrames = [
     paint: _legendMiss,
   ),
   const LegendFrame(
-    caption: 'Later worlds shrink, drift, and add debris to thread',
-    paint: _legendWorlds,
+    caption: 'Moons that meet destroy each other — phase your launches',
+    paint: _legendCollide,
+  ),
+  const LegendFrame(
+    caption: 'Late round: gravity swells, the planet drifts, debris arrives',
+    paint: _legendEscalate,
   ),
 ];

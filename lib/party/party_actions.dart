@@ -25,6 +25,20 @@ abstract class PartyActions {
   /// (the skill input — it IS the outcome). -1 lets the engine tape-draw.
   void wheelStop(int segment);
   void voteSkip();
+
+  /// Confirm the mini-game ready check (READY_UP_SPEC.md). Online-only in
+  /// practice: offline pass-and-play starts attempts directly.
+  void readyUp();
+
+  /// Throw the opening-order double dice (ORDER_AND_SOLO_SPEC §3).
+  void rollForOrder();
+
+  /// Leave the resolved order ceremony into the match proper (host/local).
+  void beginMatch();
+
+  /// GAME RIGGER holder picks the round's game (index into
+  /// [PartyController.gamePickChoices]).
+  void pickMiniGame(int choice);
   void recordMiniScore(int score);
   void confirmSpace();
   void beginMiniGameRound();
@@ -65,6 +79,14 @@ class LocalActions implements PartyActions {
   void wheelStop(int segment) => c.wheelStop(segment);
   @override
   void voteSkip() => c.voteSkip();
+  @override
+  void readyUp() => c.readyUp();
+  @override
+  void rollForOrder() => c.rollForOrder();
+  @override
+  void beginMatch() => c.beginMatch();
+  @override
+  void pickMiniGame(int choice) => c.pickMiniGame(choice);
   @override
   void recordMiniScore(int score) => c.recordMiniScore(score);
   @override
@@ -117,6 +139,15 @@ class OnlineActions implements PartyActions {
       net.act(PartyInputKind.wheelStop, value: segment + 1);
   @override
   void voteSkip() => net.act(PartyInputKind.voteSkip);
+  @override
+  void readyUp() => net.act(PartyInputKind.readyUp);
+  @override
+  void rollForOrder() => net.act(PartyInputKind.orderRoll);
+  @override
+  void beginMatch() => net.act(PartyInputKind.beginMatch);
+  @override
+  void pickMiniGame(int choice) =>
+      net.act(PartyInputKind.pickMiniGame, value: choice);
   @override
   void recordMiniScore(int score) =>
       net.act(PartyInputKind.miniScore, value: score);

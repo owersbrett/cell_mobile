@@ -3,60 +3,75 @@
 The educational component (the **E** in GAMES) for `circulate_v2`.
 
 ## The one thing to learn
-**Circulation is two coupled loops. The *systemic* loop delivers oxygen from the
-heart out to the organs; the *pulmonary* loop returns the spent blood to the
-lungs to reload oxygen. You can only deliver oxygen you have already reloaded —
-delivery and recharge are inseparable.**
+**A living body runs on a gas cycle joined to a pump. You breathe oxygen IN and
+carbon dioxide OUT (gas exchange at the lungs), but breathing alone moves no
+blood — the HEART is the pump that circulates it. Loading the blood, cleaning the
+blood, and moving the blood are three separate jobs, and the body needs all
+three at once.**
 
-> Systemic: heart → arteries → organs (oxygen handed off; blood turns blue).
-> Pulmonary: organs → veins → heart → lungs (oxygen reloaded; blood turns red).
+> Inhale → O₂ loaded into the blood at the lungs.
+> Exhale → CO₂ (the waste of respiration) expelled at the lungs.
+> Heartbeat (lub-dub) → oxygen-rich blood pumped out through the arteries to the
+> organs; spent blood returns to reload.
 
 ## How the mechanic teaches it (lesson-in-the-loop)
-- **The reserve is countable, so the coupling is legible.** v2's hero read is a
-  row of oxygen charges on the heart. Every delivery visibly spends one ("−1");
-  recharging at the lungs refills them. The learner *sees* that delivery draws
-  down a finite oxygen load and *must* be replenished — the body's actual
-  constraint — long before anything fails.
-- **Two distinct actions = the two loops.** DELIVER (tap an organ, red pulse
-  out) is the systemic half; RECHARGE (tap the lungs, reload) is the pulmonary
-  half. They are different taps with different colours, so the two loops are
-  felt as two different jobs, not one blurred "feed".
-- **Colour teaches oxygenation.** The heart lerps **red ↔ blue** with the
-  reserve: spend oxygen and the blood darkens toward deoxygenated blue; reload
-  at the lungs and it reddens. Arterial pulses are red, venous/pulmonary blood
-  is blue — the textbook colour code, embodied.
+- **Two breaths, two directions of gas exchange.** HOLD **INHALE** draws O₂ into
+  the countable reserve; HOLD **EXHALE** vents a visibly rising **CO₂ pressure
+  bar**. The learner physically operates both halves of breathing and feels that
+  they are opposite, separate jobs — not one "breathe" button. This is the exact
+  correction to the common belief that "we breathe to get oxygen" while forgetting
+  that *removing CO₂ is the other, equally vital half*.
+- **Why exhaling matters — the CO₂ cost.** Cells burn the delivered oxygen and
+  hand back carbon dioxide, so the CO₂ bar climbs with every delivery and over
+  time. Left unvented it maxes out and the body goes into **acidosis**: organs
+  drain faster and the alarm flashes. The player learns, by consequence, that
+  CO₂ is a waste product that must be actively removed — not merely a leftover.
+- **The heartbeat is the pump — lub-dub.** You can inhale a full reserve and
+  prime every organ, and *nothing reaches the body until you beat the heart*. The
+  **double-tap** is the lub-dub of one cardiac cycle (the two sounds are the
+  heart's valves snapping shut). This makes vivid the fact students routinely
+  miss: circulation is driven by the heart's mechanical pumping, not by breathing
+  and not by the nerves.
+- **Systemic vs pulmonary, embodied.** The lungs load and clean the blood (the
+  **pulmonary** side); the beat pumps it out to the organs (the **systemic**
+  side). The heart's colour lerps **red ↔ blue** with the reserve — oxygenated vs
+  deoxygenated blood, the textbook colour code.
 - **Triage teaches oxygen demand.** The lowest organs flash and score the most
-  when rescued, so the player learns that different organs have different oxygen
-  needs and that an organ starved of oxygen fails.
-- **The lungs are gas exchange.** They are the *only* node that reloads oxygen —
-  exactly their real role as the site where blood picks up O₂.
+  when rescued, so the player learns that organs have different oxygen needs and
+  that an organ starved of oxygen fails (the brain fastest).
 
-## Why this version teaches better than v1
-v1 hid the economy: a tiny continuous reserve bar you only noticed when it hit
-empty and got punished ("Out of O₂"). The deliver↔recharge dependency — the
-actual lesson — was invisible until failure, so new players spammed deliveries
-and only then discovered the rule. v2 puts the reserve front and centre as a
-*countable* magazine and lights the lungs up *before* you run dry. The learner
-internalises "I can't deliver what I haven't reloaded" by anticipation, which is
-how you actually understand a coupled system — not by being slapped for breaking
-a rule they couldn't see.
+## The cardiac cycle detail (the "lub-dub")
+The heartbeat has two sounds. **"Lub"** is the atrioventricular valves closing as
+the ventricles contract; **"dub"** is the semilunar valves closing as they relax.
+Together they are one cardiac cycle — one pump. The game's double-tap deliberately
+maps to that two-beat rhythm: tap ("lub"), tap again quickly ("dub"), and the
+pump fires. A lone tap is just a "lub" with no completed beat.
 
 ## Misconceptions corrected
-- "Blood is just blood." → It carries a finite oxygen load that must be reloaded
-  at the lungs; the charge magazine makes that load visible.
-- "There's one bloodstream." → There are two coupled loops; deoxygenated blood
-  must go to the lungs (pulmonary) before it can serve the body (systemic).
+- "We breathe only to get oxygen." → Breathing is two-way gas exchange: O₂ in AND
+  CO₂ out. The CO₂ bar makes the outward half impossible to ignore.
+- "Breathing circulates the blood." → No — the heart does. Breathing loads and
+  cleans the blood; the beat moves it. The game separates the two controls.
 - "Red and blue blood are different blood." → Same blood; the colour is its
   oxygen state, which the heart's red↔blue lerp shows directly.
+- "CO₂ is harmless leftover." → Unvented CO₂ acidifies the blood and stresses
+  every organ — modelled as the acidosis drain penalty.
 
 ## Potato through-line
-A potato has no heart, but it still runs transport loops: water and minerals
-rise through the **xylem**, sugars descend through the **phloem**. A living body
-— spud or human — keeps working only while its transport loops keep turning.
+A potato has no heart and no lungs, but it still respires — taking in O₂ and
+giving off CO₂ through tiny pores (**lenticels** on the tuber, **stomata** on the
+leaves) — and moves resources on loops: water and minerals up the **xylem**,
+sugars down the **phloem**. Same principle: a living body — spud or human — keeps
+working only while its gas exchange and transport loops keep turning.
 
 ## Check for understanding (post-play)
-- Which loop reloads oxygen, and where? (Pulmonary, at the lungs.)
-- Why can't you deliver oxygen forever without tapping the lungs? (The reserve
-  is finite; delivery spends it, only the lungs refill it.)
-- What does the heart turning blue mean? (Its blood is deoxygenated — the
-  reserve is low and needs a recharge.)
+- What are the two directions of breathing, and where do they happen? (O₂ in and
+  CO₂ out, both at the lungs — gas exchange.)
+- If you inhale a full reserve but never beat the heart, does any organ get
+  oxygen? (No — breathing loads the blood; only the heartbeat pumps it out.)
+- Why does neglecting EXHALE hurt the body? (CO₂ builds into an acid pressure —
+  acidosis — that stresses every organ and speeds their oxygen drain.)
+- What do the two heart sounds, "lub" and "dub", actually are? (Its valves
+  snapping shut across one cardiac cycle.)
+- What does the heart turning blue mean? (Its blood is deoxygenated — the reserve
+  is low and needs an inhale.)

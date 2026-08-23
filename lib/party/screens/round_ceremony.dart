@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cell_mobile/feedback/feedback_prompt.dart';
@@ -12,8 +11,9 @@ import 'package:flutter/material.dart';
 /// with a shared moment: staged podium reveal (last podium step first), a
 /// declared WINNER with confetti, and the diamond awards, before the board
 /// resumes. All clients see the same ceremony; only [interactive] devices can
-/// advance it (locally: always; online: the host, who also auto-advances after
-/// a dwell so a distracted host can't stall the room).
+/// advance it (locally: always; online: the host). TAP-TO-DRIVE LAW
+/// (ORDER_AND_SOLO_SPEC §1, Brett 2026-07-12): no timer advances the ceremony
+/// — it holds until the tap. ATTRACT paces itself via the page autopilot.
 ///
 /// Presentation is a pure function of controller state + local reveal time —
 /// zero random-tape draws, lockstep-safe.
@@ -24,9 +24,6 @@ class RoundCeremonyScreen extends StatefulWidget {
   /// Whether this device may advance past the ceremony.
   final bool interactive;
 
-  /// Online host: auto-confirm a few seconds after the reveal completes.
-  final bool autoAdvance;
-
   /// Show the one-tap "did you like that game?" prompt once the reveal has
   /// played (PARTY_CINEMATIC_SPEC §7). Off in attract mode.
   final bool showFeedback;
@@ -36,7 +33,6 @@ class RoundCeremonyScreen extends StatefulWidget {
     required this.controller,
     required this.actions,
     required this.interactive,
-    this.autoAdvance = false,
     this.showFeedback = true,
   });
 
@@ -49,14 +45,12 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
   // Checkpoint 2026-07-10: the reveal starts sooner and runs tighter — the
   // first bars rise almost immediately instead of ~600ms of dead air.
   static const _revealDuration = Duration(milliseconds: 3000);
-  static const _autoAdvanceDwell = Duration(seconds: 6);
 
   late final AnimationController _reveal;
 
   /// Drives confetti + winner-glow pulse; time source for the fx painter.
   late final AnimationController _fx;
 
-  Timer? _autoTimer;
   bool _confirmed = false;
 
   /// Fx-clock ms at the moment the winner banner first appeared — confetti
@@ -69,32 +63,13 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
   void initState() {
     super.initState();
     _reveal = AnimationController(vsync: this, duration: _revealDuration)
-      ..addStatusListener(_onRevealStatus)
       ..forward();
     _fx = AnimationController(vsync: this, duration: const Duration(seconds: 6))
       ..repeat();
   }
 
-  void _onRevealStatus(AnimationStatus status) {
-    if (status != AnimationStatus.completed) return;
-    _maybeArmAutoAdvance();
-  }
-
-  /// PARTY UX LAW: the machine never plunges. Auto-advance (online-host
-  /// pacing) may only arm once the human here has NOTHING pending — the
-  /// thumbs feedback prompt counts as pending input (checkpoint 2026-07-11:
-  /// the ceremony advanced before CONTINUE / thumbs could be tapped).
-  void _maybeArmAutoAdvance() {
-    if (!widget.autoAdvance) return;
-    if (widget.showFeedback && !_feedbackDone) return;
-    _autoTimer ??= Timer(_autoAdvanceDwell, () {
-      if (mounted) _confirm();
-    });
-  }
-
   @override
   void dispose() {
-    _autoTimer?.cancel();
     _reveal.dispose();
     _fx.dispose();
     super.dispose();
@@ -191,6 +166,8 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
               if (t >= _bannerInterval.begin) _confettiT0 ??= fxMs;
               return Stack(
                 children: [
+                  // No minimap here — it belongs to dialog beats only
+                  // (ORDER_AND_SOLO_SPEC §1). The podium owns the ceremony.
                   // Confetti fires with the winner banner.
                   if (_confettiT0 != null)
                     Positioned.fill(
@@ -221,6 +198,12 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                       const SizedBox(height: 8),
                       _winnerBanner(t),
                       Expanded(child: _barChart(sorted, spec.scoreUnit, t)),
+                      // The Big Bad's decree, settled: who lost the potato /
+                      // how the pot paid out. Lands with the banner so the
+                      // swing is read alongside the standings it changed.
+                      if (c.bossRuleOutcome.isNotEmpty &&
+                          t >= _bannerInterval.begin)
+                        _decreePanel(c),
                       if (widget.showFeedback &&
                           !_feedbackDone &&
                           t >= _footerInterval.begin)
@@ -230,11 +213,7 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
                             gameId: spec.id,
                             gameName: spec.name,
                             source: 'party',
-                            onDone: () {
-                              setState(() => _feedbackDone = true);
-                              // Feedback answered — pacing may resume.
-                              _maybeArmAutoAdvance();
-                            },
+                            onDone: () => setState(() => _feedbackDone = true),
                           ),
                         ),
                       const SizedBox(height: 12),
@@ -280,6 +259,43 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
             style: Potatuhs.body(size: 12, color: Potatuhs.textSecondary),
           ),
         ],
+      ),
+    );
+  }
+
+  /// The Big Bad's decree outcome — displayed with the results so the
+  /// potato loss / pot payout is never applied invisibly (PARTY UX LAW).
+  Widget _decreePanel(PartyController c) {
+    const danger = Color(0xFFE5484D);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: danger.withValues(alpha: 0.7)),
+          color: danger.withValues(alpha: 0.08),
+        ),
+        child: Column(
+          children: [
+            Text(
+              "⚔ THE BIG BAD'S DECREE ⚔",
+              textAlign: TextAlign.center,
+              style: Potatuhs.body(size: 11, color: danger)
+                  .copyWith(letterSpacing: 3, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            for (final line in c.bossRuleOutcome)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Text(
+                  line,
+                  textAlign: TextAlign.center,
+                  style: Potatuhs.body(size: 12, color: Potatuhs.textPrimary),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -452,14 +468,17 @@ class _RoundCeremonyScreenState extends State<RoundCeremonyScreen>
   }
 
   Widget _awardChip(int award) {
+    // Off the podium (4th+) pays nothing — mute the chip so "+0" doesn't
+    // read like a prize.
+    final color = award > 0 ? Potatuhs.gold : Potatuhs.textSecondary;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.savings, size: 13, color: Potatuhs.gold),
+        Icon(Icons.savings, size: 13, color: color),
         const SizedBox(width: 3),
         Text(
           '+$award',
-          style: Potatuhs.body(size: 14, color: Potatuhs.gold)
+          style: Potatuhs.body(size: 14, color: color)
               .copyWith(fontWeight: FontWeight.bold),
         ),
       ],

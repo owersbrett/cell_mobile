@@ -40,6 +40,24 @@ reflex loops at the spinal cord, which is *why* it's fast. See `EDUCATION.md`.
 ## Controls
 Single tap anywhere (full-field). Canvas-drawn; no raster assets.
 
+## Feel — the nodes move (motion budget by role)
+Every node drifts on an eased Lissajous path (sine components, never a teleport), with a
+**motion budget by role** so the field feels alive and stressful without becoming unfair:
+- **Brain** — stays up top, slow small drift (a little lower/right/left/higher). amp ≈ 3.2% w / 2.2% h, slow (f ≈ 0.4–0.55).
+- **Spinal cord** — the smallest shift of all. amp ≈ 1% w/h.
+- **Receptor & muscle** — large, lively excursions, out of phase with each other. amp ≈ 7.5% w / 6% h, quicker (f ≈ 1.5–2.3).
+
+Amplitude scales with difficulty (`gain = 0.55 + 0.45 × difficulty`) so motion is always on and
+the field gets busier as the run ramps — stress escalates per GAME_DESIGN.md §1. Motion is a **feel**
+change only; rules/loop/scoring are unchanged. Because moving targets never sit still, a stationary
+node can no longer be misread as a "tap now" prompt during the brain-bypass wait.
+
+Positions are computed by `_Arc.animated(size, idlePhase, difficulty)` — deterministic in the ticker
+clock + difficulty, so the painter and the tap handler read the **same** node positions (single source
+of truth). The tap is full-field so motion never makes a required tap unfair; centers are clamped fully
+on-screen. Motion lives on the ticker-driven `CustomPainter` with real elapsed dt — no per-frame widget
+rebuilds. autoPilot fires on the live-stimulus phase (position-independent), so it still hits moving nodes.
+
 ## Session / resume
 Built to **MiniGameSession**: host owns clock/countdown/score/results. Gameplay gates on
 `session.isRunning`; the run (re)starts on the rising edge of `isRunning`, so closing a session and

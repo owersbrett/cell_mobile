@@ -12,6 +12,7 @@ void main() {
         playerNames: const ['A', 'B'],
         seed: seed,
         wheels: wheels,
+      rules: 5,
       );
 
   /// Drives [c] until [until] is true or the game ends.
@@ -55,6 +56,16 @@ void main() {
         case PartyPhase.wheelSpin:
           c.wheelStop();
           break;
+        case PartyPhase.gamePick:
+          c.pickMiniGame(0);
+          break;
+        case PartyPhase.orderRoll:
+          if (c.orderResolved) {
+            c.beginMatch();
+          } else {
+            c.rollForOrder();
+          }
+          break;
         case PartyPhase.gameOver:
           break;
       }
@@ -67,7 +78,7 @@ void main() {
     drive(c, (c) => c.round == 2 && c.phase == PartyPhase.turnStart);
     expect(c.ghosts.length, 2);
     expect(
-      c.turnLog.any((l) => l.contains('GHOSTS FROM THE POTATO SHACK')),
+      c.turnLog.any((l) => l.contains('ghosts from the Potato Shack')),
       isTrue,
       reason: 'the release is announced',
     );

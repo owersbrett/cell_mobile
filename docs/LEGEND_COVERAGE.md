@@ -43,7 +43,7 @@ Each iteration = one wave:
 3. Orchestrator wires all registry `legendFrames:` lines (surgical,
    append-style), runs `flutter analyze` + the gate test, logs
    `N/124 covered`.
-4. Gate green → run `/deploy`, update `~/Potatuhs/hpg/_status/cell_mobile.md`,
+4. Gate green → run `/deploy`, update `~/Potatuhs/hotpotatogames/_status/cell_mobile.md`,
    end the loop.
 
 ## Quality bar

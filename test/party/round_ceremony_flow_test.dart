@@ -46,6 +46,16 @@ void main() {
         case PartyPhase.wheelSpin:
           c.wheelStop();
           break;
+        case PartyPhase.gamePick:
+          c.pickMiniGame(0);
+          break;
+        case PartyPhase.orderRoll:
+          if (c.orderResolved) {
+            c.beginMatch();
+          } else {
+            c.rollForOrder();
+          }
+          break;
         case PartyPhase.minigameResults:
         case PartyPhase.gameOver:
           break;
@@ -60,7 +70,8 @@ void main() {
       totalRounds: 2,
       playerNames: const ['A', 'B'],
       seed: 11,
-    );
+    rules: 5,
+      );
     driveToFirstResults(c);
 
     // The pump must NOT auto-advance the ceremony.
@@ -94,7 +105,8 @@ void main() {
       totalRounds: 2,
       playerNames: const ['A', 'B'],
       seed: 23,
-    );
+    rules: 5,
+      );
     // Play into round 2 so the log crosses a results boundary.
     driveToFirstResults(c);
     c.confirmMiniGameResults();

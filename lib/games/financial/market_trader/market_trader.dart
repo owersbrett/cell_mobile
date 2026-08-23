@@ -6,6 +6,10 @@ import 'package:flutter/scheduler.dart';
 import '../../fx.dart';
 import '../../mini_game.dart';
 import '../../../theme/potatuhs.dart';
+import '../../quick_match/quick_room_scope.dart';
+import 'market_feed.dart';
+import 'market_net.dart';
+import 'market_sim.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FinancialTradingGame — "Market Trader"  (BioScale.financial)
@@ -22,18 +26,8 @@ import '../../../theme/potatuhs.dart';
 // every sell via session.addScore. The host owns the clock / countdown /
 // results; this widget only runs the sim while session.isRunning.
 
-// --- Wallet / market tuning -------------------------------------------------
+// --- Wallet tuning (market tuning moved to market_sim.dart) ------------------
 const double _kMtStartingCash   = 1000.0; // opening capital
-const double _kMtGameDuration   = 60.0;   // seconds (mirrors host clock)
-const double _kMtBaseTickHz     = 12.0;
-const double _kMtMaxTickHz      = 30.0;
-const double _kMtBaseVolatility = 1.8;
-const double _kMtMaxVolatility  = 9.0;
-const double _kMtTrendDuration  = 4.0;
-const double _kMtNewsDuration   = 1.5;
-const double _kMtNewsChance     = 0.08;
-const double _kMtNewsAmplitude  = 14.0;
-const double _kMtStartingPrice  = 100.0;
 
 // --- Order / sizing tuning --------------------------------------------------
 // A limit buy can be placed up to this fraction below the live price.
@@ -43,10 +37,7 @@ const double _kMtCancelFeeRate  = 0.01;
 // Lot presets (in shares) offered as one-tap sizing buttons.
 const List<int> _kMtLotPresets  = [1, 5, 25];
 
-// --- Player market-event tuning ---
-const double _kMtEventImpulse   = 22.0;
-const double _kMtEventDuration  = 2.5;
-const double _kMtEventCooldown  = 14.0;
+// --- Player market-event tuning (impulse/duration/cooldown in market_sim) ---
 // Every event is a PURCHASE: this flat price is deducted from AVAILABLE cash
 // and booked as a realized expense against P&L (exactly like the cancel fee).
 const double _kMtEventCost      = 60.0;
@@ -92,28 +83,7 @@ class _MtPop {
   }
 }
 
-class _MtNews {
-  final String headline;
-  final double impulse;
-  double ttl;
-  _MtNews(this.headline, this.impulse, this.ttl);
-}
-
-class _MtEventDef {
-  final String label;
-  final String emoji;
-  final double sign;
-  const _MtEventDef(this.label, this.emoji, this.sign);
-}
-
-const List<_MtEventDef> _kMtEvents = [
-  _MtEventDef('Drought',   '☀️',  1.0),
-  _MtEventDef('Flooding',  '🌊',  1.0),
-  _MtEventDef('Tornado',   '🌪️',  1.0),
-  _MtEventDef('Quake',     '⚡',  1.0),
-  _MtEventDef('Recession', '📉', -1.0),
-  _MtEventDef('Abundance', '🌾', -1.0),
-];
+// MtNews / MtEventDef / kMtEvents live in market_sim.dart.
 
 /// One open LIMIT BUY order. Reserves [reserved] cash (= shares × limit) until
 /// the market trades at/under [limit] and the order fills.
@@ -153,7 +123,16 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   // Cumulative realized P&L — this IS the score reported to the session.
   double _realized  = 0.0;
 
-  double _timeLeft = _kMtGameDuration;
+  // The market (see market_feed.dart): solo = a private seeded sim; shared
+  // rooms swap in the host-published tape (Phase 1, ONLINE.md). The desk
+  // reads price/news ONLY through the feed.
+  late final MarketFeed _feed;
+  // Non-null exactly when this round runs inside a quick-match room — used
+  // for the shared market above and for attributing rival events by name.
+  QuickRoomScope? _room;
+  // Identity of the last news object seen, so a fresh player event (mine OR
+  // a rival's) cools the button room-wide exactly once.
+  MtNews? _seenNews;
 
   // Widget-tree refresh throttle + chart-sampling clocks (seconds).
   double _renderAccum = 0.0;
@@ -171,13 +150,9 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   // --- Open buy orders ---
   final List<_MtOrder> _orders = [];
 
-  // --- Price / market ---
-  double _price       = _kMtStartingPrice;
-  double _trend       = 0.0;
-  double _trendTimer  = 0.0;
-  double _priceClock  = 0.0;
-  _MtNews? _news;
-  double _newsTimer   = 0.0;
+  // --- Price / market (all reads go through the feed) ---
+  double get _price => _feed.price;
+  MtNews? get _news => _feed.news;
 
   // --- Chart ---
   final List<_MtPriceSample> _chart = [];
@@ -200,14 +175,6 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   Size _screen = Size.zero;
 
   // --- Derived ---
-  double get _volatility {
-    final t = 1.0 - (_timeLeft / _kMtGameDuration);
-    return _kMtBaseVolatility + (_kMtMaxVolatility - _kMtBaseVolatility) * t;
-  }
-  double get _tickHz {
-    final t = 1.0 - (_timeLeft / _kMtGameDuration);
-    return _kMtBaseTickHz + (_kMtMaxTickHz - _kMtBaseTickHz) * t;
-  }
   bool   get _inPosition  => _heldShares > 1e-6;
   double get _positionValue => _heldShares * _price;
   double get _unrealizedPnl =>
@@ -234,7 +201,30 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   @override
   void initState() {
     super.initState();
-    _eventCooldowns = List.filled(_kMtEvents.length, 0.0);
+    // Pick the market. In a quick-match room the whole room trades ONE
+    // market: the host runs it and publishes the tape; joiners render it
+    // (ONLINE.md Phase 1). Everywhere else: a private seeded sim, exactly
+    // the pre-shared-market behavior. (Non-registering lookup — legal in
+    // initState; the room context is stable for the life of a round.)
+    final room = QuickRoomScope.maybeOf(context);
+    _room = room;
+    if (room == null) {
+      _feed = LocalMarketFeed(MarketSim(
+          seed: DateTime.now().microsecondsSinceEpoch & 0x7fffffff));
+    } else if (room.isHost) {
+      // seed+round: every rematch gets a fresh deterministic walk.
+      _feed = HostMarketFeed(
+        sim: MarketSim(seed: room.seed + room.round),
+        channel: FirebaseMarketChannel(room.code),
+        myUid: room.myUid,
+      );
+    } else {
+      _feed = NetMarketFeed(
+        channel: FirebaseMarketChannel(room.code),
+        myUid: room.myUid,
+      );
+    }
+    _eventCooldowns = List.filled(kMtEvents.length, 0.0);
     _chart.add(_MtPriceSample(_price));
     // _ctrl only repaints the painters; the sim advances on _ticker below.
     _ctrl = AnimationController(
@@ -252,6 +242,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   @override
   void dispose() {
     if (widget.session.autoPilot == _autoStep) widget.session.autoPilot = null;
+    _feed.dispose();
     _ticker.dispose();
     _hustlePress.dispose();
     _ctrl.dispose();
@@ -328,34 +319,13 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     _lastElapsed = elapsed;
     if (dt <= 0) return;
     if (!widget.session.isRunning) return;
-    _timeLeft = widget.session.remaining.inMilliseconds / 1000.0;
     bool dirty = false; // a discrete change that needs an immediate rebuild
 
-    _trendTimer -= dt;
-    if (_trendTimer <= 0) {
-      _trend      = (_rng.nextDouble() * 2 - 1);
-      _trendTimer = _kMtTrendDuration * (0.6 + _rng.nextDouble() * 0.8);
-      if (_news == null && _rng.nextDouble() < _kMtNewsChance) {
-        _spawnNews();
-        dirty = true;
-      }
-    }
-
-    if (_news != null) {
-      _newsTimer -= dt;
-      if (_newsTimer <= 0) {
-        _news = null;
-        dirty = true;
-      }
-    }
-
-    _priceClock += dt * _tickHz;
-    final steps = _priceClock.floor();
-    _priceClock -= steps;
-    for (int s = 0; s < steps; s++) {
-      _stepPrice();
-      if (_fillOrders()) dirty = true; // limit fills are discrete events
-    }
+    // Advance the market (local sim, or the published tape in a shared
+    // room), then check fills against the lowest price the step touched.
+    if (_feed.step(dt)) dirty = true;
+    _syncSharedNews();
+    if (_fillOrders()) dirty = true; // limit fills are discrete events
 
     _chartTimer += dt;
     if (_chart.length < 2 || _chartTimer >= _kMtChartSampleSec) {
@@ -368,7 +338,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     for (int i = 0; i < _eventCooldowns.length; i++) {
       if (_eventCooldowns[i] > 0) {
         _eventCooldowns[i] =
-            (_eventCooldowns[i] - dt).clamp(0.0, _kMtEventCooldown);
+            (_eventCooldowns[i] - dt).clamp(0.0, kMtEventCooldown);
         if (_eventCooldowns[i] == 0) dirty = true; // button just re-enabled
       }
     }
@@ -385,30 +355,17 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     }
   }
 
-  void _stepPrice() {
-    final vol   = _volatility;
-    final drift = _trend * vol * 0.35;
-    final noise = (_rng.nextDouble() * 2 - 1) * vol;
-    double impulse = 0;
-    if (_news != null) impulse = _news!.impulse * 0.5;
-    _price = (_price + drift + noise + impulse).clamp(10.0, 9999.0);
-  }
-
-  void _spawnNews() {
-    final positive = _rng.nextBool();
-    final headlines = positive
-        ? ['STRONG EARNINGS', 'UPGRADE: BUY', 'SHORT SQUEEZE!', 'BULLISH DATA']
-        : ['EARNINGS MISS', 'FED HIKE FEAR', 'SELL-OFF WAVE', 'MARGIN CALLS'];
-    final impulse = (positive ? 1 : -1) *
-        (_kMtNewsAmplitude * (0.7 + _rng.nextDouble() * 0.6));
-    _news      = _MtNews(
-      headlines[_rng.nextInt(headlines.length)],
-      impulse,
-      _kMtNewsDuration,
-    );
-    _newsTimer  = _kMtNewsDuration;
-    _trend      = positive ? 0.9 : -0.9;
-    _trendTimer = _kMtNewsDuration;
+  /// A freshly-landed PLAYER event (mine or a rival's, local or shared)
+  /// cools its button room-wide — nobody can chain the same event inside
+  /// one cooldown window, and everyone's ring agrees with the host's gate.
+  void _syncSharedNews() {
+    final n = _feed.news;
+    if (identical(n, _seenNews)) return;
+    _seenNews = n;
+    final idx = n?.eventIdx;
+    if (idx != null && idx >= 0 && idx < _eventCooldowns.length) {
+      _eventCooldowns[idx] = max(_eventCooldowns[idx], kMtEventCooldown);
+    }
   }
 
   // ─── Sizing controls ──────────────────────────────────────────────────────
@@ -425,7 +382,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   // ─── Orders ───────────────────────────────────────────────────────────────
   /// Place a LIMIT BUY: reserves cash now, fills when price ≤ limit.
   void _placeOrder() {
-    if (!widget.session.isRunning) return;
+    if (!widget.session.isRunning || _feed.halted) return;
     final cost = _orderCost;
     if (_lotSize <= 0 || _available < cost - 1e-6) return;
     setState(() {
@@ -439,7 +396,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
   /// Instant MARKET BUY of the current lot at the live price.
   void _marketBuy() {
-    if (!widget.session.isRunning) return;
+    if (!widget.session.isRunning || _feed.halted) return;
     final cost = _lotSize * _price;
     if (_lotSize <= 0 || _available < cost - 1e-6) return;
     setState(() {
@@ -494,11 +451,14 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
   /// Cash was already reserved at placement; here it converts to shares.
   /// Returns true if at least one order filled.
   bool _fillOrders() {
+    if (_feed.halted) return false; // no fills against a frozen price
     if (_orders.isEmpty) return false;
     bool filled = false;
     for (int i = _orders.length - 1; i >= 0; i--) {
       final o = _orders[i];
-      if (_price <= o.limit + 1e-9) {
+      // Check the LOWEST price the last market step touched, not just the
+      // final sample — an intra-frame dip through the limit still fills.
+      if (_feed.low <= o.limit + 1e-9) {
         // Fill at the limit (cash reserved at the limit, so basis = limit).
         _reserved = max(0.0, _reserved - o.reserved);
         _addShares(o.shares.toDouble(), o.limit);
@@ -524,7 +484,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
   // ─── Selling (realizes P&L → score) ───────────────────────────────────────
   void _sell(int shares, {bool silent = false}) {
-    if (!widget.session.isRunning) return;
+    if (!widget.session.isRunning || _feed.halted) return;
     if (_heldShares <= 1e-6) return;
     final qty = min(shares.toDouble(), _heldShares);
     if (qty <= 1e-6) return;
@@ -589,22 +549,17 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
 
   // ─── Player market events ─────────────────────────────────────────────────
   void _triggerEvent(int idx) {
-    if (!widget.session.isRunning) return;
+    if (!widget.session.isRunning || _feed.halted) return;
     if (_eventCooldowns[idx] > 0) return;
     if (_available < _kMtEventCost - 1e-6) return; // events are a PURCHASE
     setState(() {
-      final ev = _kMtEvents[idx];
-      final impulse = ev.sign * _kMtEventImpulse;
       // Pay for the event: cash out of AVAILABLE, and the cost is a realized
       // expense against P&L — same accounting as the cancel fee.
       _available -= _kMtEventCost;
       _realized  -= _kMtEventCost;
       _syncScore();
-      _news       = _MtNews(ev.label.toUpperCase(), impulse, _kMtEventDuration);
-      _newsTimer  = _kMtEventDuration;
-      _trend      = ev.sign * 0.95;
-      _trendTimer = _kMtEventDuration;
-      _eventCooldowns[idx] = _kMtEventCooldown;
+      _feed.fireEvent(idx);
+      _eventCooldowns[idx] = kMtEventCooldown;
       _popLabel('-\$${_kMtEventCost.toStringAsFixed(0)}',
           const Color(0xFFEF5350), yFrac: 0.40);
     });
@@ -658,7 +613,10 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
           child: Column(children: [
             _buildWalletBar(),
             _buildPriceTicker(),
-            if (_news != null) _buildNewsBanner(_news!),
+            if (_feed.halted)
+              _buildHaltBanner()
+            else if (_news != null)
+              _buildNewsBanner(_news!),
 
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -669,7 +627,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
                   borderRadius: BorderRadius.circular(12),
                   child: RepaintBoundary(
                     child: CustomPaint(
-                      painter: _MtChartPainter(_chart, _kMtStartingPrice,
+                      painter: _MtChartPainter(_chart, kMtStartingPrice,
                           _limitPriceLine(), _chartRev),
                     ),
                   ),
@@ -831,7 +789,15 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     );
   }
 
-  Widget _buildNewsBanner(_MtNews news) {
+  Widget _buildNewsBanner(MtNews news) {
+    // A rival's purchased event names its buyer — the social payoff of the
+    // shared market ("RUSS BOUGHT A DROUGHT"). Own events and organic news
+    // read as before.
+    final by = news.by;
+    final room = _room;
+    final headline = (by != null && room != null && by != room.myUid)
+        ? '${room.nameOf(by).toUpperCase()} BOUGHT A ${news.headline}'
+        : news.headline;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
@@ -847,7 +813,7 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
         const Text('\u{1F4F0}', style: TextStyle(fontSize: 16)),
         const SizedBox(width: 8),
         Expanded(
-          child: Text(news.headline,
+          child: Text(headline,
               style: Potatuhs.body(
                   size: 13, weight: FontWeight.w700, color: Potatuhs.gold)),
         ),
@@ -858,6 +824,33 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
               color: news.impulse > 0
                   ? const Color(0xFF66BB6A)
                   : const Color(0xFFEF5350)),
+        ),
+      ]),
+    );
+  }
+
+  /// Shared-room host loss: the tape went silent, so the desk locks trading
+  /// and says so honestly. The session clock is LOCAL — the round still ends
+  /// and exits normally (a dead host can never trap anyone).
+  Widget _buildHaltBanner() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEF5350).withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(8),
+        border:
+            Border.all(color: const Color(0xFFEF5350).withValues(alpha: 0.7)),
+      ),
+      child: Row(children: [
+        const Text('⛔', style: TextStyle(fontSize: 16)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text('MARKET HALTED — HOST LOST',
+              style: Potatuhs.body(
+                  size: 13,
+                  weight: FontWeight.w700,
+                  color: const Color(0xFFEF5350))),
         ),
       ]),
     );
@@ -1154,11 +1147,11 @@ class _FinancialTradingGameState extends State<FinancialTradingGame>
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
       child: Row(
-        children: List.generate(_kMtEvents.length, (i) {
-          final ev       = _kMtEvents[i];
+        children: List.generate(kMtEvents.length, (i) {
+          final ev       = kMtEvents[i];
           final cd       = _eventCooldowns[i];
           final onCd     = cd > 0;
-          final progress = onCd ? 1.0 - (cd / _kMtEventCooldown) : 1.0;
+          final progress = onCd ? 1.0 - (cd / kMtEventCooldown) : 1.0;
           // Events are a purchase: unaffordable renders exactly like
           // cooldown-disabled and taps do nothing.
           final ready    = !onCd && _available >= _kMtEventCost - 1e-6;

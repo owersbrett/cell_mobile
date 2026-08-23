@@ -37,42 +37,47 @@ class _CellLoopPageState extends State<CellLoopPage> {
         .clamp(0.0, 340.0)
         .toDouble();
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onDoubleTap: () => setState(() => _entered = true),
-      child: DecoratedBox(
-        // A soft radial glow so the piece reads premium, not a flat black box.
-        decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            center: Alignment.center,
-            radius: 0.95,
-            colors: [Color(0xFF221A33), Color(0xFF0B0910)],
+    // Material ancestor: without it, Text renders with the framework's
+    // yellow double-underline "missing Material" error style.
+    return Material(
+      type: MaterialType.transparency,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onDoubleTap: () => setState(() => _entered = true),
+        child: DecoratedBox(
+          // A soft radial glow so the piece reads premium, not a flat black box.
+          decoration: const BoxDecoration(
+            gradient: RadialGradient(
+              center: Alignment.center,
+              radius: 0.95,
+              colors: [Color(0xFF221A33), Color(0xFF0B0910)],
+            ),
           ),
-        ),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // The perpetual living cell — identical to the home screen's.
-              SizedBox(
-                width: cell,
-                height: cell,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    Container(),
-                    for (final o in organelles)
-                      CellAnimationDelegate.organelle(o),
-                  ],
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // The perpetual living cell — identical to the home screen's.
+                SizedBox(
+                  width: cell,
+                  height: cell,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Container(),
+                      for (final o in organelles)
+                        CellAnimationDelegate.organelle(o),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 36),
-              Text(
-                'EXPLORE THE CELL',
-                textAlign: TextAlign.center,
-                style: Potatuhs.display(size: 30, spacing: 3),
-              ),
-            ],
+                const SizedBox(height: 36),
+                Text(
+                  'EXPLORE THE CELL',
+                  textAlign: TextAlign.center,
+                  style: Potatuhs.display(size: 30, spacing: 3),
+                ),
+              ],
+            ),
           ),
         ),
       ),

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:cell_mobile/games/mini_game_registry.dart';
+import 'package:cell_mobile/party/maps/game_map.dart';
 import 'package:cell_mobile/party/party_controller.dart';
 import 'package:cell_mobile/party/party_models.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,7 +22,8 @@ PartyController makeController({
     // Fine-grained turn-mechanics tests start at turnStart; the wheel flow
     // has its own coverage (wheel_flow_test.dart + the replay soaks).
     wheels: false,
-  );
+  rules: 5,
+      );
 }
 
 /// A Random that always yields the same low value — makes dice and branches
@@ -54,7 +56,14 @@ void walkOut(PartyController c, {bool takeShortcut = false, bool buy = false}) {
         c.choosePath(takeShortcut && opts.length > 1 ? opts.last : opts.first);
         break;
       case PartyPhase.shopOffer:
-        buy ? c.buyPotato() : c.skipPotato();
+        if (buy) {
+          c.buyPotato();
+          // Catalog games keep the stall open after a purchase (peruse on);
+          // leave explicitly so the walk continues.
+          if (c.phase == PartyPhase.shopOffer) c.skipPotato();
+        } else {
+          c.skipPotato();
+        }
         break;
       default:
         fail('unexpected phase ${c.phase}');
@@ -173,6 +182,16 @@ void playLegalGame(PartyController c, Random choices) {
       case PartyPhase.wheelSpin:
         c.wheelStop();
         break;
+      case PartyPhase.gamePick:
+        c.pickMiniGame(choices.nextInt(c.gamePickChoices.length));
+        break;
+      case PartyPhase.orderRoll:
+        if (c.orderResolved) {
+          c.beginMatch();
+        } else {
+          c.rollForOrder();
+        }
+        break;
       case PartyPhase.gameOver:
         break;
     }
@@ -184,6 +203,23 @@ void main() {
   group('replay', () {
     // The save format must reconstruct an identical match from {seed, inputs}
     // alone — that's the spine the dev-loop and the test factory both sit on.
+    test('single mode (a room of one) plays a full legal game to gameOver',
+        () {
+      // The 1 PLAYER online format: one human, no CPUs. The whole engine —
+      // turns, walks, shops, mini-game rounds, awards — must close out with
+      // a single seat.
+      final c = PartyController(
+        mode: PartyMode.single,
+        totalRounds: 3,
+        playerNames: [kCharacters.first.name],
+        seed: 99,
+        rules: 5,
+      );
+      playLegalGame(c, Random(3));
+      expect(c.phase, PartyPhase.gameOver);
+      expect(c.players, hasLength(1));
+    });
+
     test('a recorded game replays to an identical final state, even after a '
         'JSON round-trip', () {
       for (final mode in [PartyMode.ffa4, PartyMode.teams2v2, PartyMode.duel]) {
@@ -195,7 +231,8 @@ void main() {
           playerNames:
               List.generate(mode.playerCount, (i) => kCharacters[i].name),
           seed: 12345,
-        );
+        rules: 5,
+      );
         playLegalGame(original, Random(7));
         expect(original.phase, PartyPhase.gameOver);
         expect(original.inputLog, isNotEmpty);
@@ -230,7 +267,8 @@ void main() {
           playerNames: names,
           seed: 24680,
           randomMode: PartyRandomMode.host,
-        );
+        rules: 5,
+      );
         playLegalGame(host, Random(11));
         expect(host.phase, PartyPhase.gameOver);
         expect(host.recordedRandoms, isNotEmpty, reason: '$mode');
@@ -250,6 +288,7 @@ void main() {
           playerNames: names,
           inputs: inputs,
           randoms: randoms,
+          rules: 5, // matches the pinned host fixture above
         );
 
         expect(client.phase, PartyPhase.gameOver, reason: '$mode');
@@ -271,7 +310,8 @@ void main() {
             playerNames: List.generate(4, (i) => kCharacters[i].name),
             seed: 999,
             wheels: false,
-          );
+          rules: 5,
+      );
       final a = fresh()..roll();
       final b = fresh()..roll();
       expect(a.lastTurn!.dice, b.lastTurn!.dice);
@@ -365,8 +405,28 @@ void main() {
   });
 
   group('mini-game scoring', () {
-    test('FFA awards 10/6/4/2 diamonds by rank', () {
+    test('FFA awards 10/5/1/0 diamonds by rank — the podium pays, 4th walks',
+        () {
       final c = makeController();
+      playBoardPhase(c);
+      playMiniGameRound(c, [50, 200, 100, 75]);
+      int award(int i) =>
+          c.standings.firstWhere((s) => s.player.index == i).award;
+      expect(award(1), 10);
+      expect(award(2), 5);
+      expect(award(3), 1);
+      expect(award(0), 0);
+    });
+
+    test('rules ≤ 2 saves keep the launch awards (10/6/4/2)', () {
+      final c = PartyController(
+        mode: PartyMode.ffa4,
+        totalRounds: 3,
+        playerNames: List.generate(4, (i) => kCharacters[i].name),
+        random: Random(42),
+        wheels: false,
+        rules: 2,
+      );
       playBoardPhase(c);
       playMiniGameRound(c, [50, 200, 100, 75]);
       int award(int i) =>
@@ -398,6 +458,7 @@ void main() {
         playerNames: List.generate(4, (i) => kCharacters[i].name),
         seed: 42,
         wheels: false,
+      rules: 5,
       );
       playBoardPhase(c);
       c.beginMiniGameRound();
@@ -417,9 +478,9 @@ void main() {
       int award(int i) =>
           c.standings.firstWhere((s) => s.player.index == i).award;
       expect(award(1), 10); // 200, highest
-      expect(award(2), 6); // 100
-      expect(award(3), 4); // 75
-      expect(award(0), 2); // 50, lowest
+      expect(award(2), 5); // 100
+      expect(award(3), 1); // 75
+      expect(award(0), 0); // 50, lowest — off the podium
 
       // The player-tagged log replays the same regardless of arrival order.
       final restored = PartyController.fromSaveJson(
@@ -484,6 +545,45 @@ void main() {
       expect(ranking[1].index, 0); // 1 potato
       expect(ranking[2].index, 1); // 0 potatoes, 99 diamonds
       expect(ranking[3].index, 3); // 0 potatoes, 50 diamonds
+    });
+  });
+
+  group('the Potato Shack (map anchor)', () {
+    PartyController makeMapController({int rules = 5}) =>
+        PartyController(
+          mode: PartyMode.ffa4,
+          totalRounds: 3,
+          playerNames: List.generate(4, (i) => kCharacters[i].name),
+          random: _FixedRandom(0), // rolls 1
+          wheels: false,
+          gameMap: buildDownTheHole(),
+          rules: rules,
+        );
+
+    test('clocking in pays a potato; clocking out returns to square one', () {
+      final c = makeMapController();
+      final p = c.currentPlayer;
+      p.position = c.board.length - 2; // one step from the Shack
+      p.diamonds = 0; // too broke for the market stall to open
+      c.roll();
+      walkOut(c);
+      expect(p.position, c.board.length - 1); // landed at the Shack
+      expect(p.potatoes, 1); // clocked in
+      expect(c.turnLog.join(' '), contains('square one')); // announced
+      c.confirmSpace(); // COMPLETE TURN — the walk home
+      expect(p.position, 0);
+    });
+
+    test('rules ≤ 3 replays keep the old stay-at-the-anchor behavior', () {
+      final c = makeMapController(rules: 3);
+      final p = c.currentPlayer;
+      p.position = c.board.length - 2;
+      p.diamonds = 0;
+      c.roll();
+      walkOut(c);
+      expect(p.potatoes, 1);
+      c.confirmSpace();
+      expect(p.position, c.board.length - 1); // parked, as old logs recorded
     });
   });
 

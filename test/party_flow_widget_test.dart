@@ -23,6 +23,19 @@ void main() {
     // design (the living-cell interior), so settle would never complete.
     await tester.pump(const Duration(milliseconds: 400));
 
+    // THE OPENING ORDER (rules >= 6): every seat throws double dice (ties
+    // re-roll), then the match begins on a tap - all player-driven.
+    expect(find.text('THE OPENING ORDER'), findsOneWidget);
+    for (var i = 0; i < 16; i++) {
+      final throwBtn = find.textContaining('THROW FOR ');
+      if (throwBtn.evaluate().isEmpty) break;
+      await tester.tap(throwBtn);
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+    expect(find.text('BEGIN THE MATCH'), findsOneWidget);
+    await tester.tap(find.text('BEGIN THE MATCH'));
+    await tester.pump(const Duration(milliseconds: 400));
+
     // The opening ceremony plays over the opening wheel — skip it, then every
     // player stops their opening spin. The payoff HOLDS after the ~1.7s
     // deceleration (PARTY UX LAW: the player drives) — each spinner must tap
@@ -46,10 +59,9 @@ void main() {
     // match length is the first option (WEEK · 7) — track the shared const so
     // this can't go stale when the options change.
     expect(find.text('ROUND 1 / ${kPartyRoundCounts.first}'), findsOneWidget);
-    // First player defaults to the first roster character; the turn banner is
-    // "<NAME>'S TURN". Track the roster so a rename can't leave this stale.
-    expect(find.text("${kCharacters.first.name.toUpperCase()}'S TURN"),
-        findsOneWidget);
+    // The earned order decides who opens (ORDER_AND_SOLO_SPEC): the banner
+    // is "<NAME>'S TURN" for whichever character won the roll-off.
+    expect(find.textContaining("'S TURN"), findsOneWidget);
     expect(find.text('ROLL'), findsOneWidget);
     expect(exited, isFalse);
   });

@@ -5,13 +5,27 @@ import 'package:flutter/material.dart';
 /// ffa4 (1 / 1v1 / 1v1v1 / 1v1v1v1); team + 8-player formats also exist.
 /// NOTE: serialized by `.index` (party_controller / party_net), so NEW modes
 /// are APPENDED to preserve existing indices — never reorder.
-enum PartyMode { duel, ffa4, teams2v2, teams3v3, teams4v4, ffa8, solo, ffa3, ffa5 }
+// Serialized by INDEX in room meta — append new modes at the END only.
+enum PartyMode {
+  duel,
+  ffa4,
+  teams2v2,
+  teams3v3,
+  teams4v4,
+  ffa8,
+  solo,
+  ffa3,
+  ffa5,
+  single, // one human, online room of one — start immediately, no waiting
+}
 
 extension PartyModeInfo on PartyMode {
   String get label {
     switch (this) {
+      case PartyMode.single:
+        return '1 PLAYER';
       case PartyMode.solo:
-        return 'SOLO';
+        return 'YOU v 3 CPU';
       case PartyMode.duel:
         return '1 v 1';
       case PartyMode.ffa3:
@@ -33,8 +47,12 @@ extension PartyModeInfo on PartyMode {
 
   int get playerCount {
     switch (this) {
-      case PartyMode.solo:
+      case PartyMode.single:
         return 1;
+      case PartyMode.solo:
+        // ORDER_AND_SOLO_SPEC §2: solo is the player vs 3 CPU characters
+        // (seats 1–3 are CPU — see PartyController.isCpuSeat).
+        return 4;
       case PartyMode.duel:
         return 2;
       case PartyMode.ffa3:
@@ -87,29 +105,77 @@ enum PowerUp {
   loadedDice, // your next roll counts DOUBLE
   freezeRay, // TARGETED: the chosen player's next turn is skipped
   swapper, // TARGETED: swap board positions with the chosen player
+  // APPENDED: the market catalog (ITEMS_SPEC.md, Brett 2026-07-12) — the
+  // 22-item rarity shelf. Same rule: new values only ever go at the END.
+  tailwind, // +2 on your next roll
+  sabotage, // every rival's next roll is halved (round up)
+  pickpocket, // steal 3 diamonds from the leader
+  coupon, // your next market purchase is half price
+  secondWind, // +1 on your rolls for your next 3 turns
+  magnet, // path diamonds count double on your next walk
+  boostFive, // +5 on your next roll
+  boostTen, // +10 on your next roll
+  tripleDice, // your next roll uses THREE dice
+  warpPotato, // TARGETED: teleport to a warp node (markets + gateways)
+  tollOp, // an op tolls rivals 5 diamonds at every fork through next round
+  gameRigger, // you pick the next mini-game
+  goldenStakes, // next mini-game: the winner takes x3 diamonds and a potato
+  // APPENDED: the order items (ORDER_AND_SOLO_SPEC §4, rules ≥ 6).
+  reroll, // MULLIGAN: throw your just-rolled dice again (played at rollResult)
+  orderSwap, // QUEUE JUMPER, TARGETED: trade ordinals from the next round
 }
 
 extension PowerUpInfo on PowerUp {
   String get label {
     switch (this) {
       case PowerUp.voidShield:
-        return 'VOID SHIELD';
+        return 'Void Shield';
       case PowerUp.spark:
-        return 'SPARK';
+        return 'Spark';
       case PowerUp.accelerator:
-        return 'ACCELERATOR';
+        return 'Accelerator';
       case PowerUp.strongBond:
-        return 'STRONG BOND';
+        return 'Strong Bond';
       case PowerUp.catalyst:
-        return 'CATALYST';
+        return 'Catalyst';
       case PowerUp.mitochondria:
-        return 'MITOCHONDRIA';
+        return 'Mitochondria';
       case PowerUp.loadedDice:
-        return 'LOADED DICE';
+        return 'Loaded Dice';
       case PowerUp.freezeRay:
-        return 'FREEZE RAY';
+        return 'Freeze Ray';
       case PowerUp.swapper:
-        return 'SWAPPER';
+        return 'Swapper';
+      case PowerUp.tailwind:
+        return 'Tailwind';
+      case PowerUp.sabotage:
+        return 'Sabotage';
+      case PowerUp.pickpocket:
+        return 'Pickpocket';
+      case PowerUp.coupon:
+        return 'Coupon';
+      case PowerUp.secondWind:
+        return 'Second Wind';
+      case PowerUp.magnet:
+        return 'Diamond Magnet';
+      case PowerUp.boostFive:
+        return 'Booster';
+      case PowerUp.boostTen:
+        return 'Mega Booster';
+      case PowerUp.tripleDice:
+        return 'Triple Dice';
+      case PowerUp.warpPotato:
+        return 'Warp Potato';
+      case PowerUp.tollOp:
+        return 'Toll Contract';
+      case PowerUp.gameRigger:
+        return 'Game Rigger';
+      case PowerUp.goldenStakes:
+        return 'Golden Stakes';
+      case PowerUp.reroll:
+        return 'Mulligan';
+      case PowerUp.orderSwap:
+        return 'Queue Jumper';
     }
   }
 
@@ -133,6 +199,36 @@ extension PowerUpInfo on PowerUp {
         return "Freeze a player — they lose their next turn";
       case PowerUp.swapper:
         return 'Swap board positions with a player';
+      case PowerUp.tailwind:
+        return '+2 on your next roll';
+      case PowerUp.sabotage:
+        return "Every rival's next roll is HALVED";
+      case PowerUp.pickpocket:
+        return 'Steal 3 diamonds from the leader';
+      case PowerUp.coupon:
+        return 'Your next market purchase is half price';
+      case PowerUp.secondWind:
+        return '+1 on your rolls for 3 turns';
+      case PowerUp.magnet:
+        return 'Path diamonds count double on your next walk';
+      case PowerUp.boostFive:
+        return '+5 on your next roll';
+      case PowerUp.boostTen:
+        return '+10 on your next roll';
+      case PowerUp.tripleDice:
+        return 'Your next roll uses three dice';
+      case PowerUp.warpPotato:
+        return 'Teleport to any market or gateway';
+      case PowerUp.tollOp:
+        return 'An op tolls rivals 5 diamonds at every fork through next round';
+      case PowerUp.gameRigger:
+        return 'You pick the next mini-game';
+      case PowerUp.goldenStakes:
+        return 'Next mini-game: the winner takes x3 diamonds and a potato';
+      case PowerUp.reroll:
+        return 'Throw your just-rolled dice again — the new result stands';
+      case PowerUp.orderSwap:
+        return "Trade turn-order places with a player from next round";
     }
   }
 
@@ -156,13 +252,87 @@ extension PowerUpInfo on PowerUp {
         return Icons.ac_unit;
       case PowerUp.swapper:
         return Icons.swap_horiz;
+      case PowerUp.tailwind:
+        return Icons.air;
+      case PowerUp.sabotage:
+        return Icons.content_cut;
+      case PowerUp.pickpocket:
+        return Icons.back_hand;
+      case PowerUp.coupon:
+        return Icons.local_offer;
+      case PowerUp.secondWind:
+        return Icons.directions_run;
+      case PowerUp.magnet:
+        return Icons.gps_fixed;
+      case PowerUp.boostFive:
+        return Icons.rocket_launch;
+      case PowerUp.boostTen:
+        return Icons.rocket;
+      case PowerUp.tripleDice:
+        return Icons.filter_3;
+      case PowerUp.warpPotato:
+        return Icons.travel_explore;
+      case PowerUp.tollOp:
+        return Icons.toll;
+      case PowerUp.gameRigger:
+        return Icons.sports_esports;
+      case PowerUp.goldenStakes:
+        return Icons.emoji_events;
+      case PowerUp.reroll:
+        return Icons.replay_circle_filled;
+      case PowerUp.orderSwap:
+        return Icons.low_priority;
+    }
+  }
+
+  /// Catalog tier (ITEMS_SPEC.md). Drives shelf draws, pricing bands, and
+  /// the market's rarity styling.
+  ItemRarity get rarity {
+    if (kRareItemsV6.contains(this)) return ItemRarity.rare;
+    if (kExoticItemsV6.contains(this)) return ItemRarity.exotic;
+    return ItemRarity.common;
+  }
+
+  /// True for items that need a chosen target before firing (a rival seat for
+  /// freeze/swap; a warp-node slot for the warp potato). These go through
+  /// [PartyController.useItemOn], never [PartyController.useItem].
+  bool get isTargeted =>
+      this == PowerUp.freezeRay ||
+      this == PowerUp.swapper ||
+      this == PowerUp.warpPotato ||
+      this == PowerUp.orderSwap;
+}
+
+/// The three catalog tiers. COMMON stocks the everyday shelf; RARE is the
+/// power slot; EXOTIC is the expensive game-bender that only sometimes shows.
+enum ItemRarity { common, rare, exotic }
+
+extension ItemRarityInfo on ItemRarity {
+  String get label {
+    switch (this) {
+      case ItemRarity.common:
+        return 'COMMON';
+      case ItemRarity.rare:
+        return 'RARE';
+      case ItemRarity.exotic:
+        return 'EXOTIC';
+    }
+  }
+
+  Color get color {
+    switch (this) {
+      case ItemRarity.common:
+        return const Color(0xFFB0BEC5); // cool silver
+      case ItemRarity.rare:
+        return const Color(0xFFD4A017); // HPG gold
+      case ItemRarity.exotic:
+        return const Color(0xFFCE93D8); // void violet
     }
   }
 }
 
-/// The items a player can BUY at a market or be GRANTED by a card. The six
-/// scale power-ups plus the new buyables. (voidShield/strongBond also arrive
-/// free on power-up tiles; here they have a price too.)
+/// LEGACY shop list — the fixed 9-item shelf that pre-catalog games (save
+/// v2 and earlier) replay against. New games use the rarity catalog below.
 const List<PowerUp> kItemShop = [
   PowerUp.loadedDice,
   PowerUp.accelerator,
@@ -188,9 +358,105 @@ const Map<PowerUp, int> kItemPrices = {
   PowerUp.swapper: 16,
 };
 
-/// Cheapest thing on a market shelf — the threshold for the shop to open as you
-/// pass it (potato is [kPotatoPrice]; the cheapest item undercuts it).
+/// LEGACY affordability gate — pre-catalog games only open the shop when the
+/// player can afford the cheapest thing. Catalog games ALWAYS open (you get to
+/// peruse the wares even broke — Brett, 2026-07-12).
 const int kMinShopPrice = 8;
+
+// ───────────────────────── THE MARKET CATALOG ─────────────────────────
+// ITEMS_SPEC.md is the ledger. 22 items: 10 common / 5 rare / 7 exotic.
+// A market shelf usually shows 2 commons + 1 rare; roughly one visit in
+// four an exotic joins the shelf. Exotics are the expensive game-benders.
+
+/// COMMON (10) — the everyday shelf stock.
+const List<PowerUp> kCommonItems = [
+  PowerUp.mitochondria, // +3 next roll
+  PowerUp.tailwind, // +2 next roll
+  PowerUp.sabotage, // rivals' next roll halved
+  PowerUp.pickpocket, // steal 3 diamonds from the leader
+  PowerUp.coupon, // next purchase half price
+  PowerUp.secondWind, // +1 per roll for 3 turns
+  PowerUp.magnet, // path diamonds double next walk
+  PowerUp.spark, // +4 diamonds now
+  PowerUp.voidShield, // blocks next diamond loss
+  PowerUp.catalyst, // next mini-game award doubled
+];
+
+/// RARE (5) — four roll-improvers and the potato lock.
+const List<PowerUp> kRareItems = [
+  PowerUp.loadedDice, // 2x next roll
+  PowerUp.accelerator, // twin dice
+  PowerUp.boostFive, // +5 next roll
+  PowerUp.boostTen, // +10 next roll
+  PowerUp.strongBond, // blocks the next swap/steal (potato protection)
+];
+
+/// EXOTIC (7) — expensive, only sometimes on the shelf.
+const List<PowerUp> kExoticItems = [
+  PowerUp.swapper, // swap places with a player
+  PowerUp.freezeRay, // a chosen player skips their turn
+  PowerUp.tripleDice, // three dice added together
+  PowerUp.warpPotato, // teleport to a warp node
+  PowerUp.tollOp, // op tolls the forks through next round
+  PowerUp.gameRigger, // pick the next mini-game
+  PowerUp.goldenStakes, // next mini-game winner: x3 diamonds + a potato
+];
+
+/// Rules ≥ 6 pool variants (ORDER_AND_SOLO_SPEC §4): MULLIGAN joins the
+/// rares and QUEUE JUMPER the exotics — but ONLY in rev-6 matches. Shelf
+/// draws are seeded-tape `next(pool.length)` calls, so pre-6 replays must
+/// keep the 22-item pool sizes or their recorded shelves change under them.
+const List<PowerUp> kRareItemsV6 = [...kRareItems, PowerUp.reroll];
+const List<PowerUp> kExoticItemsV6 = [...kExoticItems, PowerUp.orderSwap];
+
+/// The full 22-item catalog, common → exotic (pre-6 shape; see the V6 pools).
+const List<PowerUp> kItemCatalog = [
+  ...kCommonItems,
+  ...kRareItems,
+  ...kExoticItems,
+];
+
+/// Catalog prices (diamonds). Separate from the legacy [kItemPrices] so old
+/// saves replay against the prices their purchases were recorded at.
+const Map<PowerUp, int> kCatalogPrices = {
+  // common: 5–10
+  PowerUp.coupon: 5,
+  PowerUp.tailwind: 6,
+  PowerUp.spark: 8,
+  PowerUp.sabotage: 8,
+  PowerUp.pickpocket: 8,
+  PowerUp.magnet: 8,
+  PowerUp.secondWind: 9,
+  PowerUp.mitochondria: 9,
+  PowerUp.voidShield: 10,
+  PowerUp.catalyst: 10,
+  // rare: 12–18
+  PowerUp.boostFive: 12,
+  PowerUp.loadedDice: 14,
+  PowerUp.accelerator: 14,
+  PowerUp.strongBond: 14,
+  PowerUp.boostTen: 18,
+  // exotic: 25–35 (a potato is 20 — game-benders cost more than the goal)
+  PowerUp.swapper: 25,
+  PowerUp.freezeRay: 26,
+  PowerUp.tripleDice: 26,
+  PowerUp.warpPotato: 30,
+  PowerUp.tollOp: 30,
+  PowerUp.gameRigger: 32,
+  PowerUp.goldenStakes: 35,
+  // rules ≥ 6 order items (ORDER_AND_SOLO_SPEC §4)
+  PowerUp.reroll: 13,
+  PowerUp.orderSwap: 28,
+};
+
+/// Shelf composition per market visit: 2 commons + 1 rare, plus an exotic
+/// roughly one visit in [kExoticShelfChance].
+const int kShelfCommonSlots = 2;
+const int kShelfRareSlots = 1;
+const int kExoticShelfChance = 4;
+
+/// Diamonds a hired op tolls at each fork, and how the toll is spent.
+const int kForkToll = 5;
 
 /// One of the six scale-themed territories on the board.
 class BoardSection {
@@ -435,24 +701,104 @@ List<BoardSpace> buildBoard() {
 /// Default roster — the playable Potatuhs cast, with sticker portraits from
 /// potatuhs-characters. [asset] is the portrait shown in the picker; [color] is
 /// the player's board-token tint (kept distinct per character for readability).
+/// [bio] is the one-line character-select detail — PERSONALITY ONLY
+/// (Brett 2026-07-17): no org roles, no card ranks/suits, no legacy
+/// classifications. Who they are, not where they sit.
 class PartyCharacter {
   final String name;
   final Color color;
   final String? asset; // portrait sticker path, null for a plain color token
-  const PartyCharacter(this.name, this.color, {this.asset});
+  final String bio; // one-line personality for the character select
+  const PartyCharacter(this.name, this.color, {this.asset, this.bio = ''});
 }
 
 const String _kCharDir = 'assets/characters';
 
 const List<PartyCharacter> kCharacters = [
-  PartyCharacter('Russ', Color(0xFFE16416), asset: '$_kCharDir/russ.png'),
-  PartyCharacter('Butter', Color(0xFFF4D26E), asset: '$_kCharDir/butter.png'),
-  PartyCharacter('Curly', Color(0xFFFFB300), asset: '$_kCharDir/curly.png'),
-  PartyCharacter('Waffle', Color(0xFFFFA726), asset: '$_kCharDir/waffle-fry.png'),
-  PartyCharacter('French', Color(0xFFE1C916), asset: '$_kCharDir/french.png'),
-  PartyCharacter('Tater', Color(0xFFFF7043), asset: '$_kCharDir/tater.png'),
-  PartyCharacter('Pierogi', Color(0xFFB39DDB), asset: '$_kCharDir/pierogi.png'),
-  PartyCharacter('Baked', Color(0xFF8D6E63), asset: '$_kCharDir/baked-potato.png'),
+  PartyCharacter('Russ', Color(0xFFE16416),
+      asset: '$_kCharDir/russ.png',
+      bio: 'The idea engine. uhhh… he has so many plans.'),
+  PartyCharacter('Butter', Color(0xFFF4D26E),
+      asset: '$_kCharDir/butter.png',
+      bio: 'Smooth. Already saw how this ends.'),
+  PartyCharacter('Curly', Color(0xFFFFB300),
+      asset: '$_kCharDir/curly.png',
+      bio: 'Knows a shortcut — it twists.'),
+  PartyCharacter('Waffle', Color(0xFFFFA726),
+      asset: '$_kCharDir/waffle-fry.png',
+      bio: 'Every square has a purpose.'),
+  PartyCharacter('French', Color(0xFFE1C916),
+      asset: '$_kCharDir/french.png',
+      bio: 'Counts every diamond. Twice.'),
+  PartyCharacter('Tater', Color(0xFFFF7043),
+      asset: '$_kCharDir/tater.png',
+      bio: 'Never missed a deadline — ask anybody.'),
+  PartyCharacter('Pierogi', Color(0xFFB39DDB),
+      asset: '$_kCharDir/pierogi.png',
+      bio: 'Writes it down. Canon.'),
+  PartyCharacter('Baked', Color(0xFF8D6E63),
+      asset: '$_kCharDir/baked-potato.png',
+      bio: 'Cozy, unhurried — the diamonds don\'t rush.'),
+  PartyCharacter('Chips', Color(0xFFFFD60A),
+      asset: '$_kCharDir/chips.png',
+      bio: 'The hivemind — everywhere at once.'),
+  PartyCharacter('Sunny', Color(0xFFFFF176),
+      asset: '$_kCharDir/sunny.png',
+      bio: 'Golden hour, all hours.'),
+  PartyCharacter('Gravy', Color(0xFFB5651D),
+      asset: '$_kCharDir/gravy.png',
+      bio: 'Flows smooth. Covers everything.'),
+  PartyCharacter('Salt', Color(0xFFECEFF1),
+      asset: '$_kCharDir/salt.png',
+      bio: 'Brings out everyone\'s flavor.'),
+  PartyCharacter('Pepper', Color(0xFF90A4AE),
+      asset: '$_kCharDir/pepper.png',
+      bio: 'A little heat when it\'s needed.'),
+  PartyCharacter('Sweet Potato', Color(0xFFD84315),
+      asset: '$_kCharDir/sweet-potato.png',
+      bio: 'The sweet one — don\'t mistake kind for soft.'),
+  PartyCharacter('Cheesewheel', Color(0xFFFFC11A),
+      asset: '$_kCharDir/cheesewheel.png',
+      bio: 'Rolls in, steals the scene, rolls out.'),
+  PartyCharacter('Mashed Potato', Color(0xFFF5EBD0),
+      asset: '$_kCharDir/mashed-potato.png',
+      bio: 'Comfort incarnate. Impossible to rattle.'),
+  PartyCharacter('Gratin', Color(0xFFE8A33D),
+      asset: '$_kCharDir/gratin.png',
+      bio: 'Layered. Golden on top.'),
+  PartyCharacter('Crinkle Cut', Color(0xFFFFCC80),
+      asset: '$_kCharDir/crinkle-cut.png',
+      bio: 'Every ridge runs on time.'),
+  PartyCharacter('Shoestring', Color(0xFFEEDC82),
+      asset: '$_kCharDir/shoestring.png',
+      bio: 'Thin margins are still margins.'),
+  PartyCharacter('Chuño', Color(0xFF546E7A),
+      asset: '$_kCharDir/chuno.png',
+      bio: 'Freeze-dried, never fazed.'),
+  PartyCharacter('Paddy', Color(0xFF43A047),
+      asset: '$_kCharDir/paddy.png',
+      bio: 'Five, then seven, then five.'),
+  PartyCharacter('Lou', Color(0xFFE53935),
+      asset: '$_kCharDir/lou.png',
+      bio: 'Lands the ending, gets out.'),
+  PartyCharacter('Kiki', Color(0xFFEC407A),
+      asset: '$_kCharDir/kiki.png',
+      bio: 'Panels first, punchlines always.'),
+  PartyCharacter('Brooke', Color(0xFF42A5F5),
+      asset: '$_kCharDir/brooke.png',
+      bio: 'Everything is a saga if you let it.'),
+  PartyCharacter('Silvio', Color(0xFFC0CA33),
+      asset: '$_kCharDir/silvio.png',
+      bio: 'Nothing he builds has one solution.'),
+  PartyCharacter('Antoine', Color(0xFF8E24AA),
+      asset: '$_kCharDir/antoine.png',
+      bio: 'Bars on bars — he keeps the receipts.'),
+  PartyCharacter('Sour Cream & Onion', Color(0xFF9CCC65),
+      asset: '$_kCharDir/sour-cream-and-onion.png',
+      bio: 'Finds the bug you swore was gone.'),
+  PartyCharacter('Burlap', Color(0xFFC5A572),
+      asset: '$_kCharDir/burlap.png',
+      bio: 'Secretly, the landlord.'),
 ];
 
 class PartyPlayer {
@@ -501,6 +847,18 @@ class PartyPlayer {
   bool catalyst = false;
   bool mitochondria = false;
   bool loadedDice = false;
+  // Catalog items (ITEMS_SPEC.md). One-shot roll boosts stack with each other.
+  bool tailwind = false; // +2 next roll
+  bool boostFive = false; // +5 next roll
+  bool boostTen = false; // +10 next roll
+  bool tripleDice = false; // next roll uses three dice
+  bool magnet = false; // path diamonds double on the next walk
+  bool coupon = false; // next market purchase half price
+  int secondWindTurns = 0; // +1 per roll while > 0, ticked down each roll
+
+  /// SABOTAGED: this player's next roll is halved (round up). A debuff set by
+  /// a rival's Sabotage — cleared when the roll it hits resolves.
+  bool halvedRoll = false;
 
   PartyPlayer({
     required this.index,
@@ -517,6 +875,13 @@ class PartyPlayer {
         if (catalyst) PowerUp.catalyst,
         if (mitochondria) PowerUp.mitochondria,
         if (loadedDice) PowerUp.loadedDice,
+        if (tailwind) PowerUp.tailwind,
+        if (boostFive) PowerUp.boostFive,
+        if (boostTen) PowerUp.boostTen,
+        if (tripleDice) PowerUp.tripleDice,
+        if (magnet) PowerUp.magnet,
+        if (coupon) PowerUp.coupon,
+        if (secondWindTurns > 0) PowerUp.secondWind,
       ];
 }
 
@@ -534,6 +899,7 @@ enum WheelTier {
   checkpoint, // every 4 rounds (5, 9, …), every player: the middle table
   winner, // after a round ceremony, round winner(s) only (Hole/Aether maps)
   finale, // game end, every player: the high-stakes table
+  bigBad, // every 7th round on boss maps: the decree wheel (rules ≥ 4)
 }
 
 extension WheelTierInfo on WheelTier {
@@ -547,6 +913,8 @@ extension WheelTierInfo on WheelTier {
         return "WINNER'S SPIN";
       case WheelTier.finale:
         return 'FINAL SPIN';
+      case WheelTier.bigBad:
+        return "THE BIG BAD'S WHEEL";
     }
   }
 }
@@ -559,6 +927,16 @@ enum WheelPrizeKind {
   atp, // +amount
   potatoes, // +amount (the Mario-Party-star equivalent)
   dropItem, // lose your first held item (−3 diamonds if pack is empty)
+  bossLastPotato, // arms BossRule.lastLosesPotato for this round's game
+  bossRedistribution, // arms BossRule.greatRedistribution
+}
+
+/// The decrees the Big Bad's wheel can arm. A decree is announced BEFORE the
+/// round's mini-game (everyone plays knowing the stakes) and applied to its
+/// results — see PartyController's boss-rule application.
+enum BossRule {
+  lastLosesPotato, // the round's worst rank forfeits one potato
+  greatRedistribution, // all diamonds pool; 50% / 25% / 12.5% by placement
 }
 
 class WheelSegment {
@@ -601,7 +979,9 @@ const List<WheelSegment> kWheelOpening = [
 ];
 
 /// Checkpoint spins: mostly small money, sometimes an item, sometimes a
-/// sting, rarely a whole potato.
+/// sting, rarely a whole potato. The round's winners NEVER spin this table
+/// (rules ≥ 3) — when a checkpoint lands right after their win they spin
+/// [kWheelWinner] instead, so winning can't turn into a sting.
 const List<WheelSegment> kWheelMiddle = [
   WheelSegment('+5 💎', 5, WheelPrizeKind.diamonds, amount: 5),
   WheelSegment('+10 💎', 3, WheelPrizeKind.diamonds, amount: 10),
@@ -635,6 +1015,18 @@ const List<WheelSegment> kWheelFinale = [
       item: PowerUp.strongBond),
 ];
 
+/// The Big Bad's wheel: no prizes, only decrees — the landed segment sets the
+/// harsh rule this round's mini-game is played under. The face alternates the
+/// two decrees so the spin actually reads as a choice.
+const List<WheelSegment> kWheelBigBad = [
+  WheelSegment('LAST LOSES 🥔', 1, WheelPrizeKind.bossLastPotato),
+  WheelSegment('REDISTRIBUTE 💎', 1, WheelPrizeKind.bossRedistribution),
+  WheelSegment('LAST LOSES 🥔', 1, WheelPrizeKind.bossLastPotato),
+  WheelSegment('REDISTRIBUTE 💎', 1, WheelPrizeKind.bossRedistribution),
+  WheelSegment('LAST LOSES 🥔', 1, WheelPrizeKind.bossLastPotato),
+  WheelSegment('REDISTRIBUTE 💎', 1, WheelPrizeKind.bossRedistribution),
+];
+
 List<WheelSegment> wheelTableFor(WheelTier tier) {
   switch (tier) {
     case WheelTier.opening:
@@ -645,8 +1037,19 @@ List<WheelSegment> wheelTableFor(WheelTier tier) {
       return kWheelWinner;
     case WheelTier.finale:
       return kWheelFinale;
+    case WheelTier.bigBad:
+      return kWheelBigBad;
   }
 }
 
 /// Checkpoint cadence: the wheel comes back every 4 rounds (5, 9, 13 …).
 const int kWheelCheckpointEvery = 4;
+
+/// Prowl cadence (rules ≥ 4): the mischief crew can rob ONLY during every
+/// 4th round — and even then only by board contact, on a coin flip. Every
+/// other round they are scenery you route around.
+const int kOpsProwlEvery = 4;
+
+/// Big Bad cadence (rules ≥ 4): every 7th round the map's boss spins the
+/// decree wheel over that round's mini-game.
+const int kBigBadEvery = 7;

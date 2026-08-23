@@ -29,5 +29,5 @@ Self-contained module. Imports only `mini_game.dart`, `fx.dart`,
 registry, the catalog, or the host. `flutter analyze` on the folder: 0 issues.
 
 ## Status board
-See `~/Potatuhs/hpg/_status/cell_mobile.md` for the consultant-facing status;
+See `~/Potatuhs/hotpotatogames/_status/cell_mobile.md` for the consultant-facing status;
 update it when goals/milestones change.

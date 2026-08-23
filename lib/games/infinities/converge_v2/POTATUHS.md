@@ -31,5 +31,5 @@ somehow you still get a finite pile. We've always converged. Don't worry about i
 
 ## Status hook
 Module is self-contained; analyze-clean. Report progress/blockers to
-`~/Potatuhs/hpg/_status/cell_mobile.md` per the broadcast protocol when goals or
+`~/Potatuhs/hotpotatogames/_status/cell_mobile.md` per the broadcast protocol when goals or
 milestones change.

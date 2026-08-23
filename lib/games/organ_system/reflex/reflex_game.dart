@@ -290,7 +290,10 @@ class _ReflexGameState extends State<ReflexGame>
     }
     _lastLabel = '$_lastLabel  +$total';
 
-    final geom = _Arc.of(size);
+    // Spawn the burst from the receptor's LIVE (drifted) position — same clock
+    // + difficulty the painter samples this frame, so sparks fire exactly where
+    // the moving node is drawn.
+    final geom = _Arc.animated(size, _idlePhase, _difficulty);
     _sparks.addAll(FxBurst.spawn(geom.receptor, _kStimulus,
         count: 14, speed: 150, size: 3));
 
@@ -373,6 +376,7 @@ class _Arc {
 
   const _Arc(this.size, this.receptor, this.cord, this.muscle, this.brain);
 
+  /// Static base layout (used by the manual thumbnails, which never move).
   factory _Arc.of(Size s) {
     return _Arc(
       s,
@@ -380,6 +384,62 @@ class _Arc {
       Offset(s.width * 0.50, s.height * 0.46),
       Offset(s.width * 0.82, s.height * 0.74),
       Offset(s.width * 0.50, s.height * 0.16),
+    );
+  }
+
+  /// LIVE layout — every node drifts, with a motion budget by role (Brett,
+  /// 2026-07-12). Deterministic in ([t], [difficulty]) so the painter and the
+  /// tap handler compute the SAME positions from the same clock: one source of
+  /// truth for where a node is. Motion is sine-based (always eased, never a
+  /// teleport) and each center is clamped fully on-screen so a required tap can
+  /// never drift off. Amplitude scales with difficulty → stress escalates.
+  ///
+  /// Motion budget:
+  ///   • brain    — up top, slow small drift (a little lower/right/left/higher)
+  ///   • cord     — the smallest shift of all
+  ///   • receptor — large, lively excursions
+  ///   • muscle   — large, lively excursions (out of phase with the receptor)
+  factory _Arc.animated(Size s, double t, double difficulty) {
+    final base = _Arc.of(s);
+    // Half amplitude at trial 0, full by the difficulty cap — motion is always
+    // on, and the field gets busier (more stressful) as the run ramps.
+    final gain = 0.55 + 0.45 * difficulty.clamp(0.0, 1.0);
+    return _Arc(
+      s,
+      _clamp(s, base.receptor,
+          _drift(s, t, gain, ax: 0.075, ay: 0.060, fx: 1.7, fy: 2.3, px: 0.4, py: 2.1)),
+      _clamp(s, base.cord,
+          _drift(s, t, gain, ax: 0.010, ay: 0.009, fx: 0.9, fy: 0.7, px: 2.0, py: 0.6)),
+      _clamp(s, base.muscle,
+          _drift(s, t, gain, ax: 0.075, ay: 0.060, fx: 1.9, fy: 1.5, px: 3.1, py: 0.9)),
+      _clamp(s, base.brain,
+          _drift(s, t, gain, ax: 0.032, ay: 0.022, fx: 0.55, fy: 0.42, px: 0.0, py: 1.3)),
+    );
+  }
+
+  /// A per-node drift offset: two out-of-sync sine components (a Lissajous
+  /// path, so motion reads as a lively wander, not a flat circle). Amplitudes
+  /// are fractions of the field size; [gain] scales the whole excursion.
+  static Offset _drift(Size s, double t, double gain,
+      {required double ax,
+      required double ay,
+      required double fx,
+      required double fy,
+      required double px,
+      required double py}) {
+    final dx = s.width * ax * gain * math.sin(t * fx + px);
+    final dy = s.height * ay * gain * math.sin(t * fy + py);
+    return Offset(dx, dy);
+  }
+
+  /// Keep a drifting node center fully on-screen (generous margin covers the
+  /// orb radius + its label), so no eased motion can carry it out of reach.
+  static Offset _clamp(Size s, Offset base, Offset delta) {
+    const margin = 46.0;
+    final p = base + delta;
+    return Offset(
+      p.dx.clamp(margin, math.max(margin, s.width - margin)),
+      p.dy.clamp(margin, math.max(margin, s.height - margin)),
     );
   }
 
@@ -431,10 +491,16 @@ class _ReflexPainter extends CustomPainter {
     required this.sparks,
   });
 
+  /// Same ramp curve the game state uses — keeps motion amplitude in lockstep.
+  double get _difficulty => (trial / _kDifficultyTrials).clamp(0.0, 1.0);
+
   @override
   void paint(Canvas canvas, Size size) {
     GameFx.atmosphere(canvas, size, _kSignal, idlePhase, motes: 26);
-    final arc = _Arc.of(size);
+    // LIVE positions: nodes drift on the ticker clock ([idlePhase]) with a
+    // per-node motion budget. This is the single source of node geometry the
+    // frame renders — the tap handler samples the same _Arc.animated(...).
+    final arc = _Arc.animated(size, idlePhase, _difficulty);
 
     _paintBrain(canvas, arc);
     _paintPaths(canvas, arc);

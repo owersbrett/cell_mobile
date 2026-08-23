@@ -32,7 +32,7 @@ Every system below is an absolute requirement, not a nice-to-have.
 - Lockstep: player taps → `PartyInputKind` input log; all randomness via the host
   random tape (`_tape.next(n)`), replayed on clients. New mechanics add an input kind
   (APPEND-only for index stability) + tape draws. Cutscenes must be presentation-only.
-- Economy today: **diamonds** (spendable; paydirt was collapsed into it), **potatoes**
+- Economy today: **diamonds** (spendable), **potatoes**
   (the win), **ATP** (roll boosts), 7 `PowerUp` items, `kMaxItems = 3`.
 - Roaming board entities already exist: the mischief ops (Peeler/Masher) — the ghosts
   extend this system.

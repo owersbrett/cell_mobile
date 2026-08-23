@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:cell_mobile/party/maps/mini_map.dart';
 import 'package:cell_mobile/party/party_actions.dart';
 import 'package:cell_mobile/party/party_controller.dart';
 import 'package:cell_mobile/party/party_models.dart';
@@ -8,11 +9,14 @@ import 'package:cell_mobile/theme/potatuhs.dart';
 import 'package:flutter/material.dart';
 
 /// The wheel (PARTY_CINEMATIC_SPEC §2). Spinners take the wheel in queue
-/// order. STOP is a SKILL input: the segment under the pointer at the press
-/// is the outcome (carried through the lockstep log), and the wheel visibly
-/// decelerates forward onto it — read the wheel, time the press, get the
-/// prize. After it settles, Butter explains what the prize does and the
-/// player drives the game forward with CONTINUE; nothing auto-advances.
+/// order. SPIN-DRIVES LAW (Brett 2026-07-17): the wheel DRIFTS slowly until
+/// the spinner fires SPIN — the button always says SPIN, never STOP. The
+/// segment under the pointer at the press is the outcome (carried through
+/// the lockstep log), played back as a spin-up through extra revolutions
+/// that lands on the call — aim the drift, fire, get the prize. After it
+/// settles, Butter explains what the prize does and the player drives the
+/// game forward with CONTINUE; nothing auto-advances.
+/// Wedges carry NUMBERS; the legend under the wheel maps them to prizes.
 /// On the opening spin of round 1 the ceremony plays over the top first:
 /// a rules board that holds ALL the information, while the characters the
 /// players actually picked banter across it.
@@ -49,11 +53,14 @@ class WheelScreen extends StatefulWidget {
 
 class _WheelScreenState extends State<WheelScreen>
     with TickerProviderStateMixin {
-  /// Free-spin rotation while waiting for the STOP.
+  /// Slow drift while waiting for the spinner to fire SPIN.
   late final AnimationController _spin;
 
-  /// Deceleration + result-card hold after a landed stop.
+  /// The fired spin-up + landing, then the result-card hold.
   late final AnimationController _landing;
+
+  /// Light chase / pulse clock for the wheel bulbs.
+  late final AnimationController _fx;
 
   int _seenSeq = 0;
   WheelResult? _landingResult; // the spin being paid off right now
@@ -73,13 +80,13 @@ class _WheelScreenState extends State<WheelScreen>
   void initState() {
     super.initState();
     _seenSeq = c.lastWheelResult?.seq ?? 0;
-    // One revolution per cycle — slow enough that the labels are readable
-    // in flight. Reading the wheel is the whole skill.
+    // DRIFT, not a live spin (SPIN-DRIVES LAW): slow enough to aim at — the
+    // spinner fires SPIN when their prize nears the pointer.
     _spin = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 2400));
-    // Pure deceleration; the result then HOLDS until the player continues.
+        vsync: this, duration: const Duration(milliseconds: 9000));
+    // The fired spin-up; the result then HOLDS until the player continues.
     _landing = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1700))
+        vsync: this, duration: const Duration(milliseconds: 3000))
       ..addStatusListener((s) {
         if (s != AnimationStatus.completed || !mounted) return;
         // Park the free-spin phase where the landing ended so any resume
@@ -87,6 +94,9 @@ class _WheelScreenState extends State<WheelScreen>
         _spin.value = (_landingTargetAngle % _kTwoPi) / _kTwoPi;
         setState(() {});
       });
+    _fx = AnimationController(
+        vsync: this, duration: const Duration(seconds: 3))
+      ..repeat();
     if (_isOutro) {
       // Pay off the already-landed final stop, then hand back to the board.
       final r = c.lastWheelResult;
@@ -108,6 +118,7 @@ class _WheelScreenState extends State<WheelScreen>
     if (!_isOutro) c.removeListener(_onController);
     _spin.dispose();
     _landing.dispose();
+    _fx.dispose();
     super.dispose();
   }
 
@@ -179,7 +190,7 @@ class _WheelScreenState extends State<WheelScreen>
     return table.length - 1;
   }
 
-  void _onStopPressed() {
+  void _onSpinPressed() {
     if (!_canStop) return;
     final w = c.wheel;
     if (w == null) return;
@@ -188,13 +199,13 @@ class _WheelScreenState extends State<WheelScreen>
         .wheelStop(_segmentUnderPointer(table, _spin.value * _kTwoPi));
   }
 
-  /// First forward angle ≥ ~0.9 revolutions past the press that centers
-  /// [idx] under the pointer — the wheel never reverses, it just runs out
-  /// of steam and comes back around onto what the spinner called.
+  /// First forward angle ≥ ~3.2 revolutions past the press that centers
+  /// [idx] under the pointer — the fired spin whooshes up from the drift,
+  /// never reverses, and eases onto what the spinner called.
   double _landingTarget(List<WheelSegment> table, int idx) {
     var target = _targetAngle(table, idx) % _kTwoPi;
     if (target < 0) target += _kTwoPi;
-    while (target < _spinAngleAtStop + _kTwoPi * 0.9) {
+    while (target < _spinAngleAtStop + _kTwoPi * 3.2) {
       target += _kTwoPi;
     }
     return target;
@@ -246,6 +257,15 @@ class _WheelScreenState extends State<WheelScreen>
         child: SafeArea(
         child: Stack(
           children: [
+            // The board hums behind the wheel — the spinner's token pinged so
+            // the prize always reads against where they stand in the race.
+            Positioned.fill(
+              child: MiniMapBackdrop(
+                controller: c,
+                dim: 0.18,
+                emphasis: MiniMapEmphasis(players: {spinnerSeat}),
+              ),
+            ),
             Column(
               children: [
                 const SizedBox(height: 14),
@@ -267,15 +287,15 @@ class _WheelScreenState extends State<WheelScreen>
                 const SizedBox(height: 10),
                 Expanded(
                   child: AnimatedBuilder(
-                    animation: Listenable.merge([_spin, _landing]),
+                    animation: Listenable.merge([_spin, _landing, _fx]),
                     builder: (context, _) {
                       double angle;
                       if (r != null) {
-                        // Friction, not physics-reversal: the wheel keeps
-                        // its direction and eases forward onto the segment
-                        // the spinner called at the press.
+                        // The fired spin: up from the drift, through the
+                        // extra revolutions, easing onto the segment the
+                        // spinner called at the press.
                         final t =
-                            Curves.easeOutCubic.transform(_landing.value);
+                            Curves.easeInOutCubic.transform(_landing.value);
                         angle = _spinAngleAtStop +
                             (_landingTargetAngle - _spinAngleAtStop) * t;
                       } else {
@@ -286,6 +306,7 @@ class _WheelScreenState extends State<WheelScreen>
                           table: table,
                           angle: angle,
                           accent: spinner.color,
+                          fx: _fx.value,
                           highlight: r != null && _landing.value > 0.8
                               ? r.segmentIndex
                               : null,
@@ -295,6 +316,11 @@ class _WheelScreenState extends State<WheelScreen>
                     },
                   ),
                 ),
+                _legend(
+                    table,
+                    r != null && !_landing.isAnimating
+                        ? r.segmentIndex
+                        : null),
                 if (settled)
                   // The wheel has settled: the host explains what the prize
                   // actually does, and the PLAYER moves the game forward.
@@ -336,8 +362,8 @@ class _WheelScreenState extends State<WheelScreen>
                             )
                           : Text(
                               _canStop
-                                  ? 'Read the wheel — STOP it on the prize '
-                                      'you want'
+                                  ? 'Fire SPIN when your prize drifts to '
+                                      'the pointer'
                                   : 'Waiting for ${spinner.name}…',
                               textAlign: TextAlign.center,
                               style: Potatuhs.body(
@@ -348,7 +374,7 @@ class _WheelScreenState extends State<WheelScreen>
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
                     child: _bigButton('SPIN',
-                        enabled: _canStop, onTap: _onStopPressed),
+                        enabled: _canStop, onTap: _onSpinPressed),
                   ),
                 ],
               ],
@@ -361,7 +387,48 @@ class _WheelScreenState extends State<WheelScreen>
     );
   }
 
-  /// The gold action button (STOP / CONTINUE) — one shape, one weight.
+  /// The number → prize legend (Brett 2026-07-17): wedges carry numbers so
+  /// they read at speed; the mapping lives here, landed entry highlighted.
+  Widget _legend(List<WheelSegment> table, int? landed) {
+    if (table.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 6,
+        runSpacing: 5,
+        children: [
+          for (var i = 0; i < table.length; i++)
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: i == landed
+                    ? Potatuhs.gold
+                    : Colors.black.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: i == landed
+                        ? Potatuhs.ink
+                        : _WheelPainter.fillFor(i)
+                            .withValues(alpha: 0.65)),
+              ),
+              child: Text(
+                '${i + 1} · ${table[i].label.toUpperCase()}',
+                style: Potatuhs.body(
+                        size: 10,
+                        color: i == landed
+                            ? Potatuhs.ink
+                            : Potatuhs.textPrimary)
+                    .copyWith(fontWeight: FontWeight.w800),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// The gold action button (SPIN / CONTINUE) — one shape, one weight.
   Widget _bigButton(String label,
       {required bool enabled, required VoidCallback onTap}) {
     return GestureDetector(
@@ -402,21 +469,21 @@ class _WheelScreenState extends State<WheelScreen>
     (
       Icons.emoji_events,
       'WIN',
-      'Most POTATOES wins. Show up at the POTATO SHACK for one, buy more '
+      'Most potatoes wins. Show up at the Potato Shack for one, buy more '
       'with diamonds — '
           'and you eat every diamond you walk over.',
     ),
     (
       Icons.casino,
       'ROUNDS',
-      'Everyone rolls & moves, then a MINI-GAME fires. The region you '
+      'Everyone rolls & moves, then a mini-game fires. The region you '
           'land in picks its flavor — steer toward games you like.',
     ),
     (
       Icons.track_changes,
       'THE WHEEL',
-      'Hands out ITEMS now, returns every 4 rounds, pays potatoes at the '
-          'end. STOP it on the prize you want — timing is real.',
+      'Hands out items now, returns every 4 rounds, pays potatoes at the '
+          'end. Stop it on the prize you want — timing is real.',
     ),
   ];
 
@@ -542,34 +609,53 @@ class _WheelScreenState extends State<WheelScreen>
 }
 
 /// Paints the wheel face: weighted segments starting at the pointer,
-/// clockwise, labels laid radially. Pure function of (table, angle).
+/// clockwise, each carrying a big NUMBER (the legend below maps them to
+/// prizes). Pure function of (table, angle, fx).
 ///
-/// The pointer sits at 3 O'CLOCK (not the top) ON PURPOSE: labels run
-/// radially outward, so a segment under a side pointer reads HORIZONTALLY —
-/// the landed prize is legible at the payoff on every spin. A top pointer
-/// left the winning label vertical (Brett, 2026-07-08).
+/// Stylized to DESIGN.md (Brett 2026-07-17): a warm/cool contrast rotation
+/// (Fiery Orange · Air Force Blue · Golden Shade · Glaucous · Morning
+/// Sienna · Deep Mocha), ink separators, and LIGHT — rim bulbs at every
+/// seam chasing with the [fx] clock (pulsing gold once landed) and LED dots
+/// running each separator hub→rim.
+///
+/// The pointer sits at 3 O'CLOCK (not the top) ON PURPOSE: the segment
+/// under a side pointer reads horizontally at the payoff
+/// (Brett, 2026-07-08).
 class _WheelPainter extends CustomPainter {
   final List<WheelSegment> table;
   final double angle;
   final Color accent;
+  final double fx; // 0..1 repeating light clock
   final int? highlight;
   _WheelPainter({
     required this.table,
     required this.angle,
     required this.accent,
+    required this.fx,
     this.highlight,
   });
 
+  // DESIGN.md palette, ordered warm/cool so neighbours always contrast.
   static const _fills = [
-    Color(0xFF2A2438),
-    Color(0xFF1D2B3A),
-    Color(0xFF33241E),
-    Color(0xFF1F3227),
+    Potatuhs.orange,
+    Potatuhs.airForce,
+    Potatuhs.gold,
+    Potatuhs.glaucous,
+    Potatuhs.sienna,
+    Potatuhs.mocha,
   ];
+
+  static Color fillFor(int i) => _fills[i % _fills.length];
+
+  /// Ink on the warm fills, warm white on the cool/dark ones.
+  static Color _numberColor(int i) => switch (i % _fills.length) {
+        0 || 2 || 4 => Potatuhs.ink,
+        _ => Potatuhs.textPrimary,
+      };
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (size.isEmpty) return;
+    if (size.isEmpty || table.isEmpty) return;
     final center = Offset(size.width / 2, size.height / 2);
     final radius = math.max(10.0, math.min(size.width, size.height) / 2 - 18);
     var totalWeight = 0;
@@ -582,67 +668,108 @@ class _WheelPainter extends CustomPainter {
     final stroke = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
-      ..color = Colors.black;
+      ..color = Potatuhs.ink;
 
+    final seamAngles = <double>[];
     var startWeight = 0;
     for (var i = 0; i < table.length; i++) {
       final seg = table[i];
       // Segment 0 starts at 0 rad = 3 o'clock, where the pointer sits.
       final a0 = angle + startWeight / totalWeight * 2 * math.pi;
       final sweep = seg.weight / totalWeight * 2 * math.pi;
-      paint.color = i == highlight
-          ? accent.withValues(alpha: 0.85)
-          : _fills[i % _fills.length];
+      seamAngles.add(a0);
+      paint.color =
+          i == highlight ? accent.withValues(alpha: 0.9) : fillFor(i);
       canvas.drawArc(rect, a0, sweep, true, paint);
       canvas.drawArc(rect, a0, sweep, true, stroke);
 
-      // Radial label along the segment's centerline.
+      // The wedge NUMBER — big, radial, readable at full spin speed.
       final mid = a0 + sweep / 2;
       canvas.save();
       canvas.translate(center.dx, center.dy);
       canvas.rotate(mid);
       final tp = TextPainter(
         text: TextSpan(
-          text: seg.label,
+          text: '${i + 1}',
           style: TextStyle(
-            fontFamily: Potatuhs.bodyFont,
-            fontSize: radius * 0.072,
-            fontWeight: FontWeight.bold,
-            color: i == highlight ? Colors.black : Colors.white70,
+            fontFamily: Potatuhs.displayFont,
+            fontSize: radius * (table.length > 12 ? 0.13 : 0.17),
+            color: i == highlight ? Potatuhs.ink : _numberColor(i),
           ),
         ),
         textDirection: TextDirection.ltr,
         maxLines: 1,
-        ellipsis: '…',
-      )..layout(maxWidth: radius * 0.62);
-      tp.paint(canvas, Offset(radius * 0.30, -tp.height / 2));
+      )..layout();
+      tp.paint(
+          canvas, Offset(radius * 0.60 - tp.width / 2, -tp.height / 2));
       canvas.restore();
+
+      // LED strip along the leading separator, hub → rim.
+      const dots = 5;
+      for (var d = 0; d < dots; d++) {
+        final rr = radius * (0.30 + 0.15 * d);
+        final tw = 0.45 +
+            0.55 * math.sin((fx + i / table.length + d * 0.11) * 2 * math.pi);
+        paint.color = Potatuhs.gold.withValues(alpha: 0.25 + 0.6 * tw * tw);
+        canvas.drawCircle(
+            center + Offset(math.cos(a0), math.sin(a0)) * rr, 2.2, paint);
+      }
       startWeight += seg.weight;
+    }
+
+    // Rim bulbs at every seam: CHASE while turning, all-pulse when landed.
+    final landed = highlight != null;
+    final lit = (fx * seamAngles.length * 2).floor();
+    for (var i = 0; i < seamAngles.length; i++) {
+      final a = seamAngles[i];
+      final p = center + Offset(math.cos(a), math.sin(a)) * (radius + 9);
+      final on = landed
+          ? 0.55 + 0.45 * math.sin(fx * 2 * math.pi * 2)
+          : (i == lit % seamAngles.length ||
+                  i == (lit + seamAngles.length ~/ 2) % seamAngles.length)
+              ? 1.0
+              : 0.30;
+      paint.color = Potatuhs.gold.withValues(alpha: on.clamp(0.0, 1.0));
+      canvas.drawCircle(p, landed ? 4.0 : 3.2, paint);
+      stroke
+        ..strokeWidth = 1
+        ..color = Potatuhs.ink;
+      canvas.drawCircle(p, landed ? 4.0 : 3.2, stroke);
     }
 
     // Hub.
     paint.color = Potatuhs.ink;
     canvas.drawCircle(center, radius * 0.14, paint);
-    stroke.color = accent;
+    stroke
+      ..strokeWidth = 2
+      ..color = accent;
     canvas.drawCircle(center, radius * 0.14, stroke);
 
-    // Rim glow.
+    // Rim: clean ink line over a soft accent glow.
     final rim = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 4
-      ..color = accent.withValues(alpha: 0.5)
+      ..color = accent.withValues(alpha: 0.35)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
     canvas.drawCircle(center, radius, rim);
+    stroke
+      ..strokeWidth = 3
+      ..color = Potatuhs.ink;
+    canvas.drawCircle(center, radius, stroke);
 
     // Side pointer (3 o'clock), aiming inward — the segment it marks reads
     // horizontally.
     final pointer = Path()
-      ..moveTo(center.dx + radius + 10, center.dy - 12)
-      ..lineTo(center.dx + radius + 10, center.dy + 12)
-      ..lineTo(center.dx + radius - 14, center.dy)
+      ..moveTo(center.dx + radius + 12, center.dy - 13)
+      ..lineTo(center.dx + radius + 12, center.dy + 13)
+      ..lineTo(center.dx + radius - 15, center.dy)
       ..close();
     paint.color = Potatuhs.gold;
     canvas.drawPath(pointer, paint);
+    stroke
+      ..strokeWidth = 2
+      ..color = Potatuhs.ink;
+    canvas.drawPath(pointer, stroke);
   }
 
   @override
@@ -650,5 +777,6 @@ class _WheelPainter extends CustomPainter {
       old.angle != angle ||
       old.table != table ||
       old.highlight != highlight ||
-      old.accent != accent;
+      old.accent != accent ||
+      old.fx != fx;
 }

@@ -1,76 +1,103 @@
 # GAME.md — Digest
 
 > Canonical rules manual for the organ-system-scale game **Digest**.
+> **Rules are the asset; the `.dart` is disposable.** This spec outranks the implementation — lock
+> changes here first.
 
 - **Scale (cell):** organSystem
 - **Game id:** digest
 - **Widget:** `DigestGame(session)` — `lib/games/organ_system/digest/digest_game.dart`
-- **One-line concept:** Route a morsel of food (a *bolus*) down the digestive tract, doing the right
-  organ's job at each stage.
+- **One-line concept:** Run a living digestive tract: chew food thoroughly, spit out the bad, survive
+  chokes and spice, and flush when the body is full.
 - **Role:** solo high-score (also drops into party rotation).
-- **Verb:** ROUTE-THROUGH-STAGES.
+- **Verb:** RUN-THE-TRACT (per-organ skills, not a glow-chase).
+
+## Why the redesign (the critique it answers)
+The old game reduced to "look at the bottom, when a button goes yellow tap it, rightmost first." Every
+organ played identically. This version gives each organ a **real, distinct action** and layers three
+alarm events on top, so the tract is a pipeline you actively *operate*, not five lanes you drain.
 
 ## The tract (the sequence you are learning)
-Food travels left → right through five stages, each with its own action:
+Food (a *bolus*) travels left → right through five organs, each with its own action:
 
-| # | Stage | Action button | What the organ does |
-|---|-------|---------------|---------------------|
-| 0 | MOUTH | **CHEW** | Mechanical + chemical breakdown begins (teeth, saliva). |
-| 1 | ESOPHAGUS | **SWALLOW** | Peristalsis pushes the bolus down to the stomach. |
-| 2 | STOMACH | **CHURN** | Acid + muscle churn the bolus into chyme. |
-| 3 | SMALL INTESTINE | **NUTRIENTS** | **Almost all nutrient absorption** into the blood. |
-| 4 | LARGE INTESTINE | **WATER** | **Water (and salt) reabsorption**; the rest is expelled. |
+| # | Organ | Action | What the organ does | The skill |
+|---|-------|--------|---------------------|-----------|
+| 0 | MOUTH | **CHEW** / **SPIT** | Mechanical breakdown (teeth, saliva). | Chew tough food **1–3 taps**; **SPIT** bad food. |
+| 1 | ESOPHAGUS | **SWALLOW** | Peristalsis pushes the bolus down. | A swallow can trigger a **CHOKE**. |
+| 2 | STOMACH | **CHURN** | Acid + muscle → chyme. | Churn cycles build toward a **FLUSH**. |
+| 3 | SMALL INTESTINE | **NUTRIENTS** | ~90% of nutrient absorption. | The big points. |
+| 4 | LARGE INTESTINE | **WATER** | Reabsorb water; the rest is expelled. | WATER also **douses spice** and **washes down a choke**. |
 
-## How it plays
-1. Food enters at the MOUTH on a timer.
-2. Each stage's work takes a beat — the bolus **ripens** (a ring sweeps around it). When done it
-   **glows gold** and the stage's action button lights up.
-3. **Tap the matching action button while the bolus glows** → the bolus advances to the next stage and
-   you score. Nutrients (small intestine) and water (large intestine) absorbed at the correct stage
-   score the most.
-4. A stage holds **one bolus at a time**. If the next stage is full, the bolus can't move (`FULL`) —
-   you must **clear the front of the tract first** (the pipeline lesson).
-5. **Mis-actions stall it:** pressing a button when its stage isn't ripe (`TOO SOON`) or has no food
-   (`NOTHING HERE`) breaks your streak and knocks the bolus's progress back.
+## Core loop
+1. Food enters at the MOUTH on a timer and **ripens** (a ring sweeps). When ripe it **glows gold**.
+2. Give each organ the action it needs; the bolus advances and you score. **Absorption pays the most.**
+3. One bolus per organ — if the next organ is full it can't move (`FULL`); **clear the FRONT first**.
 
-## On-screen feedback (clarity + juice)
-- **Always-visible objective (top-left):** `FEED THE BODY: glow → tap that organ's action` — swaps to a
-  live `FEED THE BODY · N processed` count once food starts exiting.
-- **Nutrient meter (top band):** a green→gold gauge that **rises on every correct action** (hardest on
-  the small-intestine NUTRIENTS absorb, and topped up by WATER at the exit) and **drains slowly** — a
-  live "am I winning?" read independent of the host score HUD.
-- **In-context how-to** shows on the intro and through the first few seconds of play, with a bobbing
-  **TAP! arrow** over whichever stage is currently ripe; it **fades out after the player's first correct
-  action** (WarioWare teach-then-vanish).
-- **Correct action:** particle burst (scaling with streak) + floating `+N` pop + green success vignette
-  flash. **Mis-action / FULL:** button shake + red vignette flash.
-- **Streak badge (top-right)** appears at 3+, pulsing, and shows the live streak bonus.
+## The seven mechanics
+
+### 1. Ingress visuals (the pipeline reads)
+When a bolus crosses into an organ it **squeezes through the boundary** (squash), the destination
+**column lights up**, and the **organ icon reacts** (pops). The tract is a moving pipeline, not static
+lanes.
+
+### 2. Bad food — SPIT or SUFFER
+Some morsels are **bad** (a sickly green-grey tell + queasy wobble). At the MOUTH a **SPIT** tab appears
+under any morsel there:
+- **Bad + SPIT** → `SPAT OUT!` **+5**, streak kept.
+- **Bad + CHEW/advance** → you swallow it: `SICK!` **−8**, a **sick state** slows the whole tract (~2.6s),
+  streak breaks.
+- **Good + SPIT** → `WASTED` **−3**, streak breaks (don't spit good food).
+The tell gets **more subtle as difficulty rises** (bad-food chance ramps **10% → 24%**).
+
+### 3. Chew depth (1–3 taps)
+Each morsel needs **1, 2, or 3 CHEW taps** by toughness, shown as **pips on the morsel** that deplete.
+Chews have a short rhythm cooldown (no machine-gunning). Only the final chew advances it.
+
+### 4. Choking event (swallow risk)
+Randomly a SWALLOW starts a **CHOKE** emergency — the tract dims, a big red alarm button pulses:
+**MASH ~10× fast** to dislodge (progress **decays** if you stop), then **SIP WATER** (tap the WATER
+button) to wash it down. Clearing it pays **+12**. Choke chance ramps **5% → 16%** per swallow.
+(Button-mash is the mechanic on every platform — no motion sensors required.)
+
+### 5. Spicy event (WATER now)
+**Spicy** morsels (chili-red tell + flame flicker) demand **WATER immediately** once chewed (they hit the
+tongue). While burning, **points drain and the drain escalates** — the screen edges glow hot. Tap
+**WATER** to douse (**+6** for a fast douse). Spicy chance ramps **6% → 18%**.
+
+### 6. Flush handle (relief valve)
+Every **5 churn cycles** a **flush handle** appears at the right edge. **Drag it DOWN** to flush the
+tract: every bolus on board is cleared for **+6 each** plus a burst. A payoff for a heavy, well-run meal.
+
+### 7. Header spacing
+The organ band is stacked and centered (icon → name → action) with breathing room between columns so
+labels never collide with each other or the tube.
 
 ## Scoring
-- CHEW / SWALLOW: +4 each · CHURN: +6 · **ABSORB NUTRIENTS: +16** · **ABSORB WATER: +10**
-- Fully processed (exits the large intestine): **+8 completion bonus** (pop reads `PROCESSED +N`).
-- **Streak bonus:** every correct action adds `+floor(min(streak,10)/2)` on top — a hot streak visibly
-  compounds the score (up to +5/action). Any mis-action resets the streak.
-- **Streak:** consecutive correct actions; any mis-action resets it. Reported via `noteStreak`.
+- CHEW (final): +4 · SWALLOW: +4 · CHURN: +6 · **NUTRIENTS: +16** · **WATER: +10**
+- Fully processed (exits large intestine): **+8** (`PROCESSED +N`).
+- **Streak bonus:** every correct action adds `+floor(min(streak,10)/2)`. Any mis-action resets streak.
+- Event bonuses: SPIT bad +5 · douse spice +6 · clear choke +12 · flush +6/bolus.
+- Penalties (clamped at 0): swallow bad −8 · waste good −3 · burn drain over time.
 - `scoreUnit`: "processed".
 
 ## How to win
-Most food processed and nutrients + water absorbed when time runs out wins.
+Most food processed + nutrients/water absorbed when time runs out — while spitting the bad, surviving
+chokes, dousing spice, and flushing a full tract.
 
 ## Acceleration (difficulty ramp)
-- Intake interval ramps **2.3 s → 0.95 s** (food arrives faster).
-- Ripen time ramps **0.85 s → 0.48 s** (stages finish sooner).
-- Result: up to **five boluses on the tract at once**, one per stage — you juggle every action.
+- Intake **2.4 s → 1.0 s**; ripen **0.85 s → 0.5 s** (up to five boluses juggled at once).
+- Bad **10→24%**, spicy **6→18%**, choke **5→16%**; bad-food tell grows subtler; chews skew toward 2–3.
 
-## Spec (registry)
+## Spec (registry — orchestrator owns)
 - `durationSeconds`: 55 · `humanMax`: 700 · `starThresholds`: [240, 440, 640]
 - `accent`: `Color(0xFFE0734B)` · `icon`: `Icons.lunch_dining` · `enabled`: true
 
 ## Session / resume
-Built to the **MiniGameSession** interface: takes a session, gates on `session.isRunning`, reports via
-`session.addScore` / `session.noteStreak`. Host owns clock, countdown, score HUD and results. A run can
-close and a fresh one re-enter cleanly (host `hostReset`); this widget keeps no cross-run state.
+Built to **MiniGameSession**: gates on `session.isRunning`, reports via `session.addScore` /
+`session.noteStreak`. Host owns clock, countdown, HUD, results. All events (choke/spicy/flush) live
+**inside the play area** and clear when the round ends — a run can close and a fresh one re-enter cleanly.
+`autoPilot` (ATTRACT) chews fully, spits bad food, mashes through chokes, douses spice, and flushes.
 
 ## Dependency rule
 Imports only: `flutter`, `dart:math`, `../../mini_game.dart`, `../../fx.dart`,
-`../../../theme/potatuhs.dart`. No other game's code. One Ticker → one CustomPainter.
+`../../../theme/potatuhs.dart`. No other game's code. One Ticker → one CustomPainter. No motion sensors.

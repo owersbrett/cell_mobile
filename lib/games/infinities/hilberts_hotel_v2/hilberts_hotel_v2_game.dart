@@ -60,7 +60,10 @@ const Color _kTextSub = Potatuhs.textSecondary;
 // still fades into ∞, so the paradox reads. Painter uses the same constants.
 const int _kRooms = 8; // visible rooms (the corridor continues to ∞)
 const double _kBottomPanel = 78; // reserved for the coach / legend strip
-const double _kBannerTop = 56; // top reserve for the arrival banner overlay
+// Top reserve: the arrival banner PLUS the persistent result ledger — the
+// "what just happened" line lives above the hotel and stays until the next
+// move replaces it (Brett 2026-07-17).
+const double _kBannerTop = 96;
 
 // -- Timing & scoring --------------------------------------------------------
 const double _kShiftRate = 7.5; // how fast guests slide to their new rooms
@@ -206,10 +209,11 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
   double _panDx = 0;
   double _panDy = 0;
 
-  // Non-blocking inline toast (a one-liner consequence; never gates input).
-  String _toast = '';
-  Color _toastColor = _kTextSub;
-  double _toastT = 0;
+  // The persistent result ledger (above the hotel): what the last swipe DID,
+  // descriptively. Never fades — it holds until the next move replaces it,
+  // so a player can always read back what just happened. Never gates input.
+  String _result = '';
+  Color _resultColor = _kTextSub;
 
   // Scoring.
   int _streak = 0;
@@ -402,7 +406,9 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
       _flashRoom = 1;
       _flashT = 1;
       _streak = 0;
-      _setToast('n−1 evicts guest 1 — room 0 does not exist', _kBad);
+      _setResult(
+          '← SHIFTED DOWN n → n−1 — GUEST 1 EVICTED: room 0 does not exist',
+          _kBad);
       _beginSettle();
       return;
     }
@@ -436,16 +442,37 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
       widget.session.noteStreak(_streak);
     }
 
-    // Inline, non-blocking consequence — teaches the under-house, no read-gate.
+    // The persistent ledger line — descriptive, never a read-gate: what the
+    // swipe DID (the bijection), what opened, who got in.
+    final rule = _ruleText(dir, shiftBy);
     if (matched) {
-      _setToast(_winLine(_demand, seats), _kGood);
+      _setResult('$rule — ${_winLine(_demand, seats)}', _kGood);
     } else if (seats < need) {
-      _setToast(_underLine(_demand), _kArrival);
+      _setResult('$rule — only $seats of $need seated · ${_underLine(_demand)}',
+          _kArrival);
     } else {
-      _setToast('overkill — that move frees more than you need', _kArrival);
+      _setResult('$rule — $seats seated · more rooms freed than needed',
+          _kArrival);
     }
 
     _beginSettle();
+  }
+
+  /// What the swipe physically did, as the bijection it enacted.
+  String _ruleText(_Dir dir, int shiftBy) {
+    switch (dir) {
+      case _Dir.right:
+        final k = shiftBy.clamp(1, _kRooms - 1);
+        return k == 1
+            ? '→ SHIFTED n → n+1'
+            : '→ SHIFTED n → n+$k';
+      case _Dir.up:
+        return '↑ DOUBLED n → 2n';
+      case _Dir.down:
+        return '↓ PRIME POWERS n → 2ⁿ';
+      case _Dir.left:
+        return '← SHIFTED DOWN n → n−1';
+    }
   }
 
   int _demandNeed(_Demand d) {
@@ -462,11 +489,11 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
   String _winLine(_Demand d, int seats) {
     switch (d) {
       case _Demand.guest:
-        return 'Room 1 opens — a full hotel still had room';
+        return 'room 1 opened, the guest is in. A full hotel still had room';
       case _Demand.bus:
-        return 'Every odd room opens — the bus checks in';
+        return 'every ODD room opened, the whole bus is in';
       case _Demand.buses:
-        return 'Prime powers — unique rooms, no clash';
+        return 'residents packed the powers of 2 — every bus got unique rooms';
     }
   }
 
@@ -475,16 +502,15 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
       case _Demand.guest:
         return 'one shift is enough for one guest';
       case _Demand.bus:
-        return 'a single shift frees ONE room — a bus needs DOUBLE';
+        return 'a bus needs DOUBLE (↑)';
       case _Demand.buses:
-        return 'ℵ₀ buses need PRIMES — too few rooms freed';
+        return 'ℵ₀ buses need PRIMES (↓)';
     }
   }
 
-  void _setToast(String t, Color c) {
-    _toast = t;
-    _toastColor = c;
-    _toastT = 1;
+  void _setResult(String t, Color c) {
+    _result = t;
+    _resultColor = c;
   }
 
   void _beginSettle() {
@@ -513,7 +539,6 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
       }
     }
     if (_flashT > 0) _flashT = (_flashT - dt / 0.9).clamp(0.0, 1.0);
-    if (_toastT > 0) _toastT = (_toastT - dt / 1.4).clamp(0.0, 1.0);
 
     if (running && _locked) {
       _settleT -= dt;
@@ -553,10 +578,10 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
   // Mirror of the painter's room geometry, so sparks land on the right room.
   Offset _roomScreenCenter(double room) {
     const pad = 14.0;
-    final plotL = pad;
+    const plotL = pad;
     final plotR = _fieldSize.width - pad;
     final roomW = (plotR - plotL) / _kRooms;
-    final top = _kBannerTop + 6;
+    const top = _kBannerTop + 6;
     final bottom = _fieldSize.height - _kBottomPanel - 12;
     final cy = (top + bottom) / 2;
     return Offset(plotL + (room - 0.5) * roomW, cy);
@@ -591,9 +616,8 @@ class _HilbertsHotelV2GameState extends State<HilbertsHotelV2Game>
                         : null,
                     tugDx: _panActive ? _panDx : 0,
                     tugDy: _panActive ? _panDy : 0,
-                    toast: _toast,
-                    toastColor: _toastColor,
-                    toastT: _toastT,
+                    result: _result,
+                    resultColor: _resultColor,
                     climax: _climax,
                   ),
                 ),
@@ -815,9 +839,8 @@ class _HotelPainter extends CustomPainter {
   final _Dir? hintDir;
   final double tugDx;
   final double tugDy;
-  final String toast;
-  final Color toastColor;
-  final double toastT;
+  final String result;
+  final Color resultColor;
   final bool climax;
 
   _HotelPainter({
@@ -831,9 +854,8 @@ class _HotelPainter extends CustomPainter {
     required this.hintDir,
     required this.tugDx,
     required this.tugDy,
-    required this.toast,
-    required this.toastColor,
-    required this.toastT,
+    required this.result,
+    required this.resultColor,
     required this.climax,
   });
 
@@ -869,7 +891,7 @@ class _HotelPainter extends CustomPainter {
     _paintGuests(canvas);
     if (running && hintDir != null) _paintHint(canvas, size);
     _paintSparks(canvas);
-    if (toastT > 0 && toast.isNotEmpty) _paintToast(canvas, size);
+    if (result.isNotEmpty) _paintResult(canvas, size);
   }
 
   void _paintAmbient(Canvas canvas, Size size) {
@@ -1003,13 +1025,18 @@ class _HotelPainter extends CustomPainter {
     canvas.drawCircle(Offset(c.dx + r * 0.32, c.dy - r * 0.1), r * 0.13, eye);
   }
 
-  /// The pulsing directional chevron — the glanceable "swipe this way" cue that
-  /// replaces the original's three symbolic rule cards.
+  /// The pulsing directional chevron — the glanceable "swipe this way" cue.
+  /// Sits BELOW the room band (Brett 2026-07-17): over the corridor it hid
+  /// behind the guests while playing; down here it owns clear ground between
+  /// the rooms and the coach strip.
   void _paintHint(Canvas canvas, Size size) {
     final pulse = 0.5 + 0.5 * math.sin(clock * 4);
-    final a = 0.35 + 0.45 * pulse;
-    final reach = _roomW * (0.7 + 0.35 * pulse);
-    final center = Offset(size.width * 0.5, _cy);
+    final a = 0.45 + 0.45 * pulse;
+    final bandBot = _cy + _roomW * 0.62 + _ty + 14;
+    final lane = (_bottom - bandBot).clamp(0.0, double.infinity);
+    if (lane < 18) return; // no clear ground on a tiny viewport
+    final reach = math.min(_roomW * (0.55 + 0.25 * pulse), lane * 0.42);
+    final center = Offset(size.width * 0.5, (bandBot + _bottom) / 2);
 
     Offset dir;
     switch (hintDir!) {
@@ -1064,32 +1091,42 @@ class _HotelPainter extends CustomPainter {
     }
   }
 
-  void _paintToast(Canvas canvas, Size size) {
-    final a = toastT.clamp(0.0, 1.0);
-    // Sit the consequence line just INSIDE the play field, above the coach strip
-    // — never over the legend row below `_bottom`.
-    final y = _bottom - 12;
-    // A soft plate so the one-liner stays readable over the corridor.
+  /// The persistent result ledger — ABOVE the hotel, in the reserve between
+  /// the arrival banner and the corridor. What the last swipe did, in full;
+  /// it holds until the next move replaces it (Brett 2026-07-17).
+  void _paintResult(Canvas canvas, Size size) {
     final tp = TextPainter(
       text: TextSpan(
-        text: toast,
+        text: result,
         style: TextStyle(
           fontFamily: _kFont,
-          fontSize: 12.5,
+          fontSize: 12,
           fontWeight: FontWeight.w800,
-          color: toastColor.withValues(alpha: a),
+          color: resultColor,
         ),
       ),
       textDirection: TextDirection.ltr,
-    )..layout(maxWidth: size.width - 40);
+      textAlign: TextAlign.center,
+      maxLines: 2,
+      ellipsis: '…',
+    )..layout(maxWidth: size.width - 44);
+    // Centered in the strip between the banner (~52px) and the corridor top.
+    const y = (_kBannerTop + 52) / 2 + 8;
     final plate = Rect.fromCenter(
       center: Offset(size.width / 2, y),
-      width: tp.width + 22,
-      height: tp.height + 10,
+      width: tp.width + 24,
+      height: tp.height + 12,
     );
     canvas.drawRRect(
-      RRect.fromRectAndRadius(plate, const Radius.circular(9)),
-      Paint()..color = _kBg.withValues(alpha: 0.72 * a),
+      RRect.fromRectAndRadius(plate, const Radius.circular(10)),
+      Paint()..color = _kBg.withValues(alpha: 0.78),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(plate, const Radius.circular(10)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = resultColor.withValues(alpha: 0.55),
     );
     tp.paint(canvas, plate.center - Offset(tp.width / 2, tp.height / 2));
   }

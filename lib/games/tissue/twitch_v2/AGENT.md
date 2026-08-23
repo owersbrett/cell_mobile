@@ -40,5 +40,5 @@ Per-hit escalation is in `_applyDifficulty()`; arc placement in `_placeArc()`.
   clean hit, and the protein phase reads as refuelling recovery.
 
 ## Status board
-Report milestones/blockers to `~/Potatuhs/hpg/_status/cell_mobile.md` per the
+Report milestones/blockers to `~/Potatuhs/hotpotatogames/_status/cell_mobile.md` per the
 BROADCAST PROTOCOL in the repo `CLAUDE.md`.

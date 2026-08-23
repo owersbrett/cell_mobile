@@ -22,21 +22,21 @@ class Op {
 
 const Op kPeeler = Op(
   id: 'peeler',
-  name: 'THE PEELER',
+  name: 'The Peeler',
   asset: 'assets/characters/peeler.png',
   blurb: 'Strips you down — skims coins and lifts items off anyone careless.',
 );
 
 const Op kMasher = Op(
   id: 'masher',
-  name: 'THE MASHER',
+  name: 'The Masher',
   asset: 'assets/characters/masher.png',
   blurb: 'Mashes it all together — swaps purses, items, and whole positions.',
 );
 
 const Op kBoilingVat = Op(
   id: 'boiling_vat',
-  name: 'THE BOILING VAT',
+  name: 'The Boiling Vat',
   asset: 'assets/characters/boiling-vat.png',
   blurb: 'Boss of the descent — the deeper you go, the hotter the water.',
   isBoss: true,
@@ -44,7 +44,7 @@ const Op kBoilingVat = Op(
 
 const Op kCheeseGrater = Op(
   id: 'cheese_grater',
-  name: 'THE CHEESE GRATER',
+  name: 'The Cheese Grater',
   asset: 'assets/characters/cheese-grater.png',
   blurb: 'Boss of the ascent — shreds the bold a little finer each pass.',
   isBoss: true,
@@ -59,13 +59,13 @@ Op? opForCard(String cardId) {
   switch (cardId) {
     case 'diamond_heist': // steal diamonds from the leader
     case 'inventory_raid': // take a rival's item
-    case 'aether_tax': // skim paydirt off everyone
+    case 'aether_tax': // skim diamonds off everyone
     case 'black_hole': // strip everyone's diamonds
-    case 'toll_booth': // skims your paydirt
+    case 'toll_booth': // skims your diamonds
       return kPeeler;
-    case 'void_swap': // swap entire paydirt
-    case 'mirror': // set your paydirt to the leader's
-    case 'tithe': // shuffle paydirt from rivals to you
+    case 'void_swap': // swap entire diamond stash
+    case 'mirror': // set your diamonds to the leader's
+    case 'tithe': // shuffle diamonds from rivals to you
     case 'even_split': // swap with the player behind
       return kMasher;
     default:

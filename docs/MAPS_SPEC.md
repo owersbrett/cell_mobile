@@ -20,14 +20,18 @@ Landing on a spot in a scale-region triggers that scale's mini-game chooser.
   just the landing space), so taking your own/longer route is how you grab more.
   Diamonds **respawn once a player completes a full traversal** of the board.
   Diamonds convert to a potato only via the end-game "Most Diamonds" award.
-- **Paydirt / ATP** (current engine) stay as in-round spending — roll boosts and
-  the potato purchase below.
+- **ATP** (current engine) stays as in-round spending — roll boosts. Diamonds
+  double as the spend for the potato purchase below.
 
 **THE POTATO SHACK (amended 2026-07-11, Brett).** The anchor (the final spot,
 `order 87`) is **the Potato Shack — where every character works**. The three
 maps are three different commutes to it; the game is about getting to work.
 - **Clocking in:** reaching the Shack **always pays +1 potato** — a potato for
   showing up.
+- **Clocking out (amended 2026-07-12, Brett):** after clocking in, the player
+  returns to **square one (order 0)** when their turn is confirmed — the Shack
+  is a checkpoint, not a parking spot. All three maps. (Rules rev ≥ 4; older
+  save logs replay the old stuck-at-the-anchor behavior.)
 - **Buying:** you can also buy potatoes there with diamonds, as before.
 - One Shack per map: Down the Hole → the **spiral center** · Into the Void →
   the **exit** · Through the Aether → the **end**.
@@ -35,6 +39,14 @@ maps are three different commutes to it; the game is about getting to work.
 The Shack is both the race target and the potato source; diamonds respawn when
 a player reaches it (completes the traversal). (The pre-amendment name for
 this spot was "the destination anchor" — retired: uninspired.)
+
+**Prowl economy (amended 2026-07-12, Brett, yumutsu).** The mischief crew
+NEVER robs at round boundaries — banked diamonds persist. Ops relocate each
+round (tape). Every 4th round they PROWL (red ring + ⚠ on the board, warning
+chip on the roll panel): brushing an op's tile risks a coin-flip robbery
+(Masher: a potato if you hold one; Peeler/fallback: up to 8 💎), the crook
+slinks off carrying the loot, reclaimable by catching it. Strong Bond parries.
+Routing around the crew is the counterplay. (Rules rev ≥ 4.)
 
 **Rounds.** Players take board turns; **after every full turn-cycle (all players
 have moved), a mini-game round fires**, drawn from the map's 8 scales. Round
@@ -109,6 +121,22 @@ shrink. 8 bands, outer→center (~11 spots each):
 
 **Signature mechanic — spiral cut-throughs.** A few spots fork "across" the
 spiral to an inner arm (skip a turn) — fast descent, riskier (lose-heavy) spots.
+
+**Fork strategy (amended 2026-07-12, Brett, yumutsu — TODO_strategy.md is the
+audit).** Every fork must price out differently by the player's state:
+- **The market fork (14→25).** The first shop moved 29 → **24**, the last spot
+  of the long way around the cut-through, so **cutting skips the market**:
+  broke players cut ahead past a shelf they can't use; rich players walk the
+  diamond-paved long way and shop (protection items guard the stash).
+- **The shop-door fork (58→69).** The second shop IS the fork spot — buy
+  first, then commit: grind the Bonds band or sprint for the Shack.
+- **THE VAT'S HEAT (rules rev ≥ 5).** The Boiling Vat makes depth real:
+  ending a walk in the four deepest bands skims **1/2/3/4 💎**
+  (Engine/Bonds/Grains/Floor; the Shack is safe; Void Shield blocks). The
+  bail-up checkpoints (22/44/66) are the counterplay — pay tempo, cool off.
+- **The chooser NAMES the trade** (PARTY UX LAW): each branch option shows
+  what it's worth, computed live (diamonds on the stretch, market, power-up,
+  heat delta, risky ground).
 
 ---
 
@@ -194,41 +222,41 @@ Card {
   effects: [ Effect ]            // applied when drawn / when no decision
   options: [ { label, effects } ] // present only when isDecision
 }
-Effect kinds: gainPaydirt(n) · losePaydirt(n) · tithe(pct)        // rivals pay you %
+Effect kinds: tithe(pct)                                          // rivals pay you %
             · gainDiamonds(n) · loseDiamonds(n) · allLoseDiamonds(frac)
             · gainItem(item) · loseItem(random) · stealItem(target)
             · gainAtp(n) · move(n) · teleport(start|anchor)
-            · swapPaydirt(randomRival) · coinFlip(win:[..], lose:[..])
+            · swapDiamonds(randomRival) · coinFlip(win:[..], lose:[..])
             · gainPotato · losePotato                              // wild only, rare
 ```
 
 ### Common deck — Tater Cards (≈10)
 | Title | Effect |
 |---|---|
-| Tithe | Each rival gives you 10% of their paydirt |
-| Windfall | +15 paydirt |
+| Tithe | Each rival gives you 10% of their diamonds |
+| Windfall | +15 diamonds |
 | Diamond Vein | Eat 6 diamonds now |
 | Second Wind | +2 ATP |
 | Hop To It | Move forward 3 |
-| Toll Booth | −8 paydirt |
-| Generous Spud *(decision)* | **A:** +10 paydirt · **B:** give 5 to each rival, gain a power-up |
-| Back Alley *(decision)* | **A:** move back 2, +12 paydirt · **B:** stay put |
-| Pocket Find | +8 paydirt and +3 diamonds |
-| Even Split *(decision)* | **A:** swap paydirt with the player behind you · **B:** decline |
+| Toll Booth | −8 diamonds |
+| Generous Spud *(decision)* | **A:** +10 diamonds · **B:** give 5 to each rival, gain a power-up |
+| Back Alley *(decision)* | **A:** move back 2, +12 diamonds · **B:** stay put |
+| Pocket Find | +11 diamonds |
+| Even Split *(decision)* | **A:** swap diamonds with the player behind you · **B:** decline |
 
 ### Wild deck — Void Cards (≈10)
 | Title | Effect |
 |---|---|
-| Void Swap | Swap your **entire** paydirt with a random rival (can hurt) |
+| Void Swap | Swap your **entire** diamond stash with a random rival (can hurt) |
 | The Watcher's Gift | Coin-flip: **win** a rare item · **lose** skip your next round |
 | Black Hole | Everyone (you too) loses **half** their diamonds |
 | Diamond Heist | Steal 10 diamonds from the current leader |
 | Reset | Coin-flip: **win** teleport to the anchor · **lose** teleport to start |
-| Potato Gamble | Coin-flip: **win** a potato · **lose** −30 paydirt |
+| Potato Gamble | Coin-flip: **win** a potato · **lose** −30 diamonds |
 | Inventory Raid | Take a random item from a rival (if you have none, they take from you) |
-| Mirror | Set your paydirt equal to the leader's (great behind, bad ahead) |
-| Gnome Bargain *(decision)* | **A:** −1 potato now, +60 paydirt · **B:** nothing |
-| Aether Tax | All players −15 paydirt; you −0 |
+| Mirror | Set your diamonds equal to the leader's (great behind, bad ahead) |
+| Gnome Bargain *(decision)* | **A:** −1 potato now, +60 diamonds · **B:** nothing |
+| Aether Tax | All players −15 diamonds; you −0 |
 
 *Items granted by cards plug into the existing power-up/item system
 (`kMaxItems = 3`). Decks are shared across maps for now; per-map flavor skins are
@@ -253,9 +281,13 @@ spots are now `cardCommon` tiles.)
 | Grains | 66–76 | atoms | 66 | 71 | 68, 74 |
 | Floor | 77–87 | particles | 77 | 82 | 79, 84 |
 
-- **Shops:** 29, 58. **Anchor (buy potato):** 87 (center).
+- **Shops:** 24, 58 (24 amended from 29, 2026-07-12 — the last spot of the
+  long way around cut-through 14→25, so the cut skips the market).
+  **Anchor (buy potato):** 87 (center).
 - **Void (wild) cards:** 41, 69, 84 (deeper = riskier).
 - **Spiral cut-throughs (forks, inner-arm skips, lose-heavy):** 14→25, 36→47, 58→69.
+- **Descent checkpoints (forks, bail up one band):** 22→11, 44→33, 66→55 —
+  the press-your-luck valve against the Vat's heat (see Fork strategy above).
 
 ### Into the Void — 4 entry + (10 lanes × 8) + 4 exit
 Lanes are 8 spots; orders run boustrophedon from 4.

@@ -428,7 +428,7 @@ class GameCatalog {
     CatalogGame(
       id: 'planet_catch',
       name: 'Orbit Catch',
-      tagline: 'Aim into the wells — gravity bends every shot',
+      tagline: 'Throw the potato home to Earth — gravity bends every shot',
       scale: BioScale.planets,
       rank: GameRank.a,
       accent: Color(0xFF29B6F6),
@@ -464,6 +464,16 @@ class GameCatalog {
       accent: Color(0xFF7272AB),
       icon: Icons.rocket_launch,
       specId: 'orbit_slingshot',
+    ),
+    CatalogGame(
+      id: 'terraform_rush',
+      name: 'Terraform Rush',
+      tagline: 'Planet triage at WarioWare speed',
+      scale: BioScale.planets,
+      rank: GameRank.b,
+      accent: Color(0xFF7272AB),
+      icon: Icons.public,
+      specId: 'terraform_rush',
     ),
     // ---- solarSystems ----
     CatalogGame(

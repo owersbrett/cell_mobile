@@ -24,6 +24,7 @@ import 'supply_chain/build_chain/build_chain_game.dart';
 import 'planets/orbit_ricochet/orbit_ricochet_game.dart';
 import 'planets/orbit_pursuit/orbit_pursuit_game.dart';
 import 'planets/orbit_slingshot/orbit_slingshot_game.dart';
+import 'planets/terraform_rush/terraform_rush_game.dart';
 import 'vocab/vocab_game.dart';
 import 'vocab/vocab_banks.dart';
 import 'financial/bonds/bonds_game.dart';
@@ -549,14 +550,14 @@ class MiniGameRegistry {
       id: 'planet_catch',
       name: 'Orbit Catch',
       scale: BioScale.planets,
-      tagline: 'Aim into the wells — gravity bends every shot',
+      tagline: 'Throw the potato home to Earth — gravity bends every shot',
       rules: [
-        'Drag toward your target — your shot curves through gravity to reach it.',
+        'Drag toward Earth — the potato curves through gravity to reach it.',
         'Bigger wells pull harder — read the curve, then launch.',
-        'Each catch scores; clear levels for bigger bonuses.',
+        'Each potato landed on Earth scores; clear levels for bigger bonuses.',
         'Ten levels ramp the gravity and spacing, then loop harder.',
       ],
-      howToWin: 'Most catches when time runs out wins.',
+      howToWin: 'Most potatoes landed when time runs out wins.',
       durationSeconds: 60,
       scoreUnit: 'hits',
       enabled: true,
@@ -632,6 +633,28 @@ class MiniGameRegistry {
       starThresholds: const [600, 1300, 2200],
       legendFrames: orbitSlingshotLegendFrames,
       builder: (context, session) => OrbitSlingshotGame(session: session),
+    ),
+    MiniGameSpec(
+      id: 'terraform_rush',
+      name: 'Terraform Rush',
+      scale: BioScale.planets,
+      tagline: 'Read the planet, curve the fix into orbit',
+      rules: [
+        'Read the planet — its look IS its state.',
+        'Tap the payload it needs — WAIT is an answer.',
+        'Drag to launch: graze into orbit, never dead-on.',
+        'Dead-on crashes; too wide drifts off to the aether.',
+      ],
+      howToWin: 'Most worlds fixed when time runs out wins.',
+      durationSeconds: 70,
+      scoreUnit: 'worlds',
+      enabled: true,
+      accent: const Color(0xFF7272AB),
+      icon: Icons.public,
+      humanMax: 520,
+      starThresholds: const [180, 320, 470],
+      legendFrames: terraformRushLegendFrames,
+      builder: (context, session) => TerraformRushGame(session: session),
     ),
     MiniGameSpec(
       id: 'orbital_insertion',

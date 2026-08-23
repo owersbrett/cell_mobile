@@ -52,7 +52,10 @@ const Color _kTextSub = Potatuhs.textSecondary;
 // on the bottom; both are sized so 4 rule cards + header + footer fit a phone
 // without overflow, and the corridor keeps real height in the middle.
 const int _kRooms = 7; // visible rooms (the corridor continues to ∞)
-const double _kBottomPanel = 214; // reserved for the rule options / card
+// Canvas reserve for the rule options / card. The panel itself sizes to its
+// content (it may run a few px past this); the reserve only keeps the room
+// row clear of it, so it errs roomy.
+const double _kBottomPanel = 236;
 const double _kBannerTop = 52; // top reserve for the arrival banner overlay
 
 // -- Timing & scoring --------------------------------------------------------
@@ -612,20 +615,18 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
                 right: 0,
                 child: SafeArea(bottom: false, child: _buildBanner()),
               ),
-              // Options / feedback (bottom).
+              // Options / feedback (bottom). Sizes to its content — a fixed
+              // box clipped the last rule card on phones. The lift keeps it
+              // clear of the iOS home indicator / Safari toolbar (viewPadding
+              // is live now that index.html declares viewport-fit=cover).
               Positioned(
                 left: 0,
                 right: 0,
-                bottom: 0,
-                child: SafeArea(
-                  top: false,
-                  child: SizedBox(
-                    height: _kBottomPanel,
-                    child: _phase == _Phase.choosing
-                        ? _buildOptions()
-                        : _buildFeedback(),
-                  ),
-                ),
+                bottom: math.max(
+                    8, MediaQuery.of(context).viewPadding.bottom),
+                child: _phase == _Phase.choosing
+                    ? _buildOptions()
+                    : _buildFeedback(),
               ),
             ],
           ),
@@ -864,7 +865,7 @@ class _HilbertsHotelGameState extends State<HilbertsHotelGame>
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Container(
             width: double.infinity,

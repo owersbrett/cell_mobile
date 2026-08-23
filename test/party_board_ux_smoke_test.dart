@@ -17,6 +17,15 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: PartyFlowPage(onExit: () {})));
     await tester.tap(find.text('START GAME'));
     await tester.pump(const Duration(milliseconds: 400));
+    // The opening order: throw for every seat, then begin the match.
+    for (var i = 0; i < 16; i++) {
+      final throwBtn = find.textContaining('THROW FOR ');
+      if (throwBtn.evaluate().isEmpty) break;
+      await tester.tap(throwBtn);
+      await tester.pump(const Duration(milliseconds: 80));
+    }
+    await tester.tap(find.text('BEGIN THE MATCH'));
+    await tester.pump(const Duration(milliseconds: 400));
     // Drive through the opening ceremony + every player's opening spin.
     await tester.tap(find.text('SKIP'));
     await tester.pump();
@@ -58,7 +67,8 @@ void main() {
           // This test pins the COMPLETE TURN gate; the wheel flow has its
           // own coverage.
           wheels: false,
-        );
+        rules: 5,
+      );
         final gated = <int>{};
         var guard = 0;
         while (c.phase != PartyPhase.minigameIntro && guard++ < 200000) {
@@ -81,6 +91,13 @@ void main() {
             case PartyPhase.spaceResolved:
               gated.add(c.currentPlayerIndex);
               c.confirmSpace();
+              break;
+            case PartyPhase.orderRoll:
+              if (c.orderResolved) {
+                c.beginMatch();
+              } else {
+                c.rollForOrder();
+              }
               break;
             default:
               guard = 200001;

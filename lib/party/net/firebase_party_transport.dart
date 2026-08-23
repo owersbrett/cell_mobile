@@ -16,8 +16,11 @@ import 'party_transport.dart';
 /// cell_games/$id/tape              [ int, ... ]       (host-written)
 /// ```
 ///
-/// Only the host writes `inputs`/`tape`; the rules gate everything behind
-/// `auth != null`. The protocol logic is identical to the in-memory fake — this
+/// Only the host writes `inputs`/`tape` — and since 2026-07-12 the RTDB rules
+/// ENFORCE that contract (SSOT: `~/Potatuhs/.config/database.rules.json`):
+/// room create/delete/meta/inputs/tape are host-only, `players/$uid` and
+/// `scores/$uid` are owner-only, `requests` are append-only stamped with the
+/// author's uid. The protocol logic is identical to the in-memory fake — this
 /// just swaps the pipe.
 class FirebasePartyTransport implements PartyTransport {
   FirebasePartyTransport({FirebaseDatabase? database})

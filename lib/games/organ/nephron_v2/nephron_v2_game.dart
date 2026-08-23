@@ -868,17 +868,23 @@ class _NephronV2Painter extends CustomPainter {
 
   void _paintGlomerulus(Canvas canvas, Size size, double t) {
     final c = Offset(size.width * 0.5, size.height * 0.095);
-    final p = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.2
-      ..color = _kBlood.withValues(alpha: 0.6);
-    for (var i = 0; i < 5; i++) {
-      final rad = 9.0 + i * 3.5;
-      canvas.drawCircle(c.translate(math.sin(t + i) * 2, 0), rad, p);
+    // Softer, tighter filtration rings — suggest the capillary tuft without
+    // shouting. Fewer rings, smaller radii, lower alpha that fades outward.
+    for (var i = 0; i < 3; i++) {
+      final rad = 7.0 + i * 3.0; // 7 · 10 · 13 (was up to 23)
+      canvas.drawCircle(
+        c.translate(math.sin(t + i) * 1.4, 0),
+        rad,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = _kBlood.withValues(alpha: 0.34 - i * 0.07),
+      );
     }
-    GameFx.orb(canvas, c, 7, _kBlood, glow: 1.2);
-    GameFx.text(canvas, 'GLOMERULUS', c.translate(0, -22), 10,
-        Potatuhs.textSecondary,
+    GameFx.orb(canvas, c, 6, _kBlood, glow: 1.0);
+    // Label sits clear ABOVE the rings (outer ring ≈ 13px) with real air.
+    GameFx.text(canvas, 'GLOMERULUS', c.translate(0, -26), 9.5,
+        Potatuhs.textSecondary.withValues(alpha: 0.85),
         weight: FontWeight.w700);
   }
 
@@ -968,17 +974,12 @@ class _NephronV2Painter extends CustomPainter {
         weight: FontWeight.w600);
   }
 
-  // ── HUD: live score + purity gauge + level/multiplier ────────────────────────
+  // ── HUD: purity gauge + level/multiplier ─────────────────────────────────────
+  // The live score lives in the host's top bar ("N molecules") — no in-canvas
+  // stamp here, so the tube entry (glomerulus + label) reads clean. Transient
+  // +N pops near scoring events carry the juice.
   void _paintHud(Canvas canvas, Size size) {
-    final score = state.widget.session.score;
     final running = state.widget.session.isRunning;
-
-    // Big live score, top-centre.
-    GameFx.text(canvas, '$score', Offset(size.width / 2, 30), 32,
-        Potatuhs.textPrimary,
-        display: true, glow: 0.35);
-    GameFx.text(canvas, state.widget.session.spec.scoreUnit,
-        Offset(size.width / 2, 51), 9.5, Potatuhs.textSecondary);
 
     // Blood-purity gauge (bottom-left). A tension gauge — NOT a clock.
     const barW = 150.0, barH = 9.0;

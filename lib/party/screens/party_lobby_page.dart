@@ -11,10 +11,15 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../firebase_bootstrap.dart';
 import '../../games/play_config.dart';
+import '../madness/madness_host_card.dart';
+import '../madness/madness_net.dart';
+import '../madness/madness_page.dart';
+import '../madness/madness_transport.dart';
 import '../net/firebase_party_transport.dart';
 import '../net/party_net.dart';
 import '../net/party_session.dart';
 import '../net/party_transport.dart';
+import 'character_picker.dart';
 import '../maps/game_map.dart';
 import '../maps/map_preview.dart';
 import '../maps/ops.dart';
@@ -33,6 +38,10 @@ class PartyLobbyPage extends StatefulWidget {
 
 enum _LobbyStage { choose, room }
 
+/// Which format the choose stage is configured for. Joining works from
+/// either tab — the room's meta says what it is and routes accordingly.
+enum _LobbyTab { party, madness }
+
 class _PartyLobbyPageState extends State<PartyLobbyPage> {
   // Created lazily only once Firebase is ready — never in a field initializer,
   // so building the lobby can't crash when Firebase isn't initialized.
@@ -42,6 +51,8 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
   final TextEditingController _joinController = TextEditingController();
 
   _LobbyStage _stage = _LobbyStage.choose;
+  _LobbyTab _tab = _LobbyTab.party;
+  MadnessTransport? _madTransport;
   PartyNet? _net;
   bool _isHost = false;
   // Defaults to the mode picked on the home screen (Solo/1v1/1v1v1/1v1v1v1);
@@ -100,6 +111,14 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
   }
 
   Future<void> _host() async {
+    // YOU v 3 CPU never needs a room: the CPUs "join" instantly by starting
+    // the local solo engine (ORDER_AND_SOLO). An online solo room would sit
+    // at WAITING FOR PLAYERS forever — its 3 seats belong to CPUs, not codes.
+    if (_mode == PartyMode.solo) {
+      PlayConfig.setMode(GameMode.solo);
+      _playLocal();
+      return;
+    }
     final name = _nameController.text.trim();
     if (name.isEmpty || _uid == null) return;
     setState(() {
@@ -134,6 +153,36 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
     }
   }
 
+  /// Hosts a MADNESS room from the MADNESS tab's config card and drops into
+  /// its own page (the madness flow never touches the board).
+  Future<void> _hostMadness(MadnessConfig config) async {
+    final name = _nameController.text.trim();
+    if (name.isEmpty || _uid == null || _busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      _madTransport ??= FirebaseMadnessTransport();
+      final net = await MadnessNet.host(
+        transport: _madTransport!,
+        code: MadnessNet.generateCode(),
+        uid: _uid!,
+        name: name,
+        config: config,
+      );
+      if (!mounted) return;
+      setState(() => _busy = false);
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => MadnessPage(net: net)));
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = 'Could not host a room. Check your connection.';
+      });
+    }
+  }
+
   Future<void> _join() async {
     final name = _nameController.text.trim();
     final code = _joinController.text.trim().toUpperCase();
@@ -142,6 +191,35 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
       _busy = true;
       _error = null;
     });
+    // The code routes itself: a madness room lands in the madness flow, a
+    // party room in the board flow — whichever tab the code was typed on.
+    try {
+      _madTransport ??= FirebaseMadnessTransport();
+      if (await _madTransport!.readMeta(code) != null) {
+        final net = await MadnessNet.join(
+          transport: _madTransport!,
+          code: code,
+          uid: _uid!,
+          name: name,
+        );
+        if (!mounted) return;
+        setState(() => _busy = false);
+        await Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => MadnessPage(net: net)));
+        return;
+      }
+    } catch (e) {
+      final msg = e is StateError ? e.message : '';
+      setState(() {
+        _busy = false;
+        _error = msg.contains('started')
+            ? 'Room "$code" already started.'
+            : msg.contains('full')
+                ? 'Room "$code" is full.'
+                : 'Could not join room "$code". Try again.';
+      });
+      return;
+    }
     try {
       _transport ??= FirebasePartyTransport();
       final net = await PartyNet.join(
@@ -198,19 +276,25 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
-          // Scroll-safe: the Spacer-driven Columns below distribute slack on a
-          // tall screen, but on a short viewport the content would overflow the
-          // bottom — so wrap in a scroll view sized to at least the viewport,
-          // letting IntrinsicHeight keep the Spacers working when there's room
-          // and letting it scroll when there isn't.
+          // Scroll-safe: the choose stage's Spacer-driven Column distributes
+          // slack on a tall screen, but on a short viewport the content would
+          // overflow the bottom — so wrap in a scroll view sized to at least
+          // the viewport, letting IntrinsicHeight keep the Spacers working
+          // when there's room and letting it scroll when there isn't.
+          //
+          // The room stage must NOT go through IntrinsicHeight: it holds the
+          // CharacterPicker, whose LayoutBuilder reports zero intrinsic height
+          // (LayoutBuilder cannot compute intrinsics), so the scroll child
+          // would measure exactly one viewport tall and the character grid
+          // below the fold would be unreachable. The room Column uses fixed
+          // spacing instead of Spacers, so it scrolls to its true height.
           child: LayoutBuilder(
             builder: (context, constraints) => SingleChildScrollView(
               child: ConstrainedBox(
                 constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                child: IntrinsicHeight(
-                  child:
-                      _stage == _LobbyStage.room ? _buildRoom() : _buildChoose(),
-                ),
+                child: _stage == _LobbyStage.room
+                    ? _buildRoom()
+                    : IntrinsicHeight(child: _buildChoose()),
               ),
             ),
           ),
@@ -223,48 +307,83 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
 
   Widget _buildChoose() {
     final canJoin = _joinController.text.trim().length >= 4 && _online && !_busy;
+    final madness = _tab == _LobbyTab.madness;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 8),
         Row(children: [_backButton(_back), const Spacer()]),
         const Spacer(flex: 2),
-        Center(child: Text('PARTY', style: Potatuhs.display(size: 44))),
+        Center(
+            child: Text(madness ? 'MADNESS' : 'PARTY',
+                style: Potatuhs.display(size: 44))),
         const SizedBox(height: 6),
         Center(
-          child: Text('Host a room, or join a friend',
+          child: Text(
+              madness
+                  ? 'Rapid-fire mini-games — wheels pick, everyone plays'
+                  : 'Host a room, or join a friend',
               style: Potatuhs.body(size: 14, color: Potatuhs.textSecondary)),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 14),
+        _tabSwitcher(),
+        const SizedBox(height: 14),
         _nameField(),
         const SizedBox(height: 14),
 
         // ── Host ──
-        _LobbyCard(
-          accent: Potatuhs.gold,
-          label: 'HOST A ROOM',
-          child: Column(
-            children: [
-              _modeToggle(),
-              const SizedBox(height: 12),
-              _mapPicker(),
-              const SizedBox(height: 12),
-              _roundsPicker(),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: PotatuhsButton(
-                  label: _busy ? 'STARTING…' : 'HOST',
-                  display: true,
-                  icon: Icons.add_circle_outline,
-                  onTap: (_online && !_busy) ? _host : () {},
-                  fill: _online ? Potatuhs.gold : Potatuhs.inkPanel,
-                  textColor: _online ? Potatuhs.ink : Potatuhs.textFaint,
+        if (madness)
+          _LobbyCard(
+            accent: Potatuhs.orange,
+            label: 'HOST MADNESS',
+            child: MadnessHostCard(
+              enabled: _online && !_busy,
+              hostLabel: _busy ? 'STARTING…' : 'HOST',
+              onHost: _hostMadness,
+            ),
+          )
+        else
+          _LobbyCard(
+            accent: Potatuhs.gold,
+            label: 'HOST A ROOM',
+            child: Column(
+              children: [
+                _modeToggle(),
+                const SizedBox(height: 12),
+                _mapPicker(),
+                const SizedBox(height: 12),
+                _roundsPicker(),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: PotatuhsButton(
+                    // Solo never opens a room — the CPUs join instantly on
+                    // this device, so it works offline too.
+                    label: _mode == PartyMode.solo
+                        ? 'START — CPUs JOIN INSTANTLY'
+                        : _busy
+                            ? 'STARTING…'
+                            : 'HOST',
+                    display: true,
+                    icon: _mode == PartyMode.solo
+                        ? Icons.play_arrow
+                        : Icons.add_circle_outline,
+                    onTap: _mode == PartyMode.solo
+                        ? _host
+                        : (_online && !_busy)
+                            ? _host
+                            : () {},
+                    fill: (_mode == PartyMode.solo || _online)
+                        ? Potatuhs.gold
+                        : Potatuhs.inkPanel,
+                    textColor: (_mode == PartyMode.solo || _online)
+                        ? Potatuhs.ink
+                        : Potatuhs.textFaint,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
         const SizedBox(height: 14),
 
         // ── Join ──
@@ -299,19 +418,62 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
                 textAlign: TextAlign.center,
                 style: Potatuhs.body(size: 13, color: Potatuhs.orange)),
           ),
-        TextButton(
-          onPressed: _playLocal,
-          child: Text(
-            _online
-                ? 'or play pass-and-play on this device'
-                : 'Online unavailable — play pass-and-play on this device',
-            textAlign: TextAlign.center,
-            style: Potatuhs.body(size: 13, color: Potatuhs.textFaint),
+        if (!madness)
+          TextButton(
+            onPressed: _playLocal,
+            child: Text(
+              _online
+                  ? 'or play pass-and-play on this device'
+                  : 'Online unavailable — play pass-and-play on this device',
+              textAlign: TextAlign.center,
+              style: Potatuhs.body(size: 13, color: Potatuhs.textFaint),
+            ),
           ),
-        ),
         const SizedBox(height: 8),
       ],
     );
+  }
+
+  /// PARTY | MADNESS — which format the host card configures. A join code
+  /// entered on either tab still routes to whatever the room actually is.
+  Widget _tabSwitcher() {
+    Widget pill(_LobbyTab tab, String label, IconData icon, Color accent) {
+      final selected = _tab == tab;
+      return Expanded(
+        child: GestureDetector(
+          onTap: () => setState(() => _tab = tab),
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: selected ? accent.withValues(alpha: 0.18) : null,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: selected ? accent : Colors.white24, width: 1.5),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon,
+                    size: 16,
+                    color: selected ? accent : Potatuhs.textFaint),
+                const SizedBox(width: 6),
+                Text(label,
+                    style: Potatuhs.body(
+                        size: 13,
+                        weight: FontWeight.w700,
+                        color: selected ? accent : Potatuhs.textFaint)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Row(children: [
+      pill(_LobbyTab.party, 'PARTY', Icons.casino, Potatuhs.gold),
+      pill(_LobbyTab.madness, 'MADNESS', Icons.track_changes, Potatuhs.orange),
+    ]);
   }
 
   // ------------------------------------------------------------------- room
@@ -325,7 +487,7 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
       children: [
         const SizedBox(height: 8),
         Row(children: [_backButton(_leaveRoom), const Spacer()]),
-        const Spacer(),
+        const SizedBox(height: 16),
         Center(
           child: Text(_isHost ? 'YOUR ROOM' : 'JOINED',
               style: Potatuhs.label(color: Potatuhs.textFaint)),
@@ -374,7 +536,7 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
             )),
         const SizedBox(height: 18),
         _characterPicker(net),
-        const Spacer(),
+        const SizedBox(height: 24),
         if (_isHost)
           SizedBox(
             width: double.infinity,
@@ -406,53 +568,16 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
   Widget _characterPicker(PartyNet? net) {
     if (net == null) return const SizedBox.shrink();
     final me = net.myPlayer;
-    final mine = me?.character;
-    final taken = {
-      for (final p in net.players)
-        if (p.uid != me?.uid) p.character
-    };
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('PICK YOUR CHARACTER',
-            style: Potatuhs.label(color: Potatuhs.textFaint)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (var i = 0; i < kCharacters.length; i++)
-              _characterChoice(net, i,
-                  selected: i == mine, taken: taken.contains(i)),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _characterChoice(PartyNet net, int i,
-      {required bool selected, required bool taken}) {
-    final dim = taken && !selected;
-    return GestureDetector(
-      onTap: dim
-          ? null
-          : () async {
-              await net.chooseCharacter(i);
-              if (mounted) setState(() {});
-            },
-      child: Opacity(
-        opacity: dim ? 0.3 : 1,
-        child: Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: selected ? Potatuhs.gold.withValues(alpha: 0.2) : null,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-                color: selected ? Potatuhs.gold : Colors.white24, width: 1.5),
-          ),
-          child: _lobbyAvatar(i, size: 46),
-        ),
-      ),
+    return CharacterPicker(
+      selected: me?.character,
+      taken: {
+        for (final p in net.players)
+          if (p.uid != me?.uid) p.character
+      },
+      onPick: (i) async {
+        await net.chooseCharacter(i);
+        if (mounted) setState(() {});
+      },
     );
   }
 
@@ -715,9 +840,12 @@ class _PartyLobbyPageState extends State<PartyLobbyPage> {
       );
 
   Widget _modeToggle() {
-    // The four home-screen formats, in player-count order. (The engine also
-    // supports ffa5/ffa8 — deliberately not surfaced here.)
+    // The five host formats, in player-count order: a room of one (start
+    // immediately), local you-v-CPU (no room — CPUs join instantly), then
+    // the real multiplayer sizes. (The engine also supports ffa5/ffa8 —
+    // deliberately not surfaced here.)
     const modes = [
+      PartyMode.single,
       PartyMode.solo,
       PartyMode.duel,
       PartyMode.ffa3,

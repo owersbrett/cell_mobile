@@ -50,6 +50,16 @@ void _playToCompletion(PartyController c, {int maxSteps = 200000}) {
       case PartyPhase.wheelSpin:
         c.wheelStop();
         break;
+      case PartyPhase.gamePick:
+        c.pickMiniGame(0);
+        break;
+      case PartyPhase.orderRoll:
+        if (c.orderResolved) {
+          c.beginMatch();
+        } else {
+          c.rollForOrder();
+        }
+        break;
       case PartyPhase.gameOver:
         break;
     }
@@ -66,7 +76,8 @@ void main() {
           playerNames: const ['A', 'B'],
           seed: 7,
           gameMap: map,
-        );
+        rules: 5,
+      );
 
         // The controller adopted the chosen board.
         expect(c.board.length, 88, reason: map.id);
@@ -95,6 +106,7 @@ void main() {
         totalRounds: 2,
         playerNames: const ['A', 'B'],
         seed: 7,
+      rules: 5,
       );
       expect(c.gameMap, isNull);
       _playToCompletion(c);

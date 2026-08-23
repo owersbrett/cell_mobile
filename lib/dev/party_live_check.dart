@@ -17,8 +17,9 @@ import '../party/party_models.dart';
 ///
 ///   flutter run -d chrome -t lib/dev/party_live_check.dart
 ///
-/// Spins up one host + three joiners (synthetic uids, one anonymous auth — the
-/// cell_games rules grant any authed user write access to a room), plays a
+/// Spins up one host + three joiners (host = the real anonymous auth uid —
+/// required since the 2026-07-12 host-scoped cell_games rules; joiners are
+/// synthetic uids riding the host's room-wide write grant), plays a
 /// full 1-round ffa4 match through the real transport, and prints
 /// `PARTY-LIVE-RESULT: PASS/FAIL` to the console. This verifies what the
 /// in-memory tests can't: anonymous auth, RTDB rules, real async listener
@@ -47,7 +48,14 @@ Future<void> _run() async {
     debugPrint('PARTY-LIVE: authed anonymously');
 
     code = _roomCode();
-    final uids = List.generate(4, (i) => 'live-check-$code-u$i');
+    // Since the 2026-07-12 rules tightening, room creation requires
+    // meta.host === auth.uid, so the host MUST be the real anonymous user.
+    // The three joiners keep synthetic uids: every write here rides the same
+    // authed connection, and the host's room-wide grant covers them. (This
+    // means the harness verifies transport/lockstep, NOT the non-host
+    // permission boundary — that needs a second real device/auth.)
+    final myUid = FirebaseAuth.instance.currentUser!.uid;
+    final uids = [myUid, ...List.generate(3, (i) => 'live-check-$code-u${i + 1}')];
     debugPrint('PARTY-LIVE: room $code');
 
     hostNet = await PartyNet.host(
@@ -102,8 +110,53 @@ Future<void> _run() async {
         case PartyPhase.cardDecision:
           nets[cur].act(PartyInputKind.chooseCardOption, value: 0);
           break;
+        case PartyPhase.wheelSpin:
+          // Post-build-17 phase: each spinner in queue order hits STOP.
+          // value omitted ⇒ 0 ⇒ tape-draw fallback (deterministic).
+          nets[c.wheel!.currentSpinner].act(PartyInputKind.wheelStop);
+          break;
+        case PartyPhase.moving:
+          // Build-24: walks are paced locally by the board UI's ticker.
+          // Headless: fast-forward the HOST's authoritative walk only —
+          // it records the tape. Replicas must NOT self-pace here (they'd
+          // consume draws the host hasn't published: "tape starved");
+          // they converge via applyNetworkInput's own moving fast-forward
+          // when the next canonical lands.
+          while (c.phase == PartyPhase.moving) {
+            c.advanceStep();
+          }
+          break;
+        case PartyPhase.spaceResolved:
+          nets[cur].act(PartyInputKind.confirmSpace); // walker: COMPLETE TURN
+          break;
+        case PartyPhase.minigameIntro:
+          // Host paces the reveal (auto-dwell is a UI-layer timer).
+          nets.first.act(PartyInputKind.beginMiniGame);
+          break;
+        case PartyPhase.minigameResults:
+          nets.first.act(PartyInputKind.confirmResults);
+          break;
+        case PartyPhase.orderRoll:
+          // THE OPENING ORDER (ORDER_AND_SOLO_SPEC §3): each pending seat
+          // throws over the wire; the host taps out of the resolved reveal.
+          if (c.orderResolved) {
+            nets.first.act(PartyInputKind.beginMatch);
+          } else {
+            nets[c.orderPendingSeat!].act(PartyInputKind.orderRoll);
+          }
+          break;
         case PartyPhase.minigamePlaying:
         case PartyPhase.passPhone:
+          // READY CHECK first (READY_UP_SPEC.md): the host rejects scores
+          // until every seat has readied over the wire.
+          if (c.phase == PartyPhase.passPhone && !c.allSeatsReady) {
+            var r = 0;
+            while (r < 4 && c.readySeats.contains(r)) {
+              r++;
+            }
+            nets[r].act(PartyInputKind.readyUp);
+            break;
+          }
           var s = 0;
           while (s < 4 && c.hasSubmittedMiniScore(s)) {
             s++;

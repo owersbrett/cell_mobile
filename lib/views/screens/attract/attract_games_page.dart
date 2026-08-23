@@ -233,6 +233,14 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
   }
 
   Widget _pausedBar() {
+    // Everything in this row is fixed-width except the spacer, so each control
+    // must stay compact — Material's 48px/64px minimums overflow a phone.
+    final chipStyle = TextButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      minimumSize: const Size(0, 36),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+    );
     return Positioned(
       left: 0,
       right: 0,
@@ -241,7 +249,7 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: 0.8),
               borderRadius: BorderRadius.circular(14),
@@ -252,19 +260,26 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
                 IconButton(
                   onPressed: () => _skip(-1),
                   tooltip: 'Previous game',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 36),
+                  visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.skip_previous,
                       size: 20, color: Colors.white70),
                 ),
                 IconButton(
                   onPressed: () => _skip(1),
                   tooltip: 'Next game',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 36),
+                  visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.skip_next,
                       size: 20, color: Colors.white70),
                 ),
-                const SizedBox(width: 4),
                 const Expanded(
                   child: Text(
-                    'PAUSED — the round is yours',
+                    'PAUSED',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -277,16 +292,24 @@ class _AttractGamesPageState extends State<AttractGamesPage> {
                 ),
                 TextButton(
                   onPressed: () => Navigator.of(context).maybePop(),
+                  style: chipStyle,
                   child: const Text('EXIT'),
                 ),
                 TextButton.icon(
                   onPressed: _manual,
+                  style: chipStyle,
                   icon: const Icon(Icons.menu_book, size: 16),
                   label: const Text('MANUAL'),
                 ),
                 const SizedBox(width: 4),
                 FilledButton.icon(
                   onPressed: _resume,
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    minimumSize: const Size(0, 36),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                  ),
                   icon: const Icon(Icons.play_arrow, size: 18),
                   label: const Text('RESUME'),
                 ),

@@ -69,9 +69,24 @@ void main() {
         expect(typeAt(m, o), SpaceType.cardWild, reason: 'wild@$o');
       }
     });
-    test('shops at 29 and 58', () {
-      expect(typeAt(m, 29), SpaceType.shop);
+    test('shops at 24 and 58 — cut-through 14→25 skips the first market', () {
+      // Shop 24 is the last spot of the long way around cut-through 14→25
+      // (TODO_strategy.md): cutting skips the market, walking earns it.
+      expect(typeAt(m, 24), SpaceType.shop);
       expect(typeAt(m, 58), SpaceType.shop);
+      expect(typeAt(m, 29), isNot(SpaceType.shop));
+    });
+    test("the Vat's heat rises band by band, Shack safe", () {
+      expect(vatHeatFor(m, m.spaces[10]), 0); // Surface — cool
+      expect(vatHeatFor(m, m.spaces[43]), 0); // Chamber — still cool
+      expect(vatHeatFor(m, m.spaces[44]), 1); // Engine Room
+      expect(vatHeatFor(m, m.spaces[58]), 2); // Bonds
+      expect(vatHeatFor(m, m.spaces[70]), 3); // Grains
+      expect(vatHeatFor(m, m.spaces[80]), 4); // The Floor
+      expect(vatHeatFor(m, m.spaces[87]), 0); // the Shack is safe
+      // Heat is a Down the Hole mechanic only.
+      expect(vatHeatFor(buildIntoTheVoid(), buildIntoTheVoid().spaces[80]), 0);
+      expect(vatHeatFor(null, m.spaces[80]), 0);
     });
     test('spiral cut-throughs are forks to inner arms', () {
       expect(m.spaces[14].nexts, containsAll(<int>[15, 25]));

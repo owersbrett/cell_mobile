@@ -1,6 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // PlanetCatchGame — "Orbit Catch"
-// Launch a planetlet through deep gravity wells and curve it onto the catcher.
+// Throw a potato through deep gravity wells and curve it home onto EARTH.
+// The target is a procedurally painted Earth (oceans/landmasses/clouds/
+// atmosphere) with a converging destination beacon; the projectile is a
+// tumbling PotatoArt spud (visual skin ONLY — physics stays on the circular
+// _kProjectileRadius body).
 // DIRECT-AIM launch: you drag TOWARD where you want the shot to go (the drag
 // vector IS the launch direction). Trajectory preview shows the real curved path.
 // Gravity is strong and legible — wells visibly bend every shot, and reading
@@ -28,6 +32,8 @@ import 'package:flutter/scheduler.dart';
 
 import 'package:cell_mobile/games/fx.dart';
 import 'package:cell_mobile/games/mini_game.dart';
+import 'package:cell_mobile/games/planet_art.dart';
+import 'package:cell_mobile/games/potato.dart';
 import 'package:cell_mobile/theme/potatuhs.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,7 +45,12 @@ const double _kMaxLaunchSpeed = 760.0; // px/s — clamp at full-power drag
 const double _kMinLaunchSpeed = 230.0; // px/s — a tiny flick still launches
 const double _kDragToSpeedScale = 2.4; // drag px → speed
 const double _kMaxDragPx = 220.0; // drag length that maps to full power
-const double _kProjectileRadius = 7.0; // visual + hit radius of the planetlet
+const double _kProjectileRadius = 7.0; // COLLISION radius — the physics circle
+
+// Potato skin (VISUAL ONLY — collision/orbit math stays on the circular
+// _kProjectileRadius body above; the oblong tuber is a paint-time costume).
+const double _kPotatoSpinRate = 5.2; // rad/s — visible end-over-end tumble
+const double _kPotatoSeed = 4.2; // stable lump pattern for THE potato
 
 // Gravity — STRONG, with a SOFTENED falloff: a = G*mass / r^1.5 (per
 // sub-step, integrated). True 1/r² dies too fast at these pixel scales — at
@@ -124,14 +135,17 @@ class _LevelBlueprint {
   });
 }
 
-/// Live planetlet in flight.
+/// Live potato in flight. [spin] is the tumble angle — VISUAL ONLY; every
+/// collision/orbit test stays on the circular [_kProjectileRadius] body.
 class _Projectile {
   double x, y; // px
   double vx, vy; // px/s
+  double spin; // rad — potato tumble (paint-time only)
   bool alive;
   final List<Offset> trail;
   _Projectile({required this.x, required this.y, required this.vx, required this.vy})
-      : alive = true,
+      : spin = 0.0,
+        alive = true,
         trail = [];
 }
 
@@ -382,356 +396,188 @@ final List<_LevelBlueprint> _kLevelLadder = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PLANET RENDERER — the anti-flat-circle heart of Orbit Catch.
-//
-// A gravity well is a WORLD, never a shaded ball. Each body derives a stable
-// "identity" (seed from its position + accent) that picks a planet archetype —
-// GAS GIANT (latitudinal cloud bands + a swirling storm), ROCKY (crater-pocked
-// terrain + a highland cap), or ICE/OCEAN (mottled continents + polar caps) —
-// then paints it in layers: atmospheric limb glow, a clipped textured surface,
-// a lit day/night terminator, a bright rim light, and (for the heavy giants) a
-// tilted planetary ring system passing behind + in front of the disc.
-//
-// Everything is derived deterministically from the seed and the disc radius, so
-// the same body reads identically frame-to-frame and matches between the live
-// board and the legend cards. Continuous life comes only from the shared clock
-// [t] (a slow surface roll + terminator sway + storm churn) — no per-frame
-// allocation of gradients beyond what the shaders inherently need.
+// PLANET RENDERER — extracted to shared kit: lib/games/planet_art.dart
+// (PlanetArt.seed / PlanetArt.skin / PlanetArt.paint). Shared with Orbital
+// Insertion; visuals are identical to the original in-file renderer.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A planet's stable visual identity, hashed from its seed. Pure data — cheap to
-/// build, holds the archetype + a palette so the painter stays branch-light.
-class _PlanetSkin {
-  final int archetype; // 0 gas giant · 1 rocky · 2 ice/ocean
-  final Color deep; // shadowed base
-  final Color mid; // body midtone
-  final Color hi; // sunlit band / highland
-  final Color atmo; // limb glow tint
-  final bool hasRing; // ring system (giants)
-  final double bandPhase; // surface pattern offset
-  final double tilt; // ring / axis tilt
-  final double stormAngle; // gas-giant storm placement
-  const _PlanetSkin({
-    required this.archetype,
-    required this.deep,
-    required this.mid,
-    required this.hi,
-    required this.atmo,
-    required this.hasRing,
-    required this.bandPhase,
-    required this.tilt,
-    required this.stormAngle,
-  });
+// ═══════════════════════════════════════════════════════════════════════════
+// EARTH — the target. Drawn locally: PlanetArt has no Earth archetype, and
+// the destination must read UNLIKE the gravity wells at a glance. Oceans +
+// fixed continents + drifting cloud wisps + terminator + atmosphere rim, all
+// scaled off the radius so it stays legible from 26px down to the ~13px
+// late-game floor. Shared by the live painter and the legend cards.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Earth's representational colors. Deliberately outside the warm Potatuhs
+// neutrals (per GAME_DESIGN §4 a planet must READ as what it is — Earth is
+// blue/green or it isn't Earth); anchored on the game's sky-blue accent.
+const Color _kEarthOceanLit = Color(0xFF64C7EA); // sunlit shallow ocean
+const Color _kEarthOcean = Color(0xFF1E6FB8); // open ocean
+const Color _kEarthOceanDeep = Color(0xFF0B2E5C); // limb-shadow ocean
+const Color _kEarthLand = Color(0xFF5B9E4D); // vegetated landmass
+const Color _kEarthLandDark = Color(0xFF35682F); // landmass shadow side
+const Color _kEarthLandTan = Color(0xFFC9A55C); // arid landmass
+const Color _kEarthAtmo = Color(0xFF8FD5FF); // atmosphere rim glow
+
+/// One lumpy continent blob — same sin-bump trick as the potato silhouette so
+/// coastlines look organic, deterministic per [seed].
+Path _earthBlob(Offset c, double rx, double ry, double seed) {
+  const steps = 14;
+  final p = Path();
+  for (var i = 0; i <= steps; i++) {
+    final a = i / steps * 2 * pi;
+    final bump = 1.0 +
+        0.30 * sin(a * 3 + seed) +
+        0.17 * sin(a * 5 - seed * 1.7) +
+        0.11 * sin(a * 7 + seed * 0.6);
+    final x = c.dx + cos(a) * rx * bump;
+    final y = c.dy + sin(a) * ry * bump;
+    i == 0 ? p.moveTo(x, y) : p.lineTo(x, y);
+  }
+  return p..close();
 }
 
-/// Derive a planet's identity from a stable [seed] + its accent [color] and
-/// disc [radius]. Giants (large radius) skew toward gas-giant + rings; the
-/// smallest bodies stay compact rocky/ice moons.
-_PlanetSkin _planetSkin(int seed, Color color, double radius) {
-  final r = Random(seed & 0x7fffffff);
-  final big = radius >= 34;
-  final small = radius < 20;
-  // Archetype: giants lean gas-giant, moons lean rocky, mids mix in ice.
-  int arch;
-  if (big) {
-    arch = r.nextDouble() < 0.7 ? 0 : (r.nextBool() ? 2 : 1);
-  } else if (small) {
-    arch = r.nextBool() ? 1 : 2;
-  } else {
-    final k = r.nextDouble();
-    arch = k < 0.4 ? 1 : (k < 0.75 ? 2 : 0);
-  }
-  // Palette anchored on the body's brand accent so it stays on-theme, with a
-  // complementary warm/cool partner mixed in for surface variety.
-  final partner = arch == 2
-      ? Color.lerp(color, Potatuhs.textPrimary, 0.5)! // icy pale
-      : (arch == 1
-          ? Color.lerp(color, Potatuhs.mocha, 0.55)! // rocky earth
-          : Color.lerp(color, Potatuhs.sienna, 0.35)!); // gas warm swirl
-  final deep = Color.lerp(color, Colors.black, 0.55)!;
-  final mid = Color.lerp(color, partner, 0.35 + r.nextDouble() * 0.2)!;
-  final hi = Color.lerp(mid, Potatuhs.textPrimary,
-      arch == 2 ? 0.6 : (arch == 0 ? 0.4 : 0.32))!;
-  final atmo = arch == 1
-      ? Color.lerp(color, Potatuhs.orange, 0.3)!
-      : Color.lerp(color, Potatuhs.airForce, arch == 2 ? 0.35 : 0.15)!;
-  return _PlanetSkin(
-    archetype: arch,
-    deep: deep,
-    mid: mid,
-    hi: hi,
-    atmo: atmo,
-    hasRing: big && r.nextDouble() < 0.62,
-    bandPhase: r.nextDouble() * pi * 2,
-    tilt: (-0.5 + r.nextDouble()) * 0.7,
-    stormAngle: r.nextDouble() * pi * 2,
-  );
-}
-
-/// A stable seed for a body from its fractional position + color — matches
-/// wherever the same body is drawn (live board and legend).
-int _bodySeed(Offset frac, Color color) =>
-    ((frac.dx * 9973).round() * 92821) ^
-    ((frac.dy * 9973).round() * 40503) ^
-    (color.toARGB32() & 0x00ffffff);
-
-/// Paint a rich procedural planet: limb-glow atmosphere → clipped textured
-/// surface (per archetype) → day/night terminator → rim light → optional ring.
-/// The light comes from the upper-left (matching the shared orb convention) and
-/// sways gently with [t] so the terminator feels alive.
-void _paintPlanet(
-    Canvas canvas, Offset c, double radius, Color color, _PlanetSkin skin,
-    double t) {
-  // Light direction (upper-left), swaying a touch over time.
-  final lightAng = -2.2 + 0.10 * sin(t * 0.5 + skin.bandPhase);
-  final light = Offset(cos(lightAng), sin(lightAng));
-  final bodyRect = Rect.fromCircle(center: c, radius: radius);
-
-  // ── Ring system — back half first (occluded by the disc) ──────────────────
-  if (skin.hasRing) {
-    _paintRing(canvas, c, radius, skin, back: true);
-  }
-
-  // ── Atmospheric limb glow — a soft colored halo hugging the disc edge. ────
+/// Paints Earth at [c] with radius [r]. [t] drifts the clouds; pass a fixed
+/// value for a static (legend) frame. Continents are a FIXED layout — the
+/// same face every time, so "that's Earth" is instant even at 13px.
+void _drawEarth(Canvas canvas, Offset c, double r, double t) {
+  // Soft atmosphere halo behind the globe.
   canvas.drawCircle(
     c,
-    radius + radius * 0.30,
+    r * 1.22,
     Paint()
-      ..shader = RadialGradient(
-        colors: [
-          skin.atmo.withValues(alpha: 0.0),
-          skin.atmo.withValues(alpha: 0.42),
-          skin.atmo.withValues(alpha: 0.0),
-        ],
-        stops: const [0.62, 0.86, 1.0],
-      ).createShader(Rect.fromCircle(center: c, radius: radius + radius * 0.30))
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+      ..color = _kEarthAtmo.withValues(alpha: 0.14)
+      ..maskFilter = MaskFilter.blur(
+          BlurStyle.normal, (r * 0.30).clamp(1.5, 6.0).toDouble()),
   );
 
-  // ── Base sphere shading: sunlit midtone → shadowed deep, lit from `light`. ─
-  canvas.drawCircle(
-    c,
-    radius,
-    Paint()
-      ..shader = RadialGradient(
-        center: Alignment(light.dx * 0.7, light.dy * 0.7),
-        radius: 1.15,
-        colors: [skin.hi, skin.mid, skin.deep],
-        stops: const [0.0, 0.5, 1.0],
-      ).createShader(bodyRect),
-  );
-
-  // ── Surface texture — clipped to the disc so it reads as a curved world. ──
+  final sphere = Rect.fromCircle(center: c, radius: r);
   canvas.save();
-  canvas.clipPath(Path()..addOval(bodyRect));
-  switch (skin.archetype) {
-    case 0:
-      _paintGasBands(canvas, c, radius, skin, t);
-      break;
-    case 1:
-      _paintRockySurface(canvas, c, radius, skin);
-      break;
-    default:
-      _paintIceSurface(canvas, c, radius, skin);
-  }
+  canvas.clipPath(Path()..addOval(sphere));
 
-  // ── Day/night terminator — a shadow cast from the anti-light side, giving a
-  // crisp lit crescent. Drawn inside the clip so it curves with the disc. ────
+  // Ocean sphere, lit from top-left like every other body on the board.
   canvas.drawCircle(
     c,
-    radius,
+    r,
+    Paint()
+      ..shader = const RadialGradient(
+        center: Alignment(-0.35, -0.4),
+        colors: [_kEarthOceanLit, _kEarthOcean, _kEarthOceanDeep],
+        stops: [0.0, 0.55, 1.0],
+      ).createShader(sphere),
+  );
+
+  // Continents — fixed layout (big green NW, green SE, tan NE) so the face is
+  // recognizable at every radius. Shaded toward the light like the ocean.
+  final landShader = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [
+      Color.lerp(_kEarthLand, Colors.white, 0.18)!,
+      _kEarthLand,
+      _kEarthLandDark,
+    ],
+    stops: const [0.0, 0.5, 1.0],
+  ).createShader(sphere);
+  final landPaint = Paint()..shader = landShader;
+  canvas.drawPath(
+      _earthBlob(c.translate(-r * 0.32, -r * 0.18), r * 0.50, r * 0.38, 2.1),
+      landPaint);
+  canvas.drawPath(
+      _earthBlob(c.translate(r * 0.38, r * 0.32), r * 0.34, r * 0.27, 5.3),
+      landPaint);
+  canvas.drawPath(
+      _earthBlob(c.translate(r * 0.30, -r * 0.44), r * 0.21, r * 0.15, 8.7),
+      Paint()..color = _kEarthLandTan.withValues(alpha: 0.92));
+
+  // Southern ice cap.
+  canvas.drawOval(
+    Rect.fromCenter(
+        center: c.translate(0, r * 0.94), width: r * 0.9, height: r * 0.34),
+    Paint()..color = Colors.white.withValues(alpha: 0.8),
+  );
+
+  // Cloud wisps — three soft bands drifting west→east, fading at the wrap so
+  // they never pop. Cheap: three small blurred ovals inside the clip.
+  final cloudBlur = (r * 0.14).clamp(0.8, 3.5).toDouble();
+  for (var i = 0; i < 3; i++) {
+    final ph = (t * 0.05 + i * 0.33) % 1.0;
+    final wx = c.dx + (ph * 2 - 1) * r * 1.1;
+    final wy = c.dy + (i - 1) * r * 0.42;
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: Offset(wx, wy), width: r * 0.62, height: r * 0.17),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.30 * sin(pi * ph))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, cloudBlur),
+    );
+  }
+
+  // Terminator — the far limb falls into shadow, opposite the highlight.
+  canvas.drawCircle(
+    c,
+    r,
     Paint()
       ..shader = RadialGradient(
-        center: Alignment(light.dx * 1.15, light.dy * 1.15),
+        center: const Alignment(-0.4, -0.45),
         radius: 1.35,
         colors: [
           Colors.transparent,
-          Colors.black.withValues(alpha: 0.10),
-          Colors.black.withValues(alpha: 0.66),
+          Colors.transparent,
+          Colors.black.withValues(alpha: 0.42),
         ],
-        stops: const [0.42, 0.72, 1.0],
-      ).createShader(bodyRect),
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(sphere),
   );
+
   canvas.restore();
 
-  // ── Rim light — a bright crescent on the sunlit limb (specular sheen). ────
+  // Atmosphere rim — a blurred sky-blue band hugging the limb + a crisp edge.
   canvas.drawCircle(
     c,
-    radius,
+    r + 0.5,
     Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = radius * 0.10
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.07)
-      ..shader = SweepGradient(
-        center: Alignment.center,
-        colors: [
-          Color.lerp(skin.hi, Colors.white, 0.5)!.withValues(alpha: 0.0),
-          Color.lerp(skin.hi, Colors.white, 0.5)!.withValues(alpha: 0.85),
-          Color.lerp(skin.hi, Colors.white, 0.5)!.withValues(alpha: 0.0),
-        ],
-        // Bright arc centered on the sunlit limb (~40% of the sweep wide).
-        // Default sweep puts stop 0.5 at angle π; rotate so it lands on `light`.
-        stops: const [0.30, 0.5, 0.70],
-        transform: GradientRotation(lightAng - pi),
-      ).createShader(bodyRect),
+      ..strokeWidth = (r * 0.20).clamp(1.2, 4.0).toDouble()
+      ..color = _kEarthAtmo.withValues(alpha: 0.5)
+      ..maskFilter = MaskFilter.blur(
+          BlurStyle.normal, (r * 0.16).clamp(0.8, 3.0).toDouble()),
   );
-
-  // Thin dark contact edge on the shadow side to seat it against the field.
   canvas.drawCircle(
     c,
-    radius,
+    r,
     Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..color = skin.deep.withValues(alpha: 0.6),
+      ..strokeWidth = 0.9
+      ..color = _kEarthAtmo.withValues(alpha: 0.55),
   );
-
-  // ── Ring system — front half (crosses in front of the disc). ──────────────
-  if (skin.hasRing) {
-    _paintRing(canvas, c, radius, skin, back: false);
-  }
 }
 
-/// Gas giant: soft latitudinal cloud bands + a churning oval storm. Bands are
-/// drawn as clipped horizontal stripes, tilted by the planet's axis.
-void _paintGasBands(
-    Canvas canvas, Offset c, double radius, _PlanetSkin skin, double t) {
+/// The potato, rotated to [rot] about its own center. Wraps the canonical
+/// [PotatoArt] renderer; [pr] is the physics radius the tuber dresses
+/// (rx/ry hug it so the visual matches the circular hit body).
+void _drawPotato(Canvas canvas, Offset c, double rot, double pr) {
   canvas.save();
   canvas.translate(c.dx, c.dy);
-  canvas.rotate(skin.tilt * 0.6);
-  const bands = 7;
-  for (int i = 0; i < bands; i++) {
-    final fy = (i / (bands - 1)) * 2 - 1; // -1..1
-    final y = fy * radius;
-    final bandH = radius * 0.34;
-    final drift = sin(t * 0.4 + i * 1.3 + skin.bandPhase);
-    final light = i.isEven;
-    final col = Color.lerp(light ? skin.hi : skin.mid, skin.deep,
-        0.15 + 0.1 * drift)!;
-    canvas.drawRect(
-      Rect.fromLTRB(-radius * 1.2, y - bandH / 2, radius * 1.2, y + bandH / 2),
-      Paint()
-        ..color = col.withValues(alpha: light ? 0.5 : 0.34)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.05),
-    );
-  }
-  // The great storm — an oval eye that churns.
-  final sx = cos(skin.stormAngle) * radius * 0.42;
-  final sy = sin(skin.stormAngle) * radius * 0.28 + radius * 0.1;
-  final churn = 0.85 + 0.15 * sin(t * 0.9 + skin.bandPhase);
-  canvas.save();
-  canvas.translate(sx, sy);
-  canvas.scale(1.3 * churn, 0.8);
-  canvas.drawCircle(
-    Offset.zero,
-    radius * 0.20,
-    Paint()
-      ..shader = RadialGradient(colors: [
-        Color.lerp(skin.hi, Potatuhs.orange, 0.4)!.withValues(alpha: 0.9),
-        skin.mid.withValues(alpha: 0.0),
-      ]).createShader(
-          Rect.fromCircle(center: Offset.zero, radius: radius * 0.20)),
+  canvas.rotate(rot);
+  PotatoArt.paint(
+    canvas,
+    center: Offset.zero,
+    rx: pr * 1.3,
+    ry: pr * 0.9,
+    seed: _kPotatoSeed,
+    glow: 0.55,
   );
-  canvas.restore();
-  canvas.restore();
-}
-
-/// Rocky world: scattered craters (deterministic) + a lighter highland cap.
-void _paintRockySurface(
-    Canvas canvas, Offset c, double radius, _PlanetSkin skin) {
-  final r = Random((skin.bandPhase * 1000).round() ^ 0x51ed);
-  // Highland cap — a soft lighter patch.
-  final capA = skin.bandPhase;
-  canvas.drawCircle(
-    c.translate(cos(capA) * radius * 0.3, sin(capA) * radius * 0.3),
-    radius * 0.6,
-    Paint()
-      ..color = skin.hi.withValues(alpha: 0.22)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.18),
-  );
-  final craters = (radius / 6).clamp(4, 12).round();
-  for (int i = 0; i < craters; i++) {
-    final a = r.nextDouble() * pi * 2;
-    final d = sqrt(r.nextDouble()) * radius * 0.85;
-    final cx = c.dx + cos(a) * d;
-    final cy = c.dy + sin(a) * d;
-    final cr = radius * (0.06 + r.nextDouble() * 0.12);
-    // Shadowed pit + a bright upper-left rim = a real crater.
-    canvas.drawCircle(Offset(cx, cy), cr,
-        Paint()..color = skin.deep.withValues(alpha: 0.38));
-    canvas.drawCircle(
-      Offset(cx - cr * 0.3, cy - cr * 0.3),
-      cr * 0.7,
-      Paint()..color = skin.hi.withValues(alpha: 0.16),
-    );
-  }
-}
-
-/// Ice / ocean world: mottled continents + bright polar caps.
-void _paintIceSurface(
-    Canvas canvas, Offset c, double radius, _PlanetSkin skin) {
-  final r = Random((skin.bandPhase * 1000).round() ^ 0x1ce);
-  final blobs = (radius / 7).clamp(4, 10).round();
-  for (int i = 0; i < blobs; i++) {
-    final a = r.nextDouble() * pi * 2;
-    final d = sqrt(r.nextDouble()) * radius * 0.8;
-    final br = radius * (0.16 + r.nextDouble() * 0.24);
-    canvas.drawCircle(
-      c.translate(cos(a) * d, sin(a) * d),
-      br,
-      Paint()
-        ..color = Color.lerp(skin.hi, skin.mid, r.nextDouble())!
-            .withValues(alpha: 0.34)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.09),
-    );
-  }
-  // Polar caps top + bottom.
-  for (final sy in [-1.0, 1.0]) {
-    canvas.drawCircle(
-      c.translate(0, sy * radius * 0.86),
-      radius * 0.5,
-      Paint()
-        ..color = Color.lerp(skin.hi, Colors.white, 0.4)!.withValues(alpha: 0.5)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.16),
-    );
-  }
-}
-
-/// A tilted planetary ring — drawn as an ellipse arc. [back] draws the far half
-/// (behind the disc); the near half is drawn after the body so it overlaps.
-void _paintRing(Canvas canvas, Offset c, double radius, _PlanetSkin skin,
-    {required bool back}) {
-  canvas.save();
-  canvas.translate(c.dx, c.dy);
-  canvas.rotate(skin.tilt);
-  final rx = radius * 1.9;
-  final ry = radius * 0.5;
-  // back = top half of the ellipse (negative y sweep), front = bottom half.
-  final startAngle = back ? pi : 0.0;
-  final ringColor = Color.lerp(skin.atmo, Potatuhs.textPrimary, 0.25)!;
-  // A couple of concentric ring lanes for richness.
-  for (final f in const [1.0, 0.86, 0.72]) {
-    canvas.drawArc(
-      Rect.fromCenter(
-          center: Offset.zero, width: rx * 2 * f, height: ry * 2 * f),
-      startAngle,
-      pi,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = radius * 0.09 * f
-        ..color = ringColor.withValues(alpha: back ? 0.28 : 0.62)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.02),
-    );
-  }
   canvas.restore();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Visual manual — the legend carousel cards, drawn with the SAME primitives the
-// live painter uses (gravity wells, gold catcher, cannon, glaucous planetlet +
-// its blurred trail) so the manual shows the LITERAL components in flight.
-// Static + self-contained: no ticker, fixed pulse, cheap. Guards tiny canvases.
+// live painter uses (gravity wells, the Earth target, the spud launcher, the
+// tumbling potato + its warm trail) so the manual shows the LITERAL components
+// in flight. Static + self-contained: no ticker, fixed pulse, cheap. Guards
+// tiny canvases.
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A static gravity well — mirrors `_GravityPuzzlePainter._paintWell` (field
@@ -773,29 +619,20 @@ void _legendWell(Canvas canvas, Offset pos, double radius, Color color,
   );
   // Same rich procedural planet as the live board. Seed from the card position
   // + color + mass so the world reads distinctly on each legend frame.
-  final skin = _planetSkin(
-      _bodySeed(Offset(pos.dx, pos.dy + mass), color), color, radius);
-  _paintPlanet(canvas, pos, radius, color, skin, 0.0);
+  final skin = PlanetArt.skin(
+      PlanetArt.seed(Offset(pos.dx, pos.dy + mass), color), color, radius);
+  PlanetArt.paint(canvas, pos, radius, color, skin, 0.0);
   if (label.isNotEmpty) {
     GameFx.text(canvas, label, pos.translate(0, radius + 15), 9,
         color.withValues(alpha: 0.8));
   }
 }
 
-/// The gold catcher — mirrors `_paintCatcher` (intake rings, drift arrow when
-/// moving, gold orb, crosshair) with the pulse frozen.
+/// Earth, the target — mirrors `_paintCatcher` (anchor ring, converging
+/// destination beacon frozen mid-pulse, drift arrow when moving, the globe
+/// itself) with the clouds/beacon animation frozen.
 void _legendCatcher(Canvas canvas, Offset pos, double radius,
     {bool moving = false}) {
-  for (int i = 0; i < 2; i++) {
-    canvas.drawCircle(
-      pos,
-      radius + 10 + i * 9,
-      Paint()
-        ..color = Potatuhs.gold.withValues(alpha: 0.16 - i * 0.06)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
-    );
-  }
   if (moving) {
     final ax = Paint()
       ..color = Potatuhs.gold.withValues(alpha: 0.4)
@@ -804,24 +641,36 @@ void _legendCatcher(Canvas canvas, Offset pos, double radius,
     canvas.drawLine(pos.translate(-radius - 16, 0),
         pos.translate(radius + 16, 0), ax);
   }
-  GameFx.orb(canvas, pos, radius, Potatuhs.gold,
-      glow: 1.6, rim: Potatuhs.sienna, specular: true);
-  final ch = Paint()
-    ..color = Potatuhs.gold.withValues(alpha: 0.6)
-    ..strokeWidth = 1.3
-    ..strokeCap = StrokeCap.round;
-  canvas.drawLine(pos.translate(-11, 0), pos.translate(11, 0), ch);
-  canvas.drawLine(pos.translate(0, -11), pos.translate(0, 11), ch);
+  _drawEarth(canvas, pos, radius, 0.0);
+  // Anchor ring + one converging beacon ring frozen mid-pulse.
+  canvas.drawCircle(
+    pos,
+    radius + 4,
+    Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.32)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2,
+  );
+  canvas.drawCircle(
+    pos,
+    radius + 4 + (radius * 0.9 + 14) * 0.55,
+    Paint()
+      ..color = Potatuhs.gold.withValues(alpha: 0.30)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6,
+  );
 }
 
-/// The cannon — mirrors `_paintCannon` (glow barrel at [angle] + ink hub).
+/// The spud launcher — mirrors `_paintCannon` (copper launch rail at [angle],
+/// ink hub, loaded potato waiting at the muzzle).
 void _legendCannon(Canvas canvas, Offset pos, double angle) {
   const barrelLen = 30.0;
   final end = Offset(
       pos.dx + cos(angle) * barrelLen, pos.dy + sin(angle) * barrelLen);
-  GameFx.glowLine(canvas, pos, end, Potatuhs.airForce, width: 5, progress: 1.0);
+  GameFx.glowLine(canvas, pos, end, Potatuhs.copper, width: 5, progress: 1.0);
   GameFx.orb(canvas, pos, 15, Potatuhs.inkPanel,
-      glow: 0.7, rim: Potatuhs.airForce, specular: false);
+      glow: 0.7, rim: Potatuhs.copper, specular: false);
+  _drawPotato(canvas, end, angle, _kProjectileRadius * 0.9);
 }
 
 /// Points along a quadratic bend — a stand-in for the real curved sim path so
@@ -839,8 +688,8 @@ List<Offset> _legendArc(Offset a, Offset ctrl, Offset b, int n) {
   return pts;
 }
 
-/// The planetlet's glowing trail + orb — mirrors `_paintProjectile` (blurred
-/// air-force polyline + white core, glaucous planetlet at [pts.last]).
+/// The potato's warm trail + tumbling spud — mirrors `_paintProjectile`
+/// (blurred gold polyline + warm-white core, PotatoArt tuber at [pts.last]).
 void _legendTrail(Canvas canvas, List<Offset> pts, {double pr = 7.0}) {
   if (pts.length >= 2) {
     final path = Path()..moveTo(pts.first.dx, pts.first.dy);
@@ -851,7 +700,7 @@ void _legendTrail(Canvas canvas, List<Offset> pts, {double pr = 7.0}) {
       path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..color = Potatuhs.airForce.withValues(alpha: 0.38)
+        ..color = Potatuhs.gold.withValues(alpha: 0.34)
         ..strokeWidth = 6
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
@@ -861,15 +710,15 @@ void _legendTrail(Canvas canvas, List<Offset> pts, {double pr = 7.0}) {
       path,
       Paint()
         ..style = PaintingStyle.stroke
-        ..color = Colors.white.withValues(alpha: 0.7)
+        ..color =
+            Color.lerp(Potatuhs.gold, Colors.white, 0.75)!.withValues(alpha: 0.7)
         ..strokeWidth = 2
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round,
     );
   }
   if (pts.isNotEmpty) {
-    GameFx.orb(canvas, pts.last, pr, Potatuhs.glaucous,
-        glow: 1.9, rim: Colors.white, specular: true);
+    _drawPotato(canvas, pts.last, 0.9, pr);
   }
 }
 
@@ -906,7 +755,7 @@ void _legendAim(Canvas canvas, Size size) {
   _legendCannon(canvas, cannon, atan2(dir.dy, dir.dx));
 }
 
-// ── Frame 2 — curve it into the gold catcher to score ──────────────────────
+// ── Frame 2 — curve the potato home to Earth to score ──────────────────────
 void _legendScore(Canvas canvas, Size size) {
   if (size.width <= 1 || size.height <= 1) return;
   final w = size.width, h = size.height;
@@ -969,16 +818,16 @@ void _legendEscalate(Canvas canvas, Size size) {
 /// The visual manual for Planet Catch — wired into the registry spec.
 final List<LegendFrame> planetCatchLegendFrames = [
   const LegendFrame(
-      caption: "Drag to aim — a planet's gravity bends your shot",
+      caption: "Drag to aim — a planet's gravity bends your throw",
       paint: _legendAim),
   const LegendFrame(
-      caption: 'Curve the planetlet into the gold catcher to score',
+      caption: 'Curve the potato home to Earth to score',
       paint: _legendScore),
   const LegendFrame(
-      caption: 'Crash into a planet and the shot is lost',
+      caption: 'Crash into a planet and the potato is lost',
       paint: _legendCrash),
   const LegendFrame(
-      caption: 'Later: dense fields and a tiny drifting catcher',
+      caption: 'Later: dense fields and a tiny drifting Earth',
       paint: _legendEscalate),
 ];
 
@@ -1046,7 +895,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   /// at the target exactly like a player's drag would — so it reuses the game's
   /// own [_launch] handler and the strong gravity wells curve the shot the rest
   /// of the way (competent, not perfect). Deterministic; never spams while a
-  /// planetlet is airborne.
+  /// potato is airborne.
   void _autoStep() {
     if (!widget.session.isRunning) return;
     if (_canvasSize == Size.zero) return;
@@ -1105,7 +954,7 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
     setState(() => _launch(v));
   }
 
-  /// Fire a planetlet from the cannon with the given launch [velocity].
+  /// Fire a potato from the launcher with the given launch [velocity].
   /// Shared by drag-release input and the attract autopilot.
   void _launch(Offset velocity) {
     final c = _cannonPx(_canvasSize);
@@ -1201,6 +1050,9 @@ class _PlanetCatchGameState extends State<PlanetCatchGame>
   // ── physics — strong G, 10 sub-steps for accurate curves ──────────────────
   void _advanceProjectile(_Projectile proj, double dt) {
     if (_canvasSize == Size.zero) return;
+    // Tumble the potato with real elapsed time — VISUAL ONLY, the collision
+    // body below stays the _kProjectileRadius circle.
+    proj.spin += _kPotatoSpinRate * dt;
     final size = _canvasSize;
     const subSteps = 10;
     final subDt = dt / subSteps;
@@ -1537,15 +1389,15 @@ class _GravityPuzzlePainter extends CustomPainter {
       _paintWell(canvas, bPos, body);
     }
 
-    // ── Catcher (target) ────────────────────────────────────────────────────
+    // ── Earth (the target) ──────────────────────────────────────────────────
     _paintCatcher(canvas);
 
-    // ── Cannon + aim feedback ───────────────────────────────────────────────
+    // ── Launcher + aim feedback ─────────────────────────────────────────────
     _paintCannon(canvas);
     _paintAim(canvas);
     _paintPreview(canvas);
 
-    // ── Live planetlet ──────────────────────────────────────────────────────
+    // ── Live potato ─────────────────────────────────────────────────────────
     _paintProjectile(canvas);
 
     FxBurst.paint(canvas, fxParticles);
@@ -1602,9 +1454,9 @@ class _GravityPuzzlePainter extends CustomPainter {
 
     // The world itself — a rich procedural planet (bands / craters / ice +
     // lit terminator + atmosphere + optional rings), never a flat shaded ball.
-    final skin = _planetSkin(
-        _bodySeed(body.pos, body.color), body.color, body.radius);
-    _paintPlanet(canvas, bPos, body.radius, body.color, skin, t);
+    final skin = PlanetArt.skin(
+        PlanetArt.seed(body.pos, body.color), body.color, body.radius);
+    PlanetArt.paint(canvas, bPos, body.radius, body.color, skin, t);
 
     if (body.label.isNotEmpty) {
       GameFx.text(
@@ -1617,22 +1469,13 @@ class _GravityPuzzlePainter extends CustomPainter {
     }
   }
 
+  // Earth, the destination. The beacon language is CONVERGING gold rings —
+  // they pulse inward onto the globe ("come here"), never a crosshair sticker.
+  // Reads as the target at every radius the ladder uses (26px → ~13px floor).
   void _paintCatcher(Canvas canvas) {
     final pulse = 0.5 + 0.5 * sin(t * 3.5);
-    final flashGlow = 0.5 * flash;
 
-    // Capture/intake rings.
-    for (int i = 0; i < 2; i++) {
-      canvas.drawCircle(
-        targetPos,
-        targetRadius + 10 + i * 9 + pulse * 4,
-        Paint()
-          ..color = Potatuhs.gold.withValues(alpha: (0.16 - i * 0.06) + 0.08 * pulse)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5,
-      );
-    }
-    // Moving catchers get a drift arrow hint.
+    // Moving catchers get a drift arrow hint (under the globe).
     if (targetMoves) {
       final ax = Paint()
         ..color = Potatuhs.gold.withValues(alpha: 0.4)
@@ -1642,19 +1485,46 @@ class _GravityPuzzlePainter extends CustomPainter {
           targetPos.translate(targetRadius + 16, 0), ax);
     }
 
-    GameFx.orb(canvas, targetPos, targetRadius, Potatuhs.gold,
-        glow: 1.6 + pulse * 0.5 + flashGlow, rim: Potatuhs.sienna, specular: true);
+    // Catch flash — a gold bloom the instant a potato lands.
+    if (flash > 0) {
+      canvas.drawCircle(
+        targetPos,
+        targetRadius * 1.6,
+        Paint()
+          ..color = Potatuhs.gold.withValues(alpha: 0.5 * flash)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+      );
+    }
 
-    final ch = Paint()
-      ..color = Potatuhs.gold.withValues(alpha: 0.6)
-      ..strokeWidth = 1.3
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(
-        targetPos.translate(-11, 0), targetPos.translate(11, 0), ch);
-    canvas.drawLine(
-        targetPos.translate(0, -11), targetPos.translate(0, 11), ch);
+    _drawEarth(canvas, targetPos, targetRadius, t);
+
+    // Destination beacon: a steady gold anchor ring hugging the atmosphere,
+    // plus two rings converging onto it out of phase (fade in far, land near).
+    canvas.drawCircle(
+      targetPos,
+      targetRadius + 4,
+      Paint()
+        ..color = Potatuhs.gold.withValues(alpha: 0.26 + 0.12 * pulse)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2,
+    );
+    for (int i = 0; i < 2; i++) {
+      final ph = (t * 0.55 + i * 0.5) % 1.0;
+      final rr = targetRadius + 4 + (1.0 - ph) * (targetRadius * 0.9 + 14);
+      canvas.drawCircle(
+        targetPos,
+        rr,
+        Paint()
+          ..color = Potatuhs.gold.withValues(alpha: 0.34 * sin(pi * ph))
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6,
+      );
+    }
   }
 
+  // The spud launcher: copper launch rail + ink hub, with the next potato
+  // visibly loaded at the muzzle whenever nothing is in flight — the fiction
+  // (we are throwing a potato at Earth) is on screen before the first drag.
   void _paintCannon(Canvas canvas) {
     double barrelAngle = -pi / 4;
     if (launchVector != null) {
@@ -1667,10 +1537,18 @@ class _GravityPuzzlePainter extends CustomPainter {
       cannonPx.dx + cos(barrelAngle) * barrelLen,
       cannonPx.dy + sin(barrelAngle) * barrelLen,
     );
-    GameFx.glowLine(canvas, cannonPx, barrelEnd, Potatuhs.airForce,
+    GameFx.glowLine(canvas, cannonPx, barrelEnd, Potatuhs.copper,
         width: 5, progress: 1.0);
     GameFx.orb(canvas, cannonPx, 16, Potatuhs.inkPanel,
-        glow: 0.7, rim: Potatuhs.airForce, specular: false);
+        glow: 0.7, rim: Potatuhs.copper, specular: false);
+
+    // Loaded potato — rocks gently while it waits; hidden once it IS the shot.
+    final inFlight = projectile != null && projectile!.alive;
+    if (!inFlight) {
+      final rock = sin(t * 2.2) * 0.14;
+      _drawPotato(
+          canvas, barrelEnd, barrelAngle + rock, _kProjectileRadius * 0.9);
+    }
   }
 
   // Direct-aim feedback: an arrow FROM the cannon pointing where the shot goes,
@@ -1760,11 +1638,13 @@ class _GravityPuzzlePainter extends CustomPainter {
           path.lineTo(trail[i].dx, trail[i].dy);
         }
         final frac = (b + 1) / bands;
+        // Warm gold wake — the potato's colors, so the trail reads as ITS
+        // heat, distinct from the cool blue gravity wells.
         canvas.drawPath(
           path,
           Paint()
             ..style = PaintingStyle.stroke
-            ..color = Potatuhs.airForce.withValues(alpha: 0.38 * frac)
+            ..color = Potatuhs.gold.withValues(alpha: 0.34 * frac)
             ..strokeWidth = 6
             ..strokeCap = StrokeCap.round
             ..strokeJoin = StrokeJoin.round
@@ -1774,7 +1654,8 @@ class _GravityPuzzlePainter extends CustomPainter {
           path,
           Paint()
             ..style = PaintingStyle.stroke
-            ..color = Colors.white.withValues(alpha: 0.75 * frac)
+            ..color = Color.lerp(Potatuhs.gold, Colors.white, 0.75)!
+                .withValues(alpha: 0.72 * frac)
             ..strokeWidth = 2.0
             ..strokeCap = StrokeCap.round
             ..strokeJoin = StrokeJoin.round,
@@ -1783,43 +1664,10 @@ class _GravityPuzzlePainter extends CustomPainter {
     }
     if (projectile!.alive) {
       final mPos = Offset(projectile!.x, projectile!.y);
-      // The planetlet is a tiny world too: bright airy glow + a lit little
-      // globe with a highlight, not a flat dot.
-      canvas.drawCircle(
-        mPos,
-        _kProjectileRadius + 5,
-        Paint()
-          ..color = Potatuhs.glaucous.withValues(alpha: 0.6)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
-      );
-      canvas.drawCircle(
-        mPos,
-        _kProjectileRadius,
-        Paint()
-          ..shader = RadialGradient(
-            center: const Alignment(-0.5, -0.5),
-            colors: [
-              Color.lerp(Potatuhs.glaucous, Colors.white, 0.7)!,
-              Potatuhs.glaucous,
-              Color.lerp(Potatuhs.glaucous, Colors.black, 0.5)!,
-            ],
-            stops: const [0.0, 0.55, 1.0],
-          ).createShader(
-              Rect.fromCircle(center: mPos, radius: _kProjectileRadius)),
-      );
-      canvas.drawCircle(
-        mPos,
-        _kProjectileRadius,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.0
-          ..color = Colors.white.withValues(alpha: 0.85),
-      );
-      canvas.drawCircle(
-        mPos.translate(-_kProjectileRadius * 0.35, -_kProjectileRadius * 0.4),
-        _kProjectileRadius * 0.28,
-        Paint()..color = Colors.white.withValues(alpha: 0.85),
-      );
+      // The potato itself — canonical PotatoArt tuber, tumbling end over end
+      // (spin advances with real dt in _advanceProjectile). Its rx/ry hug the
+      // circular _kProjectileRadius body, so what you see is what collides.
+      _drawPotato(canvas, mPos, projectile!.spin, _kProjectileRadius);
     }
   }
 

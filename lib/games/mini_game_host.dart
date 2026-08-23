@@ -65,6 +65,13 @@ class MiniGameHost extends StatefulWidget {
   /// never sit over live gameplay.
   final Widget? introAction;
 
+  /// Skip the local intro: a short settle beat on mount, then straight into
+  /// the 3-2-1 countdown. Used by the online party flow, where the READY
+  /// CHECK screen (READY_UP_SPEC.md) has already served as reading time and
+  /// every seat starts together — a second START tap would desynchronize the
+  /// round. Solo, quick match, and offline party never pass this.
+  final bool autoStart;
+
   const MiniGameHost({
     super.key,
     required this.spec,
@@ -78,6 +85,7 @@ class MiniGameHost extends StatefulWidget {
     this.onHopGame,
     this.hopLabel,
     this.introAction,
+    this.autoStart = false,
   });
 
   bool get isParty => onComplete != null;
@@ -165,7 +173,16 @@ class _MiniGameHostState extends State<MiniGameHost> {
     _session.hostReset();
     _session.addListener(_onSessionChanged);
     if (!widget.isParty) _loadBest();
-    if (widget.autoPlay) _armAutoIntro();
+    if (widget.autoPlay) {
+      _armAutoIntro();
+    } else if (widget.autoStart) {
+      // Ready-checked start (READY_UP_SPEC.md): settle beat, then countdown.
+      _autoIntroTimer = Timer(const Duration(milliseconds: 400), () {
+        if (mounted && _session.phase == MiniGamePhase.intro) {
+          _startCountdown();
+        }
+      });
+    }
   }
 
   /// Attract mode: let the intro card breathe (rest/settle during the screen
@@ -1760,6 +1777,12 @@ class _LegendCarouselState extends State<_LegendCarousel> {
   @override
   Widget build(BuildContext context) {
     final accent = widget.accent;
+    // Illustration canvas sized to the screen: a fixed 168px strip cramped
+    // legend labels and clipped bottom edges on tall phones while the intro
+    // screen sat mostly empty (playtest 2026-07-12). Floor keeps short
+    // windows at the old footprint.
+    final legendHeight =
+        (MediaQuery.sizeOf(context).height * 0.26).clamp(168.0, 300.0);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1781,7 +1804,7 @@ class _LegendCarouselState extends State<_LegendCarousel> {
           ),
           const SizedBox(height: 10),
           SizedBox(
-            height: 168,
+            height: legendHeight,
             child: PageView.builder(
               controller: _controller,
               onPageChanged: (i) {

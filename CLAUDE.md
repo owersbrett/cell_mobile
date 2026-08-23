@@ -11,10 +11,10 @@ to `explore-the-cell.web.app`. Not a single game: a board-game layer (PARTY) tha
 **mini-games**, plus a solo LEARN path through **22 scales** (nothings → infinities), each
 scale holding a list of games. ~125 games live in the registry today.
 
-- **Home** (`lib/views/screens/home_page/home_page.dart`) is a 4-door menu over an animated
+- **Home** (`lib/views/screens/home_page/home_page.dart`) is a 3-door menu over an animated
   cell: **LEARN** (scale carousel → per-scale game picker), **PARTY** (board game, online via
-  room codes), **GAMES** (all-games triage: ranks/feedback/filters), **ATTRACT** (self-playing
-  b-roll for OBS).
+  room codes), **GAMES** (all-games triage: ranks/feedback/filters). **ATTRACT** (self-playing
+  b-roll for OBS) lives in the settings sheet, not on the home menu.
 - **Party mode**: 3 lengths (`kPartyRoundCounts = [7, 28, 90]` — WEEK/MOON/SEASON) × 3 maps
   (`down_the_hole`, `into_the_void`, `through_the_aether`; spec locked in `docs/MAPS_SPEC.md`).
 - Navigation is a flat BLoC switch: `lib/blocs/navigation/` (`AppScreen` enum) routed by
@@ -25,9 +25,14 @@ scale holding a list of games. ~125 games live in the registry today.
 ```bash
 flutter run                 # run (web: flutter run -d chrome)
 flutter analyze             # ALWAYS run before declaring work done
-flutter test                # tests
+flutter test                # all tests
+flutter test test/party_controller_test.dart   # single test file
 flutter build web           # web build; deploy via the /deploy skill (bumps build number)
 ```
+
+`flutter test --platform chrome` CANNOT init Firebase (external JS) — don't retry it. To
+verify online party against real RTDB, use the live harness:
+`flutter run -d chrome -t lib/dev/party_live_check.dart`.
 
 ## Agent operating rules (load-bearing)
 
@@ -55,8 +60,8 @@ flutter build web           # web build; deploy via the /deploy skill (bumps bui
    When Brett says a game **"rocks"** (or equivalent strong praise), set that game's rank to
    **S** (`rank: GameRank.s`) in the catalog immediately — persist it in code, never leave it
    as session-only opinion.
-8. **Registry edits are conservative.** `lib/games/mini_game_registry.dart` (~2,800 lines)
-   and `lib/party/screens/party_page.dart` (~3,600 lines) are shared monster files touched by
+8. **Registry edits are conservative.** `lib/games/mini_game_registry.dart` (~2,900 lines)
+   and `lib/party/screens/party_page.dart` (~4,700 lines) are shared monster files touched by
    many agents. Make surgical, append/patch-style edits there; never reformat, reorder, or
    refactor them opportunistically. When dispatching per-game work to subagents, the
    orchestrator keeps registry/catalog edits to itself.
@@ -72,6 +77,33 @@ flutter build web           # web build; deploy via the /deploy skill (bumps bui
    deterministic animations. Auto-executing an effect and leaving the player confused
    is a bug even when the state machine is correct. Voice law: "uhhh…" is Russ's
    catchphrase ALONE — Butter is smooth and never hedges.
+
+## Multi-session protocol (when several sessions run this repo concurrently)
+
+Sessions share one working tree and cannot see each other's context. When more than one
+session (or human-driven Claude tab) is active on this repo at once:
+
+1. **Claim before you edit.** Append one line to `_sessions/YYYY-MM-DD.md` (create the file
+   if it's the day's first): territory (game folder or subsystem), goal, start time. One
+   game folder per session. If your territory is already claimed and not marked done, STOP
+   and tell Brett instead of editing.
+2. **Shared files are orchestrator-only.** `lib/games/mini_game_registry.dart`,
+   `lib/games/game_catalog.dart`, `lib/party/screens/party_page.dart`, `CLAUDE.md`, and
+   `docs/` may be edited only by the single designated orchestrator session. A per-game
+   session that needs a registry/catalog change writes the exact requested edit into its
+   ledger entry as a REQUEST line and leaves the file untouched.
+3. **Analyze is advisory mid-flight.** A repo-wide `flutter analyze` while other sessions
+   are live reflects their half-finished edits too. Report analyze results scoped to your
+   files; a clean analyze is only authoritative on the integrated tree after all sessions
+   land (the orchestrator runs that one).
+4. **Close your claim.** On finish, append to your entry: files touched, what was verified
+   (analyze scope, played or not), and anything left dirty or unresolved. This ledger is a
+   lock file + QA feeder, not a devlog — one or two lines per event.
+5. **QA gate is separate from the fleet.** No session marks its own work "done" for the
+   GAMES rubric; after the fleet lands, one integration pass diffs claims vs. `git diff`,
+   runs the single authoritative analyze/tests, and spot-plays touched games.
+
+Format details: `_sessions/README.md`.
 
 ## The GAMES rubric — every game carries its docs
 
@@ -156,6 +188,9 @@ changes inside individual games. Entry: group icon in the per-scale picker + gam
 lib/
   blocs/            # navigation + cell + scale_explorer BLoCs
   data/             # organelles + per-scale entity blocks (lib/data/scales/)
+  dev/              # party_live_check.dart — live-RTDB verification harness
+  feedback/         # in-app feedback capture (prompt, pending sheet, models)
+  game/             # LEGACY free-roam cell engine — only lib/views/screens/game_page/ uses it
   games/            # THE GAMES — one folder per scale family, one subfolder per game
     game_catalog.dart       # SSOT: every game + rank        (edit: orchestrator only)
     mini_game.dart          # spec/session contract
@@ -164,10 +199,13 @@ lib/
     GAME_DESIGN.md          # the gameplay law — read before any game work
     <scale>/<game_id>/      # game.dart + GAME.md + AGENT.md + EDUCATION.md (+ POTATUHS.md)
     attract/                # self-playing attract mode
+  learn/ models/    # LEARN-path progress + module/lesson/entity models
   party/            # board game: models, controller, maps/, net/, screens/
   telemetry/        # RTDB play counters
   theme/            # potatuhs.dart design kit
   views/            # home, scale overview/explorer, mini_game_page (legacy launcher)
+learning-materials/ # the lessons app (Vite/TS, separate deploy) — synced via /sync-education
+manual/             # manual-spec.json — consumed by the HPG manual (see BROADCAST PROTOCOL)
 docs/
   NORTH_STAR.md             # project constitution (vocabulary, principles, inventory)
   MULTIPLAYER_HANDOFF.md    # board/online agent context + known bugs
@@ -191,8 +229,8 @@ and lag reality — trust `game_catalog.dart` + `mini_game_registry.dart` for wh
 ## BROADCAST PROTOCOL (consultant interface)
 
 A consultant session at the Potatuhs root coordinates this game with sod_tori, Tater Dash,
-and the HPG manual. Keep `~/Potatuhs/hpg/_status/cell_mobile.md` current — it is how the
+and the HPG manual. Keep `~/Potatuhs/hotpotatogames/_status/cell_mobile.md` current — it is how the
 consultant reads your goals/progress without interrupting you. Update it when you (1) set or
 revise goals, (2) hit a milestone or blocker, (3) write/change `manual/manual-spec.json`.
-Follow the schema in `~/Potatuhs/hpg/_status/README.md`. Keep it short; it is a status board,
+Follow the schema in `~/Potatuhs/hotpotatogames/_status/README.md`. Keep it short; it is a status board,
 not a devlog.

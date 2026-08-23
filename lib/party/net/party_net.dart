@@ -295,7 +295,12 @@ class PartyNet extends ChangeNotifier {
         }
         return false;
       case PartyInputKind.useItem:
-        if (c.phase == PartyPhase.turnStart && slot == cur) {
+        // MULLIGAN is the one item played after the dice land (rollResult);
+        // everything else arms at turnStart.
+        final itemPhase = r.value == PowerUp.reroll.index
+            ? PartyPhase.rollResult
+            : PartyPhase.turnStart;
+        if (c.phase == itemPhase && slot == cur) {
           final item = PowerUp.values[r.value];
           if (c.currentPlayer.items.contains(item)) {
             c.useItem(item);
@@ -342,8 +347,12 @@ class PartyNet extends ChangeNotifier {
         }
         return false;
       case PartyInputKind.miniScore:
+        // Legal during live play and between-submission passPhone re-entries
+        // — but NEVER during the ready check (READY_UP_SPEC.md): the round
+        // hasn't started for anyone until every seat is in, and the host
+        // enforces that, not just the screens.
         final playing = c.phase == PartyPhase.minigamePlaying ||
-            c.phase == PartyPhase.passPhone;
+            (c.phase == PartyPhase.passPhone && c.allSeatsReady);
         if (playing && !c.hasSubmittedMiniScore(slot)) {
           c.recordMiniScore(r.value, player: slot);
           return true;
@@ -395,6 +404,39 @@ class PartyNet extends ChangeNotifier {
                 c.phase == PartyPhase.passPhone) &&
             !c.skipVotes.contains(slot)) {
           c.voteSkip(player: slot);
+          return true;
+        }
+        return false;
+      case PartyInputKind.pickMiniGame:
+        // Only the GAME RIGGER's holder picks the round's game.
+        if (c.phase == PartyPhase.gamePick && slot == c.gamePickerSeat) {
+          c.pickMiniGame(r.value);
+          return true;
+        }
+        return false;
+      case PartyInputKind.readyUp:
+        // The ready check (READY_UP_SPEC.md): one confirmation per seat while
+        // the round holds at passPhone. No timer — the players decide.
+        if (c.phase == PartyPhase.passPhone &&
+            !c.readySeats.contains(slot)) {
+          c.readyUp(player: slot);
+          return true;
+        }
+        return false;
+      case PartyInputKind.orderRoll:
+        // The opening order (ORDER_AND_SOLO_SPEC §3): only the pending
+        // seat's throw counts.
+        if (c.phase == PartyPhase.orderRoll && slot == c.orderPendingSeat) {
+          c.rollForOrder(player: slot);
+          return true;
+        }
+        return false;
+      case PartyInputKind.beginMatch:
+        // The room host taps out of the resolved ceremony (tap-to-drive).
+        if (c.phase == PartyPhase.orderRoll &&
+            c.orderResolved &&
+            r.uid == myUid) {
+          c.beginMatch();
           return true;
         }
         return false;

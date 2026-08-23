@@ -13,6 +13,7 @@ import '../mini_game.dart';
 import '../mini_game_host.dart';
 import 'quick_match_net.dart';
 import 'quick_match_transport.dart';
+import 'quick_room_scope.dart';
 
 /// QUICK MATCH — play ONE catalog game with friends via a room code.
 ///
@@ -160,12 +161,22 @@ class _QuickMatchPageState extends State<QuickMatchPage> {
   Widget build(BuildContext context) {
     final net = _net;
     if (_phase == _Phase.playing && net != null) {
-      // The game IS the screen — the host owns clock/results/exit.
-      return MiniGameHost(
-        spec: net.spec,
-        playerLabel: net.myPlayer?.name,
-        onComplete: _onComplete,
-        onExit: () => Navigator.of(context).maybePop(),
+      // The game IS the screen — the host owns clock/results/exit. The scope
+      // hands the room context to games with a shared mode (QuickRoomScope);
+      // games without one never look it up.
+      return QuickRoomScope(
+        code: net.code,
+        myUid: net.myUid,
+        isHost: net.isHost,
+        seed: net.meta?.seed ?? 0,
+        round: net.round,
+        players: net.players,
+        child: MiniGameHost(
+          spec: net.spec,
+          playerLabel: net.myPlayer?.name,
+          onComplete: _onComplete,
+          onExit: () => Navigator.of(context).maybePop(),
+        ),
       );
     }
     return Scaffold(

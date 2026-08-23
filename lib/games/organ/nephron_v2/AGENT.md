@@ -25,9 +25,12 @@ the A/B judge.
 3. **SCAFFOLD.** Early levels (1–2) tag nutrients (pulsing green REABSORB ring)
    vs waste (red hazard ✕) pre-attentively; the tell is **stripped from level 3
    up**, ending on the read-the-label Na⁺·EXCESS twist.
-4. **READABLE SCORE.** Big in-widget score, scoreUnit label, streak multiplier
-   pill, and the purity gauge — the deciding number never relies on host chrome.
-   Scoring is **non-negative** (wrong calls cost streak + purity, not points).
+4. **READABLE SCORE.** The live score reads from the host's top bar
+   ("N molecules") — there is NO in-canvas score stamp (it congested the tube
+   entry, overlapping the GLOMERULUS label + emitter rings; removed 2026-07-12).
+   In-canvas juice is transient **+N pops** at scoring events plus the streak
+   multiplier + purity gauge along the bottom band. Scoring is **non-negative**
+   (wrong calls cost streak + purity, not points).
 5. **CLIMAX.** Final 10 s → red FINAL FLUSH surge (×1.5) + one big final nutrient
    (×2). The accelerate now climbs to the buzzer instead of clogging out.
 

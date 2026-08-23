@@ -13,6 +13,7 @@ void main() {
         seed: seed,
         gameMap: map,
         wheels: wheels,
+      rules: 5,
       );
 
   /// Drives [c] until [until] returns true (or the game ends).
@@ -56,6 +57,16 @@ void main() {
         case PartyPhase.wheelSpin:
           c.wheelStop();
           break;
+        case PartyPhase.gamePick:
+          c.pickMiniGame(0);
+          break;
+        case PartyPhase.orderRoll:
+          if (c.orderResolved) {
+            c.beginMatch();
+          } else {
+            c.rollForOrder();
+          }
+          break;
         case PartyPhase.gameOver:
           break;
       }
@@ -88,28 +99,52 @@ void main() {
     expect(c.wheel!.queue, [0], reason: 'seat 0 won the round');
   });
 
-  test('into_the_void runs NO winner spins; checkpoint still fires at round 5',
-      () {
+  test(
+      'into_the_void runs NO per-round winner spins; at the round-5 '
+      'checkpoint the round winner spins the winner table instead of the '
+      'sting table', () {
     final c = duel(map: gameMapById('into_the_void'));
-    var checkpoints = 0;
-    var winners = 0;
-    var lastCheckpointRound = 0;
+    // Every wheel state drive() passes through, in order (each spinner is
+    // observed exactly once: drive checks `until` once per wheelStop).
+    final seen = <(int, WheelTier, int)>[];
     drive(c, (c) {
-      if (c.phase == PartyPhase.wheelSpin &&
-          c.wheel!.currentSpinner == 0 &&
-          c.round > 1) {
-        if (c.wheel!.tier == WheelTier.checkpoint) {
-          checkpoints++;
-          lastCheckpointRound = c.round;
-        }
-        if (c.wheel!.tier == WheelTier.winner) winners++;
+      if (c.phase == PartyPhase.wheelSpin && c.round > 1) {
+        seen.add((c.round, c.wheel!.tier, c.wheel!.currentSpinner));
       }
       return false; // run to game over
     });
     expect(c.phase, PartyPhase.gameOver);
-    expect(winners, 0, reason: 'the Void wants less wheel');
-    expect(checkpoints, 1, reason: '7 rounds → one checkpoint (round 5)');
-    expect(lastCheckpointRound, 5);
+    // Only the tiers the winner-pays law governs — other tiers (finale,
+    // bigBad…) have their own coverage and cadence.
+    final midGame = [
+      for (final e in seen)
+        if (e.$2 == WheelTier.winner || e.$2 == WheelTier.checkpoint) e
+    ];
+    expect(midGame, [
+      // Round 5 checkpoint: seat 0 won round 4, so their spin is the
+      // all-positive winner table and they sit out the checkpoint queue.
+      // No winner/checkpoint wheel on any other round — the Void still
+      // wants less wheel.
+      (5, WheelTier.winner, 0),
+      (5, WheelTier.checkpoint, 1),
+    ]);
+  });
+
+  test('checkpoint chained behind a winner spin excludes the winner — '
+      'winning a round never feeds you a sting table', () {
+    final c = duel(); // legacy board: winner spins run every round
+    final seen = <(WheelTier, int)>[];
+    drive(c, (c) {
+      if (c.phase == PartyPhase.wheelSpin && c.round == 5) {
+        seen.add((c.wheel!.tier, c.wheel!.currentSpinner));
+      }
+      return false;
+    });
+    expect(c.phase, PartyPhase.gameOver);
+    expect(seen, [
+      (WheelTier.winner, 0), // seat 0 won round 4 → winner table
+      (WheelTier.checkpoint, 1), // only the non-winner faces the stings
+    ]);
   });
 
   test('final spin runs for everyone, then game over', () {
@@ -139,7 +174,7 @@ void main() {
     // round's mini-game fires straight away.
     drive(c, (c) => c.phase == PartyPhase.minigameIntro);
     expect(c.players[1].frozenTurns, 0);
-    expect(c.turnLog.any((l) => l.contains('FROZEN')), isTrue);
+    expect(c.turnLog.any((l) => l.contains('frozen solid')), isTrue);
     expect(c.currentPlayerIndex, 1,
         reason: 'the skip still consumed seat 1\'s slot in the cycle');
   });

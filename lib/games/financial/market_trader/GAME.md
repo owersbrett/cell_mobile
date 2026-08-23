@@ -52,9 +52,13 @@ a mistimed event that just burned money.
   chain-pump.
 - HUSTLE remains the free-cash floor, now doubling as "grinding toward your next event."
 
-> **Shared-market note:** the sim (price path AND events) is per-player local; rooms only sync scores.
-> A shared live tape (host-published ticks/events, one market per room, your Drought hits everyone) is
-> a designed-but-not-commissioned follow-up.
+> **Shared-market note (Phase 1 SHIPPED, 2026-07-12):** in a quick-match room the whole room trades
+> ONE market — the host runs the only sim (`MarketSim`, seeded `meta.seed + round`) and publishes the
+> tape to `cell_games/$code/market`; joiners render it and never simulate. Your Drought spikes
+> everyone's price; rival events land attributed ("RUSS BOUGHT A DROUGHT") with a room-wide button
+> cooldown. Host loss = honest halt (trading locks, "MARKET HALTED — HOST LOST", the local session
+> clock still ends the round). Solo play is unchanged (private seeded sim). Wallets, orders and P&L
+> stay client-side — price impact (order routing/slippage) is Phase 2. Full design: `ONLINE.md`.
 
 They inject a strong, sustained price impulse (the existing `_news`/impulse system). Timing them with
 your position — and affording them — is the skill.
@@ -101,11 +105,15 @@ into the market instead of dead-ending.
 > Note: the old Credit/Debt mechanic is **removed**. Reserves-via-limit-orders is the new agency/capital
 > mechanic and reads far more clearly than a debt meter.
 
-## Multiplayer (future, not now)
-Single-player today (events move your own market). This design is built for the planned **online mode**
-(web-hosted / mobile-joined over Firebase): a **shared live market** where your Drought spikes everyone's
-price and your Recession craters a rival right after they buy. Keep the event system factored so the
-impulse source can later come from any player. (See online-play roadmap.)
+## Multiplayer (Phase 1 live: the shared tape)
+Quick-match rooms trade a **shared live market** (see the shared-market note above and `ONLINE.md`).
+Architecture: `market_sim.dart` (the seedable price walk) → `market_feed.dart` (the seam the desk
+reads: `LocalMarketFeed` solo, `HostMarketFeed`/`NetMarketFeed` shared) → `market_net.dart` (the
+`cell_games/$code/market` channel + the `requests`-channel event intents, host-enforced shared
+cooldown). The game learns its room context via `QuickRoomScope` (quick-match's generic injection
+seam). Phase 2 (designed, not built): order intents → host folds aggregate flow into the price →
+price impact + slippage. Verification: `test/games/market_trader_net_test.dart` +
+`flutter run -d chrome -t lib/dev/market_live_check.dart`.
 
 ## Scoring / win
 Score = **cumulative realized P&L**, reported to the host session via `session.addScore` on every sell

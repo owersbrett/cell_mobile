@@ -200,21 +200,21 @@ List<BoardSpace> _assembleSpaces({
 
 GameMap buildDownTheHole() {
   final secs = [
-    _sec(BioScale.organism, 'SURFACE', const Color(0xFF8BC34A), Icons.grass, 0,
+    _sec(BioScale.organism, 'Surface', const Color(0xFF8BC34A), Icons.grass, 0,
         'harvest charm'),
-    _sec(BioScale.organ, 'FLESH', const Color(0xFFEF5350), Icons.favorite, 1,
+    _sec(BioScale.organ, 'Flesh', const Color(0xFFEF5350), Icons.favorite, 1,
         'growth'),
-    _sec(BioScale.tissue, 'WEAVE', const Color(0xFFEC407A), Icons.gradient, 2,
+    _sec(BioScale.tissue, 'Weave', const Color(0xFFEC407A), Icons.gradient, 2,
         'layer-lock'),
-    _sec(BioScale.cell, 'CHAMBER', const Color(0xFF26A69A), Icons.circle, 3,
+    _sec(BioScale.cell, 'Chamber', const Color(0xFF26A69A), Icons.circle, 3,
         'mitosis'),
-    _sec(BioScale.organelle, 'ENGINE ROOM', const Color(0xFF9C27B0),
+    _sec(BioScale.organelle, 'Engine Room', const Color(0xFF9C27B0),
         Icons.blur_circular, 4, 'mitochondria'),
-    _sec(BioScale.molecular, 'BONDS', const Color(0xFF00BCD4), Icons.science, 5,
+    _sec(BioScale.molecular, 'Bonds', const Color(0xFF00BCD4), Icons.science, 5,
         'catalyst'),
-    _sec(BioScale.atoms, 'GRAINS', const Color(0xFF5C6BC0), Icons.blur_on, 6,
+    _sec(BioScale.atoms, 'Grains', const Color(0xFF5C6BC0), Icons.blur_on, 6,
         'strong bond'),
-    _sec(BioScale.particles, 'THE FLOOR', const Color(0xFFAB47BC), Icons.grain,
+    _sec(BioScale.particles, 'The Floor', const Color(0xFFAB47BC), Icons.grain,
         7, 'accelerator'),
   ];
 
@@ -240,14 +240,20 @@ GameMap buildDownTheHole() {
     powerUps: {0, 11, 22, 33, 44, 55, 66, 77},
     cardCommon: {5, 16, 27, 38, 49, 60, 71, 82},
     loses: {3, 8, 14, 19, 25, 30, 36, 41, 47, 52, 57, 63, 68, 74, 79, 84},
-    shops: {29, 58},
+    // Shop 24 sits on the LAST spot of the long way around cut-through 14→25:
+    // taking the cut skips the market (TODO_strategy.md — broke players cut
+    // ahead past the shelf they can't use; rich players walk the diamond road
+    // and shop). Shop 58 is the other grammar: the fork ON the market door.
+    shops: {24, 58},
     cardWild: {41, 69, 84}, // deeper = riskier (override the lose at 41/84)
     // Two kinds of fork:
-    //  · spiral cut-throughs — skip deeper, faster but riskier (14/36/58).
+    //  · spiral cut-throughs — skip deeper, faster; 14→25 also skips the
+    //    market at 24 (the strategy fork: tempo vs diamonds + the shelf).
     //  · DESCENT CHECKPOINTS — a mandatory stop, periodically as you descend,
     //    to keep going DOWN (order+1, toward the center) or BAIL UP one band
-    //    toward the surface (order-11). Press-your-luck: bail before the deep
-    //    lose/wild spaces, or push for the center potato.
+    //    toward the surface (order-11). Press-your-luck vs the VAT'S HEAT
+    //    (rules ≥ 5, [vatHeatFor]): the deeper bands skim diamonds every
+    //    landing, so bailing up trades tempo for a cooler commute.
     forks: {
       14: 25, 36: 47, 58: 69, // cut-throughs (down faster)
       22: 11, 44: 33, 66: 55, // checkpoints: bail up one band
@@ -256,7 +262,7 @@ GameMap buildDownTheHole() {
 
   return GameMap(
     id: 'down_the_hole',
-    name: 'DOWN THE HOLE',
+    name: 'Down the Hole',
     subtitle: 'The descent into the infinitesimal',
     sections: secs,
     spaces: spaces,
@@ -271,25 +277,25 @@ GameMap buildDownTheHole() {
 
 GameMap buildIntoTheVoid() {
   final secs = [
-    _sec(BioScale.nothings, 'THE VOID', const Color(0xFF90A4AE),
+    _sec(BioScale.nothings, 'The Void', const Color(0xFF90A4AE),
         Icons.circle_outlined, 0, 'null'),
-    _sec(BioScale.somethings, 'SOMETHING', const Color(0xFF7E57C2),
+    _sec(BioScale.somethings, 'Something', const Color(0xFF7E57C2),
         Icons.auto_awesome, 1, 'spark'),
-    _sec(BioScale.somethings, 'THE RAINBOW', const Color(0xFFFF7043),
+    _sec(BioScale.somethings, 'The Rainbow', const Color(0xFFFF7043),
         Icons.gradient, 2, 'prism'),
-    _sec(BioScale.particles, 'THE AETHER', const Color(0xFFAB47BC), Icons.grain,
+    _sec(BioScale.particles, 'The Aether', const Color(0xFFAB47BC), Icons.grain,
         3, 'drift'),
-    _sec(BioScale.multiverseAll, 'YOOMI', const Color(0xFF42A5F5),
+    _sec(BioScale.multiverseAll, 'Yoomi', const Color(0xFF42A5F5),
         Icons.bubble_chart, 4, 'echo'),
-    _sec(BioScale.multiverseAll, 'OOMI', const Color(0xFF26C6DA),
+    _sec(BioScale.multiverseAll, 'Oomi', const Color(0xFF26C6DA),
         Icons.bubble_chart, 5, 'echo'),
-    _sec(BioScale.universeAll, 'SOOMI', const Color(0xFF66BB6A),
+    _sec(BioScale.universeAll, 'Soomi', const Color(0xFF66BB6A),
         Icons.public, 6, 'all'),
-    _sec(BioScale.cosmicStructures, 'BOBO, THE WATCHER', const Color(0xFFFFCA28),
+    _sec(BioScale.cosmicStructures, 'Bobo, the Watcher', const Color(0xFFFFCA28),
         Icons.visibility, 7, 'gaze'),
-    _sec(BioScale.infinities, 'JELLYFISH DRIFT', const Color(0xFFBA68C8),
+    _sec(BioScale.infinities, 'Jellyfish Drift', const Color(0xFFBA68C8),
         Icons.waves, 8, 'tide'),
-    _sec(BioScale.infinities, 'THE RESET', const Color(0xFFEF5350),
+    _sec(BioScale.infinities, 'The Reset', const Color(0xFFEF5350),
         Icons.refresh, 9, 'reset'),
   ];
 
@@ -334,7 +340,7 @@ GameMap buildIntoTheVoid() {
 
   return GameMap(
     id: 'into_the_void',
-    name: 'INTO THE VOID',
+    name: 'Into the Void',
     subtitle: 'The dream realm — snakes, ladders, and Void cards',
     sections: secs,
     spaces: spaces,
@@ -349,21 +355,21 @@ GameMap buildIntoTheVoid() {
 
 GameMap buildThroughTheAether() {
   final secs = [
-    _sec(BioScale.ecosystem, 'MEADOW', const Color(0xFF66BB6A), Icons.park, 0,
+    _sec(BioScale.ecosystem, 'Meadow', const Color(0xFF66BB6A), Icons.park, 0,
         'balance'),
-    _sec(BioScale.farmSystem, 'FARMLAND', const Color(0xFF9CCC65),
+    _sec(BioScale.farmSystem, 'Farmland', const Color(0xFF9CCC65),
         Icons.agriculture, 1, 'rotation'),
-    _sec(BioScale.planets, 'WORLDS', const Color(0xFF42A5F5), Icons.public, 2,
+    _sec(BioScale.planets, 'Worlds', const Color(0xFF42A5F5), Icons.public, 2,
         'gravity'),
-    _sec(BioScale.solarSystems, 'SUNS', const Color(0xFFFFA726), Icons.wb_sunny,
+    _sec(BioScale.solarSystems, 'Suns', const Color(0xFFFFA726), Icons.wb_sunny,
         3, 'orbit'),
-    _sec(BioScale.galactic, 'GALAXIES', const Color(0xFF7E57C2),
+    _sec(BioScale.galactic, 'Galaxies', const Color(0xFF7E57C2),
         Icons.auto_awesome, 4, 'starlight'),
-    _sec(BioScale.cosmicStructures, 'THE WEB', const Color(0xFF26C6DA),
+    _sec(BioScale.cosmicStructures, 'The Web', const Color(0xFF26C6DA),
         Icons.hub, 5, 'link'),
-    _sec(BioScale.multiverseAll, 'MANYFOLD', const Color(0xFFBA68C8),
+    _sec(BioScale.multiverseAll, 'Manyfold', const Color(0xFFBA68C8),
         Icons.bubble_chart, 6, 'merge'),
-    _sec(BioScale.universeAll, 'ALL', const Color(0xFFFFCA28), Icons.blur_on, 7,
+    _sec(BioScale.universeAll, 'All', const Color(0xFFFFCA28), Icons.blur_on, 7,
         'everything'),
   ];
 
@@ -395,7 +401,7 @@ GameMap buildThroughTheAether() {
 
   return GameMap(
     id: 'through_the_aether',
-    name: 'THROUGH THE AETHER',
+    name: 'Through the Aether',
     subtitle: 'The ascent into everything',
     sections: secs,
     spaces: spaces,
@@ -419,6 +425,20 @@ const String kDefaultMapId = 'down_the_hole';
 GameMap gameMapById(String id) =>
     kGameMaps.firstWhere((m) => m.id == id, orElse: () => kGameMaps.first);
 
+/// THE VAT'S HEAT (rules ≥ 5) — the Boiling Vat's depth pressure on Down the
+/// Hole ("the deeper you go, the hotter the water"). Ending your walk in one
+/// of the four deepest bands skims diamonds: Engine Room −1, Bonds −2,
+/// Grains −3, The Floor −4. The Shack itself (the anchor) is safe — you made
+/// it to work. This is what the bail-up checkpoint forks trade against:
+/// bailing costs tempo but cools the commute. Deterministic (no tape), so
+/// lockstep and replays sail through it.
+int vatHeatFor(GameMap? map, BoardSpace space) {
+  if (map == null || map.id != 'down_the_hole') return 0;
+  if (space.order >= map.spaces.length - 1) return 0; // the Shack is safe
+  final band = space.sectionIndex;
+  return band <= 3 ? 0 : band - 3;
+}
+
 // ===========================================================================
 // Cards — two decks (MAPS_SPEC §Cards). Data only; the effect engine that
 // applies these lands with the controller wiring step.
@@ -427,9 +447,7 @@ GameMap gameMapById(String id) =>
 enum CardDeck { common, wild }
 
 enum EffectKind {
-  gainPaydirt,
-  losePaydirt,
-  tithe, // rivals pay you a % of their paydirt
+  tithe, // rivals pay you a % of their diamonds
   gainDiamonds,
   loseDiamonds,
   allLoseDiamonds, // everyone, including you, loses a fraction
@@ -439,7 +457,7 @@ enum EffectKind {
   gainAtp,
   move, // relative board move (may be negative)
   teleport, // to start or anchor
-  swapPaydirt, // with a chosen/random rival
+  swapDiamonds, // with a chosen/random rival
   setEqualToLeader, // Mirror
   coinFlip, // resolve win[] or lose[]
   gainPotato,
@@ -490,14 +508,14 @@ const List<Card> kCommonDeck = [
       id: 'tithe',
       deck: CardDeck.common,
       title: 'Tithe',
-      text: 'Each rival gives you 10% of their paydirt.',
+      text: 'Each rival gives you 10% of their diamonds.',
       effects: [CardEffect(EffectKind.tithe, 10)]),
   Card(
       id: 'windfall',
       deck: CardDeck.common,
       title: 'Windfall',
-      text: '+15 paydirt.',
-      effects: [CardEffect(EffectKind.gainPaydirt, 15)]),
+      text: '+15 diamonds.',
+      effects: [CardEffect(EffectKind.gainDiamonds, 15)]),
   Card(
       id: 'diamond_vein',
       deck: CardDeck.common,
@@ -520,16 +538,16 @@ const List<Card> kCommonDeck = [
       id: 'toll_booth',
       deck: CardDeck.common,
       title: 'Toll Booth',
-      text: '-8 paydirt.',
-      effects: [CardEffect(EffectKind.losePaydirt, 8)]),
+      text: '-8 diamonds.',
+      effects: [CardEffect(EffectKind.loseDiamonds, 8)]),
   Card(
       id: 'generous_spud',
       deck: CardDeck.common,
       title: 'Generous Spud',
-      text: 'A: +10 paydirt. B: give 5 to each rival, gain a power-up.',
+      text: 'A: +10 diamonds. B: give 5 to each rival, gain a power-up.',
       isDecision: true,
       options: [
-        CardOption('+10 paydirt', [CardEffect(EffectKind.gainPaydirt, 10)]),
+        CardOption('+10 diamonds', [CardEffect(EffectKind.gainDiamonds, 10)]),
         CardOption('Give 5 each, gain a power-up',
             [CardEffect(EffectKind.gainItem, 1)]),
       ]),
@@ -537,31 +555,28 @@ const List<Card> kCommonDeck = [
       id: 'back_alley',
       deck: CardDeck.common,
       title: 'Back Alley',
-      text: 'A: move back 2, +12 paydirt. B: stay put.',
+      text: 'A: move back 2, +12 diamonds. B: stay put.',
       isDecision: true,
       options: [
-        CardOption('Back 2, +12 paydirt',
-            [CardEffect(EffectKind.move, -2), CardEffect(EffectKind.gainPaydirt, 12)]),
+        CardOption('Back 2, +12 diamonds',
+            [CardEffect(EffectKind.move, -2), CardEffect(EffectKind.gainDiamonds, 12)]),
         CardOption('Stay put', []),
       ]),
   Card(
       id: 'pocket_find',
       deck: CardDeck.common,
       title: 'Pocket Find',
-      text: '+8 paydirt and +3 diamonds.',
-      effects: [
-        CardEffect(EffectKind.gainPaydirt, 8),
-        CardEffect(EffectKind.gainDiamonds, 3)
-      ]),
+      text: '+11 diamonds.',
+      effects: [CardEffect(EffectKind.gainDiamonds, 11)]),
   Card(
       id: 'even_split',
       deck: CardDeck.common,
       title: 'Even Split',
-      text: 'A: swap paydirt with the player behind you. B: decline.',
+      text: 'A: swap diamonds with the player behind you. B: decline.',
       isDecision: true,
       options: [
         CardOption('Swap with the player behind',
-            [CardEffect(EffectKind.swapPaydirt)]),
+            [CardEffect(EffectKind.swapDiamonds)]),
         CardOption('Decline', []),
       ]),
 ];
@@ -572,8 +587,8 @@ const List<Card> kWildDeck = [
       id: 'void_swap',
       deck: CardDeck.wild,
       title: 'Void Swap',
-      text: 'Swap your entire paydirt with a random rival (can hurt).',
-      effects: [CardEffect(EffectKind.swapPaydirt)]),
+      text: 'Swap your entire diamond stash with a random rival (can hurt).',
+      effects: [CardEffect(EffectKind.swapDiamonds)]),
   Card(
       id: 'watchers_gift',
       deck: CardDeck.wild,
@@ -608,10 +623,10 @@ const List<Card> kWildDeck = [
       id: 'potato_gamble',
       deck: CardDeck.wild,
       title: 'Potato Gamble',
-      text: 'Coin-flip: win a potato, or lose 30 paydirt.',
+      text: 'Coin-flip: win a potato, or lose 30 diamonds.',
       effects: [
         CardEffect(EffectKind.coinFlip, 0,
-            [CardEffect(EffectKind.gainPotato)], [CardEffect(EffectKind.losePaydirt, 30)])
+            [CardEffect(EffectKind.gainPotato)], [CardEffect(EffectKind.loseDiamonds, 30)])
       ]),
   Card(
       id: 'inventory_raid',
@@ -623,23 +638,23 @@ const List<Card> kWildDeck = [
       id: 'mirror',
       deck: CardDeck.wild,
       title: 'Mirror',
-      text: "Set your paydirt equal to the leader's (great behind, bad ahead).",
+      text: "Set your diamonds equal to the leader's (great behind, bad ahead).",
       effects: [CardEffect(EffectKind.setEqualToLeader)]),
   Card(
       id: 'gnome_bargain',
       deck: CardDeck.wild,
       title: 'Gnome Bargain',
-      text: 'A: -1 potato now, +60 paydirt. B: nothing.',
+      text: 'A: -1 potato now, +60 diamonds. B: nothing.',
       isDecision: true,
       options: [
-        CardOption('-1 potato, +60 paydirt',
-            [CardEffect(EffectKind.losePotato), CardEffect(EffectKind.gainPaydirt, 60)]),
+        CardOption('-1 potato, +60 diamonds',
+            [CardEffect(EffectKind.losePotato), CardEffect(EffectKind.gainDiamonds, 60)]),
         CardOption('Nothing', []),
       ]),
   Card(
       id: 'aether_tax',
       deck: CardDeck.wild,
       title: 'Aether Tax',
-      text: 'All players -15 paydirt; you -0.',
-      effects: [CardEffect(EffectKind.losePaydirt, 0)]),
+      text: 'All players -15 diamonds; you -0.',
+      effects: [CardEffect(EffectKind.loseDiamonds, 0)]),
 ];
