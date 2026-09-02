@@ -5,7 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
-import '../firebase_options.dart';
+import '../firebase_env.dart';
 import '../party/net/firebase_party_transport.dart';
 import '../party/net/party_net.dart';
 import '../party/party_controller.dart';
@@ -42,8 +42,7 @@ Future<void> _run() async {
   PartyNet? hostNet;
   String? code;
   try {
-    await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform);
+    await Firebase.initializeApp(options: firebaseOptionsForCurrentEnv());
     await FirebaseAuth.instance.signInAnonymously();
     debugPrint('PARTY-LIVE: authed anonymously');
 
@@ -55,7 +54,10 @@ Future<void> _run() async {
     // means the harness verifies transport/lockstep, NOT the non-host
     // permission boundary — that needs a second real device/auth.)
     final myUid = FirebaseAuth.instance.currentUser!.uid;
-    final uids = [myUid, ...List.generate(3, (i) => 'live-check-$code-u${i + 1}')];
+    final uids = [
+      myUid,
+      ...List.generate(3, (i) => 'live-check-$code-u${i + 1}')
+    ];
     debugPrint('PARTY-LIVE: room $code');
 
     hostNet = await PartyNet.host(
@@ -101,8 +103,8 @@ Future<void> _run() async {
           nets[cur].act(PartyInputKind.beginWalk);
           break;
         case PartyPhase.chooseBranch:
-          nets[cur].act(PartyInputKind.choosePath,
-              value: c.branchOptions.first);
+          nets[cur]
+              .act(PartyInputKind.choosePath, value: c.branchOptions.first);
           break;
         case PartyPhase.shopOffer:
           nets[cur].act(PartyInputKind.skipPotato);

@@ -70,8 +70,8 @@ class GameFeedback {
     String? note,
     required String source,
   }) async {
-    final ref = await submit(
-        gameId: gameId, liked: liked, note: note, source: source);
+    final ref =
+        await submit(gameId: gameId, liked: liked, note: note, source: source);
     await removePending(gameId);
     return ref;
   }

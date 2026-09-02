@@ -92,8 +92,13 @@ class SpinRequest {
     this.key = '',
   });
 
-  Map<String, dynamic> toJson() =>
-      {'uid': uid, 'kind': kind, 'round': round, 'stage': stage, 'value': value};
+  Map<String, dynamic> toJson() => {
+        'uid': uid,
+        'kind': kind,
+        'round': round,
+        'stage': stage,
+        'value': value
+      };
 
   static const _kinds = {'spin', 'ready', 'go', 'tbPass', 'tbSkip', 'tbOut'};
 
@@ -303,7 +308,8 @@ class FirebaseMadnessTransport implements MadnessTransport {
     final snap = await _room(id).child('players').get();
     if (!snap.exists || snap.value == null) return const [];
     return <NetPlayer>[
-      for (final child in snap.children) NetPlayer.fromJson(_asMap(child.value)),
+      for (final child in snap.children)
+        NetPlayer.fromJson(_asMap(child.value)),
     ]..sort((a, b) => a.slot.compareTo(b.slot));
   }
 

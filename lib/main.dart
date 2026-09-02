@@ -1,24 +1,6 @@
-import 'dart:async';
+import 'main_common.dart';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter/material.dart';
-import 'package:flutter_web_plugins/url_strategy.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-import 'firebase_bootstrap.dart';
-import 'learn/learn_progress.dart';
-import 'my_app.dart';
-
-Future main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  // Clean /{slug} URLs on web for single-game iframe embeds. No-op on mobile.
-  if (kIsWeb) usePathUrlStrategy();
-  await SharedPreferences.getInstance();
-  // Viewed-topic progress for LEARN (cards/modules/explorer read it sync).
-  await LearnProgress.instance.load();
-  // Match main_common: never block first paint on Firebase. Online play inits
-  // in the background and the lobby enables once it's ready; awaiting here could
-  // gray-screen the web build if anonymous auth ever stalls.
-  runApp(MyApp());
-  unawaited(initFirebaseSafe());
-}
+/// Default entry point (the web deploy target). The environment comes from
+/// `--dart-define=APP_ENV=<dev|tst|stg|prod>` (default prod). All launch logic
+/// lives in `bootstrap()` so every entry point behaves identically.
+Future<void> main() => bootstrap();

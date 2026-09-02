@@ -6,7 +6,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
-import '../firebase_options.dart';
+import '../firebase_env.dart';
 import '../games/financial/market_trader/market_net.dart';
 import '../games/financial/market_trader/market_sim.dart';
 import '../games/quick_match/quick_match_transport.dart';
@@ -42,8 +42,7 @@ Future<void> _run() async {
   String? code;
   Timer? driver;
   try {
-    await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform);
+    await Firebase.initializeApp(options: firebaseOptionsForCurrentEnv());
     await FirebaseAuth.instance.signInAnonymously();
     final uid = FirebaseAuth.instance.currentUser!.uid;
     debugPrint('MARKET-LIVE: authed anonymously');

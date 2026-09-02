@@ -155,15 +155,24 @@ changes inside individual games. Entry: group icon in the per-scale picker + gam
 
 ## Firebase
 
-- Project **`hot-potato-games`** (shared across HPG). Multiplayer + telemetry use **RTDB**
-  (`firebase_database`); Firestore is only for account/avatar (`user_profile.dart`,
-  `vipotato.dart`). Config: `lib/firebase_bootstrap.dart`, `lib/firebase_options.dart`.
+- **Four environments, one project each** — `hot-potato-games` (prd) +
+  `hot-potato-games-{dev,tst,stg}`. Isolation is at the PROJECT boundary (each has its own
+  Firestore/RTDB/Auth/Hosting), NOT via path namespacing — every env uses identical bare
+  collection/RTDB paths, so prd's Sessions KPI can't be polluted by non-prod. The active env
+  is a COMPILE-TIME choice: `--dart-define=APP_ENV=<dev|tst|stg|prod>` (default `prod`).
+  `lib/environment.dart` resolves it; `lib/firebase_env.dart` maps it to the project's
+  `FirebaseOptions`; `firebase_bootstrap.dart` inits with that. Flavored entrypoints
+  (`main_dev.dart`/`main_tst.dart`/`main_stg.dart`/`main_prod.dart`) pin the env; all four
+  funnel through `bootstrap()` in `main_common.dart`.
+- Multiplayer + telemetry use **RTDB** (`firebase_database`); Firestore is only for
+  account/avatar (`user_profile.dart`, `vipotato.dart`).
 - Auth: cell runs in an iframe on `hotpotatogames.com`; custom-token SSO via
   `auth_bridge_web.dart` → `AuthProfile`, else anonymous.
 - Telemetry: `lib/telemetry/cell_telemetry.dart` (`recordBoardPlay`, `recordMiniGamePlay` →
   `cell/plays/daily/<UTC>`). Don't double-count board resumes.
-- Rules SSOT + deploy live at the Potatuhs root (`~/Potatuhs/.config/firestore.rules`,
-  `/deploy-rules` skill). Hosting deploy: the `/deploy` skill.
+- Rules SSOT (one file, shared shape across all four projects) + deploy live at the Potatuhs
+  root (`~/Potatuhs/.config/firestore.rules`, `/deploy-rules` deploys to all four). Hosting
+  deploy: the `/deploy` skill — `deploy.sh` for prd, `deploy_env.sh <env>` for any env.
 
 ## Shared kit (read-mostly; change here, nowhere else)
 

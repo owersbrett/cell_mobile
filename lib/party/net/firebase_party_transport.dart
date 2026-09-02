@@ -61,7 +61,8 @@ class FirebasePartyTransport implements PartyTransport {
     final snap = await _game(id).child('players').get();
     if (!snap.exists || snap.value == null) return const [];
     return <NetPlayer>[
-      for (final child in snap.children) NetPlayer.fromJson(_asMap(child.value)),
+      for (final child in snap.children)
+        NetPlayer.fromJson(_asMap(child.value)),
     ]..sort((a, b) => a.slot.compareTo(b.slot));
   }
 
@@ -147,8 +148,7 @@ class FirebasePartyTransport implements PartyTransport {
     final sub = _game(id).onValue.listen((event) {
       final root = _asMap(event.snapshot.value);
       final inputs = <PartyInput>[
-        for (final e in _asList(root['inputs']))
-          PartyInput.fromJson(_asMap(e)),
+        for (final e in _asList(root['inputs'])) PartyInput.fromJson(_asMap(e)),
       ];
       final tape = <int>[
         for (final e in _asList(root['tape'])) (e as num).toInt(),

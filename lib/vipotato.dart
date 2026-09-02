@@ -73,7 +73,8 @@ class VIPotatoConfig {
 
   /// Layers bottom→top, ready to stack.
   List<Trait> get layers => traits.values.toList()
-    ..sort((a, b) => traitZIndex(a.category).compareTo(traitZIndex(b.category)));
+    ..sort(
+        (a, b) => traitZIndex(a.category).compareTo(traitZIndex(b.category)));
 
   /// The `traits` map shape persisted in a `vipotatoes` doc.
   Map<String, dynamic> traitsField() => {
@@ -132,8 +133,7 @@ class VIPotatoService {
         grouped.putIfAbsent(t.category, () => []).add(t);
       }
       final ordered = grouped.entries.toList()
-        ..sort((a, b) =>
-            traitZIndex(a.key).compareTo(traitZIndex(b.key)));
+        ..sort((a, b) => traitZIndex(a.key).compareTo(traitZIndex(b.key)));
       return {for (final e in ordered) e.key: e.value};
     } catch (e) {
       debugPrint('VIPotatoService.loadTraitsByCategory: $e');
@@ -189,10 +189,10 @@ class VIPotatoService {
     } else {
       // Next ordinal across the collection (matches the site's scheme).
       int nextOrdinal = 1;
-      final top =
-          await col.orderBy('ordinal', descending: true).limit(1).get();
+      final top = await col.orderBy('ordinal', descending: true).limit(1).get();
       if (top.docs.isNotEmpty) {
-        nextOrdinal = ((top.docs.first.data()['ordinal'] ?? 0) as num).toInt() + 1;
+        nextOrdinal =
+            ((top.docs.first.data()['ordinal'] ?? 0) as num).toInt() + 1;
       }
       final ref = await col.add({
         ...data,

@@ -1,9 +1,5 @@
-
 import 'environment.dart';
-
 import 'main_common.dart';
 
-Future<void> main() async {
-  await mainCommon(Environment.prod);
-}
-
+/// Flavored entry: `flutter run -t lib/main_prod.dart`.
+Future<void> main() => bootstrap(env: AppEnvId.prod);

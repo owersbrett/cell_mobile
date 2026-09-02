@@ -5,7 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
 import 'auth_bridge_stub.dart' if (dart.library.html) 'auth_bridge_web.dart';
-import 'firebase_options.dart';
+import 'firebase_env.dart';
 import 'games/opponent_config.dart';
 import 'user_profile.dart';
 
@@ -28,7 +28,7 @@ Future<void> initFirebaseSafe() async {
   try {
     if (Firebase.apps.isEmpty) {
       await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
+        options: firebaseOptionsForCurrentEnv(),
       );
     }
     // Track auth + the users/{uid} profile for the account sheet.

@@ -205,7 +205,9 @@ class AuthService {
         photoURL: photoURL,
       );
       final c = current.value;
-      if (c != null) AuthProfile.set(name: c.displayName, avatarUrl: c.photoURL);
+      if (c != null) {
+        AuthProfile.set(name: c.displayName, avatarUrl: c.photoURL);
+      }
     } catch (e) {
       debugPrint('AuthService.updateProfile: $e');
       rethrow;

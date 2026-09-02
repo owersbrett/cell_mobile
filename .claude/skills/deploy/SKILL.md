@@ -29,6 +29,34 @@ The script:
 3. Runs `firebase deploy --only hosting:explore-the-cell --project hot-potato-games`.
 4. Prints the live URL and the new build number to confirm.
 
+## Environments (dev / tst / stg / prd)
+
+Explore the Cell runs four environments, each its **own Firebase project**
+(isolated Firestore/RTDB/Auth/Hosting — see `lib/environment.dart` +
+`lib/firebase_env.dart`). The command above deploys **prd**. To deploy any env:
+
+```bash
+bash .claude/skills/deploy/deploy_env.sh <dev|tst|stg|prd>
+```
+
+It stamps the build with `--dart-define=APP_ENV=<env>` so the bundle connects to
+the matching project, then deploys Hosting there:
+
+| Env | Project | Cell hosting site | URL |
+|-----|---------|-------------------|-----|
+| dev | `hot-potato-games-dev` | `explore-the-cell-dev` | https://explore-the-cell-dev.web.app |
+| tst | `hot-potato-games-tst` | `explore-the-cell-tst` | https://explore-the-cell-tst.web.app |
+| stg | `hot-potato-games-stg` | `explore-the-cell-stg` | https://explore-the-cell-stg.web.app |
+| prd | `hot-potato-games` | `explore-the-cell` | https://explore-the-cell.web.app |
+
+Cell gets its OWN dedicated site in each project — **not** the project's default
+site (`hot-potato-games-<env>.web.app`), which is reserved for the
+`hotpotatogames-web` frontend. `deploy_env.sh` creates the cell site if missing.
+
+`APP_ENV` defaults to `prod`, so a plain `flutter build web` (or the prd deploy
+above) always targets production. Firestore/RTDB rules for all four projects
+ship from the one SSOT via `/deploy-rules`.
+
 ## Verify the deploy
 
 After it finishes, open https://explore-the-cell.web.app and **hard-refresh**

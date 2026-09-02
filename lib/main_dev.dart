@@ -1,9 +1,5 @@
-
 import 'environment.dart';
-
 import 'main_common.dart';
 
-Future<void> main() async {
-  await mainCommon(Environment.dev);
-}
-
+/// Flavored entry: `flutter run -t lib/main_dev.dart` (no dart-define needed).
+Future<void> main() => bootstrap(env: AppEnvId.dev);

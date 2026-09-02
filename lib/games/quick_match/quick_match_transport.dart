@@ -132,7 +132,8 @@ class FirebaseQuickMatchTransport implements QuickMatchTransport {
     final snap = await _room(id).child('players').get();
     if (!snap.exists || snap.value == null) return const [];
     return <NetPlayer>[
-      for (final child in snap.children) NetPlayer.fromJson(_asMap(child.value)),
+      for (final child in snap.children)
+        NetPlayer.fromJson(_asMap(child.value)),
     ]..sort((a, b) => a.slot.compareTo(b.slot));
   }
 

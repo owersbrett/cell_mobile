@@ -80,8 +80,7 @@ class MarketNewsMsg {
     );
   }
 
-  MtNews toMtNews() =>
-      MtNews(h, i, kMtEventDuration, by: by, eventIdx: idx);
+  MtNews toMtNews() => MtNews(h, i, kMtEventDuration, by: by, eventIdx: idx);
 }
 
 class MarketEventIntent {
@@ -259,8 +258,8 @@ class HostMarketFeed implements MarketFeed {
     _publishAccum += dt;
     if (_publishAccum >= kMtTickPublishSec) {
       _publishAccum = 0;
-      channel.publishTick(
-          MarketTick(_seq++, sim.price, (_clock * 1000).round()));
+      channel
+          .publishTick(MarketTick(_seq++, sim.price, (_clock * 1000).round()));
     }
     if (!identical(sim.news, _publishedNews)) {
       _publishedNews = sim.news;
